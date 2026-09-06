@@ -100,14 +100,32 @@ class AutoModeController(
         val current = _state.value
         val connecting = current is AutoModeState.Connecting && isRunning
         val connectedArmed = current is AutoModeState.Connected && connectedWatcher?.isActive == true
-        if (!connecting && !connectedArmed) {
-            adapter.log("[AUTO] Skip requested but no attempt in flight")
+        val isError = current is AutoModeState.Error
+        if (!connecting && !connectedArmed && !isError) {
+            adapter.log("[AUTO] Skip requested but disconnected or inactive")
             return
         }
-        adapter.log("[AUTO] Skipping current server; trying next")
-        skipRequested.set(true)
         if (connecting) {
+            adapter.log("[AUTO] Skipping current server; trying next")
+            skipRequested.set(true)
             adapterSkipSignal?.invoke()
+            return
+        }
+        if (connectedArmed) {
+            adapter.log("[AUTO] Connected server skipped by user; trying next")
+            skipRequested.set(true)
+            return
+        }
+        if (isError) {
+            adapter.log("[AUTO] Error state: advancing to next server")
+            val remaining = remainingCandidates
+            if (remaining.isNotEmpty()) {
+                overrideServers = remaining
+                start()
+            } else {
+                adapter.log("[AUTO] No remaining servers; restarting from top")
+                start()
+            }
         }
     }
 
@@ -179,6 +197,7 @@ class AutoModeController(
         connectedWatcher?.cancel()
         connectedWatcher = null
         skipRequested.set(false)
+        overrideServers = null
         if (!isRunning) return
         adapter.log("[AUTO] User requested stop")
         job?.cancel()
@@ -189,19 +208,23 @@ class AutoModeController(
     /** §3 button semantics across the four states. */
     fun onButtonPressed() {
         when (_state.value) {
-            is AutoModeState.Disconnected, is AutoModeState.Error -> start()
+            is AutoModeState.Disconnected, is AutoModeState.Error -> {
+                overrideServers = null
+                start()
+            }
             is AutoModeState.Connecting -> stop()
             is AutoModeState.Connected -> disconnectNow()
         }
     }
 
-        /** §3/§29-Test10: pressing while Connected disconnects via the normal flow. */
+    /** §3/§29-Test10: pressing while Connected disconnects via the normal flow. */
     fun disconnectNow() {
         // Kill the connected watcher too — the user chose to end the session,
         // not to move to the next server.
         connectedWatcher?.cancel()
         connectedWatcher = null
         skipRequested.set(false)
+        overrideServers = null
         if (isRunning) {
             // Cancel the active run, then clean up the tunnel.
             job?.cancel()
@@ -251,6 +274,7 @@ class AutoModeController(
             attempt++
 
             adapter.log("[AUTO] Trying #$attempt ${server.hostname ?: server.ip}")
+            remainingCandidates = servers.dropWhile { it !== server }.drop(1)
             skipRequested.set(false)
             setState(
                 AutoModeState.Connecting(

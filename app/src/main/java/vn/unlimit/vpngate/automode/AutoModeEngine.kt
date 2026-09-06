@@ -82,10 +82,41 @@ object AutoModeEngine {
         }
     }
 
-    /** §22: the collector cache is the single source of servers. */
+    /** §22: the collector cache is the primary source of servers, with DB/repo fallback. */
     suspend fun defaultServers(dataUtil: DataUtil): List<AutoModeCandidate> {
-        val list: VPNGateConnectionList = dataUtil.connectionsCache ?: return emptyList()
-        return (0 until list.size()).mapNotNull { list.get(it)?.toCandidate() }
+        var list: VPNGateConnectionList? = dataUtil.connectionsCache
+        if (list == null || list.size() == 0) {
+            val app = vn.unlimit.vpngate.App.instance
+            if (app != null) {
+                val dbItems = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    try {
+                        app.vpnGateItemDao.getAll()
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                }
+                if (!dbItems.isNullOrEmpty()) {
+                    val connList = VPNGateConnectionList()
+                    dbItems.forEach { connList.add(VPNGateConnection().fromVPNGateItem(it)) }
+                    dataUtil.connectionsCache = connList
+                    list = connList
+                }
+                if (list == null || list.size() == 0) {
+                    try {
+                        val repo = vn.unlimit.vpngate.repository.VpnServerRepository(cacheDir = app.filesDir)
+                        val res = repo.refresh()
+                        if (res?.connectionList != null && res.connectionList.size() > 0) {
+                            dataUtil.connectionsCache = res.connectionList
+                            list = res.connectionList
+                        }
+                    } catch (_: Throwable) {
+                        // ignore and proceed
+                    }
+                }
+            }
+        }
+        val currentList = list ?: return emptyList()
+        return (0 until currentList.size()).mapNotNull { currentList.get(it)?.toCandidate() }
     }
 
     fun VPNGateConnection.toCandidate(): AutoModeCandidate = AutoModeCandidate(

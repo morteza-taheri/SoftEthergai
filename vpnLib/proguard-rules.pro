@@ -19,10 +19,11 @@
 # class:
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
+-keep class de.blinkt.openvpn.** { *; }
+-keep interface de.blinkt.openvpn.** { *; }
+-keepclassmembers class de.blinkt.openvpn.** { *; }
 -keep class de.blinkt.openvpn.VpnProfile
 -keepclassmembers class de.blinkt.openvpn.VpnProfile { public *;}
-#-keep class de.blinkt.openvpn.core.**
-#-keepclassmembers class de.blinkt.openvpn.core.** { public *;}
 -keep class de.blinkt.openvpn.core.ConfigParser$ConfigParseError
 -keep class de.blinkt.openvpn.core.ConfigParser
 -keepclassmembers class de.blinkt.openvpn.core.ConfigParser {public *;}

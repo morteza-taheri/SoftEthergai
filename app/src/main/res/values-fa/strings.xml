@@ -247,6 +247,15 @@
     <string name="auto_mode_notification_connecting">در حال اتصال به %1$s (%2$d/%3$d)…</string>
     <string name="auto_mode_notification_connected">متصل به %1$s از طریق %2$s</string>
     <string name="auto_mode_log_copied">گزارش در کلیپ‌بورد کپی شد</string>
+    <string name="auto_mode_tap_to_connect">برای اتصال ضربه بزنید</string>
+    <string name="auto_mode_tap_to_disconnect">برای قطع اتصال ضربه بزنید</string>
+    <string name="auto_mode_tap_to_stop">برای لغو ضربه بزنید</string>
+    <string name="auto_mode_tap_to_retry">برای تلاش مجدد ضربه بزنید</string>
+    <string name="auto_mode_permission_battery_title">بهینه‌سازی باتری در پس‌زمینه</string>
+    <string name="auto_mode_permission_battery_desc">برای جلوگیری از قطع شدن اتصال وی‌پی‌ان در پس‌زمینه توسط اندروید، لطفاً مصرف باتری را روی حالت بدون محدودیت قرار دهید.</string>
+    <string name="auto_mode_permission_battery_allow">تنظیم</string>
+    <string name="auto_mode_permission_battery_skip">بعداً</string>
+    <string name="auto_mode_connected_secure">متصل و ایمن</string>
     <string name="title_home">خانه</string>
     <string name="title_servers">سرورها</string>
     <string name="title_free_server">سرور رایگان</string>

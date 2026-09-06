@@ -121,3 +121,17 @@
 
 # With R8 full mode generic signatures are stripped for classes that are not kept.
 -keep,allowobfuscation,allowshrinking class retrofit2.Response
+
+# Keep OpenVPN, SoftEther, and SSTP core classes & listener interfaces
+-keep class de.blinkt.openvpn.** { *; }
+-keep interface de.blinkt.openvpn.** { *; }
+-keepclassmembers class de.blinkt.openvpn.** { *; }
+
+-keep class vn.unlimit.softether.** { *; }
+-keep interface vn.unlimit.softether.** { *; }
+-keepclassmembers class vn.unlimit.softether.** { *; }
+
+-keep class kittoku.osc.** { *; }
+-keep interface kittoku.osc.** { *; }
+-keepclassmembers class kittoku.osc.** { *; }
+
