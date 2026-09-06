@@ -1,0 +1,342 @@
+<resources>
+    <string name="app_name" translatable="false">VPN Gate Connector Pro</string>
+    <string name="home">Home</string>
+    <string name="paid_server">Paid Server</string>
+    <string name="navigation_drawer_open">Open drawer</string>
+    <string name="navigation_drawer_close">Close drawer</string>
+    <string name="search">Search</string>
+    <string name="sort">Sort</string>
+    <string name="filter">Filter</string>
+    <string name="filter_server_protocol">Show server with protocol</string>
+    <string name="reset">Reset</string>
+    <string name="show_tcp_server">TCP Server</string>
+    <string name="show_udp_server">UDP Server</string>
+    <string name="show_l2tp_server">L2TP Server</string>
+    <string name="show_sstp_server">MS-SSTP Server</string>
+    <string name="show_softether_server">SoftEther SSL-VPN Server</string>
+    <string name="must_check_at_least_1_protocol">You must check at least 1 server protocol to continue</string>
+    <string-array name="number_filter_operator">
+        <item>equal (=)</item>
+        <item>greater than (&gt;)</item>
+        <item>greater or equal (&gt;=)</item>
+        <item>less than (&lt;)</item>
+        <item>less than or equal (&lt;=)</item>
+    </string-array>
+    <string name="operator_equal" translatable="false">=</string>
+    <string name="operator_greater" translatable="false">&gt;</string>
+    <string name="operator_greater_equal" translatable="false">&gt;=</string>
+    <string name="operator_less" translatable="false">&lt;</string>
+    <string name="operator_less_equal" translatable="false">&lt;=</string>
+    <string name="about">About</string>
+    <string name="setting">Setting</string>
+    <string name="help">Help</string>
+    <string name="speed">Speed</string>
+    <string name="speed_unit" translatable="false">Mb/s</string>
+    <string name="ping_unit" translatable="false">ms</string>
+    <string name="hostname">Hostname</string>
+    <string name="score">Score</string>
+    <string name="score_short">Score</string>
+    <string name="go_back">Go back</string>
+    <string name="l2tp_end_point">Server / endpoint</string>
+    <string name="l2tp_connect">Connect via L2TP</string>
+    <string name="openvpn_over_tcp">OpenVPN over TCP</string>
+    <string name="openvpn_over_udp">OpenVPN over UDP</string>
+    <string name="softether_over_tcp">SoftEther SSL-VPN over TCP</string>
+    <string name="softether_over_udp">SoftEther SSL-VPN over UDP</string>
+    <string name="connect_use_ms_sstp">Connect via MS-SSTP</string>
+    <string name="vpn_protocol_selection_title">Select VPN protocol</string>
+    <string name="operator_message_title">Message from server operator</string>
+    <string name="connect_use">Use</string>
+    <string name="connect_use_tcp">TCP</string>
+    <string name="connect_use_udp">UDP</string>
+    <string name="ping">Ping</string>
+    <string name="session">Session</string>
+    <string name="max_session">Max Session</string>
+    <string name="domain">Domain</string>
+    <string name="ipv6">IPv6</string>
+    <string name="good">Good</string>
+    <string name="medium">Normal</string>
+    <string name="full">Full</string>
+    <string name="uptime">Uptime</string>
+    <string name="owner">Owner</string>
+    <string name="tcp_port" translatable="false">TCP</string>
+    <string name="udp_port" translatable="false">UDP</string>
+    <string name="l2tp_support">L2TP Support</string>
+    <string name="l2tp_supported">Yes</string>
+    <string name="sstp_support">MS-SSTP Support</string>
+    <string name="ms_sstp">MS-SSTP</string>
+    <string name="days">days</string>
+    <string name="hours">hours</string>
+    <string name="minutes">minutes</string>
+    <string name="seconds">seconds</string>
+    <string name="cancel_connection">Disconnect</string>
+    <string name="pauseVPN">Pause VPN</string>
+    <string name="resumevpn">Resume VPN</string>
+    <string name="state_connected">Connected</string>
+    <string name="connection_error">Error when trying get data from server. Tap to try again!</string>
+    <string name="no_network">Your device is not connect to any network\nPlease connect any wifi or enable mobile data to continue</string>
+    <string name="loading_text">App is fetching data from server\nPlease wait in a moment</string>
+    <string name="search_hint">Country, IP, Hostname, Operator</string>
+    <string name="to_top">Back to top</string>
+    <string name="country">Country</string>
+    <string name="sort_property">Sort by</string>
+    <string name="sort_type">Sort type</string>
+    <string name="sort_asc">Ascending</string>
+    <string name="sort_desc">Descending</string>
+    <string name="apply">Apply</string>
+    <string name="cancel">Cancel</string>
+    <string name="feature_not_available">You can\'t do this action at this moment</string>
+    <!--- Settings -->
+    <string name="enable_notification_speed">Enable speed/statistics in notify</string>
+    <string name="setting_startup_screen">Startup screen</string>
+    <string-array name="startup_screen">
+        <item>List screen</item>
+        <item>Status screen</item>
+    </string-array>
+    <string name="setting_startup_screen_subtitle">Choose startup screen after app start with at least connection success.\nIf no connection success before list screen always display.\nStartup screen also display when tap to notification.</string>
+    <string name="enable_notification_speed_hint">Display speed/statistics in notification. If turn off only connect status display in notification and battery usage may fewer.</string>
+    <string name="setting_cache_label">Cache save time</string>
+    <string name="setting_cache_subtitle">Is the time data will save in device after get data from server</string>
+    <string name="setting_cache_auto_clear_label">Cache will auto clear at:</string>
+    <string name="setting_cache_clear">Clear now</string>
+    <string name="setting_clear_cache_success">Clear cache success</string>
+    <string name="setting_clear_cache_error">Some thing when wrong. Cache can\'t clear</string>
+    <string-array name="setting_cache_time">
+        <item>15 minutes</item>
+        <item>30 minutes</item>
+        <item>1 hours</item>
+        <item>2 hours</item>
+        <item>4 hours</item>
+        <item>6 hours</item>
+        <item>12 hours</item>
+        <item>24 hours</item>
+        <item>Never</item>
+    </string-array>
+    <string name="cache_time_15m">15 minutes</string>
+    <string name="cache_time_30m">30 minutes</string>
+    <string name="cache_time_1h">1 hours</string>
+    <string name="cache_time_2h">2 hours</string>
+    <string name="cache_time_4h">4 hours</string>
+    <string name="cache_time_6h">6 hours</string>
+    <string name="cache_time_12h">12 hours</string>
+    <string name="cache_time_24h">24 hours</string>
+    <string name="cache_time_never">Never</string>
+    <string name="startup_screen_auto">Auto Connect screen</string>
+    <string name="startup_screen_list">List screen</string>
+    <string name="startup_screen_status">Status screen</string>
+    <string name="setting_developer_mode_label">Developer Mode (logging)</string>
+    <string name="setting_developer_mode_summary">Keep diagnostic logs enabled for troubleshooting. Turn off for maximum speed.</string>
+    <string name="setting_language_label">Language</string>
+    <string name="setting_language_system">System default</string>
+    <string name="setting_theme_label">Theme</string>
+    <string name="setting_theme_system">System default</string>
+    <string name="setting_theme_light">Light</string>
+    <string name="setting_theme_dark">Dark</string>
+    <string name="setting_theme_subtitle">Choose the app appearance. Light and Dark styles follow this theme.</string>
+    <string name="setting_excluded_apps_label">Excluded apps</string>
+    <string name="excluded_apps_count_none">None</string>
+    <string name="excluded_apps_count">%1$d excluded</string>
+    <string name="press_back_again_to_exit">Please click BACK again to exit</string>
+    <!-- Detail -->
+    <string name="total_user">Total user</string>
+    <string name="total_traffic">Total traffic</string>
+    <string name="log_type">Log type</string>
+    <string name="connect_to_this_server">Connect to this server</string>
+    <string name="install_openvpn">Install OpenVPN Connect</string>
+    <string name="save_config_file">Save OpenVPN config file</string>
+    <string name="saved_ovpn_file_in">Saved ovpn file in %1$s. Import to OpenVPN Connect to use it</string>
+    <string name="connect_via_l2tp">Connect via L2TP VPN</string>
+    <string name="connect_via_sstp">Connect via MS-SSTP</string>
+    <string name="connect_use_protocol">Connect use protocol:</string>
+    <string name="retry_connect">Retry connect</string>
+    <string name="vpn_auth_failure">Auth failure</string>
+    <string name="connecting">Connecting…</string>
+    <string name="sstp_connecting">Connecting MS-SSTP…</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="disconnect_sstp">Disconnect MS-SSTP</string>
+    <string name="cancel_sstp">Cancel MS-SSTP</string>
+    <string name="disconnecting">Disconnecting…</string>
+    <string name="sstp_disconnecting">Disconnecting MS-SSTP…</string>
+    <string name="sstp_disconnected">Disconnected MS-SSTP</string>
+    <string name="sstp_connected">Connected MS-SSTP with IP: %1$s</string>
+    <string name="sstp_disconnected_by_error">Disconnected MS-SSTP because of error or by outside problem</string>
+    <string name="canceled">Canceled</string>
+    <string name="copy_ip">Copy IP to clipboard</string>
+    <string name="copy_hostname">Copy HostName to clipboard</string>
+    <string name="copied">Copied</string>
+    <string name="copy_label">Copy</string>
+    <string name="collector_debug_source">Debug collector info</string>
+    <string name="collector_debug_title">Collector debug</string>
+    <string name="collector_debug_dump">Provenance</string>
+    <string name="collector_debug_raw_html">Raw HTML</string>
+    <string name="collector_debug_raw_api">Raw API</string>
+    <string name="collector_debug_unavailable">Provenance unavailable — refresh the server list first</string>
+    <string name="collector_debug_raw_unavailable">Raw capture unavailable for this refresh</string>
+    <string name="connecting_use_protocol">Connecting to VPN server use [%1$s] protocol.</string>
+    <!--VPN String -->
+    <string name="unknown_state">Unknown</string>
+    <string name="state_user_vpn_permission" translatable="false">Waiting for user permission to use VPN API</string>
+    <string name="check_ip">Check your current public IP</string>
+    <string name="about_html">%1$s is a free, open-source, multi-protocol VPN client for Android with a native SoftEther VPN implementation. It also supports OpenVPN, MS-SSTP and L2TP/IPsec, connecting to free community servers from the VPN Gate project as well as private servers.</string>
+    <string name="about_development">Development</string>
+    <string name="about_author_label">Developed and maintained by</string>
+    <string name="about_author_name" translatable="false">Morteza Taheri</string>
+    <string name="about_author_email" translatable="false">morteza.taheri@live.com</string>
+    <string name="about_author_github" translatable="false">https://github.com/morteza-taheri</string>
+    <string name="about_source_title">Source code</string>
+    <string name="about_source_description">This project is open source and released under the GPLv3 license. Contributions, bug reports and pull requests are welcome on GitHub.</string>
+    <string name="about_source_link" translatable="false">https://github.com/morteza-taheri/SoftEther</string>
+    <string name="about_copyright" translatable="false">© 2026 Morteza Taheri</string>
+    <string name="license_html">%1$s is under GPLv3 LICENSE. It means if you use this project or a part of this project in your project it must be open source. This project uses other open source projects as libraries, detail below.</string>
+    <string name="vpn_gate_link" translatable="false">http://www.vpngate.net/en/about_overview.aspx</string>
+    <string name="version">Version:</string>
+    <string name="license_label" translatable="false">OpenVPN for Android (GPLv2)</string>
+    <string name="license_link" translatable="false">https://github.com/schwabe/ics-openvpn/blob/master/doc/LICENSE.txt</string>
+    <string name="license_glide_label" translatable="false">glide (Apache License, Version 2.0)</string>
+    <string name="license_glide_link" translatable="false">https://github.com/bumptech/glide/blob/master/LICENSE</string>
+    <string name="license_sstp_label" translatable="false">Open SSTP Client for Android (MIT)</string>
+    <string name="license_sstp_link" translatable="false">https://github.com/kittoku/Open-SSTP-Client/blob/main/LICENSE</string>
+    <string name="license_softether_label" translatable="false">SoftEther-Android-Module (Apache License, Version 2.0)</string>
+    <string name="license_softether_link" translatable="false">https://github.com/hoang-rio/SoftEther-Android-Module/blob/main/LICENSE</string>
+    <string name="license">License</string>
+    <string name="operator_message">Operator message</string>
+    <string name="hide_op_message_5time">Hide all message next 5 connect time</string>
+    <string name="close">Close</string>
+    <string name="name_hint">Your name. Minimum %1$d character</string>
+    <string name="content_hint">What you need help?\nMinimum %1$d character</string>
+    <string name="btn_send">Send</string>
+    <string name="name_error_message">Name must be longer than %1$d character</string>
+    <string name="content_error_message">Content must be longer than %1$d character</string>
+    <string name="uploaded_data">Uploaded</string>
+    <string name="downloaded_data">Downloaded</string>
+    <string name="help_request_from">[VPN]Help request from: </string>
+    <string name="send_email">Send email</string>
+    <string name="email_error_fix">Please check correct error first</string>
+    <string name="error_load_profile">Error load VPN profile</string>
+    <string name="traffic_session">Session traffic</string>
+    <string name="clear_statistics">Clear statistics</string>
+    <string name="get_pro_version">Get Pro version</string>
+    <string name="status">Status</string>
+    <string name="tap_to_disconnect">Tap button to disconnect from %1$s</string>
+    <string name="tap_to_connect_last">Tap button to connect to %1$s</string>
+    <string name="connected_to">Connected to %1$s</string>
+    <string name="no_last_vpn_server">Please select a VPN Server from home to connect first</string>
+    <string name="connect_one_warning">You need connect to at least one VPN Server before access this function</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="feature_available_in_pro">This feature only available in Pro version</string>
+    <string name="block_ads_setting_label">Block Ads (Pro only)</string>
+    <string name="block_ads_setting_hint">Block ads in all app and browser when VPN is connected use DNS</string>
+    <string name="udp_setting_label">Include UDP server</string>
+    <string name="udp_setting_hint">Include UDP server in server list</string>
+    <string name="setting_apply_on_next_connection_time">This setting will apply on next connection time</string>
+    <string name="dns_setting_label">Use custom DNS</string>
+    <string name="dns_setting_hint">Use custom DNS when connected to VPN Server instead of default Google DNS (8.8.8.8/8.8.4.4).\nThis setting will turn off Block Ads setting when enabled</string>
+    <string name="dns_ip_1" translatable="false">DNS 1</string>
+    <string name="dns_ip_2">DNS 2 (optional)</string>
+    <string name="dns_ip_1_hint" translatable="false">8.8.8.8</string>
+    <string name="dns_ip_2_hint" translatable="false">8.8.4.4</string>
+    <string name="use_domain_label">Use domain to connect</string>
+    <string name="use_domain_hint">Use domain .opengw.net to connect to VPN Server instead of Server IP Address</string>
+    <string name="empty_search_result">No sever found with keyword \"%1$s\"</string>
+    <string name="empty_filter_result">No sever found current filter</string>
+    <string name="no_server_available">No servers available. Please pull to refresh.</string>
+    <!-- L2TPConnect -->
+    <string name="l2tp_connect_title">Connect to \"%1$s\" via L2TP/IPSec</string>
+    <string name="l2tp_connect_hint">To connect to server \"%1$s\" via L2TP/IPSec VPN. Please follow several step bellow</string>
+    <string name="l2tp_connect_add">1. Add new VPN Connection in VPN Setting like this</string>
+    <string name="l2tp_tap_to_connect">2. Tap to created VPN Connection to connect</string>
+    <!-- Auto Mode -->
+    <string name="auto_mode">Auto Mode</string>
+    <string name="setting_auto_protocol_label">Default VPN Protocol</string>
+    <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
+    <string name="setting_softether_max_connections_label">SoftEther Max Connections</string>
+    <string name="setting_softether_max_connections_value">%1$d connections</string>
+    <string name="auto_mode_state_disconnected">Disconnected</string>
+    <string name="auto_mode_state_connecting">Connecting…</string>
+    <string name="auto_mode_state_connected">Connected</string>
+    <string name="auto_mode_state_error">Error</string>
+    <string name="auto_mode_attempt_progress">Attempting server %1$d of %2$d</string>
+    <string name="auto_mode_attempt_n_of_m">Attempt: %1$d / %2$d</string>
+    <string name="auto_mode_server_name">Server: %1$s</string>
+    <string name="auto_mode_server_ip">IP: %1$s</string>
+    <string name="auto_mode_server_protocol">Protocol: %1$s</string>
+    <string name="auto_mode_server_speed">Speed: %1$d Mbps</string>
+    <string name="auto_mode_server_ping">Ping: %1$d ms</string>
+    <string name="auto_mode_error_no_server">Could not connect to any available server.</string>
+    <string name="auto_mode_error_generic">Auto Mode failed. Tap to try again.</string>
+    <string name="auto_mode_error_vpn_permission">VPN permission is required for Auto Mode. Please allow it and try again.</string>
+    <string name="auto_mode_try_next_server">Try next server</string>
+    <string name="auto_mode_log_title">Log</string>
+    <string name="auto_mode_log_copy">Copy</string>
+    <string name="auto_mode_log_clear">Clear</string>
+    <string name="auto_mode_log_empty">Module output will appear here when Auto Mode connects.</string>
+    <string name="auto_mode_notification_title">Auto Mode</string>
+    <string name="auto_mode_notification_connecting">Connecting to %1$s (%2$d/%3$d)…</string>
+    <string name="auto_mode_notification_connected">Connected to %1$s via %2$s</string>
+    <string name="auto_mode_log_copied">Log copied to clipboard</string>
+    <string name="title_home">Home</string>
+    <string name="title_servers">Servers</string>
+    <string name="title_free_server">Free Server</string>
+    <string name="title_personal">Personal</string>
+    <!-- Login screen -->
+    <string name="default_loading_text">Loading…</string>
+    <!-- Sign up screen -->
+    <!-- Activate screen -->
+    <!-- Forgot pass screen -->
+    <!-- Reset pass screen -->
+    <!-- Home screen -->
+    <string name="usage_chart">Usage chart</string>
+    <string name="session_list">Session list</string>
+    <array name="chart_type">
+        <item>Hourly</item>
+        <item>Daily</item>
+        <item>Monthly</item>
+    </array>
+    <string name="you_have_not_any_connected_session">You have not any connected session.</string>
+    <!-- Personal -->
+    <!-- Notification setting -->
+    <!-- Change pass -->
+    <!-- Profile -->
+    <!-- Check app install source error message -->
+    <!-- Exclude Apps -->
+    <string name="app_icon">App icon</string>
+    <string name="add_apps_to_exclude">Add Apps to Exclude</string>
+    <string name="exclude_app_description">Selected apps will bypass the VPN tunnel and use your regular internet connection</string>
+    <string name="search_apps_hint">Search apps...</string>
+    <string name="exclude_apps_text">Excluding %d app(s) from VPN</string>
+    <string name="apps_updated_successfully">Apps updated successfully</string>
+    <string name="vpn_restarted_for_settings">VPN restarted for new settings.</string>
+    <string name="error_saving_apps">Error saving apps</string>
+    <string name="error_opening_app_selection">Error opening app selection</string>
+    <!-- VPN Protocol Selection Dialog -->
+    <string name="select_vpn_protocol">Select VPN Protocol</string>
+    <string name="available_protocols">Available Protocols</string>
+    <string name="openvpn_tcp">OpenVPN (TCP)</string>
+    <string name="openvpn_udp">OpenVPN (UDP)</string>
+    <string name="softether_vpn_tcp">SoftEther VPN (TCP)</string>
+    <string name="softether_vpn_udp">SoftEther VPN (UDP)</string>
+    <string name="softether_vpn_udp_natt">SoftEther VPN (UDP - NAT-T)</string>
+    <string name="protocol_available_port">Available on port %1$d</string>
+    <string name="protocol_available_default_port">Available on TCP %1$d (default)</string>
+    <string name="protocol_supported_port_unknown">Supported — port unknown</string>
+    <string name="protocol_not_available">Not available</string>
+    <string name="softether_available">SSL-VPN Protocol</string>
+    <string name="softether_not_available">Not available</string>
+    <string name="openvpn_tcp_not_available">OpenVPN TCP is not available for this server</string>
+    <string name="openvpn_udp_not_available">OpenVPN UDP is not available for this server</string>
+    <string name="softether_not_available_toast">SoftEther is not available for this server</string>
+    <string name="connecting_softether">Connecting SoftEther…</string>
+    <string name="disconnect_softether">Disconnect SoftEther</string>
+    <string name="cancel_softether">Cancel SoftEther</string>
+    <string name="softether_connected">Connected SoftEther with IP: %1$s</string>
+    <string name="softether_disconnected">Disconnected SoftEther</string>
+    <string name="softether_disconnected_by_error">Disconnected SoftEther because of error</string>
+    <string name="vpn_permission_denied">VPN permission denied</string>
+    <string name="softether_connecting">Connecting SoftEther…</string>
+    <string name="softether_tls_handshake">Establishing SoftEther TLS handshake…</string>
+    <string name="softether_protocol_handshake">Negotiating SoftEther protocol…</string>
+    <string name="softether_authenticating">Authenticating SoftEther session…</string>
+    <string name="softether_session_setup">Establishing SoftEther session…</string>
+    <string name="softether_disconnecting">Disconnecting SoftEther…</string>
+    <string name="error_unknown">An unknown error occurred. Please try again.</string>
+</resources>

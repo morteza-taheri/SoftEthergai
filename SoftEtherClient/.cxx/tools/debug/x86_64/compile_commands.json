@@ -1,0 +1,122 @@
+[
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/jni/softether_jni.c.o -c /app/applet/SoftEtherClient/src/main/cpp/jni/softether_jni.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/jni/softether_jni.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/proto/softether_protocol.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_protocol.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_protocol.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/proto/softether_pack.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_pack.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_pack.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/proto/softether_nat_t.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_nat_t.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_nat_t.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/proto/rudp_transport.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/rudp_transport.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/rudp_transport.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/proto/softether_rudp.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_rudp.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_rudp.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/crypto/aes_wrapper.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/aes_wrapper.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/aes_wrapper.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/crypto/compress.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/compress.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/compress.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/socket/tcp_socket.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/socket/tcp_socket.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/socket/tcp_socket.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/packet/packet_handler.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/packet/packet_handler.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/packet/packet_handler.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -g -O0 -std=gnu11 -o CMakeFiles/softether.dir/softether-core/src/net/dhcp_client.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/net/dhcp_client.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/net/dhcp_client.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/test/native_test.c.o -c /app/applet/SoftEtherClient/src/main/cpp/test/native_test.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/test/native_test.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/test/test_jni_bridge.c.o -c /app/applet/SoftEtherClient/src/main/cpp/test/test_jni_bridge.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/test/test_jni_bridge.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/jni/softether_jni.c.o -c /app/applet/SoftEtherClient/src/main/cpp/jni/softether_jni.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/jni/softether_jni.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/proto/softether_protocol.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_protocol.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_protocol.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/proto/softether_pack.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_pack.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_pack.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/proto/softether_nat_t.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_nat_t.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_nat_t.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/proto/rudp_transport.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/rudp_transport.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/rudp_transport.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/proto/softether_rudp.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_rudp.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_rudp.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/crypto/aes_wrapper.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/aes_wrapper.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/aes_wrapper.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/crypto/compress.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/compress.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/crypto/compress.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/socket/tcp_socket.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/socket/tcp_socket.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/socket/tcp_socket.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/packet/packet_handler.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/packet/packet_handler.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/packet/packet_handler.c"
+},
+{
+  "directory": "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+  "command": "/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=x86_64-none-linux-android24 --sysroot=/opt/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dsoftether_test_EXPORTS -I/app/applet/SoftEtherClient/src/main/cpp/softether-core/include -I/app/applet/SoftEtherClient/src/main/cpp/openssl/include -I/app/applet/SoftEtherClient/src/main/cpp/test -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security -O2 -fPIC -O0 -g -fno-limit-debug-info  -fPIC -Wall -Wno-unused-parameter -Wno-unused-variable -fPIC -std=gnu11 -o CMakeFiles/softether_test.dir/softether-core/src/net/dhcp_client.c.o -c /app/applet/SoftEtherClient/src/main/cpp/softether-core/src/net/dhcp_client.c",
+  "file": "/app/applet/SoftEtherClient/src/main/cpp/softether-core/src/net/dhcp_client.c"
+}
+]

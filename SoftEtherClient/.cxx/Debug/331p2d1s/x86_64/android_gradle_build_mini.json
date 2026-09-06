@@ -1,0 +1,33 @@
+{
+  "buildFiles": [
+    "/app/applet/SoftEtherClient/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/opt/android/sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/opt/android/sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "softether_test::@6890427a1f51a3e7e1df": {
+      "artifactName": "softether_test",
+      "abi": "x86_64",
+      "output": "/app/applet/SoftEtherClient/build/intermediates/cxx/Debug/331p2d1s/obj/x86_64/libsoftether_test.so",
+      "runtimeFiles": []
+    },
+    "softether::@6890427a1f51a3e7e1df": {
+      "artifactName": "softether",
+      "abi": "x86_64",
+      "output": "/app/applet/SoftEtherClient/build/intermediates/cxx/Debug/331p2d1s/obj/x86_64/libsoftether.so",
+      "runtimeFiles": []
+    }
+  }
+}

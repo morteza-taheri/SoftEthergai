@@ -1,0 +1,413 @@
+package vn.unlimit.vpngate.models
+
+import android.content.Context
+import android.os.Build
+import android.os.Parcel
+import android.os.Parcelable
+import android.util.Base64
+import vn.unlimit.vpngate.App.Companion.instance
+import vn.unlimit.vpngate.R
+import vn.unlimit.vpngate.utils.DataUtil
+import java.text.DecimalFormat
+import kotlin.math.roundToInt
+
+/**
+ * Created by dongh on 14/01/2018.
+ */
+class VPNGateConnection : Parcelable {
+    //HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,logType,Operator,Message,OpenVPN_ConfigData_Base64
+    var hostName: String? = null
+    var ip: String? = null
+    var score = 0
+    var ping = 0
+    var speed = 0
+    var countryLong: String? = null
+    var countryShort: String? = null
+    var numVpnSession = 0
+    var uptime = 0
+    var totalUser = 0
+    var totalTraffic: Long = 0
+    var logType: String? = null
+    var operator: String? = null
+    var message: String? = null
+    var openVpnConfigData: String? = null
+    var tcpPort = 0
+    var udpPort = 0
+    var isL2TPSupport = 0
+    var isSSTPSupport = 0
+    var seTcpPort = 0
+    var seUdpPort = 0
+    // SoftEther UDP offered without a published port (§6/§9): the UI
+    // shows "supported — port unknown" instead of hiding the option.
+    var seUdpSupported = false
+
+    val isUdpOnly: Boolean
+        get() = seTcpPort <= 0 && seUdpPort > 0
+
+    /** SoftEther UDP is offered but no port was published (§6/§9). */
+    val isSeUdpPortUnknown: Boolean
+        get() = seUdpSupported && seUdpPort <= 0
+
+    /**
+     * Port to use for an MS-SSTP connection. The collected SSTP fact
+     * may carry an unknown port; the protocol-standard TCP listener
+     * 443 is the documented default (locked product decision).
+     */
+    val sstpConnectPort: Int
+        get() = if (tcpPort > 0) tcpPort else SSTP_DEFAULT_PORT
+
+    private constructor(`in`: Parcel) {
+        hostName = `in`.readString()
+        ip = `in`.readString()
+        score = `in`.readInt()
+        ping = `in`.readInt()
+        speed = `in`.readInt()
+        countryLong = `in`.readString()
+        countryShort = `in`.readString()
+        numVpnSession = `in`.readInt()
+        uptime = `in`.readInt()
+        totalUser = `in`.readInt()
+        totalTraffic = `in`.readLong()
+        logType = `in`.readString()
+        operator = `in`.readString()
+        message = `in`.readString()
+        openVpnConfigData = `in`.readString()
+        tcpPort = `in`.readInt()
+        udpPort = `in`.readInt()
+        isL2TPSupport = `in`.readInt()
+        isSSTPSupport = `in`.readInt()
+        seTcpPort = `in`.readInt()
+        seUdpPort = `in`.readInt()
+        seUdpSupported = `in`.readInt() == 1
+    }
+
+    //Empty constructor
+    constructor()
+
+    override fun writeToParcel(out: Parcel, flags: Int) {
+        out.writeString(hostName)
+        out.writeString(ip)
+        out.writeInt(score)
+        out.writeInt(ping)
+        out.writeInt(speed)
+        out.writeString(countryLong)
+        out.writeString(countryShort)
+        out.writeInt(numVpnSession)
+        out.writeInt(uptime)
+        out.writeInt(totalUser)
+        out.writeLong(totalTraffic)
+        out.writeString(logType)
+        out.writeString(operator)
+        out.writeString(message)
+        out.writeString(openVpnConfigData)
+        out.writeInt(tcpPort)
+        out.writeInt(udpPort)
+        out.writeInt(isL2TPSupport)
+        out.writeInt(isSSTPSupport)
+        out.writeInt(seTcpPort)
+        out.writeInt(seUdpPort)
+        out.writeInt(if (seUdpSupported) 1 else 0)
+    }
+
+    private fun decodeBase64(base64str: String): String? {
+        try {
+            val plainBytes = Base64.decode(base64str, 1)
+            return String(plainBytes)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
+    }
+
+    val calculateHostName: String
+        get() {
+            val name = hostName ?: ""
+            return "$name.opengw.net"
+        }
+
+    val scoreAsString: String
+        get() = score.toString()
+
+    val pingAsString: String
+        get() = ping.toString() + ""
+
+    val numVpnSessionAsString: String
+        get() = numVpnSession.toString() + ""
+
+    fun setOperatorString(operator: String) {
+        var loperator = operator
+        loperator = loperator.replace("'s owner", "")
+        this.operator = loperator
+    }
+
+    fun getOpenVpnConfigDataString(): String? {
+        var openVpnConfigDataTmp = openVpnConfigData
+        if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
+            val dDomain = "$hostName.opengw.net"
+            openVpnConfigDataTmp = openVpnConfigDataTmp!!.replace(ip!!, dDomain)
+        }
+        return openVpnConfigDataTmp
+    }
+
+    fun setOpenVpnConfigDataString(openVpnConfigData: String) {
+        this.openVpnConfigData = decodeBase64(openVpnConfigData)?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * The public vpngate.net feed carries no per-protocol port columns, only the
+     * OpenVPN config blob. Derive what the blob tells us so the protocol
+     * selection UI is not empty:
+     * - "proto tcp" / "proto udp" selects the transport
+     * - "remote <host> <port>" carries the port
+     * A SoftEther VPN server serves its native protocol on the same TCP
+     * listener as OpenVPN over TCP (protocol auto-detection), so the TCP port
+     * from the blob also becomes the SoftEther TCP port.
+     * Explicit port columns from an extended feed are never overridden.
+     */
+    private fun derivePortsFromOpenVpnConfig() {
+        val config = openVpnConfigData ?: return
+        var proto: String? = null
+        var remotePort = 0
+        for (rawLine in config.lines()) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) {
+                continue
+            }
+            if (proto == null && line.startsWith("proto ")) {
+                proto = line.removePrefix("proto ").trim()
+            }
+            if (remotePort == 0 && line.startsWith("remote ")) {
+                val parts = line.split(Regex("\\s+"))
+                if (parts.size >= 3) {
+                    remotePort = parts[2].toIntOrNull() ?: 0
+                }
+            }
+        }
+        if (proto == null || remotePort <= 0) {
+            return
+        }
+        if (proto.startsWith("tcp")) {
+            if (tcpPort == 0) tcpPort = remotePort
+            if (seTcpPort == 0) seTcpPort = remotePort
+        } else if (proto.startsWith("udp")) {
+            if (udpPort == 0) udpPort = remotePort
+        }
+    }
+
+    val openVpnConfigDataUdp: String?
+        get() {
+            var openVpnConfigDataUdp = openVpnConfigData
+            if (this.tcpPort > 0) {
+                // Current config is config for tcp need for udp
+                openVpnConfigDataUdp = openVpnConfigDataUdp!!
+                    .replace("proto tcp", "proto udp")
+                    .replace("remote $ip $tcpPort", "remote $ip $udpPort")
+            }
+            if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
+                val dDomain = "$hostName.opengw.net"
+                openVpnConfigDataUdp = openVpnConfigDataUdp!!.replace(ip!!, dDomain)
+            }
+            // Current config is udp only
+            return openVpnConfigDataUdp
+        }
+
+    val calculateSpeed: String
+        get() = round(speed.toDouble() / (1000 * 1000))
+
+    val calculateTotalTraffic: String
+        get() {
+            val inMB = totalTraffic.toDouble() / (1000 * 1000)
+            if (inMB < 1000) {
+                return round(inMB) + " MB"
+            }
+            val inGB = inMB / 1000
+            if (inGB < 1000) {
+                return round(inMB / 1000) + " GB"
+            }
+            return round(inGB / 1000) + " TB"
+        }
+
+    fun getCalculateUpTime(context: Context): String {
+        //Display as second
+        if (uptime < 60000) {
+            return round((uptime / 1000).toDouble()) + " " + context.resources.getString(R.string.seconds)
+        }
+        //Display as minute
+        if (uptime < 3600000) {
+            return (uptime.toDouble() / 60000).roundToInt()
+                .toString() + " " + context.resources.getString(R.string.minutes)
+        }
+        //Display as hours
+        if (uptime < 3600000 * 24) {
+            return round(uptime.toDouble() / 3600000) + " " + context.resources.getString(R.string.hours)
+        }
+        return round(uptime.toDouble() / (24 * 3600000)) + " " + context.resources.getString(R.string.days)
+    }
+
+    private fun round(value: Double): String {
+        val df = DecimalFormat("####0.###")
+        return df.format(value)
+    }
+
+    override fun describeContents(): Int {
+        return 0
+    }
+
+    fun toVPNGateItem(): VPNGateItem {
+        return VPNGateItem(
+            hostName = this.hostName!!,
+            ip = this.ip,
+            score = this.score,
+            ping = this.ping,
+            speed = this.speed,
+            countryLong = this.countryLong,
+            countryShort = this.countryShort,
+            numVpnSession = this.numVpnSession,
+            uptime = this.uptime,
+            totalUser = this.totalUser,
+            totalTraffic = this.totalTraffic,
+            logType = this.logType,
+            operator = this.operator,
+            message = this.message,
+            openVpnConfigData = this.openVpnConfigData,
+            tcpPort = this.tcpPort,
+            udpPort = this.udpPort,
+            isL2TPSupport = this.isL2TPSupport(),
+            isSSTPSupport = this.isSSTPSupport(),
+            seTcpPort = this.seTcpPort,
+            seUdpPort = this.seUdpPort,
+            seUdpSupported = this.seUdpSupported
+        )
+    }
+
+    fun fromVPNGateItem(vpnGateItem: VPNGateItem): VPNGateConnection {
+        hostName = vpnGateItem.hostName
+        ip = vpnGateItem.ip
+        score = vpnGateItem.score
+        ping = vpnGateItem.ping
+        speed = vpnGateItem.speed
+        countryLong = vpnGateItem.countryLong
+        countryShort = vpnGateItem.countryShort
+        numVpnSession = vpnGateItem.numVpnSession
+        uptime = vpnGateItem.uptime
+        totalUser = vpnGateItem.totalUser
+        totalTraffic = vpnGateItem.totalTraffic
+        logType = vpnGateItem.logType
+        operator = vpnGateItem.operator
+        message = vpnGateItem.message
+        openVpnConfigData = vpnGateItem.openVpnConfigData
+        tcpPort = vpnGateItem.tcpPort
+        udpPort = vpnGateItem.udpPort
+        isL2TPSupport = if (vpnGateItem.isL2TPSupport) 1 else 0
+        isSSTPSupport = if (vpnGateItem.isSSTPSupport) 1 else 0
+        seTcpPort = vpnGateItem.seTcpPort
+        seUdpPort = vpnGateItem.seUdpPort
+        seUdpSupported = vpnGateItem.seUdpSupported
+        return this
+    }
+
+    val name: String
+        get() = this.getName(false)
+
+    fun getName(useUdp: Boolean, useSoftEther: Boolean = false): String {
+        var address = ip
+        if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
+            address = "$hostName.opengw.net"
+        }
+        if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)) {
+            val tcp = if (useSoftEther && seTcpPort > 0) seTcpPort else tcpPort
+            val udp = if (useSoftEther && seUdpPort > 0) seUdpPort else udpPort
+            if (tcp == 0 && udp == 0) {
+                return String.format("%s[%s]", countryLong, address)
+            }
+            val portStr = if (useUdp || tcp == 0) {
+                "UDP:$udp"
+            } else {
+                "TCP:$tcp"
+            }
+            return String.format("%s[%s][%s]", countryLong, address, portStr)
+        }
+        return String.format("%s[%s]", countryLong, address)
+    }
+
+    fun isL2TPSupport(): Boolean {
+        return isL2TPSupport == 1 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+    }
+
+    fun isSSTPSupport(): Boolean {
+        return isSSTPSupport == 1
+    }
+
+    companion object {
+        /** MS-SSTP protocol-standard listener (locked product decision). */
+        const val SSTP_DEFAULT_PORT = 443
+
+        @JvmField
+        val CREATOR
+                : Parcelable.Creator<VPNGateConnection> =
+            object : Parcelable.Creator<VPNGateConnection> {
+                override fun createFromParcel(`in`: Parcel): VPNGateConnection {
+                    return VPNGateConnection(`in`)
+                }
+
+                override fun newArray(size: Int): Array<VPNGateConnection?> {
+                    return arrayOfNulls(size)
+                }
+            }
+
+        fun fromCsv(csvLine: String): VPNGateConnection? {
+            val properties =
+                csvLine.split(",".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
+            try {
+                var index = 0
+                val vpnGateConnection = VPNGateConnection()
+                vpnGateConnection.hostName = properties[index++]
+                vpnGateConnection.ip = properties[index++]
+                vpnGateConnection.score = properties[index++].toInt()
+                vpnGateConnection.ping = properties[index++].toInt()
+                vpnGateConnection.speed = properties[index++].toInt()
+                vpnGateConnection.countryLong = properties[index++]
+                vpnGateConnection.countryShort = properties[index++]
+                vpnGateConnection.numVpnSession = properties[index++].toInt()
+                vpnGateConnection.uptime = properties[index++].toInt()
+                vpnGateConnection.totalUser = properties[index++].toInt()
+                vpnGateConnection.totalTraffic = properties[index++].toLong()
+                vpnGateConnection.logType = properties[index++]
+                vpnGateConnection.setOperatorString(properties[index++])
+                vpnGateConnection.message = properties[index++]
+                vpnGateConnection.setOpenVpnConfigDataString(properties[index])
+                if (instance!!.dataUtil!!.getBooleanSetting(
+                        DataUtil.INCLUDE_UDP_SERVER,
+                        true
+                    ) && properties.size >= index + 2
+                ) {
+                    vpnGateConnection.tcpPort = properties[++index].toInt()
+                    vpnGateConnection.udpPort = properties[++index].toInt()
+                    if (properties.size > index + 1) {
+                        vpnGateConnection.isL2TPSupport = properties[++index].toInt()
+                    }
+                    if (properties.size > index + 1) {
+                        vpnGateConnection.isSSTPSupport = properties[++index].toInt()
+                    }
+                    if (properties.size > index + 1) {
+                        vpnGateConnection.seTcpPort = properties[++index].toInt()
+                    }
+                    if (properties.size > index + 1) {
+                        vpnGateConnection.seUdpPort = properties[++index].toInt()
+                    }
+                } else {
+                    vpnGateConnection.tcpPort = 0
+                    vpnGateConnection.udpPort = 0
+                    vpnGateConnection.isL2TPSupport = 0
+                    vpnGateConnection.isSSTPSupport = 0
+                    vpnGateConnection.seTcpPort = 0
+                    vpnGateConnection.seUdpPort = 0
+                }
+                vpnGateConnection.derivePortsFromOpenVpnConfig()
+                return vpnGateConnection
+            } catch (_: Exception) {
+                return null
+            }
+        }
+    }
+}

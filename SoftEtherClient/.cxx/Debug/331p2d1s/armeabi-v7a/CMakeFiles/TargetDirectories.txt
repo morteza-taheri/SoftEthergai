@@ -1,0 +1,4 @@
+/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/armeabi-v7a/CMakeFiles/softether.dir
+/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/armeabi-v7a/CMakeFiles/softether_test.dir
+/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/armeabi-v7a/CMakeFiles/edit_cache.dir
+/app/applet/SoftEtherClient/.cxx/Debug/331p2d1s/armeabi-v7a/CMakeFiles/rebuild_cache.dir

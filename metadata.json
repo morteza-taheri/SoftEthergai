@@ -1,0 +1,8 @@
+{
+  "name": "VPN Gate Connector Pro",
+  "description": "Multi-protocol VPN client for Android supporting SoftEther, OpenVPN, MS-SSTP, and L2TP.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

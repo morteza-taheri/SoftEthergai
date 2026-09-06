@@ -1,0 +1,372 @@
+package kittoku.osc.control
+
+import android.util.Log
+import kittoku.osc.ControlMessage
+import kittoku.osc.Result
+import kittoku.osc.SharedBridge
+import kittoku.osc.Where
+import kittoku.osc.client.SSTP_REQUEST_TIMEOUT
+import kittoku.osc.client.SstpClient
+import kittoku.osc.client.ppp.IpcpClient
+import kittoku.osc.client.ppp.Ipv6cpClient
+import kittoku.osc.client.ppp.LCPClient
+import kittoku.osc.client.ppp.PPPClient
+import kittoku.osc.client.ppp.PPP_NEGOTIATION_TIMEOUT
+import kittoku.osc.client.ppp.auth.ChapClient
+import kittoku.osc.client.ppp.auth.ChapMSCHAPV2Client
+import kittoku.osc.client.ppp.auth.EAPClient
+import kittoku.osc.client.ppp.auth.EAPMSAuthClient
+import kittoku.osc.client.ppp.auth.PAPClient
+import kittoku.osc.debug.assertAlways
+import kittoku.osc.io.OutgoingManager
+import kittoku.osc.io.incoming.IncomingManager
+import kittoku.osc.preference.AUTH_PROTOCOL_EAP_MSCHAPv2
+import kittoku.osc.preference.AUTH_PROTOCOL_MSCHAPv2
+import kittoku.osc.preference.AUTH_PROTOCOl_PAP
+import kittoku.osc.preference.OscPrefKey
+import kittoku.osc.preference.accessor.getBooleanPrefValue
+import kittoku.osc.preference.accessor.getIntPrefValue
+import kittoku.osc.preference.accessor.resetReconnectionLife
+import kittoku.osc.terminal.SSL_REQUEST_INTERVAL
+import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_ABORT
+import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_DISCONNECT
+import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_DISCONNECT_ACK
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
+
+
+internal class Controller(internal val bridge: SharedBridge) {
+    private var observer: NetworkObserver? = null
+
+    private var sstpClient: SstpClient? = null
+    private var pppClient: PPPClient? = null
+    private var incomingManager: IncomingManager? = null
+    private var outgoingManager: OutgoingManager? = null
+
+    private var lcpClient: LCPClient? = null
+    private var papClient: PAPClient? = null
+    private var chapClient: ChapClient? = null
+    private var eapClient: EAPClient? = null
+    private var ipcpClient: IpcpClient? = null
+    private var ipv6cpClient: Ipv6cpClient? = null
+
+    private var jobMain: Job? = null
+
+    private val mutex = Mutex()
+    private var destructionJob: Job? = null
+
+    private val isReconnectionEnabled = getBooleanPrefValue(OscPrefKey.RECONNECTION_ENABLED, bridge.prefs)
+    private val isReconnectionAvailable: Boolean
+        get() = getIntPrefValue(OscPrefKey.RECONNECTION_LIFE, bridge.prefs) > 0
+
+    private fun attachHandler() {
+        bridge.handler = CoroutineExceptionHandler { _, throwable ->
+            kill(isReconnectionEnabled) {
+                val header = "OSC: ERR_UNEXPECTED"
+                bridge.service.logWriter?.report(header + "\n" + throwable.stackTraceToString())
+                bridge.service.notifyError(header)
+            }
+        }
+    }
+
+    internal fun launchJobMain() {
+        attachHandler()
+
+        jobMain = bridge.service.scope.launch(bridge.handler) {
+            bridge.attachSSLTerminal()
+            bridge.attachIPTerminal()
+
+
+            bridge.sslTerminal!!.initialize()
+            if (!expectProceeded(Where.SSL, SSL_REQUEST_INTERVAL)) {
+                return@launch
+            }
+
+
+            IncomingManager(bridge).also {
+                it.launchJobMain()
+                incomingManager = it
+            }
+
+
+            SstpClient(bridge).also {
+                sstpClient = it
+                incomingManager!!.registerMailbox(it)
+                it.launchJobRequest()
+
+                if (!expectProceeded(Where.SSTP_REQUEST, SSTP_REQUEST_TIMEOUT)) {
+                    return@launch
+                }
+
+                sstpClient!!.launchJobControl()
+            }
+
+
+            PPPClient(bridge).also {
+                pppClient = it
+                incomingManager!!.registerMailbox(it)
+                it.launchJobControl()
+            }
+
+
+            LCPClient(bridge).also {
+                incomingManager!!.registerMailbox(it)
+                it.launchJobNegotiation()
+
+                if (!expectProceeded(Where.LCP, PPP_NEGOTIATION_TIMEOUT)) {
+                    return@launch
+                }
+
+                incomingManager!!.unregisterMailbox(it)
+            }
+
+
+            val authTimeout = getIntPrefValue(OscPrefKey.PPP_AUTH_TIMEOUT, bridge.prefs) * 1000L
+            when (bridge.currentAuth) {
+                AUTH_PROTOCOl_PAP -> PAPClient(bridge).also {
+                    incomingManager!!.registerMailbox(it)
+                    it.launchJobAuth()
+
+                    if (!expectProceeded(Where.PAP, authTimeout)) {
+                        return@launch
+                    }
+
+                    incomingManager!!.unregisterMailbox(it)
+                }
+
+                AUTH_PROTOCOL_MSCHAPv2 -> ChapMSCHAPV2Client(bridge).also {
+                    chapClient = it
+                    incomingManager!!.registerMailbox(it)
+                    it.launchJobAuth()
+
+                    if (!expectProceeded(Where.CHAP, authTimeout)) {
+                        return@launch
+                    }
+                }
+
+                AUTH_PROTOCOL_EAP_MSCHAPv2 -> EAPMSAuthClient(bridge).also {
+                    eapClient = it
+                    incomingManager!!.registerMailbox(it)
+                    it.launchJobAuth()
+
+                    if (!expectProceeded(Where.EAP, authTimeout)) {
+                        return@launch
+                    }
+                }
+
+                else -> throw NotImplementedError(bridge.currentAuth)
+            }
+
+
+            sstpClient!!.sendCallConnected()
+
+
+            if (bridge.PPP_IPv4_ENABLED) {
+                IpcpClient(bridge).also {
+                    incomingManager!!.registerMailbox(it)
+                    it.launchJobNegotiation()
+
+                    if (!expectProceeded(Where.IPCP, PPP_NEGOTIATION_TIMEOUT)) {
+                        return@launch
+                    }
+
+                    incomingManager!!.unregisterMailbox(it)
+                }
+            }
+
+
+            if (bridge.PPP_IPv6_ENABLED) {
+                Ipv6cpClient(bridge).also {
+                    incomingManager!!.registerMailbox(it)
+                    it.launchJobNegotiation()
+
+                    when (awaitIpv6cpNegotiation()) {
+                        Ipv6cpOutcome.PROCEEDED -> incomingManager!!.unregisterMailbox(it)
+                        Ipv6cpOutcome.SKIPPED -> {
+                            // Server does not support IPv6CP; keep the connection IPv4-only.
+                            it.cancel()
+                            incomingManager!!.unregisterMailbox(it)
+                            bridge.service.logWriter?.report("IPv6CP not supported by server; continuing with IPv4-only")
+                        }
+                        Ipv6cpOutcome.ABORTED -> return@launch
+                    }
+                }
+            }
+
+
+            bridge.ipTerminal!!.initialize()
+            if (!expectProceeded(Where.IP, null)) {
+                return@launch
+            }
+
+
+            OutgoingManager(bridge).also {
+                it.launchJobMain()
+                outgoingManager = it
+            }
+
+
+            observer = NetworkObserver(bridge)
+
+            if (isReconnectionEnabled) {
+                resetReconnectionLife(bridge.prefs)
+            }
+
+
+            expectProceeded(Where.SSTP_CONTROL, null) // wait ERR_ message until disconnection
+        }
+    }
+
+    private suspend fun expectProceeded(where: Where, timeout: Long?): Boolean {
+        while (true) {
+            val received = if (timeout != null) {
+                withTimeoutOrNull(timeout) {
+                    bridge.controlMailbox.receive()
+                } ?: ControlMessage(where, Result.ERR_TIMEOUT)
+            } else {
+                bridge.controlMailbox.receive()
+            }
+
+            if (isStaleIpv6cpLeftover(received)) {
+                // Leftover from the IPv6CP phase we skipped; the server has no
+                // usable IPv6. Drop it and wait for the actual phase result.
+                bridge.service.logWriter?.report("Ignoring stale ${received.from.name}: ${received.result.name} from skipped IPv6CP")
+                continue
+            }
+
+            if (received.result == Result.PROCEEDED) {
+                assertAlways(received.from == where)
+
+                return true
+            }
+
+            failConnection(received)
+
+            return false
+        }
+    }
+
+    private fun isStaleIpv6cpLeftover(received: ControlMessage): Boolean {
+        return received.from == Where.IPV6CP ||
+            received.from == Where.IPV6CP_IDENTIFIER ||
+            (received.from == Where.PPP && received.result == Result.ERR_PROTOCOL_REJECTED)
+    }
+
+    private enum class Ipv6cpOutcome {
+        PROCEEDED,
+        SKIPPED, // IPv6 not negotiated; degrade to IPv4-only
+        ABORTED, // unrelated fatal error, connection is being torn down
+    }
+
+    private suspend fun awaitIpv6cpNegotiation(): Ipv6cpOutcome {
+        val received = withTimeoutOrNull(PPP_NEGOTIATION_TIMEOUT) {
+            bridge.controlMailbox.receive()
+        }
+
+        if (received == null) {
+            // Server never answered IPv6CP; treat as unsupported.
+            return Ipv6cpOutcome.SKIPPED
+        }
+
+        if (received.result == Result.PROCEEDED) {
+            assertAlways(received.from == Where.IPV6CP)
+
+            return Ipv6cpOutcome.PROCEEDED
+        }
+
+        val isIpv6cpFailure =
+            (received.from == Where.IPV6CP && received.result == Result.ERR_COUNT_EXHAUSTED) ||
+                (received.from == Where.IPV6CP_IDENTIFIER && received.result == Result.ERR_OPTION_REJECTED) ||
+                (received.from == Where.PPP && received.result == Result.ERR_PROTOCOL_REJECTED)
+
+        if (isIpv6cpFailure) {
+            return Ipv6cpOutcome.SKIPPED
+        }
+
+        // Unrelated fatal error; abort exactly like expectProceeded would.
+        failConnection(received)
+
+        return Ipv6cpOutcome.ABORTED
+    }
+
+    private fun failConnection(received: ControlMessage) {
+        val lastPacketType = if (received.result == Result.ERR_DISCONNECT_REQUESTED) {
+            SSTP_MESSAGE_TYPE_CALL_DISCONNECT_ACK
+        } else {
+            SSTP_MESSAGE_TYPE_CALL_ABORT
+        }
+
+        kill(isReconnectionEnabled) {
+            sstpClient?.sendLastPacket(lastPacketType)
+
+            val header = "${received.from.name}: ${received.result.name}"
+            var log = header
+            if (received.supplement != null) {
+                log += "\n${received.supplement}"
+            }
+
+            bridge.service.logWriter?.report(log)
+            bridge.service.notifyError(header)
+        }
+    }
+
+    internal fun disconnect(): Job? { // use if the user want to normally disconnect
+        return kill(false) {
+            sstpClient?.sendLastPacket(SSTP_MESSAGE_TYPE_CALL_DISCONNECT)
+        }
+    }
+
+    internal fun kill(isReconnectionRequested: Boolean, cleanup: (suspend () -> Unit)?): Job? {
+        Log.d("SSTPController", "kill() called, isReconnectionRequested=$isReconnectionRequested")
+        
+        if (!mutex.tryLock()) {
+            Log.d("SSTPController", "kill(): Failed to acquire lock, returning existing destructionJob")
+            return destructionJob
+        }
+
+        destructionJob = bridge.service.scope.launch {
+            Log.d("SSTPController", "kill(): Launching cleanup job")
+            observer?.close()
+
+            jobMain?.cancel()
+            Log.d("SSTPController", "kill(): jobMain cancelled")
+            cancelClients()
+
+            cleanup?.invoke()
+            Log.d("SSTPController", "kill(): cleanup invoked")
+
+            closeTerminals()
+
+            if (isReconnectionRequested && isReconnectionAvailable) {
+                Log.d("SSTPController", "kill(): Triggering reconnection")
+                bridge.service.launchJobReconnect()
+            } else {
+                Log.d("SSTPController", "kill(): Closing service bridge")
+                bridge.service.close()
+            }
+        }
+        
+        return destructionJob
+    }
+
+    private fun cancelClients() {
+        lcpClient?.cancel()
+        papClient?.cancel()
+        chapClient?.cancel()
+        eapClient?.cancel()
+        ipcpClient?.cancel()
+        ipv6cpClient?.cancel()
+        sstpClient?.cancel()
+        pppClient?.cancel()
+        incomingManager?.cancel()
+        outgoingManager?.cancel()
+    }
+
+    private fun closeTerminals() {
+        bridge.sslTerminal?.close()
+        bridge.ipTerminal?.close()
+    }
+}

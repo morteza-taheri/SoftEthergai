@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Modern brand palette (dark): deep indigo surfaces with the same
+         indigo primary, desaturated accents tuned for dark backgrounds. -->
+    <color name="colorPrimary">#818CF8</color>
+    <color name="colorPrimaryTransparent">#96818CF8</color>
+    <color name="colorPrimaryDark">#1E1B4B</color>
+    <color name="colorAccent">#2DD4BF</color>
+    <color name="colorRed">#F87171</color>
+    <color name="colorAccentTransparent">#962DD4BF</color>
+    <color name="lineColor">#334155</color>
+    <color name="colorOverlay">#47000000</color>
+    <color name="colorWhite">#ffffff</color>
+    <color name="colorTextPrimary">#F1F5F9</color>
+    <color name="colorTextSubPrimary">#E2E8F0</color>
+    <color name="colorTextSecondary">#94A3B8</color>
+    <color name="colorWhiteTransparent">#B3FFFFFF</color>
+    <color name="colorSelected">#33818CF8</color>
+    <color name="colorTransparent">#00000000</color>
+    <color name="colorLink">#60A5FA</color>
+    <color name="colorGoodStatus">#34D399</color>
+    <color name="colorBuyButton">#10B981</color>
+    <color name="colorBuyButtonFocus">#6EE7B7</color>
+    <color name="colorProgressPaid">#3B82F6</color>
+    <color name="colorHistoryButton">#0EA5E9</color>
+    <color name="colorHistoryButtonFocus">#7DD3FC</color>
+    <color name="colorPrimaryAdaptive">#818CF8</color>
+    <color name="background">#0F172A</color>
+    <color name="colorSkeleton">#1E293B</color>
+    <color name="colorAutoDisconnected">#F87171</color>
+    <color name="colorAutoConnecting">#FBBF24</color>
+    <color name="colorAutoConnected">#34D399</color>
+    <color name="adBorderColor">#FF3F3F46</color>
+    <!-- New modern surfaces -->
+    <color name="colorSurface">#1E293B</color>
+    <color name="colorSurfaceVariant">#312E81</color>
+    <color name="colorSurfaceElevated">#253044</color>
+    <color name="colorPrimaryContainer">#312E81</color>
+    <color name="colorOnPrimaryContainer">#E0E7FF</color>
+    <color name="colorSecondaryContainer">#134E4A</color>
+    <color name="colorOnSecondaryContainer">#CCFBF1</color>
+    <color name="colorErrorContainer">#7F1D1D</color>
+    <color name="colorOnErrorContainer">#FECACA</color>
+    <color name="colorOutline">#475569</color>
+    <color name="colorShadow">#66000000</color>
+    <!-- Material3 on-colors & secondary -->
+    <color name="colorOnPrimary">#0F172A</color>
+    <color name="colorSecondary">#2DD4BF</color>
+    <color name="colorOnSecondary">#042F2E</color>
+</resources>

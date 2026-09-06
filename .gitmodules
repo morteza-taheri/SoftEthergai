@@ -1,0 +1,11 @@
+
+[submodule "sstpClient"]
+	path = sstpClient
+	url = git@github.com:hoang-rio/Open-SSTP-Client.git
+	branch = vpngate-connector
+[submodule "vpnLib"]
+	path = vpnLib
+	url = git@github.com:hoang-rio/vpnLib.git
+[submodule "SoftEtherClient"]
+	path = SoftEtherClient
+	url = git@github.com:morteza-taheri/softether-android-client.git

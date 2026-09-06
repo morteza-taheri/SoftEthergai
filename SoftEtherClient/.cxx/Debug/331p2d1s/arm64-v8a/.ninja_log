@@ -1,0 +1,27 @@
+# ninja log v5
+3	402	1788693421394292831	CMakeFiles/softether.dir/softether-core/src/proto/softether_pack.c.o	63770675744e17a
+4	414	1788693421405499603	CMakeFiles/softether.dir/softether-core/src/proto/softether_nat_t.c.o	64e74b8b54745b0
+1	419	1788693421409980415	CMakeFiles/softether.dir/jni/softether_jni.c.o	cf9e06d5846b0652
+1	614	1788693421590480963	CMakeFiles/softether.dir/softether-core/src/packet/packet_handler.c.o	179984a4ce7946aa
+419	703	1788693421695116336	CMakeFiles/softether.dir/softether-core/src/crypto/compress.c.o	15ed9521ed8a3544
+6	915	1788693421905240213	CMakeFiles/softether.dir/softether-core/src/proto/rudp_transport.c.o	657c90d94274c2db
+403	1104	1788693422094824284	CMakeFiles/softether.dir/softether-core/src/proto/softether_rudp.c.o	4a5f1dd8f8cb7eb4
+703	1294	1788693422210780841	CMakeFiles/softether.dir/softether-core/src/socket/tcp_socket.c.o	2a8f30a7fad56307
+2	1315	1788693422304091911	CMakeFiles/softether.dir/softether-core/src/proto/softether_protocol.c.o	50d945f408277b4e
+916	1317	1788693422307354747	CMakeFiles/softether.dir/softether-core/src/net/dhcp_client.c.o	4ae0a489d154fcc2
+415	1412	1788693422402923527	CMakeFiles/softether.dir/softether-core/src/crypto/aes_wrapper.c.o	a9229f5c499f3ad0
+1316	1711	1788693422702280632	CMakeFiles/softether_test.dir/test/test_jni_bridge.c.o	78fa401fb0a44a4c
+1317	1798	1788693422790434577	CMakeFiles/softether_test.dir/softether-core/src/proto/softether_nat_t.c.o	ca4601c69eb0fe84
+1294	1805	1788693422796579425	CMakeFiles/softether_test.dir/jni/softether_jni.c.o	763ef9f4331bcbfe
+1412	1813	1788693422803304722	CMakeFiles/softether_test.dir/softether-core/src/proto/softether_pack.c.o	1ca142446220ffcc
+614	1906	1788693422888993619	CMakeFiles/softether_test.dir/softether-core/src/proto/softether_protocol.c.o	19816c00e665c24a
+1104	1917	1788693422890189508	CMakeFiles/softether_test.dir/test/native_test.c.o	627dfc4ef785444a
+1711	2204	1788693423096667346	/app/applet/SoftEtherClient/build/intermediates/cxx/Debug/331p2d1s/obj/arm64-v8a/libsoftether.so	765a7f632d640bfc
+1918	2213	1788693423204932503	CMakeFiles/softether_test.dir/softether-core/src/crypto/compress.c.o	48dfcf5d8eb91983
+1805	2503	1788693423495344794	CMakeFiles/softether_test.dir/softether-core/src/proto/softether_rudp.c.o	151e0c3a9d7ab508
+1798	2597	1788693423587660223	CMakeFiles/softether_test.dir/softether-core/src/proto/rudp_transport.c.o	e9f467f70b5e3b9d
+2213	2601	1788693423592910720	CMakeFiles/softether_test.dir/softether-core/src/net/dhcp_client.c.o	95c864d66be218d1
+1906	2603	1788693423594459182	CMakeFiles/softether_test.dir/softether-core/src/packet/packet_handler.c.o	139955948e8a348d
+2205	2618	1788693423610335465	CMakeFiles/softether_test.dir/softether-core/src/socket/tcp_socket.c.o	7de846ba86bbd29a
+1813	2707	1788693423699124559	CMakeFiles/softether_test.dir/softether-core/src/crypto/aes_wrapper.c.o	46522a46ed500b4e
+2707	2934	1788693423897193733	/app/applet/SoftEtherClient/build/intermediates/cxx/Debug/331p2d1s/obj/arm64-v8a/libsoftether_test.so	ccf04144ebf2cc3d

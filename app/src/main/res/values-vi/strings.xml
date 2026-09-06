@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="paid_server">Máy chủ trả phí</string>
+    <string name="navigation_drawer_open">Mở menu</string>
+    <string name="navigation_drawer_close">Đóng menu</string>
+    <string name="search">Tìm kiếm</string>
+    <string name="about">Giới thiệu</string>
+    <string name="setting">Cài đặt</string>
+    <string name="sort">Sắp xếp</string>
+    <string name="filter">Lọc</string>
+    <string name="filter_server_protocol">Hiện máy chủ với giao thức</string>
+    <string name="show_tcp_server">Máy chủ TCP</string>
+    <string name="show_udp_server">Máy chủ UDP</string>
+    <string name="show_l2tp_server">Máy chủ L2TP</string>
+    <string name="show_sstp_server">Máy chủ MS-SSTP</string>
+    <string name="must_check_at_least_1_protocol">Bạn cần chọn ít nhất một giao thức máy chủ để tiếp tục</string>
+    <string-array name="number_filter_operator">
+        <item>bằng (=)</item>
+        <item>lớn hơn (&gt;)</item>
+        <item>lớn hơn hoặc bằng (&gt;=)</item>
+        <item>nhỏ hơn (&lt;)</item>
+        <item>nhỏ hơn hoặc bằng (&lt;=)</item>
+    </string-array>
+    <string name="reset">Đặt lại</string>
+    <string name="help">Trợ giúp</string>
+    <string name="speed">Tốc độ</string>
+    <string name="hostname">Tên máy chủ</string>
+    <string name="score">Điểm(Chất lượng)</string>
+    <string name="score_short">Điểm</string>
+    <string name="ping">Độ trễ</string>
+    <string name="session">Số kết nối</string>
+    <string name="max_session">Số kết nối tối đa</string>
+    <string name="domain">Tên miền</string>
+    <string name="good">Tốt</string>
+    <string name="medium">Trung bình</string>
+    <string name="full">Đầy</string>
+    <string name="uptime">T.gian bật</string>
+    <string name="owner">Chủ sở hữu</string>
+    <string name="l2tp_support">Hỗ trợ L2TP</string>
+    <string name="l2tp_supported">Có</string>
+    <string name="sstp_support">Hỗ trợ MS-SSTP</string>
+    <string name="days">ngày</string>
+    <string name="hours">giờ</string>
+    <string name="minutes">phút</string>
+    <string name="seconds">giây</string>
+    <string name="connection_error">Có lỗi khi lấy dữ liệu từ máy chủ. Chạm để thử lại</string>
+    <string name="no_network">Thiết bị của bạn chưa được kết nối mạng\nVui lòng kết nối wifi hoặc bật kết nối di động để tiếp tục</string>
+    <string name="loading_text">Ứng dụng đang lấy dữ liệu từ máy chủ\nVui lòng đợi giây lát</string>
+    <string name="search_hint">Quốc gia, IP, Tên máy chủ, Tên chủ sở hữu</string>
+    <string name="to_top">Về đầu trang</string>
+    <string name="country">Quốc gia</string>
+    <string name="sort_property">Sắp xếp theo</string>
+    <string name="sort_type">Kiếu sắp xếp</string>
+    <string name="sort_asc">Tăng dần</string>
+    <string name="sort_desc">Giảm dần</string>
+    <string name="apply">Áp dụng</string>
+    <string name="cancel">Hủy</string>
+    <string name="feature_not_available">Hiện tại bạn chưa thể sử dụng tính năng này</string>
+    <!--- Settings -->
+    <string name="setting_startup_screen">Màn hình khởi động</string>
+    <string name="setting_startup_screen_subtitle">Chọn màn hình khởi động sau khi kết nối thành công ít nhất 1 lần.\nNếu không có kết nối thành công màn hình danh sách luôn được hiển thị.\nMàn hình khởi động cũng được mở khi bấm vào thông báo.</string>
+    <string-array name="startup_screen">
+        <item>Màn hình danh sách</item>
+        <item>Màn hình trạng thái</item>
+    </string-array>
+    <string name="enable_notification_speed">Bật hiển thị tốc độ/thống kê ở thông báo</string>
+    <string name="enable_notification_speed_hint">Hiển thị tốc độ/thống kê lưu lượng ở bảng thông báo. Nếu tắt chỉ trạng thái kết nối được hiển thị và tiêu thụ pin có thể giảm một chút.</string>
+    <string name="setting_cache_label">Thời gian lưu đệm</string>
+    <string name="setting_cache_subtitle">Là thời gian dữ liệu được lưu vào bộ nhớ máy sau khi lấy dữ liệu từ máy chủ</string>
+    <string name="setting_cache_auto_clear_label">Bộ nhớ đệm sẽ tự xóa vào lúc:</string>
+    <string name="setting_cache_clear">Xóa ngay</string>
+    <string name="setting_clear_cache_success">Xóa bộ nhớ đệm thành công</string>
+    <string name="setting_clear_cache_error">Có lỗi xảy ra. Bộ nhớ đệm chưa được xóa</string>
+    <string-array name="setting_cache_time">
+        <item>15 phút</item>
+        <item>30 phút</item>
+        <item>1 giờ</item>
+        <item>2 giờ</item>
+        <item>4 giờ</item>
+        <item>6 giờ</item>
+        <item>12 giờ</item>
+        <item>24 giờ</item>
+        <item>Không bao giờ</item>
+    </string-array>
+    <string name="setting_developer_mode_label">Chế độ nhà phát triển (nhật ký)</string>
+    <string name="setting_developer_mode_summary">Giữ nhật ký chẩn đoán bật để khắc phục sự cố. Tắt để có tốc độ tối đa.</string>
+    <string name="setting_language_label">Ngôn ngữ</string>
+    <string name="setting_language_system">Theo hệ thống</string>
+    <string name="setting_excluded_apps_label">Ứng dụng loại trừ</string>
+    <string name="press_back_again_to_exit">Bấm quay lại lần nữa để thoát</string>
+    <!-- Detail -->
+    <string name="total_user">Tổng người dùng</string>
+    <string name="total_traffic">Tổng lưu lượng</string>
+    <string name="log_type">Log type</string>
+    <string name="connect_to_this_server">Kết nối đến server này</string>
+    <string name="install_openvpn">Cài đặt OpenVPN Connect</string>
+    <string name="save_config_file">Lưu file cấu hình OpenVPN</string>
+    <string name="saved_ovpn_file_in">Đã lưu file cấu hình tại %1$s. Nhập vào OpenVPN để sử dụng</string>
+    <string name="connect_via_l2tp">Kết nối qua L2TP VPN</string>
+    <string name="connect_via_sstp">Kết nối qua MS-SSTP</string>
+    <string name="connect_use_protocol">Kết nối sử dụng giao thức:</string>
+    <string name="retry_connect">Thử kết nối lại</string>
+    <string name="vpn_auth_failure">Lỗi xác thực</string>
+    <string name="disconnect">Ngắt kết nối</string>
+    <string name="disconnect_sstp">Ngắt kết nối MS-SSTP</string>
+    <string name="cancel_sstp">Huỷ kết nối MS-SSTP</string>
+    <string name="disconnecting">Đang ngắt kết nối…</string>
+    <string name="sstp_disconnecting">Đang ngắt kết nối MS-SSTP…</string>
+    <string name="connecting">Đang kết nối…</string>
+    <string name="sstp_connecting">Đang kết nối MS-SSTP…</string>
+    <string name="sstp_disconnected">Đã ngắt kết nối MS-SSTP</string>
+    <string name="sstp_connected">Đã kết nối MS-SSTP với IP: %1$s</string>
+    <string name="sstp_disconnected_by_error">Đã ngắt kết nối MS-SSTP do gặp lỗi hoặc yếu tố bên ngoài.</string>
+    <string name="canceled">Đã hủy</string>
+    <string name="copy_ip">Sao chép IP vào bộ nhớ đệm</string>
+    <string name="copy_hostname">Sao chép tên máy chủ vào bộ nhớ đệm</string>
+    <string name="copied">Đã sao chép</string>
+    <string name="connecting_use_protocol">Đang kết nối tới máy chủ VPN bằng giao thức [%1$s].</string>
+    <!-- VPN String -->
+    <string name="unknown_state">Không rõ</string>
+    <string name="cancel_connection">Ngắt kết nối</string>
+    <string name="pauseVPN">Tạm dừng VPN</string>
+    <string name="resumevpn">Tiếp tục VPN</string>
+    <string name="check_ip">Kiểm tra IP hiện tại</string>
+    <string name="about_html">%1$s là ứng dụng khách VPN đa giao thức, miễn phí và mã nguồn mở cho Android với triển khai SoftEther VPN gốc. Ứng dụng cũng hỗ trợ OpenVPN, MS-SSTP và L2TP/IPsec, kết nối đến các máy chủ cộng đồng miễn phí từ dự án VPN Gate cũng như các máy chủ riêng.</string>
+    <string name="about_development">Phát triển</string>
+    <string name="about_author_label">Được phát triển và bảo trì bởi</string>
+    <string name="about_source_title">Mã nguồn</string>
+    <string name="about_source_description">Dự án này là mã nguồn mở và được phát hành theo giấy phép GPLv3. Mọi đóng góp, báo cáo lỗi và pull request đều được chào đón trên GitHub.</string>
+    <string name="license_html">%1$s được phát hành theo giấy phép GPLv3. Nghĩa là nếu bạn sử dụng dự án này hoặc một phần của dự án trong dự án của bạn thì dự án đó phải là mã nguồn mở. Dự án này sử dụng các dự án mã nguồn mở khác làm thư viện, chi tiết bên dưới.</string>
+    <string name="version">Phiên bản:</string>
+    <string name="license">Giấy phép</string>
+    <string name="operator_message">Tin nhắn chủ sở hữu</string>
+    <string name="hide_op_message_5time">Ẩn tất cả tin nhắn 5 lần kết nối tiếp theo</string>
+    <string name="close">Đóng</string>
+    <string name="name_hint">Tên bạn. Tối thiểu %1$d ký tự</string>
+    <string name="content_hint">Bạn cần trợ giúp gì?\nTối thiểu %1$d ký tự</string>
+    <string name="btn_send">Gửi</string>
+    <string name="name_error_message">Tên bạn phải dài hơn %1$d ký tự</string>
+    <string name="content_error_message">Nội dung phải dài hơn %1$d ký tự</string>
+    <string name="help_request_from">[VPN]Yêu cầu trợ giúp từ: </string>
+    <string name="send_email">Gửi email</string>
+    <string name="email_error_fix">Vui lòng sửa các lỗi nhập liệu trước</string>
+    <string name="error_load_profile">Có lỗi khi nạp cấu hình VPN</string>
+    <string name="traffic_session">Lưu lượng phiên</string>
+    <string name="uploaded_data">Tải lên</string>
+    <string name="downloaded_data">Tải xuống</string>
+    <string name="clear_statistics">Xóa thống kê</string>
+    <string name="get_pro_version">Mua bản Pro</string>
+    <string name="status">Trạng thái</string>
+    <string name="tap_to_disconnect">Bấm nút để ngắt kết nối với %1$s</string>
+    <string name="tap_to_connect_last">Bấm nút để kết nối đến %1$s</string>
+    <string name="connected_to">Đã kết nối đến %1$s</string>
+    <string name="no_last_vpn_server">Vui lòng chọn VPN Server từ home để kết nối trước</string>
+    <string name="connect_one_warning">Bạn cần kết nối tới ít nhất một máy chủ VPN để có thể truy cập chức năng này</string>
+    <string name="disconnected">Đã ngắt kết nối</string>
+    <string name="state_connected">Đã kết nối</string>
+    <string name="feature_available_in_pro">Tính năng này chỉ khả dụng trên phiên bản Pro</string>
+    <string name="block_ads_setting_label">Chặn quảng cáo (Chỉ bản Pro)</string>
+    <string name="block_ads_setting_hint">Chặn quảng cáo trên tất cả ứng dụng, trình duyệt khi VPN được kết nối sử dụng DNS</string>
+    <string name="udp_setting_label">Bao gồm cả các máy chủ UDP</string>
+    <string name="udp_setting_hint">Bao gồm cả các máy chủ UDP trong danh sách máy chủ</string>
+    <string name="setting_apply_on_next_connection_time">Cài đặt sẽ được áp dụng vào lần kết nối tiếp theo</string>
+    <string name="dns_setting_label">Dùng DNS tuỳ chỉnh</string>
+    <string name="dns_setting_hint">Dùng DNS tuỳ chỉnh thay thế Google DNS (8.8.8.8/8.8.4.4) mặc định khi kết nối VPN.\nNếu bật cài đặt này sẽ tắt cài đặt chặn quảng cáo</string>
+    <string name="dns_ip_2">DNS 2 (tuỳ chọn)</string>
+    <string name="use_domain_label">Dùng tên miền để kết nối</string>
+    <string name="use_domain_hint">Dùng tên miền .opengw.net để kết nối tới máy chủ VPN thay vì sử dụng địa chỉ IP</string>
+    <string name="empty_search_result">Không tìm thấy máy chủ nào với từ khoá \"%1$s\"</string>
+    <string name="empty_filter_result">Không tìm thấy máy chủ nào với điều kiện lọc hiện tại</string>
+    <string name="no_server_available">Không có máy chủ nào. Vui lòng kéo xuống để tải lại.</string>
+    <!-- L2TPConnect -->
+    <string name="l2tp_connect_title">Kết nối đến \"%1$s\" bằng L2TP/IPSec</string>
+    <string name="l2tp_connect_hint">Để kết nối đến máy chủ \"%1$s\" bằng L2TP/IPSec VPN. Vui lòng làm theo các hướng dẫn bên dưới</string>
+    <string name="l2tp_connect_add">1. Thêm mới kết nối VPN tương tự bên dưới</string>
+    <string name="l2tp_tap_to_connect">2. Bấm vào kết nối VPN vừa tạo để kết nối</string>
+    <!-- Auto Mode -->
+    <string name="auto_mode">Chế độ tự động</string>
+    <string name="setting_auto_protocol_label">Giao thức VPN mặc định</string>
+    <string name="setting_auto_timeout_label">Thời gian chờ kết nối chế độ tự động</string>
+    <string name="setting_softether_max_connections_label">Số kết nối SoftEther tối đa</string>
+    <string name="setting_softether_max_connections_value">%1$d kết nối</string>
+    <string name="auto_mode_state_disconnected">Đã ngắt kết nối</string>
+    <string name="auto_mode_state_connecting">Đang kết nối…</string>
+    <string name="auto_mode_state_connected">Đã kết nối</string>
+    <string name="auto_mode_state_error">Lỗi</string>
+    <string name="auto_mode_attempt_progress">Đang thử máy chủ %1$d / %2$d</string>
+    <string name="auto_mode_attempt_n_of_m">Lần thử: %1$d / %2$d</string>
+    <string name="auto_mode_server_name">Máy chủ: %1$s</string>
+    <string name="auto_mode_server_ip">IP: %1$s</string>
+    <string name="auto_mode_server_protocol">Giao thức: %1$s</string>
+    <string name="auto_mode_server_speed">Tốc độ: %1$d Mbps</string>
+    <string name="auto_mode_server_ping">Ping: %1$d ms</string>
+    <string name="auto_mode_error_no_server">Không thể kết nối tới bất kỳ máy chủ khả dụng nào.</string>
+    <string name="auto_mode_error_generic">Chế độ tự động thất bại. Chạm để thử lại.</string>
+    <string name="auto_mode_error_vpn_permission">Chế độ tự động cần quyền VPN. Vui lòng cho phép và thử lại.</string>
+    <string name="auto_mode_try_next_server">Thử máy chủ tiếp theo</string>
+    <string name="auto_mode_log_title">Nhật ký</string>
+    <string name="auto_mode_log_copy">Sao chép</string>
+    <string name="auto_mode_log_clear">Xóa</string>
+    <string name="auto_mode_log_empty">Nhật ký của module sẽ hiển thị ở đây khi chế độ tự động kết nối.</string>
+    <string name="auto_mode_notification_title">Chế độ tự động</string>
+    <string name="auto_mode_notification_connecting">Đang kết nối tới %1$s (%2$d/%3$d)…</string>
+    <string name="auto_mode_notification_connected">Đã kết nối tới %1$s qua %2$s</string>
+    <string name="auto_mode_log_copied">Đã sao chép nhật ký</string>
+    <string name="title_home">Home</string>
+    <string name="title_servers">Máy chủ</string>
+    <string name="title_free_server">Server miễn phí</string>
+    <string name="title_personal">Cá nhân</string>
+    <!-- Login screen -->
+    <string name="default_loading_text">Đang tải…</string>
+    <!-- Sign up screen -->
+    <!-- Activate screen -->
+    <!-- Forgot pass screen -->
+    <!-- Reset pass screen -->
+    <!-- Home screen -->
+    <string name="usage_chart">Biểu đồ sử dụng</string>
+    <string name="session_list">Danh sách phiên</string>
+    <array name="chart_type">
+        <item>Hàng giờ</item>
+        <item>Hàng ngày</item>
+        <item>Hàng tháng</item>
+    </array>
+    <string name="you_have_not_any_connected_session">Bạn không có phiên kết nối nào.</string>
+    <!-- Personal -->
+    <!-- Notification setting -->
+    <!-- Change pass -->
+    <!-- Profile -->
+    <!-- Check app install source error message -->
+    <!-- Exclude Apps -->
+    <string name="app_icon">Biểu tượng ứng dụng</string>
+    <string name="add_apps_to_exclude">Thêm ứng dụng cần loại trừ</string>
+    <string name="exclude_app_description">Các ứng dụng đã chọn sẽ bỏ qua tunnel VPN và sử dụng kết nối internet thông thường</string>
+    <string name="search_apps_hint">Tìm kiếm ứng dụng...</string>
+    <string name="exclude_apps_text">Đang loại trừ %d ứng dụng khỏi VPN</string>
+    <string name="apps_updated_successfully">Đã cập nhật ứng dụng thành công</string>
+    <string name="vpn_restarted_for_settings">VPN khởi động lại cho cài đặt mới.</string>
+    <string name="error_saving_apps">Lỗi khi lưu ứng dụng</string>
+    <string name="error_opening_app_selection">Lỗi khi mở danh sách ứng dụng</string>
+    <!-- VPN Protocol Selection Dialog -->
+    <string name="select_vpn_protocol">Chọn giao thức VPN</string>
+    <string name="available_protocols">Giao thức khả dụng</string>
+    <string name="openvpn_tcp">OpenVPN (TCP)</string>
+    <string name="openvpn_udp">OpenVPN (UDP)</string>
+    <string name="softether_vpn_tcp">SoftEther VPN (TCP)</string>
+    <string name="softether_vpn_udp">SoftEther VPN (UDP)</string>
+    <string name="softether_vpn_udp_natt">SoftEther VPN (UDP - NAT-T)</string>
+    <string name="protocol_available_port">Khả dụng trên cổng %1$d</string>
+    <string name="protocol_not_available">Không khả dụng</string>
+    <string name="softether_available">Giao thức SSL-VPN</string>
+    <string name="softether_not_available">Không khả dụng</string>
+    <string name="openvpn_tcp_not_available">OpenVPN TCP không khả dụng cho máy chủ này</string>
+    <string name="openvpn_udp_not_available">OpenVPN UDP không khả dụng cho máy chủ này</string>
+    <string name="softether_not_available_toast">SoftEther không khả dụng cho máy chủ này</string>
+    <string name="connecting_softether">Đang kết nối SoftEther…</string>
+    <string name="disconnect_softether">Ngắt kết nối SoftEther</string>
+    <string name="cancel_softether">Huỷ kết nối SoftEther</string>
+    <string name="softether_connected">Đã kết nối SoftEther với IP: %1$s</string>
+    <string name="softether_disconnected">Đã ngắt kết nối SoftEther</string>
+    <string name="softether_disconnected_by_error">Đã ngắt kết nối SoftEther do gặp lỗi</string>
+    <string name="softether_connecting">Đang kết nối SoftEther…</string>
+    <string name="softether_tls_handshake">Đang thiết lập bắt tay TLS SoftEther…</string>
+    <string name="softether_protocol_handshake">Đang thương lượng giao thức SoftEther…</string>
+    <string name="softether_authenticating">Đang xác thực phiên SoftEther…</string>
+    <string name="softether_session_setup">Đang thiết lập phiên SoftEther…</string>
+    <string name="softether_disconnecting">Đang ngắt kết nối SoftEther…</string>
+    <string name="vpn_permission_denied">Quyền VPN bị từ chối</string>
+    <string name="error_unknown">Có lỗi xảy ra. Vui lòng thử lại.</string>
+</resources>

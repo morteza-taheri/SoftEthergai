@@ -1,0 +1,304 @@
+<resources>
+    <string name="home">خانه</string>
+    <string name="paid_server">سرور اشتراکی</string>
+    <string name="navigation_drawer_open">باز کردن منو</string>
+    <string name="navigation_drawer_close">بستن منو</string>
+    <string name="search">جستجو</string>
+    <string name="sort">مرتب‌سازی</string>
+    <string name="filter">فیلتر</string>
+    <string name="filter_server_protocol">نمایش سرورهای دارای پروتکل</string>
+    <string name="reset">بازنشانی</string>
+    <string name="show_tcp_server">سرور TCP</string>
+    <string name="show_udp_server">سرور UDP</string>
+    <string name="show_l2tp_server">سرور L2TP</string>
+    <string name="show_sstp_server">سرور MS-SSTP</string>
+    <string name="show_softether_server">سرور SoftEther SSL-VPN</string>
+    <string name="must_check_at_least_1_protocol">برای ادامه باید حداقل یک پروتکل را انتخاب کنید</string>
+    <string-array name="number_filter_operator">
+        <item>مساوی (=)</item>
+        <item>بزرگ‌تر از (&gt;)</item>
+        <item>بزرگ‌تر یا مساوی (&gt;=)</item>
+        <item>کوچک‌تر از (&lt;)</item>
+        <item>کوچک‌تر یا مساوی (&lt;=)</item>
+    </string-array>
+    <string name="about">درباره</string>
+    <string name="setting">تنظیمات</string>
+    <string name="help">راهنما</string>
+    <string name="speed">سرعت</string>
+    <string name="speed_unit" translatable="false">مگابیت/ثانیه</string>
+    <string name="hostname">نام میزبان</string>
+    <string name="score">امتیاز</string>
+    <string name="score_short">امتیاز</string>
+    <string name="ping">پینگ</string>
+    <string name="session">نشست</string>
+    <string name="max_session">حداکثر نشست</string>
+    <string name="domain">دامنه</string>
+    <string name="ipv6">IPv6</string>
+    <string name="good">خوب</string>
+    <string name="medium">معمولی</string>
+    <string name="full">کامل</string>
+    <string name="uptime">مدت فعالیت</string>
+    <string name="owner">مالک</string>
+    <string name="l2tp_support">پشتیبانی L2TP</string>
+    <string name="l2tp_supported">بله</string>
+    <string name="sstp_support">پشتیبانی MS-SSTP</string>
+    <string name="ms_sstp">MS-SSTP</string>
+    <string name="days">روز</string>
+    <string name="hours">ساعت</string>
+    <string name="minutes">دقیقه</string>
+    <string name="seconds">ثانیه</string>
+    <string name="cancel_connection">قطع اتصال</string>
+    <string name="pauseVPN">توقف موقت VPN</string>
+    <string name="resumevpn">ادامه VPN</string>
+    <string name="state_connected">متصل</string>
+    <string name="connection_error">خطا در دریافت داده از سرور. برای تلاش مجدد ضربه بزنید!</string>
+    <string name="no_network">دستگاه شما به هیچ شبکه‌ای متصل نیست\nبرای ادامه به وای‌فای متصل شوید یا داده موبایل را فعال کنید</string>
+    <string name="loading_text">برنامه در حال دریافت داده از سرور است\nلطفاً لحظه‌ای صبر کنید</string>
+    <string name="search_hint">کشور، IP، نام میزبان، اپراتور</string>
+    <string name="to_top">بازگشت به بالا</string>
+    <string name="country">کشور</string>
+    <string name="sort_property">مرتب‌سازی بر اساس</string>
+    <string name="sort_type">نوع مرتب‌سازی</string>
+    <string name="sort_asc">صعودی</string>
+    <string name="sort_desc">نزولی</string>
+    <string name="apply">اعمال</string>
+    <string name="cancel">انصراف</string>
+    <string name="feature_not_available">این عملیات در حال حاضر امکان‌پذیر نیست</string>
+    <!-- Settings -->
+    <string name="enable_notification_speed">نمایش سرعت/آمار در اعلان</string>
+    <string name="setting_startup_screen">صفحهٔ آغازین</string>
+    <string-array name="startup_screen">
+        <item>صفحهٔ فهرست</item>
+        <item>صفحهٔ وضعیت</item>
+    </string-array>
+    <string name="setting_startup_screen_subtitle">صفحه‌ای که پس از اجرای برنامه (با حداقل یک اتصال موفق) نمایش داده می‌شود.\nاگر اتصال موفقی ثبت نشده باشد همیشه صفحهٔ فهرست نمایش داده می‌شود.\nبا ضربه به اعلان نیز همین صفحه باز می‌شود.</string>
+    <string name="enable_notification_speed_hint">نمایش سرعت/آمار در اعلان. در صورت خاموش بودن فقط وضعیت اتصال نمایش داده می‌شود و مصرف باتری کمتر می‌شود.</string>
+    <string name="setting_cache_label">مدت ذخیرهٔ کش</string>
+    <string name="setting_cache_subtitle">مدتی که داده‌ها پس از دریافت از سرور روی دستگاه ذخیره می‌شوند</string>
+    <string name="setting_cache_auto_clear_label">کش به‌طور خودکار پاک می‌شود در:</string>
+    <string name="setting_cache_clear">پاک‌سازی همین حالا</string>
+    <string name="setting_clear_cache_success">کش با موفقیت پاک شد</string>
+    <string name="setting_clear_cache_error">مشکلی پیش آمد. کش پاک نشد</string>
+    <string-array name="setting_cache_time">
+        <item>۱۵ دقیقه</item>
+        <item>۳۰ دقیقه</item>
+        <item>۱ ساعت</item>
+        <item>۲ ساعت</item>
+        <item>۴ ساعت</item>
+        <item>۶ ساعت</item>
+        <item>۱۲ ساعت</item>
+        <item>۲۴ ساعت</item>
+        <item>هرگز</item>
+    </string-array>
+    <string name="cache_time_15m">۱۵ دقیقه</string>
+    <string name="cache_time_30m">۳۰ دقیقه</string>
+    <string name="cache_time_1h">۱ ساعت</string>
+    <string name="cache_time_2h">۲ ساعت</string>
+    <string name="cache_time_4h">۴ ساعت</string>
+    <string name="cache_time_6h">۶ ساعت</string>
+    <string name="cache_time_12h">۱۲ ساعت</string>
+    <string name="cache_time_24h">۲۴ ساعت</string>
+    <string name="cache_time_never">هرگز</string>
+    <string name="startup_screen_auto">صفحهٔ اتصال خودکار</string>
+    <string name="startup_screen_list">صفحهٔ فهرست</string>
+    <string name="startup_screen_status">صفحهٔ وضعیت</string>
+    <string name="setting_developer_mode_label">حالت توسعه‌دهنده (لاگ‌ها)</string>
+    <string name="setting_developer_mode_summary">لاگ‌های تشخیصی برای عیب‌یابی روشن بمانند. برای حداکثر سرعت خاموش کنید.</string>
+    <string name="setting_language_label">زبان</string>
+    <string name="setting_language_system">زبان سیستم</string>
+    <string name="setting_theme_label">پوسته</string>
+    <string name="setting_theme_system">پیش‌فرض سیستم</string>
+    <string name="setting_theme_light">روشن</string>
+    <string name="setting_theme_dark">تیره</string>
+    <string name="setting_theme_subtitle">نمای برنامه را انتخاب کنید؛ سبک روشن و تیره طبق همین انتخاب اعمال می‌شود.</string>
+    <string name="setting_excluded_apps_label">برنامه‌های مستثنا</string>
+    <string name="excluded_apps_count_none">هیچ</string>
+    <string name="go_back">بازگشت</string>
+    <string name="l2tp_end_point">سرور / نقطهٔ اتصال</string>
+    <string name="l2tp_connect">اتصال از طریق L2TP</string>
+    <string name="openvpn_over_tcp">OpenVPN روی TCP</string>
+    <string name="openvpn_over_udp">OpenVPN روی UDP</string>
+    <string name="softether_over_tcp">SoftEther SSL-VPN روی TCP</string>
+    <string name="softether_over_udp">SoftEther SSL-VPN روی UDP</string>
+    <string name="connect_use_ms_sstp">اتصال از طریق MS-SSTP</string>
+    <string name="vpn_protocol_selection_title">انتخاب پروتکل VPN</string>
+    <string name="operator_message_title">پیام مدیر سرور</string>
+    <string name="connect_use">استفاده از</string>
+    <string name="connect_use_tcp">TCP</string>
+    <string name="connect_use_udp">UDP</string>
+    <string name="excluded_apps_count">%1$d برنامه مستثنا</string>
+    <string name="press_back_again_to_exit">برای خروج دوباره دکمهٔ BACK را بزنید</string>
+    <!-- Detail -->
+    <string name="total_user">کل کاربران</string>
+    <string name="total_traffic">کل ترافیک</string>
+    <string name="log_type">نوع لاگ</string>
+    <string name="connect_to_this_server">اتصال به این سرور</string>
+    <string name="install_openvpn">نصب OpenVPN Connect</string>
+    <string name="save_config_file">ذخیرهٔ فایل پیکربندی OpenVPN</string>
+    <string name="saved_ovpn_file_in">فایل ovpn در %1$s ذخیره شد. برای استفاده در OpenVPN Connect واردش کنید</string>
+    <string name="connect_via_l2tp">اتصال از طریق VPN با L2TP</string>
+    <string name="connect_via_sstp">اتصال از طریق MS-SSTP</string>
+    <string name="connect_use_protocol">اتصال با پروتکل:</string>
+    <string name="retry_connect">تلاش مجدد برای اتصال</string>
+    <string name="vpn_auth_failure">خطای احراز هویت</string>
+    <string name="connecting">در حال اتصال…</string>
+    <string name="sstp_connecting">در حال اتصال MS-SSTP…</string>
+    <string name="disconnect">قطع اتصال</string>
+    <string name="disconnect_sstp">قطع اتصال MS-SSTP</string>
+    <string name="cancel_sstp">انصراف MS-SSTP</string>
+    <string name="disconnecting">در حال قطع اتصال…</string>
+    <string name="sstp_disconnecting">در حال قطع اتصال MS-SSTP…</string>
+    <string name="sstp_disconnected">اتصال MS-SSTP قطع شد</string>
+    <string name="sstp_connected">اتصال MS-SSTP برقرار شد با IP: %1$s</string>
+    <string name="sstp_disconnected_by_error">اتصال MS-SSTP به دلیل خطا یا مشکل خارجی قطع شد</string>
+    <string name="canceled">لغو شد</string>
+    <string name="copy_ip">کپی IP در کلیپ‌بورد</string>
+    <string name="copy_hostname">کپی نام میزبان در کلیپ‌بورد</string>
+    <string name="copied">کپی شد</string>
+    <string name="copy_label">کپی</string>
+    <string name="collector_debug_source">اطلاعات دیباگ جمع‌آورنده</string>
+    <string name="collector_debug_title">دیباگ جمع‌آورنده</string>
+    <string name="collector_debug_dump">منشأ داده‌ها</string>
+    <string name="collector_debug_raw_html">HTML خام</string>
+    <string name="collector_debug_raw_api">API خام</string>
+    <string name="collector_debug_unavailable">اطلاعات منشأ در دسترس نیست — ابتدا فهرست سرورها را تازه‌سازی کنید</string>
+    <string name="collector_debug_raw_unavailable">ثبت خام برای این تازه‌سازی در دسترس نیست</string>
+    <string name="connecting_use_protocol">اتصال به سرور VPN با پروتکل [%1$s].</string>
+    <!-- VPN strings -->
+    <string name="unknown_state">نامشخص</string>
+    <string name="check_ip">بررسی IP عمومی فعلی شما</string>
+    <string name="about_html">%1$s یک کلاینت VPN چندپروتکلی رایگان و متن‌باز برای اندروید با پیاده‌سازی بومی SoftEther VPN است. همچنین از OpenVPN، MS-SSTP و L2TP/IPsec پشتیبانی می‌کند و به سرورهای رایگان عمومی پروژهٔ VPN Gate و سرورهای خصوصی متصل می‌شود.</string>
+    <string name="about_development">توسعه</string>
+    <string name="about_author_label">توسعه و نگهداری توسط</string>
+    <string name="about_source_title">کد منبع</string>
+    <string name="about_source_description">این پروژه متن‌باز و تحت مجوز GPLv3 منتشر شده است. مشارکت، گزارش باگ و pull request در گیت‌هاب مورد استقبال است.</string>
+    <string name="license_html">%1$s تحت مجوز GPLv3 است. یعنی اگر از این پروژه یا بخشی از آن در پروژهٔ خود استفاده کنید، پروژهٔ شما نیز باید متن‌باز باشد. این پروژه از پروژه‌های متن‌باز دیگر به‌عنوان کتابخانه استفاده می‌کند که در ادامه آمده است.</string>
+    <string name="version">نسخه:</string>
+    <string name="license">مجوز</string>
+    <string name="operator_message">پیام اپراتور</string>
+    <string name="hide_op_message_5time">پنهان‌کردن همهٔ پیام‌ها در ۵ اتصال بعدی</string>
+    <string name="close">بستن</string>
+    <string name="name_hint">نام شما. حداقل %1$d نویسه</string>
+    <string name="content_hint">چه کمکی لازم دارید؟\nحداقل %1$d نویسه</string>
+    <string name="btn_send">ارسال</string>
+    <string name="name_error_message">نام باید بلندتر از %1$d نویسه باشد</string>
+    <string name="content_error_message">محتوا باید بلندتر از %1$d نویسه باشد</string>
+    <string name="uploaded_data">دادهٔ آپلودشده</string>
+    <string name="downloaded_data">دادهٔ دانلودشده</string>
+    <string name="help_request_from">[VPN]درخواست راهنما از: </string>
+    <string name="send_email">ارسال ایمیل</string>
+    <string name="email_error_fix">لطفاً ابتدا خطای صحیح را بررسی کنید</string>
+    <string name="error_load_profile">خطا در بارگذاری پروفایل VPN</string>
+    <string name="traffic_session">ترافیک نشست</string>
+    <string name="clear_statistics">پاک‌سازی آمار</string>
+    <string name="get_pro_version">دریافت نسخهٔ Pro</string>
+    <string name="status">وضعیت</string>
+    <string name="tap_to_disconnect">برای قطع اتصال از %1$s دکمه را بزنید</string>
+    <string name="tap_to_connect_last">برای اتصال به %1$s دکمه را بزنید</string>
+    <string name="connected_to">متصل به %1$s</string>
+    <string name="no_last_vpn_server">لطفاً ابتدا از صفحهٔ اصلی یک سرور VPN را برای اتصال انتخاب کنید</string>
+    <string name="connect_one_warning">برای دسترسی به این قابلیت باید حداقل به یک سرور VPN متصل شده باشید</string>
+    <string name="disconnected">قطع شده</string>
+    <string name="feature_available_in_pro">این قابلیت فقط در نسخهٔ Pro موجود است</string>
+    <string name="block_ads_setting_label">مسدودسازی تبلیغات (فقط Pro)</string>
+    <string name="block_ads_setting_hint">مسدودسازی تبلیغات در همهٔ برنامه‌ها و مرورگر هنگام اتصال VPN با استفاده از DNS</string>
+    <string name="udp_setting_label">شامل سرورهای UDP</string>
+    <string name="udp_setting_hint">قرار دادن سرورهای UDP در فهرست سرورها</string>
+    <string name="setting_apply_on_next_connection_time">این تنظیم در اتصال بعدی اعمال می‌شود</string>
+    <string name="dns_setting_label">استفاده از DNS سفارشی</string>
+    <string name="dns_setting_hint">استفاده از DNS سفارشی هنگام اتصال به سرور VPN به‌جای DNS پیش‌فرض گوگل (۸.۸.۸.۸/۸.۸.۴.۴).\nبا فعال‌سازی، تنظیم مسدودسازی تبلیغات خاموش می‌شود</string>
+    <string name="dns_ip_2">DNS ۲ (اختیاری)</string>
+    <string name="use_domain_label">اتصال با دامنه</string>
+    <string name="use_domain_hint">استفاده از دامنهٔ .opengw.net برای اتصال به سرور VPN به‌جای نشانی IP سرور</string>
+    <string name="empty_search_result">سروری با کلیدواژهٔ «%1$s» پیدا نشد</string>
+    <string name="empty_filter_result">سروری با این فیلتر پیدا نشد</string>
+    <string name="no_server_available">سروری موجود نیست. برای تازه‌سازی پایین بکشید.</string>
+    <!-- L2TPConnect -->
+    <string name="l2tp_connect_title">اتصال به «%1$s» از طریق L2TP/IPSec</string>
+    <string name="l2tp_connect_hint">برای اتصال به سرور «%1$s» از طریق VPN با L2TP/IPSec مراحل زیر را دنبال کنید</string>
+    <string name="l2tp_connect_add">۱. یک اتصال VPN جدید در تنظیمات VPN مانند نمونه بسازید</string>
+    <string name="l2tp_tap_to_connect">۲. روی اتصال VPN ساخته‌شده ضربه بزنید تا وصل شود</string>
+    <!-- Auto Mode -->
+    <string name="auto_mode">حالت خودکار</string>
+    <string name="setting_auto_protocol_label">پروتکل پیش‌فرض VPN</string>
+    <string name="setting_auto_timeout_label">مدت انتظار اتصال حالت خودکار</string>
+    <string name="setting_softether_max_connections_label">حداکثر اتصالات همزمان SoftEther</string>
+    <string name="setting_softether_max_connections_value">%1$d اتصال</string>
+    <string name="auto_mode_state_disconnected">قطع</string>
+    <string name="auto_mode_state_connecting">در حال اتصال…</string>
+    <string name="auto_mode_state_connected">متصل</string>
+    <string name="auto_mode_state_error">خطا</string>
+    <string name="auto_mode_attempt_progress">تلاش برای سرور %1$d از %2$d</string>
+    <string name="auto_mode_attempt_n_of_m">تلاش: %1$d / %2$d</string>
+    <string name="auto_mode_server_name">سرور: %1$s</string>
+    <string name="auto_mode_server_ip">IP: %1$s</string>
+    <string name="auto_mode_server_protocol">پروتکل: %1$s</string>
+    <string name="auto_mode_server_speed">سرعت: %1$d مگابیت</string>
+    <string name="auto_mode_server_ping">پینگ: %1$d میلی‌ثانیه</string>
+    <string name="auto_mode_error_no_server">اتصال به هیچ سرور قابل‌دستیابی ممکن نشد.</string>
+    <string name="auto_mode_error_generic">حالت خودکار ناموفق بود. برای تلاش مجدد ضربه بزنید.</string>
+    <string name="auto_mode_error_vpn_permission">حالت خودکار به مجوز VPN نیاز دارد. لطفاً اجازه دهید و دوباره تلاش کنید.</string>
+    <string name="auto_mode_try_next_server">امتحان سرور بعدی</string>
+    <string name="auto_mode_log_title">گزارش</string>
+    <string name="auto_mode_log_copy">کپی</string>
+    <string name="auto_mode_log_clear">پاک‌سازی</string>
+    <string name="auto_mode_log_empty">خروجی ماژول پس از اتصال حالت خودکار اینجا نمایش داده می‌شود.</string>
+    <string name="auto_mode_notification_title">حالت خودکار</string>
+    <string name="auto_mode_notification_connecting">در حال اتصال به %1$s (%2$d/%3$d)…</string>
+    <string name="auto_mode_notification_connected">متصل به %1$s از طریق %2$s</string>
+    <string name="auto_mode_log_copied">گزارش در کلیپ‌بورد کپی شد</string>
+    <string name="title_home">خانه</string>
+    <string name="title_servers">سرورها</string>
+    <string name="title_free_server">سرور رایگان</string>
+    <string name="title_personal">شخصی</string>
+    <!-- Home screen -->
+    <string name="usage_chart">نمودار مصرف</string>
+    <string name="session_list">فهرست نشست‌ها</string>
+    <array name="chart_type">
+        <item>ساعتی</item>
+        <item>روزانه</item>
+        <item>ماهانه</item>
+    </array>
+    <string name="you_have_not_any_connected_session">هیچ نشست متصلی ندارید.</string>
+    <!-- Exclude apps -->
+    <string name="app_icon">آیکون برنامه</string>
+    <string name="add_apps_to_exclude">افزودن برنامه‌های مستثنا</string>
+    <string name="exclude_app_description">برنامه‌های انتخاب‌شده از تونل VPN عبور نمی‌کنند و از اتصال اینترنت معمولی استفاده می‌کنند</string>
+    <string name="search_apps_hint">جستجوی برنامه‌ها…</string>
+    <string name="exclude_apps_text">مستثنا کردن %d برنامه از VPN</string>
+    <string name="apps_updated_successfully">برنامه‌ها با موفقیت به‌روزرسانی شدند</string>
+    <string name="vpn_restarted_for_settings">VPN برای تنظیمات جدید راه‌اندازی مجدد شد.</string>
+    <string name="error_saving_apps">خطا در ذخیرهٔ برنامه‌ها</string>
+    <string name="error_opening_app_selection">خطا در باز کردن انتخاب برنامه</string>
+    <!-- VPN Protocol Selection Dialog -->
+    <string name="select_vpn_protocol">انتخاب پروتکل VPN</string>
+    <string name="available_protocols">پروتکل‌های موجود</string>
+    <string name="openvpn_tcp">OpenVPN (TCP)</string>
+    <string name="openvpn_udp">OpenVPN (UDP)</string>
+    <string name="softether_vpn_tcp">SoftEther VPN (TCP)</string>
+    <string name="softether_vpn_udp">SoftEther VPN (UDP)</string>
+    <string name="softether_vpn_udp_natt">SoftEther VPN (UDP - NAT-T)</string>
+    <string name="protocol_available_port">موجود روی پورت %1$d</string>
+    <string name="protocol_available_default_port">موجود روی TCP %1$d (پیش‌فرض)</string>
+    <string name="protocol_supported_port_unknown">پشتیبانی می‌شود — پورت نامشخص</string>
+    <string name="protocol_not_available">موجود نیست</string>
+    <string name="softether_available">پروتکل SSL-VPN</string>
+    <string name="softether_not_available">موجود نیست</string>
+    <string name="openvpn_tcp_not_available">OpenVPN TCP برای این سرور موجود نیست</string>
+    <string name="openvpn_udp_not_available">OpenVPN UDP برای این سرور موجود نیست</string>
+    <string name="softether_not_available_toast">SoftEther برای این سرور موجود نیست</string>
+    <string name="connecting_softether">در حال اتصال SoftEther…</string>
+    <string name="disconnect_softether">قطع اتصال SoftEther</string>
+    <string name="cancel_softether">انصراف SoftEther</string>
+    <string name="softether_connected">اتصال SoftEther برقرار شد با IP: %1$s</string>
+    <string name="softether_disconnected">اتصال SoftEther قطع شد</string>
+    <string name="softether_disconnected_by_error">اتصال SoftEther به دلیل خطا قطع شد</string>
+    <string name="vpn_permission_denied">مجوز VPN رد شد</string>
+    <string name="softether_connecting">در حال اتصال SoftEther…</string>
+    <string name="softether_tls_handshake">برقراری دست‌دادن TLS در SoftEther…</string>
+    <string name="softether_protocol_handshake">مذاکرهٔ پروتکل SoftEther…</string>
+    <string name="softether_authenticating">احراز هویت نشست SoftEther…</string>
+    <string name="softether_session_setup">برقراری نشست SoftEther…</string>
+    <string name="softether_disconnecting">در حال قطع اتصال SoftEther…</string>
+    <string name="error_unknown">خطای نامشخصی رخ داد. لطفاً دوباره تلاش کنید.</string>
+</resources>
