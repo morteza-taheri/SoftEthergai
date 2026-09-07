@@ -1,5 +1,5 @@
 <resources>
-    <string name="home">خانه</string>
+    <string name="home">لیست سرورها</string>
     <string name="paid_server">سرور اشتراکی</string>
     <string name="navigation_drawer_open">باز کردن منو</string>
     <string name="navigation_drawer_close">بستن منو</string>
@@ -256,7 +256,10 @@
     <string name="auto_mode_permission_battery_allow">تنظیم</string>
     <string name="auto_mode_permission_battery_skip">بعداً</string>
     <string name="auto_mode_connected_secure">متصل و ایمن</string>
-    <string name="title_home">خانه</string>
+    <string name="title_home">لیست سرورها</string>
+    <string name="server_list_count">%1$d سرور</string>
+    <string name="server_list_last_updated">آخرین بروزرسانی: %1$s</string>
+    <string name="server_list_never_updated">هنوز بروزرسانی نشده</string>
     <string name="title_servers">سرورها</string>
     <string name="title_free_server">سرور رایگان</string>
     <string name="title_personal">شخصی</string>

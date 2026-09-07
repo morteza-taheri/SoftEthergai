@@ -51,6 +51,7 @@ class VpnServerRepository(
         val connectionList: VPNGateConnectionList,
         val serverCount: Int,
         val fromCache: Boolean,
+        val savedAt: Long = System.currentTimeMillis(),
     )
 
     /** §33 debug panel payload for one server. */
@@ -230,7 +231,7 @@ class VpnServerRepository(
             servers.forEach { list.add(it) }
 
             CollectorLog.d("Loaded last-known-good snapshot (savedAt=$savedAt): ${servers.size}")
-            CollectResult(list, servers.size, fromCache = true)
+            CollectResult(list, servers.size, fromCache = true, savedAt = savedAt)
         } catch (e: Exception) {
             CollectorLog.d("Snapshot load failed: ${e.message}")
             null

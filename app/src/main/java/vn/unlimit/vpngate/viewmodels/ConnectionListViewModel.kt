@@ -21,8 +21,10 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     var dataUtil: DataUtil = App.instance!!.dataUtil!!
 
     val vpnGateConnectionList = MutableLiveData<VPNGateConnectionList>()
+    val lastUpdatedTime = MutableLiveData<Long>()
     init {
         vpnGateConnectionList.value = dataUtil.connectionsCache
+        lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
     }
     private var isRetried = false
     var isError: MutableLiveData<Boolean> = MutableLiveData(false)
@@ -68,6 +70,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 }
 
                 vpnGateConnectionList.value = connectionList
+                lastUpdatedTime.postValue(result.savedAt)
                 val items = connectionList.toVPNGateItems()
                 withContext(Dispatchers.IO) {
                     App.instance!!.vpnGateItemDao.deleteAll()

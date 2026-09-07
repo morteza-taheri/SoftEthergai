@@ -100,6 +100,9 @@ class DataUtil(context: Context?) {
                 gson!!.toJson(cache, Cache::class.java, writer)
                 writer.close()
                 setConnectionCacheExpire(cache.expires)
+                val updateEditor = sharedPreferencesSetting!!.edit()
+                updateEditor.putLong(CONNECTION_CACHE_UPDATED_AT_KEY, System.currentTimeMillis())
+                updateEditor.apply()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -137,6 +140,15 @@ class DataUtil(context: Context?) {
             }
             return null
         }
+
+    val connectionCacheUpdatedAt: Long
+        get() = sharedPreferencesSetting?.getLong(CONNECTION_CACHE_UPDATED_AT_KEY, 0L) ?: 0L
+
+    fun setConnectionCacheUpdatedAt(time: Long) {
+        val editor = sharedPreferencesSetting?.edit() ?: return
+        editor.putLong(CONNECTION_CACHE_UPDATED_AT_KEY, time)
+        editor.apply()
+    }
 
     fun setStringSetting(key: String?, value: String?) {
         val editor = sharedPreferencesSetting!!.edit()
@@ -320,6 +332,7 @@ class DataUtil(context: Context?) {
         const val AUTO_LAST_SUCCESS_PROTOCOL: String = "AUTO_LAST_SUCCESS_PROTOCOL"
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"
         const val CONNECTION_CACHE_KEY = "CONNECTION_CACHE_KEY"
+        const val CONNECTION_CACHE_UPDATED_AT_KEY = "CONNECTION_CACHE_UPDATED_AT_KEY"
 
         /**
          * Check device connect to a network or not

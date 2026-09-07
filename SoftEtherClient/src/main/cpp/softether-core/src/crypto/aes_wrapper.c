@@ -51,6 +51,15 @@ struct ssl_context {
 // ossl_tls_handle_rlayer_return / ssl3_read_bytes during DHCP or receive).
 static pthread_rwlock_t g_tls_use_lock = PTHREAD_RWLOCK_INITIALIZER;
 
+// Serialize ALL OpenSSL provider-touching API calls (digests, RAND, etc.).
+// OpenSSL 3.5.x's provider/namemap initialization is not thread-safe:
+// concurrent first-time fetches (EVP_DigestInit_ex, RAND_bytes, etc.) race
+// in ossl_namemap_stored / OPENSSL_sk_push, corrupting the namemap stack
+// (scudo aborts) or triggering provider refcount bugs (#32008).  Wrapping
+// every entry point into OpenSSL crypto with this single mutex makes all
+// provider access single-threaded, preventing the race.
+static pthread_mutex_t g_openssl_lock = PTHREAD_MUTEX_INITIALIZER;
+
 // Per-connection SSL_CTX (Phase 16): sharing one CTX across connections with
 // concurrent I/O corrupted TLS digest state (scudo aborts in EVP_MD_CTX_free).
 // Library init stays global/once; each connection creates its own CTX under a
@@ -252,21 +261,26 @@ void sha256_hash(const uint8_t* data, size_t data_len, uint8_t* hash) {
     }
     ssl_init_library();
     
+    pthread_mutex_lock(&g_openssl_lock);
+
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (ctx == NULL) {
         LOGE("Failed to create MD context");
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
         LOGE("Failed to initialize SHA256");
         EVP_MD_CTX_free(ctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (EVP_DigestUpdate(ctx, data, data_len) != 1) {
         LOGE("SHA256 update failed");
         EVP_MD_CTX_free(ctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
@@ -276,6 +290,7 @@ void sha256_hash(const uint8_t* data, size_t data_len, uint8_t* hash) {
     }
     
     EVP_MD_CTX_free(ctx);
+    pthread_mutex_unlock(&g_openssl_lock);
 }
 
 void rc4_crypt(const uint8_t* key, size_t key_len, uint8_t* data, size_t data_len) {
@@ -324,12 +339,16 @@ int generate_random_bytes(uint8_t* buffer, size_t len) {
         return -1;
     }
     ssl_init_library();
-    
-    if (RAND_bytes(buffer, (int)len) != 1) {
+
+    pthread_mutex_lock(&g_openssl_lock);
+    int rc = RAND_bytes(buffer, (int)len);
+    pthread_mutex_unlock(&g_openssl_lock);
+
+    if (rc != 1) {
         LOGE("Failed to generate random bytes");
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -426,8 +445,21 @@ int ssl_connect(ssl_context_t* ctx, int socket_fd, const char* hostname) {
     int result;
     
     while (attempt < max_attempts) {
+        // The TLS handshake parses the server certificate / public key through
+        // OpenSSL's ASN.1 decoder + provider/namemap machinery (OSSL_DECODER,
+        // DER2KEY, ERR_pop_to_mark). These mutate GLOBAL OpenSSL provider and
+        // decoder registries shared by every thread. The per-SSL g_tls_use_lock
+        // above only protects this SSL object, NOT those globals, so run the
+        // handshake under g_openssl_lock to make it mutually exclusive with the
+        // data path's digest/RAND/SHA calls and with other concurrent
+        // handshakes. A concurrent unmarshalled provider fetch here corrupts
+        // the shared decoder registry (scudo header corruption in
+        // ERR_pop_to_mark / der2key_decode) — see the production crash whose
+        // backtrace is OSSL_DECODER_from_data -> der2key_decode.
+        pthread_mutex_lock(&g_openssl_lock);
         result = SSL_do_handshake(ctx->ssl);
-        
+        pthread_mutex_unlock(&g_openssl_lock);
+
         if (result == 1) {
             // Handshake successful
             break;
@@ -511,7 +543,20 @@ int ssl_read(ssl_context_t* ctx, uint8_t* buffer, size_t len) {
             pthread_rwlock_unlock(&g_tls_use_lock);
             return -1;
         }
+        // The TLS record layer computes the record HMAC through OpenSSL's
+        // provider-fetched EVP_MAC (tls1_mac -> EVP_MD_CTX_free ->
+        // EVP_PKEY_CTX_free -> EVP_MAC_free). This touches the same GLOBAL
+        // provider/namemap registry shared by every thread. The per-SSL
+        // g_tls_use_lock above only protects THIS SSL object; without
+        // g_openssl_lock a concurrent handshake/digest/RAND on another thread
+        // can corrupt the shared EVP_MAC, which surfaces as scudo header
+        // corruption in EVP_MAC_free deep inside SSL_read. Serialize the read
+        // (and write, below) under g_openssl_lock to close the last uncovered
+        // provider-touching path. Lock order stays g_tls_use_lock ->
+        // g_openssl_lock, matching the handshake.
+        pthread_mutex_lock(&g_openssl_lock);
         result = SSL_read(ctx->ssl, buffer, (int)len);
+        pthread_mutex_unlock(&g_openssl_lock);
         if (result > 0 || result == 0) {
             break;
         }
@@ -554,7 +599,14 @@ int ssl_write(ssl_context_t* ctx, const uint8_t* data, size_t len) {
     }
 
     pthread_rwlock_wrlock(&g_tls_use_lock);
+    // Same provider-registry serialization as the read path: SSL_write's TLS
+    // record MAC computation fetches a provider-side EVP_MAC (global namemap),
+    // so it must be made mutually exclusive with every other OpenSSL
+    // provider-touching op (handshake, digests, RAND, reads) under
+    // g_openssl_lock. Held only around the SSL_write call itself.
+    pthread_mutex_lock(&g_openssl_lock);
     int result = SSL_write(ctx->ssl, data, (int)len);
+    pthread_mutex_unlock(&g_openssl_lock);
     if (result < 0) {
         int ssl_error = SSL_get_error(ctx->ssl, result);
         if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) {
@@ -592,34 +644,41 @@ void md5_hash(const uint8_t* data, size_t data_len, uint8_t* hash) {
     }
     ssl_init_library();
 
+    pthread_mutex_lock(&g_openssl_lock);
+
     unsigned int hash_len = 0;
     unsigned char md_buf[EVP_MAX_MD_SIZE];
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
     
     if (mdctx == NULL) {
         LOGE("md5_hash: Failed to create EVP_MD_CTX");
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestInit_ex(mdctx, EVP_md5(), NULL)) {
         LOGE("md5_hash: EVP_DigestInit_ex failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestUpdate(mdctx, data, data_len)) {
         LOGE("md5_hash: EVP_DigestUpdate failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestFinal_ex(mdctx, md_buf, &hash_len)) {
         LOGE("md5_hash: EVP_DigestFinal_ex failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     EVP_MD_CTX_free(mdctx);
+    pthread_mutex_unlock(&g_openssl_lock);
     
     if (hash_len != MD5_HASH_SIZE) {
         LOGE("md5_hash: Unexpected hash length %u (expected %d)", hash_len, MD5_HASH_SIZE);
@@ -638,34 +697,41 @@ void sha1_hash(const uint8_t* data, size_t data_len, uint8_t* hash) {
     }
     ssl_init_library();
 
+    pthread_mutex_lock(&g_openssl_lock);
+
     unsigned int hash_len = 0;
     unsigned char md_buf[EVP_MAX_MD_SIZE];
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
     
     if (mdctx == NULL) {
         LOGE("sha1_hash: Failed to create EVP_MD_CTX");
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestInit_ex(mdctx, EVP_sha1(), NULL)) {
         LOGE("sha1_hash: EVP_DigestInit_ex failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestUpdate(mdctx, data, data_len)) {
         LOGE("sha1_hash: EVP_DigestUpdate failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     if (!EVP_DigestFinal_ex(mdctx, md_buf, &hash_len)) {
         LOGE("sha1_hash: EVP_DigestFinal_ex failed");
         EVP_MD_CTX_free(mdctx);
+        pthread_mutex_unlock(&g_openssl_lock);
         return;
     }
     
     EVP_MD_CTX_free(mdctx);
+    pthread_mutex_unlock(&g_openssl_lock);
     
     if (hash_len != SHA1_HASH_SIZE) {
         LOGE("sha1_hash: Unexpected hash length %u (expected %d)", hash_len, SHA1_HASH_SIZE);

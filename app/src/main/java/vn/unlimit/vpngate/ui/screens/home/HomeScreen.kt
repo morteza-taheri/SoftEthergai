@@ -63,6 +63,7 @@ import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.provider.BaseProvider
+import vn.unlimit.vpngate.utils.DateTimeFormatterUtil
 import vn.unlimit.vpngate.ui.components.FullScreenError
 import vn.unlimit.vpngate.ui.components.FullScreenLoading
 import vn.unlimit.vpngate.ui.components.FullScreenNoNetwork
@@ -141,6 +142,7 @@ fun HomeScreen(
     // ----- Observers (same as old MainActivity + HomeFragment)
     val isLoadingVm by connectionListViewModel.isLoading.observeAsState(false)
     val isErrorVm by connectionListViewModel.isError.observeAsState(false)
+    val lastUpdatedTime by connectionListViewModel.lastUpdatedTime.observeAsState(0L)
     LaunchedEffect(isLoadingVm) {
         isLoading = isLoadingVm
         if (!isLoadingVm) {
@@ -225,7 +227,24 @@ fun HomeScreen(
                             )
                         } else {
                             TopAppBar(
-                                title = { Text(stringResource(R.string.app_name)) },
+                                title = {
+                                    Column {
+                                        Text(stringResource(R.string.app_name))
+                                        val updatedFormatted = if (lastUpdatedTime > 0L) {
+                                            DateTimeFormatterUtil.formatLastUpdated(lastUpdatedTime)
+                                        } else ""
+                                        val subtitleText = if (updatedFormatted.isNotEmpty()) {
+                                            stringResource(R.string.server_list_last_updated, updatedFormatted)
+                                        } else {
+                                            stringResource(R.string.server_list_never_updated)
+                                        }
+                                        Text(
+                                            text = subtitleText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
                                 actions = {
                                     IconButton(onClick = { isSearching = true }) {
                                         Icon(
@@ -317,6 +336,21 @@ fun HomeScreen(
                                 ),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
+                                item(key = "server_list_header") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.server_list_count, model.size()),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                                 items(
                                     count = model.size(),
                                     key = { index ->

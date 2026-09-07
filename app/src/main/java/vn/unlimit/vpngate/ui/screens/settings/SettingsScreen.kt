@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
 import androidx.preference.PreferenceManager
 import de.blinkt.openvpn.core.OpenVPNService
+import vn.unlimit.vpngate.utils.DateTimeFormatterUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -433,8 +434,7 @@ fun SettingsScreen(
                         SettingDivider()
                         SettingActionRow(
                             title = stringResource(R.string.setting_cache_auto_clear_label),
-                            subtitle = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM)
-                                .format(cacheExpires),
+                            subtitle = DateTimeFormatterUtil.formatDate(cacheExpires),
                             icon = Icons.Outlined.DeleteOutline,
                             actionLabel = stringResource(R.string.setting_cache_clear),
                             onClick = { clearListServerCache(true) },

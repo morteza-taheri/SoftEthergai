@@ -204,6 +204,9 @@
     <string name="auto_mode_notification_connected">Đã kết nối tới %1$s qua %2$s</string>
     <string name="auto_mode_log_copied">Đã sao chép nhật ký</string>
     <string name="title_home">Home</string>
+    <string name="server_list_count">%1$d máy chủ</string>
+    <string name="server_list_last_updated">Cập nhật lần cuối: %1$s</string>
+    <string name="server_list_never_updated">Chưa cập nhật</string>
     <string name="title_servers">Máy chủ</string>
     <string name="title_free_server">Server miễn phí</string>
     <string name="title_personal">Cá nhân</string>

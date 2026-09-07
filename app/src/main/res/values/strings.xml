@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name" translatable="false">VPN Gate Connector Pro</string>
-    <string name="home">Home</string>
+    <string name="app_name" translatable="false">VpnM</string>
+    <string name="home">Server List</string>
     <string name="paid_server">Paid Server</string>
     <string name="navigation_drawer_open">Open drawer</string>
     <string name="navigation_drawer_close">Close drawer</string>
@@ -283,7 +283,10 @@
     <string name="auto_mode_permission_battery_allow">Configure</string>
     <string name="auto_mode_permission_battery_skip">Later</string>
     <string name="auto_mode_connected_secure">Connected &amp; Protected</string>
-    <string name="title_home">Home</string>
+    <string name="title_home">Server List</string>
+    <string name="server_list_count">%1$d servers</string>
+    <string name="server_list_last_updated">Last updated: %1$s</string>
+    <string name="server_list_never_updated">Not updated yet</string>
     <string name="title_servers">Servers</string>
     <string name="title_free_server">Free Server</string>
     <string name="title_personal">Personal</string>
