@@ -316,4 +316,7 @@
     <string name="softether_session_setup">برقراری نشست SoftEther…</string>
     <string name="softether_disconnecting">در حال قطع اتصال SoftEther…</string>
     <string name="error_unknown">خطای نامشخصی رخ داد. لطفاً دوباره تلاش کنید.</string>
+    <string name="get_servers">دریافت لیست سرورها</string>
+    <string name="servers_count_label">%1$d سرور در دسترس</string>
+    <string name="auto_mode_no_servers_banner">لیست سرورها خالی است. لطفاً ابتدا لیست سرورها را دریافت کنید.</string>
 </resources>

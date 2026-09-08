@@ -242,7 +242,13 @@
     <string name="no_server_available">No servers available. Please refresh the server list.</string>
     <string name="refresh">Refresh</string>
     <string name="refresh_servers">Refresh Servers</string>
+    <string name="get_servers">Get Server List</string>
     <string name="update_server_list_first">Please update the server list first</string>
+    <string name="server_list_last_updated">Updated: %1$s</string>
+    <string name="server_list_never_updated">Not updated yet</string>
+    <string name="servers_count_label">%1$d servers available</string>
+    <string name="server_list_count">%1$d servers available</string>
+    <string name="auto_mode_no_servers_banner">Server list is empty. Please fetch the servers before connecting.</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">Connect to \"%1$s\" via L2TP/IPSec</string>
     <string name="l2tp_connect_hint">To connect to server \"%1$s\" via L2TP/IPSec VPN. Please follow several step bellow</string>
@@ -287,9 +293,6 @@
     <string name="auto_mode_permission_battery_skip">Later</string>
     <string name="auto_mode_connected_secure">Connected &amp; Protected</string>
     <string name="title_home">Server List</string>
-    <string name="server_list_count">%1$d servers</string>
-    <string name="server_list_last_updated">Last updated: %1$s</string>
-    <string name="server_list_never_updated">Not updated yet</string>
     <string name="title_servers">Servers</string>
     <string name="title_free_server">Free Server</string>
     <string name="title_personal">Personal</string>

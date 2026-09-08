@@ -328,6 +328,18 @@ fun AutoModeScreen(
     )
     val defaultProtocol = AutoModeProtocol.fromId(defaultProtocolId)
 
+    val cachedList = viewModel.dataUtil.connectionsCache
+    var serverCount by remember { mutableStateOf(cachedList?.size() ?: 0) }
+    LaunchedEffect(state) {
+        withContext(Dispatchers.IO) {
+            val app = context.applicationContext as? App
+            val count = app?.vpnGateItemDao?.count() ?: (viewModel.dataUtil.connectionsCache?.size() ?: 0)
+            withContext(Dispatchers.Main) {
+                serverCount = count
+            }
+        }
+    }
+
     Scaffold { padding ->
         Column(
             modifier = Modifier
@@ -343,7 +355,7 @@ fun AutoModeScreen(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp),
+                    .padding(bottom = 16.dp),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -370,6 +382,43 @@ fun AutoModeScreen(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                }
+            }
+
+            if (serverCount == 0 && state is AutoModeState.Disconnected) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.auto_mode_no_servers_banner),
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                        Button(
+                            onClick = { onNavigateHome() },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.get_servers))
+                        }
+                    }
                 }
             }
 
