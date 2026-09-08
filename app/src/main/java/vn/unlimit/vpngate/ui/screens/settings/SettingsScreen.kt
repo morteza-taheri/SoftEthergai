@@ -128,6 +128,7 @@ fun SettingsScreen(
     var developerMode by remember { mutableStateOf(dataUtil.getDeveloperMode()) }
     var excludedAppsCount by remember { mutableStateOf(excludeAppsManager.getExcludedAppsCount()) }
     var showExcludedApps by remember { mutableStateOf(false) }
+    var showProtocolPrioritySheet by remember { mutableStateOf(false) }
     var autoProtocol by remember {
         mutableStateOf(
             AutoModeProtocol.fromId(
@@ -387,11 +388,11 @@ fun SettingsScreen(
             // ---------------- Auto Mode section
             item {
                 SettingsSection(title = stringResource(R.string.auto_mode)) {
-                    SettingValueRow(
-                        title = stringResource(R.string.setting_auto_protocol_label),
-                        value = autoProtocol.id.lowercase().replace('_', ' '),
+                    SettingActionRow(
+                        title = stringResource(R.string.setting_protocol_priority_title),
+                        subtitle = stringResource(R.string.setting_protocol_priority_summary),
                         icon = Icons.Outlined.VpnLock,
-                        onClick = { showAutoProtocolPicker = true },
+                        onClick = { showProtocolPrioritySheet = true },
                     )
                     SettingDivider()
                     SettingValueRow(
@@ -510,12 +511,18 @@ fun SettingsScreen(
             selectedIndex = languageIndex,
             onSelect = { index ->
                 languageIndex = index
-                val locales = when (index) {
-                    1 -> LocaleListCompat.forLanguageTags("en")
-                    2 -> LocaleListCompat.forLanguageTags("fa")
-                    else -> LocaleListCompat.getEmptyLocaleList()
+                val langTag = when (index) {
+                    1 -> "en"
+                    2 -> "fa"
+                    else -> ""
                 }
-                AppCompatDelegate.setApplicationLocales(locales)
+                if (langTag.isNotEmpty()) {
+                    dataUtil.setStringSetting("app_saved_language", langTag)
+                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(langTag))
+                } else {
+                    dataUtil.setStringSetting("app_saved_language", "")
+                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.getEmptyLocaleList())
+                }
             },
             onDismiss = { showLanguagePicker = false },
         )
@@ -607,6 +614,13 @@ fun SettingsScreen(
                 showExcludedApps = false
                 excludedAppsCount = excludeAppsManager.getExcludedAppsCount()
             },
+        )
+    }
+
+    if (showProtocolPrioritySheet) {
+        ProtocolPrioritySheet(
+            dataUtil = dataUtil,
+            onDismiss = { showProtocolPrioritySheet = false },
         )
     }
 }

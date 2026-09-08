@@ -357,4 +357,17 @@
     <string name="softether_session_setup">Establishing SoftEther session…</string>
     <string name="softether_disconnecting">Disconnecting SoftEther…</string>
     <string name="error_unknown">An unknown error occurred. Please try again.</string>
+    <string name="update_servers">Update Servers</string>
+    <string name="setting_protocol_priority_title">Auto Connect Protocol Priority</string>
+    <string name="setting_protocol_priority_summary">Select enabled protocols and customize their priority order</string>
+    <string name="proto_softether_udp">SoftEther UDP</string>
+    <string name="proto_softether_tcp">SoftEther TCP</string>
+    <string name="proto_sstp">MS-SSTP</string>
+    <string name="proto_openvpn_udp">OpenVPN UDP</string>
+    <string name="proto_openvpn_tcp">OpenVPN TCP</string>
+    <string name="move_up">Move up</string>
+    <string name="move_down">Move down</string>
+    <string name="no_suitable_server_found">No suitable server found</string>
+    <string name="show_traffic_in_notification">Show Traffic in Notification</string>
+    <string name="show_traffic_in_notification_desc">Display download/upload speed and usage in status notification</string>
 </resources>

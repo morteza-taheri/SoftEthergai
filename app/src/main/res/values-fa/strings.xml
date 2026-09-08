@@ -317,6 +317,19 @@
     <string name="softether_disconnecting">در حال قطع اتصال SoftEther…</string>
     <string name="error_unknown">خطای نامشخصی رخ داد. لطفاً دوباره تلاش کنید.</string>
     <string name="get_servers">دریافت لیست سرورها</string>
+    <string name="update_servers">به‌روزرسانی سرورها</string>
     <string name="servers_count_label">%1$d سرور در دسترس</string>
     <string name="auto_mode_no_servers_banner">لیست سرورها خالی است. لطفاً ابتدا لیست سرورها را دریافت کنید.</string>
+    <string name="setting_protocol_priority_title">اولویت پروتکل‌های اتصال خودکار</string>
+    <string name="setting_protocol_priority_summary">پروتکل‌های فعال و ترتیب اولویت آن‌ها را مشخص کنید</string>
+    <string name="proto_softether_udp">SoftEther UDP</string>
+    <string name="proto_softether_tcp">SoftEther TCP</string>
+    <string name="proto_sstp">MS-SSTP</string>
+    <string name="proto_openvpn_udp">OpenVPN UDP</string>
+    <string name="proto_openvpn_tcp">OpenVPN TCP</string>
+    <string name="move_up">انتقال به بالا</string>
+    <string name="move_down">انتقال به پایین</string>
+    <string name="no_suitable_server_found">هیچ سرور مناسبی یافت نشد</string>
+    <string name="show_traffic_in_notification">نمایش ترافیک در اعلان</string>
+    <string name="show_traffic_in_notification_desc">نمایش ترافیک مصرفی و سرعت دانلود/آپلود در اعلان اتصال</string>
 </resources>

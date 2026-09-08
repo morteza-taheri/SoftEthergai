@@ -51,6 +51,17 @@ class App : Application() {
         dataUtil = DataUtil(this)
         isImportToOpenVPN = AppConfig.getBoolean("vpn_import_open_vpn")
 
+        // First launch language detection: fa if device is Persian, else en
+        val savedLang = dataUtil!!.getStringSetting("app_saved_language", null)
+        if (savedLang == null) {
+            val sysLang = java.util.Locale.getDefault().language
+            val initialLang = if (sysLang.equals("fa", ignoreCase = true)) "fa" else "en"
+            dataUtil!!.setStringSetting("app_saved_language", initialLang)
+            AppCompatDelegate.setApplicationLocales(
+                androidx.core.os.LocaleListCompat.forLanguageTags(initialLang)
+            )
+        }
+
         // Apply the user-selected appearance (System / Light / Dark) before any
         // activity is created so the whole app follows Theme.Material3.DayNight.
         // Default theme is Dark (2).

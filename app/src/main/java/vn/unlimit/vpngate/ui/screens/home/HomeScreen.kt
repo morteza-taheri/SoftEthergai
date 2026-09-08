@@ -30,6 +30,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -368,27 +372,18 @@ fun HomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.padding(24.dp),
                             ) {
-                                emptyMessageRes?.let {
-                                    Text(
-                                        if (it == R.string.empty_search_result) {
-                                            stringResource(it, keyword)
-                                        } else {
-                                            stringResource(it)
-                                        },
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        textAlign = TextAlign.Center,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                } ?: Text(
-                                    stringResource(R.string.no_server_available),
-                                    style = MaterialTheme.typography.bodyLarge,
+                                Text(
+                                    text = stringResource(R.string.update_server_list_first),
+                                    style = MaterialTheme.typography.titleMedium,
                                     textAlign = TextAlign.Center,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold,
                                 )
 
                                 Button(
                                     onClick = { connectionListViewModel.getAPIData() },
                                     enabled = !isLoading,
+                                    shape = RoundedCornerShape(12.dp),
                                 ) {
                                     if (isLoading) {
                                         CircularProgressIndicator(
@@ -422,18 +417,71 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             item(key = "server_list_header") {
-                                Row(
+                                Card(
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    ),
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
+                                        .padding(horizontal = 2.dp, vertical = 2.dp),
                                 ) {
-                                    Text(
-                                        text = stringResource(R.string.server_list_count, serverItems.size),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = stringResource(R.string.servers_count_label, serverItems.size),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                            val updatedStr = DateTimeFormatterUtil.formatLastUpdated(dataUtil.connectionCacheUpdatedAt)
+                                            Text(
+                                                text = if (updatedStr.isNotBlank()) {
+                                                    stringResource(R.string.server_list_last_updated, updatedStr)
+                                                } else {
+                                                    stringResource(R.string.server_list_never_updated)
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                isError = false
+                                                noNetwork = false
+                                                connectionListViewModel.getAPIData()
+                                            },
+                                            enabled = !isLoading,
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            if (isLoading) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = MaterialTheme.colorScheme.onPrimary,
+                                                )
+                                            } else {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.Refresh,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(16.dp),
+                                                    )
+                                                    Text(stringResource(R.string.update_servers))
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             items(
