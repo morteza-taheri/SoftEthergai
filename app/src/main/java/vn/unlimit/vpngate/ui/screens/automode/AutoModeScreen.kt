@@ -321,13 +321,6 @@ fun AutoModeScreen(
         )
     }
 
-    // Default protocol from settings
-    val defaultProtocolId = viewModel.dataUtil.getStringSetting(
-        DataUtil.SETTING_DEFAULT_VPN_PROTOCOL,
-        AutoModeProtocol.DEFAULT_ID,
-    )
-    val defaultProtocol = AutoModeProtocol.fromId(defaultProtocolId)
-
     val cachedList = viewModel.dataUtil.connectionsCache
     var serverCount by remember { mutableStateOf(cachedList?.size() ?: 0) }
     LaunchedEffect(state) {
@@ -349,42 +342,6 @@ fun AutoModeScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Protocol info badge
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Tune,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.setting_auto_protocol_label),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = defaultProtocol.id.replace('_', ' '),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-
             if (serverCount == 0 && state is AutoModeState.Disconnected) {
                 Card(
                     colors = CardDefaults.cardColors(

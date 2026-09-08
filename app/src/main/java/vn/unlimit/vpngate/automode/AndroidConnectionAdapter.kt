@@ -240,7 +240,11 @@ class AndroidConnectionAdapter(
 
     private fun startService(action: String, service: Class<*>) {
         val intent = Intent(context, service).setAction(action)
-        startForegroundCompatible(intent, service)
+        try {
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to startService with action $action", e)
+        }
     }
 
     private fun startForegroundCompatible(intent: Intent, service: Class<*>) {

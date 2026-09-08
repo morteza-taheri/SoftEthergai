@@ -249,16 +249,23 @@ class SoftEtherVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
 
+        createNotificationChannel()
+
+        if (intent?.action == ACTION_DISCONNECT) {
+            mIsUserDisconnect = true
+            stopVpn()
+            return START_NOT_STICKY
+        }
+
         // Android requires startForeground() within ~5s of startForegroundService().
-        // Use the correct text and omit the disconnect action when disconnecting.
-        val isDisconnectAction = intent?.action == ACTION_DISCONNECT
-        startForeground(
-            NOTIFICATION_ID,
-            createNotification(
-                if (isDisconnectAction) getString(R.string.softether_disconnecting) else getString(R.string.softether_connecting),
-                !isDisconnectAction
+        try {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(getString(R.string.softether_connecting), true)
             )
-        )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error calling startForeground in onStartCommand", e)
+        }
 
         when (intent?.action) {
             ACTION_CONNECT -> {
@@ -276,10 +283,6 @@ class SoftEtherVpnService : VpnService() {
                     Log.e(TAG, "No configuration provided")
                     stopSelf()
                 }
-            }
-            ACTION_DISCONNECT -> {
-                mIsUserDisconnect = true
-                stopVpn()
             }
             else -> {
                 Log.w(TAG, "Unknown action: ${intent?.action}")
@@ -336,9 +339,16 @@ class SoftEtherVpnService : VpnService() {
     private var isStopping = false
 
     private fun startVpn(config: ConnectionConfig) {
+        isStopping = false
         if (isRunning) {
-            Log.w(TAG, "VPN already running")
-            return
+            Log.w(TAG, "VPN already running, tearing down previous instance")
+            try {
+                controller?.destroyResources()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error tearing down previous controller", e)
+            }
+            controller = null
+            isRunning = false
         }
 
         Log.d(TAG, "Starting VPN with config: ${config.serverHost}:${config.serverPort}")
