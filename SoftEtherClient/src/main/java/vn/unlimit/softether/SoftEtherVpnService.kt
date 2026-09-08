@@ -239,6 +239,13 @@ class SoftEtherVpnService : VpnService() {
         notificationManager.notify(NOTIFICATION_CHANNEL_ERROR_ID.hashCode(), builder.build())
     }
 
+    override fun onRevoke() {
+        Log.i(TAG, "VPN permission revoked by system or another VPN app")
+        mIsUserDisconnect = false
+        stopVpn()
+        super.onRevoke()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
 

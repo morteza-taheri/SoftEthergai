@@ -168,7 +168,10 @@
     <string name="use_domain_hint">Dùng tên miền .opengw.net để kết nối tới máy chủ VPN thay vì sử dụng địa chỉ IP</string>
     <string name="empty_search_result">Không tìm thấy máy chủ nào với từ khoá \"%1$s\"</string>
     <string name="empty_filter_result">Không tìm thấy máy chủ nào với điều kiện lọc hiện tại</string>
-    <string name="no_server_available">Không có máy chủ nào. Vui lòng kéo xuống để tải lại.</string>
+    <string name="no_server_available">Không có máy chủ nào. Vui lòng làm mới danh sách máy chủ.</string>
+    <string name="refresh">Làm mới</string>
+    <string name="refresh_servers">Làm mới máy chủ</string>
+    <string name="update_server_list_first">Vui lòng cập nhật danh sách máy chủ trước</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">Kết nối đến \"%1$s\" bằng L2TP/IPSec</string>
     <string name="l2tp_connect_hint">Để kết nối đến máy chủ \"%1$s\" bằng L2TP/IPSec VPN. Vui lòng làm theo các hướng dẫn bên dưới</string>

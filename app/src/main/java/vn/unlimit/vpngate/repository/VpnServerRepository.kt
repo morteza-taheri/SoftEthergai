@@ -204,37 +204,48 @@ class VpnServerRepository(
     }
 
     private fun loadSnapshot(): CollectResult? {
-        val file = cacheFile() ?: return null
-        if (!file.isFile) return null
+        val file = cacheFile()
+        if (file != null && file.isFile) {
+            val result = try {
+                val json = file.readText(Charsets.UTF_8)
+                val savedAt = runCatching {
+                    gson.fromJson<Map<String, Any?>>(
+                        json,
+                        object : TypeToken<Map<String, Any?>>() {}.type,
+                    )["savedAt"] as? Number
+                }.getOrNull()?.toLong() ?: 0L
 
-        return try {
-            val json = file.readText(Charsets.UTF_8)
-            val savedAt = runCatching {
-                gson.fromJson<Map<String, Any?>>(
-                    json,
-                    object : TypeToken<Map<String, Any?>>() {}.type,
-                )["savedAt"] as? Number
-            }.getOrNull()?.toLong() ?: 0L
+                val servers: List<VPNGateConnection> = run {
+                    val element = com.google.gson.JsonParser.parseString(json).asJsonObject
+                    val array = element.getAsJsonArray("servers") ?: return@run emptyList()
+                    gson.fromJson(
+                        array,
+                        object : TypeToken<List<VPNGateConnection>>() {}.type,
+                    )
+                }
 
-            val servers: List<VPNGateConnection> = run {
-                val element = com.google.gson.JsonParser.parseString(json).asJsonObject
-                val array = element.getAsJsonArray("servers") ?: return null
-                gson.fromJson(
-                    array,
-                    object : TypeToken<List<VPNGateConnection>>() {}.type,
-                )
+                if (servers.isNotEmpty()) {
+                    val list = VPNGateConnectionList()
+                    servers.forEach { list.add(it) }
+                    CollectorLog.d("Loaded last-known-good snapshot (savedAt=$savedAt): ${servers.size}")
+                    CollectResult(list, servers.size, fromCache = true, savedAt = savedAt)
+                } else null
+            } catch (e: Exception) {
+                CollectorLog.d("Snapshot load failed: ${e.message}")
+                null
             }
-
-            if (servers.isEmpty()) return null
-
-            val list = VPNGateConnectionList()
-            servers.forEach { list.add(it) }
-
-            CollectorLog.d("Loaded last-known-good snapshot (savedAt=$savedAt): ${servers.size}")
-            CollectResult(list, servers.size, fromCache = true, savedAt = savedAt)
-        } catch (e: Exception) {
-            CollectorLog.d("Snapshot load failed: ${e.message}")
-            null
+            if (result != null) return result
         }
+
+        // Room database fallback
+        val dbItems = runCatching { vn.unlimit.vpngate.App.instance?.vpnGateItemDao?.getAll() }.getOrNull()
+        if (!dbItems.isNullOrEmpty()) {
+            val list = VPNGateConnectionList()
+            dbItems.forEach { list.add(VPNGateConnection().fromVPNGateItem(it)) }
+            CollectorLog.d("Loaded ${dbItems.size} servers from internal database fallback")
+            return CollectResult(list, dbItems.size, fromCache = true)
+        }
+
+        return null
     }
 }

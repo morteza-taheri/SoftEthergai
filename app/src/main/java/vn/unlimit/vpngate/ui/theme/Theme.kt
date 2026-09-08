@@ -77,8 +77,19 @@ val ExtendedTheme: ExtendedColors
     @Composable get() = LocalExtendedColors.current
 
 @Composable
+fun isAppInDarkTheme(): Boolean {
+    val dataUtil = vn.unlimit.vpngate.App.instance?.dataUtil
+    val themeSetting = dataUtil?.getIntSetting(vn.unlimit.vpngate.utils.DataUtil.SETTING_THEME, 2) ?: 2
+    return when (themeSetting) {
+        1 -> false
+        0 -> isSystemInDarkTheme()
+        else -> true // default is 2 (Dark theme)
+    }
+}
+
+@Composable
 fun VpnGateTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = isAppInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
     val extended = if (darkTheme) {

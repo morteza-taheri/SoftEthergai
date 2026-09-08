@@ -57,7 +57,8 @@ fun CopySheet(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 vn.unlimit.vpngate.ui.components.FlagImage(
-                    url = "$baseUrl/images/flags/${connection.countryShort}.png",
+                    url = "$baseUrl/images/flags/${connection.countryShort?.uppercase() ?: ""}.png",
+                    countryCode = connection.countryShort,
                     modifier = Modifier.padding(top = 4.dp),
                 )
                 Text(

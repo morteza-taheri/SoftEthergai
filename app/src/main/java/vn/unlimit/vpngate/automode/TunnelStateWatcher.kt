@@ -25,14 +25,19 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
     @Volatile
     private var onTunnelUp: ((AutoModeProtocol) -> Unit)? = null
 
+    @Volatile
+    var onTunnelLost: (() -> Unit)? = null
+
     private var prefs: SharedPreferences? = null
     private val sstpListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (watching == AutoModeProtocol.MS_SSTP &&
-                key == OscPrefKey.ROOT_STATE.toString() &&
-                prefs?.getBoolean(OscPrefKey.ROOT_STATE.toString(), false) == true
-            ) {
-                onTunnelUp?.invoke(AutoModeProtocol.MS_SSTP)
+            if (key == OscPrefKey.ROOT_STATE.toString()) {
+                val isUp = prefs?.getBoolean(OscPrefKey.ROOT_STATE.toString(), false) == true
+                if (watching == AutoModeProtocol.MS_SSTP && isUp) {
+                    onTunnelUp?.invoke(AutoModeProtocol.MS_SSTP)
+                } else if (!isUp) {
+                    onTunnelLost?.invoke()
+                }
             }
         }
 
@@ -49,6 +54,7 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         prefs = null
         SoftEtherVpnService.removeStateListener(this)
         VpnStatus.removeStateListener(this)
+        onTunnelLost = null
     }
 
     /** Arm the watcher for one attempt of [protocol]. */
@@ -68,6 +74,9 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
                 onTunnelUp?.invoke(watching!!)
             }
         }
+        if (state == SoftEtherVpnService.STATE_DISCONNECTED || state == SoftEtherVpnService.STATE_ERROR) {
+            onTunnelLost?.invoke()
+        }
     }
 
     override fun setConnectedVPN(uuid: String?) {
@@ -85,6 +94,9 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
             if (status == ConnectionStatus.LEVEL_CONNECTED) {
                 onTunnelUp?.invoke(watching!!)
             }
+        }
+        if (status == ConnectionStatus.LEVEL_NOTCONNECTED || status == ConnectionStatus.LEVEL_AUTH_FAILED) {
+            onTunnelLost?.invoke()
         }
     }
 }

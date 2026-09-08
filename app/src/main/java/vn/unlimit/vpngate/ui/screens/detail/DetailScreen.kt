@@ -132,7 +132,8 @@ fun DetailScreen(activity: DetailActivity) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         FlagImage(
-                            url = dataUtil.baseUrl + "/images/flags/" + conn.countryShort + ".png",
+                            url = dataUtil.baseUrl + "/images/flags/" + (conn.countryShort?.uppercase() ?: "") + ".png",
+                            countryCode = conn.countryShort,
                             modifier = Modifier.size(44.dp),
                         )
                         Column(modifier = Modifier.padding(start = 14.dp)) {

@@ -114,7 +114,7 @@ fun SettingsScreen(
         mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_STARTUP_SCREEN, 0).coerceIn(0, 2))
     }
     var themeIndex by remember {
-        mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_THEME, 0).coerceIn(0, 2))
+        mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_THEME, 2).coerceIn(0, 2))
     }
     var languageIndex by remember {
         mutableStateOf(

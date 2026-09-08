@@ -23,4 +23,11 @@ interface VPNGateItemDao {
 
     @Query("SELECT COUNT(hostName) FROM vpngateitem")
     fun count(): Int
+
+    @androidx.room.Transaction
+    fun replaceAll(items: List<VPNGateItem>) {
+        if (items.isEmpty()) return
+        deleteAll()
+        insertAll(*items.toTypedArray())
+    }
 }

@@ -106,8 +106,14 @@ class VPNGateConnectionList : Parcelable {
         data!!.addAll(list.data!!)
     }
 
-    fun get(index: Int): VPNGateConnection {
-        return data!![index]
+    fun get(index: Int): VPNGateConnection? {
+        val d = data ?: return null
+        return if (index in 0 until d.size) d[index] else null
+    }
+
+    fun toList(): List<VPNGateConnection> {
+        val d = data ?: return emptyList()
+        return synchronized(d) { ArrayList(d) }
     }
 
     fun size(): Int {

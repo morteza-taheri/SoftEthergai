@@ -212,7 +212,10 @@
     <string name="use_domain_hint">استفاده از دامنهٔ .opengw.net برای اتصال به سرور VPN به‌جای نشانی IP سرور</string>
     <string name="empty_search_result">سروری با کلیدواژهٔ «%1$s» پیدا نشد</string>
     <string name="empty_filter_result">سروری با این فیلتر پیدا نشد</string>
-    <string name="no_server_available">سروری موجود نیست. برای تازه‌سازی پایین بکشید.</string>
+    <string name="no_server_available">هیچ سروری در دسترس نیست. لطفاً لیست سرورها را به‌روزرسانی کنید.</string>
+    <string name="refresh">به‌روزرسانی</string>
+    <string name="refresh_servers">به‌روزرسانی سرورها</string>
+    <string name="update_server_list_first">اول لیست سرور ها را بروز رسانی کن</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">اتصال به «%1$s» از طریق L2TP/IPSec</string>
     <string name="l2tp_connect_hint">برای اتصال به سرور «%1$s» از طریق VPN با L2TP/IPSec مراحل زیر را دنبال کنید</string>

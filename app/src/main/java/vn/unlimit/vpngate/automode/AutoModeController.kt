@@ -99,23 +99,42 @@ class AutoModeController(
     fun skipToNextServer() {
         val current = _state.value
         val connecting = current is AutoModeState.Connecting && isRunning
-        val connectedArmed = current is AutoModeState.Connected && connectedWatcher?.isActive == true
+        val isConnected = current is AutoModeState.Connected
         val isError = current is AutoModeState.Error
-        if (!connecting && !connectedArmed && !isError) {
+
+        if (!connecting && !isConnected && !isError) {
             adapter.log("[AUTO] Skip requested but disconnected or inactive")
             return
         }
+
         if (connecting) {
             adapter.log("[AUTO] Skipping current server; trying next")
             skipRequested.set(true)
             adapterSkipSignal?.invoke()
             return
         }
-        if (connectedArmed) {
+
+        if (isConnected) {
             adapter.log("[AUTO] Connected server skipped by user; trying next")
-            skipRequested.set(true)
+            connectedWatcher?.cancel()
+            connectedWatcher = null
+            TunnelStateWatcher.onTunnelLost = null
+            job?.cancel()
+            job = null
+            scope.launch {
+                adapter.disconnect()
+                val remaining = remainingCandidates
+                if (remaining.isEmpty()) {
+                    adapter.log("[AUTO] No more servers to try")
+                    setState(AutoModeState.Error(ERROR_NO_SERVER))
+                } else {
+                    overrideServers = remaining
+                    start()
+                }
+            }
             return
         }
+
         if (isError) {
             adapter.log("[AUTO] Error state: advancing to next server")
             val remaining = remainingCandidates
@@ -146,34 +165,23 @@ class AutoModeController(
     private var remainingCandidates: List<AutoModeCandidate> = emptyList()
 
     /**
-     * While CONNECTED the main run has finished; this light watcher waits
-     * for the user to press Try next server (skip flag), then tears down
-     * the tunnel and starts a fresh run over the remaining candidates.
+     * While CONNECTED the main run has finished; this watcher monitors for
+     * external tunnel disconnects / revocations.
      */
     private fun startConnectedWatcher(protocol: AutoModeProtocol) {
         connectedWatcher?.cancel()
-        connectedWatcher = scope.launch {
-            while (currentCoroutineContext().isActive && !skipRequested.get()) {
-                kotlinx.coroutines.delay(300)
-            }
-            if (!currentCoroutineContext().isActive) return@launch
-            if (skipRequested.get()) {
-                skipRequested.set(false)
-                adapter.log("[AUTO] Connected server skipped by user; trying next")
-                adapter.disconnect() // §15 teardown of the live tunnel
-                val remaining = remainingCandidates
-                // Detach this watcher before starting the next run so the
-                // fresh watcher (after the next success) is not self-cancelled.
+        TunnelStateWatcher.onTunnelLost = {
+            if (_state.value is AutoModeState.Connected) {
+                adapter.log("[AUTO] Tunnel disconnected externally / revoked by system")
+                connectedWatcher?.cancel()
                 connectedWatcher = null
-                if (remaining.isEmpty()) {
-                    adapter.log("[AUTO] No more servers to try")
-                    setState(AutoModeState.Error(ERROR_NO_SERVER))
-                    job = null
-                } else {
-                    // Restart the loop over the remaining candidates only.
-                    overrideServers = remaining
-                    start()
-                }
+                TunnelStateWatcher.onTunnelLost = null
+                setState(AutoModeState.Disconnected)
+            }
+        }
+        connectedWatcher = scope.launch {
+            while (currentCoroutineContext().isActive) {
+                kotlinx.coroutines.delay(1000)
             }
         }
     }
@@ -196,6 +204,7 @@ class AutoModeController(
     fun stop() {
         connectedWatcher?.cancel()
         connectedWatcher = null
+        TunnelStateWatcher.onTunnelLost = null
         skipRequested.set(false)
         overrideServers = null
         if (!isRunning) return
@@ -219,10 +228,9 @@ class AutoModeController(
 
     /** §3/§29-Test10: pressing while Connected disconnects via the normal flow. */
     fun disconnectNow() {
-        // Kill the connected watcher too — the user chose to end the session,
-        // not to move to the next server.
         connectedWatcher?.cancel()
         connectedWatcher = null
+        TunnelStateWatcher.onTunnelLost = null
         skipRequested.set(false)
         overrideServers = null
         if (isRunning) {
@@ -274,7 +282,12 @@ class AutoModeController(
             attempt++
 
             adapter.log("[AUTO] Trying #$attempt ${server.hostname ?: server.ip}")
-            remainingCandidates = servers.dropWhile { it !== server }.drop(1)
+            val currentIdx = servers.indexOfFirst { it.ip == server.ip && it.hostname == server.hostname }
+            remainingCandidates = if (currentIdx in 0 until servers.lastIndex) {
+                servers.subList(currentIdx + 1, servers.size)
+            } else {
+                emptyList()
+            }
             skipRequested.set(false)
             setState(
                 AutoModeState.Connecting(
@@ -321,7 +334,12 @@ class AutoModeController(
                 onSuccess(server, protocol)
                 // Remember the remaining (not-yet-attempted) candidates so a
                 // user skip while connected continues with the next server.
-                remainingCandidates = servers.dropWhile { it !== server }.drop(1)
+                val currentIdx = servers.indexOfFirst { it.ip == server.ip && it.hostname == server.hostname }
+                remainingCandidates = if (currentIdx in 0 until servers.lastIndex) {
+                    servers.subList(currentIdx + 1, servers.size)
+                } else {
+                    emptyList()
+                }
                 setState(
                     AutoModeState.Connected(
                         hostname = server.hostname,

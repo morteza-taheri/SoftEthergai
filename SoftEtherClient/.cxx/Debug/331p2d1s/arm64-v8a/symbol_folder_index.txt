@@ -1,1 +1,0 @@
-/app/applet/SoftEtherClient/build/intermediates/cxx/Debug/331p2d1s/obj/arm64-v8a

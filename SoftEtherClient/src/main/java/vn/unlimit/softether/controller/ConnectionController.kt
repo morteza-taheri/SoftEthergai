@@ -473,12 +473,13 @@ class ConnectionController(
             Log.d(TAG, "DHCP success: IP=${dhcpResult.assignedIp}/${dhcpResult.prefixLength} " +
                     "GW=${dhcpResult.gateway} DNS=${dhcpResult.dnsServer} DNS2=${dhcpResult.dnsServer2}")
             assignedLocalIp = dhcpResult.assignedIp
-            // Update config with DHCP-assigned values
+            // Update config with DHCP-assigned IP/prefix, while preserving configured public/user DNS
+            // (VPN Gate SecureNAT internal DNS relays like 10.240.254.254 are often broken or blocked)
             dhcpConfig = config.copy(
                 localAddress = dhcpResult.assignedIp,
                 prefixLength = dhcpResult.prefixLength,
-                dnsServer = if (dhcpResult.dnsServer != "0.0.0.0") dhcpResult.dnsServer else config.dnsServer,
-                secondaryDnsServer = if (dhcpResult.dnsServer2 != "0.0.0.0") dhcpResult.dnsServer2 else config.secondaryDnsServer
+                dnsServer = config.dnsServer,
+                secondaryDnsServer = config.secondaryDnsServer
             )
             vpnInterface = service.establishVpnInterface(dhcpConfig)
                 ?: throw Exception("Failed to establish VPN interface")
@@ -952,8 +953,8 @@ class ConnectionController(
                 val dhcpConfig = config.copy(
                     localAddress = dhcpResult.assignedIp,
                     prefixLength = dhcpResult.prefixLength,
-                    dnsServer = if (dhcpResult.dnsServer != "0.0.0.0") dhcpResult.dnsServer else config.dnsServer,
-                    secondaryDnsServer = if (dhcpResult.dnsServer2 != "0.0.0.0") dhcpResult.dnsServer2 else config.secondaryDnsServer
+                    dnsServer = config.dnsServer,
+                    secondaryDnsServer = config.secondaryDnsServer
                 )
                 vpnInterface = service.establishVpnInterface(dhcpConfig)
                     ?: throw Exception("Failed to establish VPN interface during reconnect")

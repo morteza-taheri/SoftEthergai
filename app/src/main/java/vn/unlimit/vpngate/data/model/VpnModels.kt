@@ -143,7 +143,7 @@ object VpnRecords {
             VpnProtocolNames.SOFTETHER to linkedMapOf<String, Any?>(
                 "supported" to false,
                 "tcp" to linkedMapOf<String, Any?>("supported" to false, "port" to null),
-                "udp" to linkedMapOf<String, Any?>("supported" to false, "port" to null),
+                "udp" to linkedMapOf<String, Any?>("supported" to false, "port" to null, "dynamicPort" to false),
             ),
             VpnProtocolNames.OPENVPN to linkedMapOf<String, Any?>(
                 "supported" to false,

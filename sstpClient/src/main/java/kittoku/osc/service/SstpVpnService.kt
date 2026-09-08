@@ -521,6 +521,18 @@ class SstpVpnService : VpnService() {
         stopSelf()
     }
 
+    override fun onRevoke() {
+        Log.i("SstpVpnService", "VPN permission revoked by system or another VPN app")
+        setRootState(false)
+        setStringPrefValue("", OscPrefKey.HOME_CONNECTED_IP, prefs)
+        currentConnectedIp = ""
+        notifyTrafficListeners(SstpTrafficSnapshot.EMPTY)
+        controller?.kill(false, null)
+        controller = null
+        close()
+        super.onRevoke()
+    }
+
     override fun onDestroy() {
         logWriter?.write("Terminate VPN connection")
         logWriter?.close()

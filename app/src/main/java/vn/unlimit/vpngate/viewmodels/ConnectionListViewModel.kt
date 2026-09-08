@@ -64,8 +64,17 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 }
 
                 if (connectionList == null || connectionList.size() == 0) {
-                    Log.e(TAG, "Collector returned no servers")
-                    isError.postValue(true)
+                    val dbItems = withContext(Dispatchers.IO) {
+                        App.instance?.vpnGateItemDao?.getAll().orEmpty()
+                    }
+                    if (dbItems.isNotEmpty()) {
+                        val dbList = VPNGateConnectionList().fromVPNGateItems(dbItems)
+                        vpnGateConnectionList.value = dbList
+                        Log.i(TAG, "Network refresh returned no servers; preserved ${dbItems.size} servers from internal database")
+                    } else {
+                        Log.e(TAG, "Collector returned no servers and database is empty")
+                        isError.postValue(true)
+                    }
                     return@launch
                 }
 
@@ -73,9 +82,8 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 lastUpdatedTime.postValue(result.savedAt)
                 val items = connectionList.toVPNGateItems()
                 withContext(Dispatchers.IO) {
-                    App.instance!!.vpnGateItemDao.deleteAll()
-                    App.instance!!.vpnGateItemDao.insertAll(*items.toTypedArray())
-                    val itemCount = App.instance!!.vpnGateItemDao.count()
+                    App.instance?.vpnGateItemDao?.replaceAll(items)
+                    val itemCount = App.instance?.vpnGateItemDao?.count() ?: 0
                     Log.i(
                         TAG,
                         "Collected ${result.serverCount} servers" +
@@ -85,7 +93,16 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "Got exception when collecting servers", e)
-                isError.postValue(true)
+                val dbItems = withContext(Dispatchers.IO) {
+                    App.instance?.vpnGateItemDao?.getAll().orEmpty()
+                }
+                if (dbItems.isNotEmpty()) {
+                    val dbList = VPNGateConnectionList().fromVPNGateItems(dbItems)
+                    vpnGateConnectionList.value = dbList
+                    Log.i(TAG, "Exception during refresh; preserved ${dbItems.size} servers from database")
+                } else {
+                    isError.postValue(true)
+                }
             } finally {
                 isLoading.postValue(false)
             }

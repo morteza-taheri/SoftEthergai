@@ -366,6 +366,7 @@ object VpnGateHtmlParser {
 
                 if (udpSupported || udpPortOk) {
                     VpnRecords.setField(server, "protocols.softether.udp.supported", true, source)
+                    VpnRecords.setField(server, "protocols.softether.udp.dynamicPort", true, source)
                     // §6: the UDP port stays null unless printed.
                     if (udpPortOk) {
                         VpnRecords.setField(
@@ -487,6 +488,8 @@ object VpnGateHtmlParser {
             if (opCell != null) {
                 var operator = VpnUtil.clean(opCell.text())
                 operator = operator.replace(Regex("^by\\s+", RegexOption.IGNORE_CASE), "")
+                operator = operator.replace(Regex("\\s+E-mail:.*$", RegexOption.IGNORE_CASE), "")
+                operator = VpnUtil.clean(operator)
 
                 if (operator.isNotEmpty()) {
                     VpnRecords.setField(server, "operator.name", operator, source)

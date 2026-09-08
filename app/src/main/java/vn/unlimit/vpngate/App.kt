@@ -53,10 +53,11 @@ class App : Application() {
 
         // Apply the user-selected appearance (System / Light / Dark) before any
         // activity is created so the whole app follows Theme.Material3.DayNight.
-        val themeMode = when (dataUtil!!.getIntSetting(DataUtil.SETTING_THEME, 0)) {
+        // Default theme is Dark (2).
+        val themeMode = when (dataUtil!!.getIntSetting(DataUtil.SETTING_THEME, 2)) {
             1 -> AppCompatDelegate.MODE_NIGHT_NO
-            2 -> AppCompatDelegate.MODE_NIGHT_YES
-            else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            0 -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            else -> AppCompatDelegate.MODE_NIGHT_YES
         }
         AppCompatDelegate.setDefaultNightMode(themeMode)
 
@@ -66,6 +67,9 @@ class App : Application() {
         vn.unlimit.vpngate.data.model.CollectorLog.sink = { Log.d("VpnGateCollector", it) }
         vn.unlimit.vpngate.data.model.CollectorLog.enabled = dataUtil!!.getDeveloperMode()
         vn.unlimit.vpngate.automode.AutoModeLogStore.setPaused(!dataUtil!!.getDeveloperMode())
+        // Initialize global VPN connection state tracker
+        vn.unlimit.vpngate.state.GlobalVpnTracker.init(this)
+
         // Make notification open DetailActivity
         OpenVPNService.setNotificationActivityClass(
             if (dataUtil!!.getIntSetting(

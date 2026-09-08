@@ -239,7 +239,10 @@
     <string name="use_domain_hint">Use domain .opengw.net to connect to VPN Server instead of Server IP Address</string>
     <string name="empty_search_result">No sever found with keyword \"%1$s\"</string>
     <string name="empty_filter_result">No sever found current filter</string>
-    <string name="no_server_available">No servers available. Please pull to refresh.</string>
+    <string name="no_server_available">No servers available. Please refresh the server list.</string>
+    <string name="refresh">Refresh</string>
+    <string name="refresh_servers">Refresh Servers</string>
+    <string name="update_server_list_first">Please update the server list first</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">Connect to \"%1$s\" via L2TP/IPSec</string>
     <string name="l2tp_connect_hint">To connect to server \"%1$s\" via L2TP/IPSec VPN. Please follow several step bellow</string>

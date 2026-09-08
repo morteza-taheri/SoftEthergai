@@ -106,6 +106,10 @@ object AutoModeEngine {
                         val repo = vn.unlimit.vpngate.repository.VpnServerRepository(cacheDir = app.filesDir)
                         val res = repo.refresh()
                         if (res?.connectionList != null && res.connectionList.size() > 0) {
+                            val items = res.connectionList.toVPNGateItems()
+                            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                app.vpnGateItemDao.replaceAll(items)
+                            }
                             dataUtil.connectionsCache = res.connectionList
                             list = res.connectionList
                         }

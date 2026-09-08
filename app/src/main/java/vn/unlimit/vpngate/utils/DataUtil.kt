@@ -47,46 +47,41 @@ class DataUtil(context: Context?) {
 
     var connectionsCache: VPNGateConnectionList?
         /**
-         * Get connection cache
+         * Get connection cache from internal Room database
          *
          * @return VPNGateConnectionList
          */
         get() {
             try {
-                Log.d(TAG, "get connectionsCache")
-                val inFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-                if (!inFile.isFile) {
-                    return null
-                } else {
-                    val fileInputStream = FileInputStream(inFile)
-                    val reader = JsonReader(InputStreamReader(fileInputStream))
-                    val cacheType = object : TypeToken<Cache?>() {
-                    }.type
-                    val cache = gson!!.fromJson<Cache>(reader, cacheType)
-                    if (cache.isExpires()) {
-                        reader.close()
-                        return null
-                    } else {
-                        reader.close()
-                        val items = App.instance!!.vpnGateItemDao.getAll()
-                        Log.d(TAG, "Get ${items.size} from cache")
+                Log.d(TAG, "get connectionsCache from internal database")
+                val app = App.instance
+                if (app != null) {
+                    val items = app.vpnGateItemDao.getAll()
+                    if (items.isNotEmpty()) {
+                        Log.d(TAG, "Retrieved ${items.size} servers from internal database")
                         return VPNGateConnectionList().fromVPNGateItems(items)
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Got exception when get connection cache", e)
+                Log.e(TAG, "Got exception when reading server list from database", e)
             }
             return null
         }
         /**
-         * Set connection cache
-         *
+         * Set connection cache and persist into internal Room database
          */
-        set(_) {
+        set(value) {
             try {
+                if (value != null && value.size() > 0) {
+                    val app = App.instance
+                    if (app != null) {
+                        val items = value.toVPNGateItems()
+                        app.vpnGateItemDao.replaceAll(items)
+                        Log.d(TAG, "Saved ${items.size} healthy servers into internal database")
+                    }
+                }
                 val cache = Cache()
                 val calendar = Calendar.getInstance()
-                //Cache in minute get from setting; -1 = Never (far future)
                 val minute = getCacheSaveTimeMinutes()
                 if (minute < 0) {
                     calendar.set(Calendar.YEAR, 9999)

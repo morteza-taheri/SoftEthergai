@@ -176,7 +176,9 @@ fun AppRoot(
                 )
             }
             composable(NavRoutes.AUTO) {
-                AutoModeScreen()
+                AutoModeScreen(
+                    onNavigateHome = { navigate(NavRoutes.HOME) },
+                )
             }
             composable(NavRoutes.STATUS) {
                 StatusScreen(

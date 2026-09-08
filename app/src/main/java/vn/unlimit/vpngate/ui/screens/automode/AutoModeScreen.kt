@@ -91,7 +91,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -126,8 +130,11 @@ import vn.unlimit.vpngate.viewmodels.AutoModeViewModel
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AutoModeScreen() {
+fun AutoModeScreen(
+    onNavigateHome: () -> Unit = {},
+) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val viewModel: AutoModeViewModel = viewModel()
     val state by viewModel.state.observeAsState(AutoModeState.Disconnected)
 
@@ -177,15 +184,7 @@ fun AutoModeScreen() {
         }
     }
 
-    fun startAutoModeWithAllChecks() {
-        val current = viewModel.state.value
-        val isStart = current is AutoModeState.Disconnected || current is AutoModeState.Error
-        if (!isStart) {
-            // Already connecting or connected: toggle/disconnect immediately
-            viewModel.onButtonPressed()
-            return
-        }
-
+    fun proceedWithPermissionsAndConnect() {
         // 1. Check Notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
@@ -222,6 +221,46 @@ fun AutoModeScreen() {
                 context.getString(R.string.auto_mode_error_vpn_permission),
                 Toast.LENGTH_LONG,
             ).show()
+        }
+    }
+
+    fun startAutoModeWithAllChecks() {
+        val current = viewModel.state.value
+        val isStart = current is AutoModeState.Disconnected || current is AutoModeState.Error
+        if (!isStart) {
+            // Already connecting or connected: toggle/disconnect immediately
+            viewModel.onButtonPressed()
+            return
+        }
+
+        scope.launch(Dispatchers.IO) {
+            val cache = viewModel.dataUtil.connectionsCache
+            val count = if (cache != null && cache.size() > 0) {
+                cache.size()
+            } else {
+                val app = context.applicationContext as? App
+                try {
+                    app?.vpnGateItemDao?.count() ?: 0
+                } catch (_: Exception) {
+                    0
+                }
+            }
+
+            if (count == 0) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.update_server_list_first),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    onNavigateHome()
+                }
+                return@launch
+            }
+
+            withContext(Dispatchers.Main) {
+                proceedWithPermissionsAndConnect()
+            }
         }
     }
 
@@ -289,29 +328,7 @@ fun AutoModeScreen() {
     )
     val defaultProtocol = AutoModeProtocol.fromId(defaultProtocolId)
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Security,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(end = 8.dp),
-                        )
-                        Text(
-                            stringResource(R.string.auto_mode),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
-        },
-    ) { padding ->
+    Scaffold { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()

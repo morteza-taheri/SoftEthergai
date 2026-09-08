@@ -91,8 +91,8 @@ public class VpnProfile implements Serializable, Cloneable {
     public static final int AUTH_RETRY_NOINTERACT = 2;
     public static final boolean mIsOpenVPN22 = false;
     private static final long serialVersionUID = 7085688938959334563L;
-    private static final int AUTH_RETRY_NONE_KEEP = 1;
-    private static final int AUTH_RETRY_INTERACT = 3;
+    public static final int AUTH_RETRY_NONE_KEEP = 1;
+    public static final int AUTH_RETRY_INTERACT = 3;
     private static final String EXTRA_RSA_PADDING_TYPE = "de.blinkt.openvpn.api.RSA_PADDING_TYPE";
     private static final String EXTRA_SALTLEN = "de.blinkt.openvpn.api.SALTLEN";
     private static final String EXTRA_NEEDS_DIGEST = "de.blinkt.openvpn.api.NEEDS_DIGEST";
@@ -180,6 +180,7 @@ public class VpnProfile implements Serializable, Cloneable {
     public String mPeerFingerPrints = "";
     public int mCompatMode = 0;
     public boolean mUseLegacyProvider = false;
+    public boolean mDpc1protocol = false;
     public String mTlSCertProfile = "";
     public long mCreationDate = 0;
 
@@ -486,7 +487,7 @@ public class VpnProfile implements Serializable, Cloneable {
             cfg.append(mConnections[0].getConnectionBlock(configForOvpn3));
         } else {
             for (Connection conn : mConnections) {
-                canUsePlainRemotes = canUsePlainRemotes && conn.isOnlyRemote();
+                canUsePlainRemotes = canUsePlainRemotes && conn.isOnlyRemote(configForOvpn3);
             }
 
             if (mRemoteRandom)

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,15 +30,22 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.utils.DataUtil
@@ -72,8 +80,9 @@ fun ServerCard(
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FlagImage(
-                    url = "$baseUrl/images/flags/${connection.countryShort}.png",
-                    modifier = Modifier.size(34.dp),
+                    url = "$baseUrl/images/flags/${connection.countryShort?.uppercase() ?: ""}.png",
+                    countryCode = connection.countryShort,
+                    modifier = Modifier.size(36.dp),
                 )
                 Column(
                     modifier = Modifier
@@ -148,21 +157,53 @@ fun ServerCard(
     }
 }
 
-/** Flag loaded with Coil, rounded placeholder while loading. */
+/**
+ * Converts a 2-letter ISO country code (e.g. "JP", "US", "DE") into Unicode country flag emoji.
+ */
+fun countryCodeToEmoji(countryCode: String?): String {
+    if (countryCode.isNullOrBlank() || countryCode.length != 2) return "🌐"
+    val firstChar = countryCode[0].uppercaseChar()
+    val secondChar = countryCode[1].uppercaseChar()
+    if (firstChar !in 'A'..'Z' || secondChar !in 'A'..'Z') return "🌐"
+    val firstCodePoint = 0x1F1E6 + (firstChar - 'A')
+    val secondCodePoint = 0x1F1E6 + (secondChar - 'A')
+    return String(Character.toChars(firstCodePoint)) + String(Character.toChars(secondCodePoint))
+}
+
+/** Flag loaded with Coil, with instantaneous native emoji fallback. */
 @Composable
-fun FlagImage(url: String, modifier: Modifier = Modifier, corner: Dp = 8.dp) {
-    androidx.compose.foundation.layout.Box(
-        modifier = modifier.background(
-            MaterialTheme.colorScheme.surfaceVariant,
-            RoundedCornerShape(corner),
-        ),
+fun FlagImage(
+    url: String? = null,
+    countryCode: String? = null,
+    modifier: Modifier = Modifier,
+    corner: Dp = 8.dp,
+) {
+    val derivedCode = countryCode ?: url?.substringAfterLast('/')?.substringBefore('.')?.takeIf { it.length == 2 }
+    val emoji = remember(derivedCode) { countryCodeToEmoji(derivedCode) }
+    var imageFailed by remember(url) { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(corner))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
         contentAlignment = Alignment.Center,
     ) {
-        coil3.compose.AsyncImage(
-            model = url,
-            contentDescription = null,
-            modifier = modifier,
-        )
+        if (!url.isNullOrBlank() && !imageFailed) {
+            coil3.compose.AsyncImage(
+                model = url,
+                contentDescription = derivedCode,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+                onError = { imageFailed = true },
+            )
+        }
+        if (url.isNullOrBlank() || imageFailed) {
+            Text(
+                text = emoji,
+                fontSize = 20.sp,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 

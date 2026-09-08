@@ -23,9 +23,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.VerticalAlignTop
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -38,7 +40,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -157,11 +158,17 @@ fun HomeScreen(
     }
     LaunchedEffect(isErrorVm) {
         if (isErrorVm) {
-            isError = true
-            contentVisible = false
+            val hasData = (list != null && list!!.size() > 0) || (dataUtil.connectionsCache?.size() ?: 0) > 0
+            if (!hasData) {
+                isError = true
+                contentVisible = false
+            } else {
+                isError = false
+                contentVisible = true
+            }
         }
     }
-    // Initial load: cache → display; network state → loading/error/no-network
+    // Initial load: database cache → display; network state → refresh or offline display
     LaunchedEffect(Unit) {
         val cached = withContext(Dispatchers.IO) { dataUtil.connectionsCache }
         val online = withContext(Dispatchers.IO) { DataUtil.isOnline(context.applicationContext) }
@@ -169,6 +176,9 @@ fun HomeScreen(
             cached != null && cached.size() > 0 -> {
                 contentVisible = true
                 refreshView()
+                if (online) {
+                    connectionListViewModel.getAPIData()
+                }
             }
             online -> connectionListViewModel.getAPIData()
             else -> {
@@ -246,6 +256,23 @@ fun HomeScreen(
                                     }
                                 },
                                 actions = {
+                                    IconButton(
+                                        onClick = { connectionListViewModel.getAPIData() },
+                                        enabled = !isLoading,
+                                    ) {
+                                        if (isLoading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Filled.Refresh,
+                                                contentDescription = stringResource(R.string.refresh),
+                                            )
+                                        }
+                                    }
                                     IconButton(onClick = { isSearching = true }) {
                                         Icon(
                                             Icons.Filled.Search,
@@ -293,38 +320,65 @@ fun HomeScreen(
                         }
                     },
                 ) { padding ->
-                    val model = list
-                    if (model == null || model.size() == 0) {
+                    val serverItems = remember(list) { list?.toList() ?: emptyList() }
+                    if (serverItems.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(padding),
                             contentAlignment = Alignment.Center,
                         ) {
-                            emptyMessageRes?.let {
-                                Text(
-                                    if (it == R.string.empty_search_result) {
-                                        stringResource(it, keyword)
-                                    } else {
-                                        stringResource(it)
-                                    },
-                                    modifier = Modifier.padding(24.dp),
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.padding(24.dp),
+                            ) {
+                                emptyMessageRes?.let {
+                                    Text(
+                                        if (it == R.string.empty_search_result) {
+                                            stringResource(it, keyword)
+                                        } else {
+                                            stringResource(it)
+                                        },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } ?: Text(
+                                    stringResource(R.string.no_server_available),
                                     style = MaterialTheme.typography.bodyLarge,
                                     textAlign = TextAlign.Center,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                            } ?: Text(
-                                stringResource(R.string.no_server_available),
-                                modifier = Modifier.padding(24.dp),
-                                style = MaterialTheme.typography.bodyLarge,
-                                textAlign = TextAlign.Center,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+
+                                Button(
+                                    onClick = { connectionListViewModel.getAPIData() },
+                                    enabled = !isLoading,
+                                ) {
+                                    if (isLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                        )
+                                    } else {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Refresh,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Text(stringResource(R.string.refresh_servers))
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } else {
-                        PullToRefreshBox(
-                            isRefreshing = isLoading,
-                            onRefresh = { connectionListViewModel.getAPIData() },
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(padding),
@@ -345,20 +399,18 @@ fun HomeScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(
-                                            text = stringResource(R.string.server_list_count, model.size()),
+                                            text = stringResource(R.string.server_list_count, serverItems.size),
                                             style = MaterialTheme.typography.labelMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
                                 }
                                 items(
-                                    count = model.size(),
-                                    key = { index ->
-                                        model.get(index).calculateHostName + "#" +
-                                                model.get(index).ip + "#" + index
+                                    items = serverItems,
+                                    key = { conn ->
+                                        "${conn.calculateHostName}#${conn.ip}#${conn.tcpPort}#${conn.udpPort}#${conn.countryLong}"
                                     },
-                                ) { index ->
-                                    val conn = model.get(index)
+                                ) { conn ->
                                     ServerCard(
                                         connection = conn,
                                         dataUtil = dataUtil,
