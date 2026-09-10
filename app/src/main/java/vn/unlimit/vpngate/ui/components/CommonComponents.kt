@@ -12,14 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.SignalCellularAlt
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.SignalCellularAlt
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -130,7 +130,7 @@ fun FullScreenError(onRetry: () -> Unit, modifier: Modifier = Modifier) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Icon(
-                Icons.Filled.CloudOff,
+                Icons.Rounded.CloudOff,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -157,7 +157,7 @@ fun FullScreenNoNetwork(modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(
-            Icons.Filled.WifiOff,
+            Icons.Rounded.WifiOff,
             contentDescription = null,
             modifier = Modifier.size(48.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -175,5 +175,5 @@ fun FullScreenNoNetwork(modifier: Modifier = Modifier) {
 @Composable
 private fun PreviewIcons() {
     // Keeps the icon imports referenced when tree-shaking preview builds.
-    listOf(Icons.Filled.Bolt, Icons.Filled.Pause, Icons.Filled.Public, Icons.Filled.SignalCellularAlt, Icons.Filled.Speed, Icons.Filled.Storage)
+    listOf(Icons.Rounded.Bolt, Icons.Rounded.Pause, Icons.Rounded.Public, Icons.Rounded.SignalCellularAlt, Icons.Rounded.Speed, Icons.Rounded.Storage)
 }

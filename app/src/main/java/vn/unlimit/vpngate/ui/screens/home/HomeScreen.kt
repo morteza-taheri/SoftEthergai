@@ -22,13 +22,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Sort
-import androidx.compose.material.icons.filled.VerticalAlignTop
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material.icons.rounded.KeyboardDoubleArrowUp
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -222,14 +221,14 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                         placeholder = { Text(stringResource(R.string.search_hint)) },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                         trailingIcon = {
                             IconButton(onClick = {
                                 isSearching = false
                                 keyword = ""
                                 refreshView()
                             }) {
-                                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close))
+                                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.close))
                             }
                         },
                         singleLine = true,
@@ -271,7 +270,7 @@ fun HomeScreen(
                                     )
                                 } else {
                                     Icon(
-                                        Icons.Filled.Refresh,
+                                        Icons.Rounded.Refresh,
                                         contentDescription = stringResource(R.string.refresh_servers),
                                         tint = MaterialTheme.colorScheme.primary,
                                     )
@@ -279,19 +278,19 @@ fun HomeScreen(
                             }
                             IconButton(onClick = { isSearching = true }) {
                                 Icon(
-                                    Icons.Filled.Search,
+                                    Icons.Rounded.Search,
                                     contentDescription = stringResource(R.string.search),
                                 )
                             }
                             IconButton(onClick = { showSortSheet = true }) {
                                 Icon(
-                                    Icons.Filled.Sort,
+                                    Icons.Rounded.Tune,
                                     contentDescription = stringResource(R.string.sort),
                                 )
                             }
                             IconButton(onClick = { showFilterSheet = true }) {
                                 Icon(
-                                    Icons.Filled.FilterList,
+                                    Icons.Rounded.FilterList,
                                     contentDescription = stringResource(R.string.filter),
                                     tint = if (activeFilter != null) {
                                         MaterialTheme.colorScheme.primary
@@ -315,7 +314,7 @@ fun HomeScreen(
                         },
                         icon = {
                             Icon(
-                                Icons.Filled.VerticalAlignTop,
+                                Icons.Rounded.KeyboardDoubleArrowUp,
                                 contentDescription = stringResource(R.string.to_top),
                             )
                         },
@@ -347,7 +346,7 @@ fun HomeScreen(
                                 },
                                 modifier = Modifier.padding(top = 16.dp),
                             ) {
-                                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.size(8.dp))
                                 Text(stringResource(R.string.get_servers))
                             }
@@ -397,7 +396,7 @@ fun HomeScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
                                             Icon(
-                                                Icons.Filled.Refresh,
+                                                Icons.Rounded.Refresh,
                                                 contentDescription = null,
                                                 modifier = Modifier.size(18.dp),
                                             )
@@ -473,7 +472,7 @@ fun HomeScreen(
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
                                                     Icon(
-                                                        Icons.Filled.Refresh,
+                                                        Icons.Rounded.Refresh,
                                                         contentDescription = null,
                                                         modifier = Modifier.size(16.dp),
                                                     )

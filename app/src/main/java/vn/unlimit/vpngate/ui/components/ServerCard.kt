@@ -18,11 +18,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.NetworkCheck
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.NetworkCheck
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -120,19 +120,19 @@ fun ServerCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 MetricChip(
-                    icon = Icons.Filled.Speed,
+                    icon = Icons.Rounded.Speed,
                     text = connection.calculateSpeed + " " + stringResource(R.string.speed_unit),
                 )
                 MetricChip(
-                    icon = Icons.Filled.NetworkCheck,
+                    icon = Icons.Rounded.NetworkCheck,
                     text = connection.pingAsString + " " + stringResource(R.string.ping_unit),
                 )
                 MetricChip(
-                    icon = Icons.Filled.Storage,
+                    icon = Icons.Rounded.Storage,
                     text = connection.numVpnSessionAsString,
                 )
                 MetricChip(
-                    icon = Icons.Filled.Bolt,
+                    icon = Icons.Rounded.Bolt,
                     text = connection.getUpTimeShort(),
                 )
             }
@@ -252,7 +252,7 @@ fun PowerButton(
                 )
             } else {
                 Icon(
-                    Icons.Filled.PowerSettingsNew,
+                    Icons.Rounded.PowerSettingsNew,
                     contentDescription = null,
                     modifier = Modifier.size(size / 2),
                     tint = if (activated) MaterialTheme.colorScheme.onPrimary else idleColor,

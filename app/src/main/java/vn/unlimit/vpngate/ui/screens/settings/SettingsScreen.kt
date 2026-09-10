@@ -22,21 +22,21 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Block
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.Hub
-import androidx.compose.material.icons.outlined.Language
-import androidx.compose.material.icons.outlined.Launch
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.Router
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Storage
-import androidx.compose.material.icons.outlined.Timer
-import androidx.compose.material.icons.outlined.Translate
-import androidx.compose.material.icons.outlined.VpnLock
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Launch
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Router
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.VpnLock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -215,7 +215,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.enable_notification_speed),
                         subtitle = stringResource(R.string.enable_notification_speed_hint),
-                        icon = Icons.Outlined.Speed,
+                        icon = Icons.Rounded.Speed,
                         checked = notifySpeed,
                         onChecked = {
                             notifySpeed = it
@@ -227,7 +227,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.udp_setting_label),
                         subtitle = stringResource(R.string.udp_setting_hint),
-                        icon = Icons.Outlined.Router,
+                        icon = Icons.Rounded.Router,
                         checked = includeUdp,
                         onChecked = {
                             includeUdp = it
@@ -239,7 +239,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.use_domain_label),
                         subtitle = stringResource(R.string.use_domain_hint),
-                        icon = Icons.Outlined.Language,
+                        icon = Icons.Rounded.Language,
                         checked = useDomain,
                         onChecked = {
                             useDomain = it
@@ -251,7 +251,7 @@ fun SettingsScreen(
                         SettingSwitchRow(
                             title = stringResource(R.string.block_ads_setting_label),
                             subtitle = stringResource(R.string.block_ads_setting_hint),
-                            icon = Icons.Outlined.Block,
+                            icon = Icons.Rounded.Block,
                             checked = blockAds,
                             onChecked = {
                                 blockAds = it
@@ -291,7 +291,7 @@ fun SettingsScreen(
                         SettingSwitchRow(
                             title = stringResource(R.string.dns_setting_label),
                             subtitle = stringResource(R.string.dns_setting_hint),
-                            icon = Icons.Outlined.Dns,
+                            icon = Icons.Rounded.Dns,
                             checked = useCustomDns,
                             onChecked = {
                                 useCustomDns = it
@@ -391,14 +391,14 @@ fun SettingsScreen(
                     SettingActionRow(
                         title = stringResource(R.string.setting_protocol_priority_title),
                         subtitle = stringResource(R.string.setting_protocol_priority_summary),
-                        icon = Icons.Outlined.VpnLock,
+                        icon = Icons.Rounded.VpnLock,
                         onClick = { showProtocolPrioritySheet = true },
                     )
                     SettingDivider()
                     SettingValueRow(
                         title = stringResource(R.string.setting_auto_timeout_label),
                         value = "$autoTimeout s",
-                        icon = Icons.Outlined.Timer,
+                        icon = Icons.Rounded.Timer,
                         onClick = { showAutoTimeoutPicker = true },
                     )
                     SettingDivider()
@@ -408,14 +408,14 @@ fun SettingsScreen(
                             R.string.setting_softether_max_connections_value,
                             softetherMaxConnections,
                         ),
-                        icon = Icons.Outlined.Hub,
+                        icon = Icons.Rounded.Hub,
                         onClick = { showSoftetherConnectionsPicker = true },
                     )
                     SettingDivider()
                     SettingActionRow(
                         title = stringResource(R.string.setting_excluded_apps_label),
                         subtitle = stringResource(R.string.exclude_apps_text, excludedAppsCount),
-                        icon = Icons.Outlined.Apps,
+                        icon = Icons.Rounded.Apps,
                         onClick = { showExcludedApps = true },
                     )
                 }
@@ -428,7 +428,7 @@ fun SettingsScreen(
                         title = stringResource(R.string.setting_cache_label),
                         value = cacheTimes[cacheTimeIndex],
                         subtitle = stringResource(R.string.setting_cache_subtitle),
-                        icon = Icons.Outlined.Storage,
+                        icon = Icons.Rounded.Storage,
                         onClick = { showCacheTimePicker = true },
                     )
                     if (cacheExpires != null) {
@@ -436,7 +436,7 @@ fun SettingsScreen(
                         SettingActionRow(
                             title = stringResource(R.string.setting_cache_auto_clear_label),
                             subtitle = DateTimeFormatterUtil.formatDate(cacheExpires),
-                            icon = Icons.Outlined.DeleteOutline,
+                            icon = Icons.Rounded.DeleteOutline,
                             actionLabel = stringResource(R.string.setting_cache_clear),
                             onClick = { clearListServerCache(true) },
                         )
@@ -450,14 +450,14 @@ fun SettingsScreen(
                     SettingValueRow(
                         title = stringResource(R.string.setting_startup_screen),
                         value = startupScreens[startupScreenIndex],
-                        icon = Icons.Outlined.Launch,
+                        icon = Icons.Rounded.Launch,
                         onClick = { showStartupPicker = true },
                     )
                     SettingDivider()
                     SettingValueRow(
                         title = stringResource(R.string.setting_language_label),
                         value = languageNames[languageIndex],
-                        icon = Icons.Outlined.Translate,
+                        icon = Icons.Rounded.Translate,
                         onClick = { showLanguagePicker = true },
                     )
                     SettingDivider()
@@ -465,14 +465,14 @@ fun SettingsScreen(
                         title = stringResource(R.string.setting_theme_label),
                         value = themeNames[themeIndex],
                         subtitle = stringResource(R.string.setting_theme_subtitle),
-                        icon = Icons.Outlined.Palette,
+                        icon = Icons.Rounded.Palette,
                         onClick = { showThemePicker = true },
                     )
                     SettingDivider()
                     SettingSwitchRow(
                         title = stringResource(R.string.setting_developer_mode_label),
                         subtitle = stringResource(R.string.setting_developer_mode_summary),
-                        icon = Icons.Outlined.Code,
+                        icon = Icons.Rounded.Code,
                         checked = developerMode,
                         onChecked = {
                             developerMode = it

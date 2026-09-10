@@ -7,16 +7,16 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Autorenew
-import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -69,31 +69,31 @@ private val destinations = listOf(
     NavDestination(
         NavRoutes.AUTO,
         R.string.auto_mode,
-        Icons.Filled.Autorenew,
-        Icons.Outlined.Autorenew,
+        Icons.Rounded.Shield,
+        Icons.Outlined.Shield,
     ),
     NavDestination(
         NavRoutes.HOME,
         R.string.home,
-        Icons.Filled.Home,
-        Icons.Outlined.Home,
+        Icons.Rounded.Dns,
+        Icons.Outlined.Dns,
     ),
     NavDestination(
         NavRoutes.STATUS,
         R.string.status,
-        Icons.Filled.VpnKey,
-        Icons.Outlined.VpnKey,
+        Icons.Rounded.Security,
+        Icons.Outlined.Security,
     ),
     NavDestination(
         NavRoutes.SETTINGS,
         R.string.setting,
-        Icons.Filled.Settings,
+        Icons.Rounded.Settings,
         Icons.Outlined.Settings,
     ),
     NavDestination(
         NavRoutes.ABOUT,
         R.string.about,
-        Icons.Filled.Info,
+        Icons.Rounded.Info,
         Icons.Outlined.Info,
     ),
 )
