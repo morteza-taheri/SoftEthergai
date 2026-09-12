@@ -137,13 +137,26 @@ fun ServerCard(
                 )
             }
             val badges = buildList {
-                if (isIncludeUdp && connection.tcpPort > 0) add(ProtocolBadges.TCP)
-                if (isIncludeUdp && connection.udpPort > 0) add(ProtocolBadges.UDP)
-                if (connection.seTcpPort > 0 || connection.seUdpPort > 0 || connection.seUdpSupported) {
-                    add(ProtocolBadges.SOFTETHER)
+                if (isIncludeUdp && connection.tcpPort > 0) {
+                    add("TCP:${connection.tcpPort}")
+                } else if (isIncludeUdp && !connection.openVpnConfigData.isNullOrEmpty()) {
+                    add("OpenVPN")
                 }
-                if (connection.isSSTPSupport()) add(ProtocolBadges.SSTP)
-                if (connection.isL2TPSupport()) add(ProtocolBadges.L2TP)
+                if (isIncludeUdp && connection.udpPort > 0) {
+                    add("UDP:${connection.udpPort}")
+                }
+                if (connection.seTcpPort > 0) {
+                    add("SoftEther:${connection.seTcpPort}")
+                } else if (connection.seUdpPort > 0 || connection.seUdpSupported) {
+                    add("SoftEther")
+                }
+                if (connection.isSSTPSupport()) {
+                    val port = connection.sstpConnectPort
+                    if (port > 0) add("SSTP:$port") else add("SSTP")
+                }
+                if (connection.isL2TPSupport()) {
+                    add("L2TP")
+                }
             }
             if (badges.isNotEmpty()) {
                 Row(

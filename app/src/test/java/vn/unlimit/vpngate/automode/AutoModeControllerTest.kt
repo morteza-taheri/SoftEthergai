@@ -40,6 +40,11 @@ class AutoModeControllerTest {
             logs += "disconnect"
         }
 
+        override suspend fun ensureDisconnected(timeoutMs: Long): Boolean {
+            logs += "ensureDisconnected"
+            return true
+        }
+
         override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
             val hostname = logs.lastOrNull { it.startsWith("connect:") }
                 ?.removePrefix("connect:") ?: return false
@@ -92,7 +97,7 @@ class AutoModeControllerTest {
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
-        protocolProvider = { protocol },
+        protocolPriorityProvider = { listOf(protocol) },
         serverProvider = { servers },
         onSuccess = onSuccess,
         attemptTimeoutMs = timeout,
@@ -357,6 +362,28 @@ class AutoModeControllerTest {
         assertEquals(1, adapter.logs.count { it == "connect:s1" })
         assertEquals(1, adapter.logs.count { it == "connect:s2" })
         assertTrue("[AUTO] Connected server skipped by user; trying next" in adapter.logs)
+    }
+
+    // Switching to the next server must ensure previous connection attempt is stopped first.
+    @Test
+    fun switchingToNextServerEnsuresPreviousConnectionStopped() = runBlocking {
+        adapter.failing += "s1"
+        val c = controller(servers = listOf(server("s1"), server("s2")))
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertTrue(terminal is AutoModeState.Connected)
+        assertEquals("s2", (terminal as AutoModeState.Connected).hostname)
+
+        // Verify the sequence: connect:s1 -> disconnect -> ensureDisconnected -> connect:s2
+        val s1Index = adapter.logs.indexOf("connect:s1")
+        val disconnectIndex = adapter.logs.indexOf("disconnect")
+        val ensureIndex = adapter.logs.indexOf("ensureDisconnected")
+        val s2Index = adapter.logs.indexOf("connect:s2")
+
+        assertTrue(s1Index != -1)
+        assertTrue(disconnectIndex > s1Index)
+        assertTrue(ensureIndex >= disconnectIndex)
+        assertTrue(s2Index > ensureIndex)
     }
 
     /** Waits for a state change away from the current terminal, then the next terminal. */

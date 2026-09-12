@@ -79,6 +79,7 @@ class DataUtil(context: Context?) {
                         app.vpnGateItemDao.replaceAll(items)
                         Log.d(TAG, "Saved ${items.size} healthy servers into internal database")
                     }
+                    setServerListInitialFetchDone(true)
                 }
                 val cache = Cache()
                 val calendar = Calendar.getInstance()
@@ -298,8 +299,17 @@ class DataUtil(context: Context?) {
         return minutes.getOrElse(index) { minutes[DEFAULT_CACHE_TIME_INDEX] }
     }
 
+    fun isServerListInitialFetchDone(): Boolean {
+        return getBooleanSetting(KEY_SERVER_LIST_INITIAL_FETCH_DONE, false)
+    }
+
+    fun setServerListInitialFetchDone(done: Boolean = true) {
+        setBooleanSetting(KEY_SERVER_LIST_INITIAL_FETCH_DONE, done)
+    }
+
     companion object {
         const val TAG = "DataUtil"
+        const val KEY_SERVER_LIST_INITIAL_FETCH_DONE: String = "KEY_SERVER_LIST_INITIAL_FETCH_DONE"
         const val SETTING_CACHE_TIME_KEY: String = "SETTING_CACHE_TIME_KEY"
         const val SETTING_DEVELOPER_MODE: String = "SETTING_DEVELOPER_MODE"
 

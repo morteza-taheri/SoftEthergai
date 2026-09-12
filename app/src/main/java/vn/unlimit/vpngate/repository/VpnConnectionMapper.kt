@@ -87,10 +87,23 @@ object VpnConnectionMapper {
         // Supported whenever an SSTP hostname exists, even with unknown
         // port (locked decision: connect on TCP 443 by default).
         conn.isSSTPSupport = if (VpnRecords.bool(sstp["supported"])) 1 else 0
+        val sstpPort = VpnRecords.int(sstp["port"])
+        if (sstpPort > 0) {
+            conn.sstpPort = sstpPort
+        }
         conn.seTcpPort = seTcpPort
         conn.seUdpPort = seUdpPort
         // UI state (§plan T3.8): UDP offered with no published port.
         conn.seUdpSupported = seUdpSupported
+
+        // Ensure ports are derived from OpenVPN config if missing from transport table
+        if (conn.tcpPort <= 0 && conn.udpPort <= 0 && !conn.openVpnConfigData.isNullOrEmpty()) {
+            conn.derivePortsFromOpenVpnConfig()
+        }
+        // If SoftEther TCP port is unset but OpenVPN TCP port was detected
+        if (conn.seTcpPort <= 0 && conn.tcpPort > 0 && (conn.seUdpSupported || VpnRecords.bool(se["supported"]))) {
+            conn.seTcpPort = conn.tcpPort
+        }
 
         return conn
     }

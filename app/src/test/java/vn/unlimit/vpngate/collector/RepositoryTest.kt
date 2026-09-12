@@ -76,7 +76,7 @@ class RepositoryTest {
         var found = false
         for (i in 0 until result.connectionList.size()) {
             val conn = result.connectionList.get(i)
-            if (conn.hostName == "public-vpn-206") {
+            if (conn?.hostName == "public-vpn-206") {
                 found = true
                 assertEquals("219.100.37.165", conn.ip)
                 assertEquals("JP", conn.countryShort)
@@ -94,7 +94,7 @@ class RepositoryTest {
         var apiRowFound = false
         for (i in 0 until result.connectionList.size()) {
             val conn = result.connectionList.get(i)
-            if (conn.hostName == "public-vpn-219") {
+            if (conn?.hostName == "public-vpn-219") {
                 apiRowFound = true
                 assertEquals("219.100.37.206", conn.ip)
                 assertNotNull(conn.openVpnConfigData)

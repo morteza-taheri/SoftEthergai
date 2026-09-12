@@ -94,13 +94,43 @@ class VpnServerRepository(
                 withTimeoutOrNull(MAIN_TIMEOUT_MS) { mirrorSource.discoverMirrors() }
             }
 
-            val html = htmlDeferred.await()
-            val apiText = apiDeferred.await()
+            var html = htmlDeferred.await()
+            var apiText = apiDeferred.await()
             val mirrors = mirrorsDeferred.await().orEmpty()
 
             CollectorLog.d(
                 "Sources: html=${html != null} api=${apiText != null} mirrors=${mirrors.size}"
             )
+
+            // API Fallback: if main API failed (e.g. blocked), attempt mirror API endpoint
+            if (apiText == null && mirrors.isNotEmpty()) {
+                CollectorLog.d("Main API unavailable; attempting mirror API fallback")
+                for (mirror in mirrors.take(5)) {
+                    val mirrorApi = withTimeoutOrNull(15_000L) {
+                        apiSource.fetchFromMirror(mirror)
+                    }
+                    if (!mirrorApi.isNullOrEmpty() && mirrorApi.contains("HostName")) {
+                        apiText = mirrorApi
+                        CollectorLog.d("Successfully fetched API CSV from mirror: $mirror")
+                        break
+                    }
+                }
+            }
+
+            // HTML Fallback: if main HTML failed (e.g. blocked), attempt mirror HTML endpoint
+            if (html == null && mirrors.isNotEmpty()) {
+                CollectorLog.d("Main HTML unavailable; attempting mirror HTML fallback")
+                for (mirror in mirrors.take(5)) {
+                    val mirrorHtml = withTimeoutOrNull(15_000L) {
+                        htmlSource.fetchFromMirror(mirror)
+                    }
+                    if (!mirrorHtml.isNullOrEmpty() && mirrorHtml.contains("vg_hosts_table_id")) {
+                        html = mirrorHtml
+                        CollectorLog.d("Successfully fetched HTML table from mirror: $mirror")
+                        break
+                    }
+                }
+            }
 
             val collected = mutableListOf<VpnServerRecord>()
 
@@ -117,15 +147,20 @@ class VpnServerRepository(
             lastRawHtml = html?.take(RAW_CAPTURE_LIMIT)
             lastRawApi = apiText?.take(RAW_CAPTURE_LIMIT)
 
-            // Mirrors fetched one by one (rate-limited by the fetcher).
-            for ((index, mirrorUrl) in mirrors.withIndex()) {
-                val mirrorHtml = withTimeoutOrNull(MIRROR_TIMEOUT_MS) {
-                    mirrorSource.fetchMirror(mirrorUrl)
-                } ?: continue
+            // Fetch additional mirrors concurrently (up to 6) with individual timeouts
+            val mirrorJobs = mirrors.take(6).mapIndexed { index, mirrorUrl ->
+                async {
+                    val mirrorHtml = withTimeoutOrNull(MIRROR_TIMEOUT_MS) {
+                        mirrorSource.fetchMirror(mirrorUrl)
+                    } ?: return@async null
 
-                runCatching {
-                    collected.addAll(VpnGateHtmlParser.parseHtml(mirrorHtml, "mirror_${index + 1}"))
+                    runCatching {
+                        VpnGateHtmlParser.parseHtml(mirrorHtml, "mirror_${index + 1}")
+                    }.getOrNull()
                 }
+            }
+            mirrorJobs.forEach { job ->
+                job.await()?.let { collected.addAll(it) }
             }
 
             collected

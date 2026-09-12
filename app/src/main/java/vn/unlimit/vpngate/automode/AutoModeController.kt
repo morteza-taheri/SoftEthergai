@@ -33,8 +33,13 @@ class AutoModeController(
     interface ConnectionAdapter {
         suspend fun connect(candidate: AutoModeCandidate, protocol: AutoModeProtocol)
         suspend fun disconnect()
+        suspend fun ensureDisconnected(timeoutMs: Long = 3000L): Boolean = true
         suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean
         fun log(message: String)
+    }
+
+    fun compatibleServers(all: List<AutoModeCandidate>, protocol: AutoModeProtocol): List<AutoModeCandidate> {
+        return all.filter { protocol.supports(it) }.sortedWith(byQuality)
     }
 
     companion object {
@@ -110,14 +115,14 @@ class AutoModeController(
         }
 
         if (isConnecting) {
-            adapter.log("[AUTO] Skipping current in-flight attempt; advancing to next server")
+            adapter.log("[AUTO] Skipping current in-flight attempt; ensuring disconnect before advancing to next server")
             skipServerRequested.set(true)
             adapterSkipSignal?.invoke()
             return
         }
 
         if (isConnected) {
-            adapter.log("[AUTO] Disconnecting active tunnel and advancing to next server")
+            adapter.log("[AUTO] Connected server skipped by user; trying next")
             connectedWatcher?.cancel()
             connectedWatcher = null
             TunnelStateWatcher.onTunnelLost = null
@@ -125,6 +130,8 @@ class AutoModeController(
             job = null
             scope.launch {
                 adapter.disconnect()
+                adapter.ensureDisconnected()
+                adapter.log("[AUTO] Previous tunnel completely stopped. Advancing to next server.")
                 currentServerIndex++
                 if (currentServerIndex >= sortedCandidates.size) {
                     adapter.log("[AUTO] No more servers to try. End of list reached.")
@@ -137,14 +144,19 @@ class AutoModeController(
         }
 
         if (isError) {
-            adapter.log("[AUTO] Error state: advancing to next server")
-            currentServerIndex++
-            if (currentServerIndex < sortedCandidates.size) {
-                startInternal(resumeFromCurrentIndex = true)
-            } else {
-                adapter.log("[AUTO] No more servers remaining")
-                setState(AutoModeState.Error(ERROR_NO_SERVER))
+            adapter.log("[AUTO] Error state: ensuring stopped before advancing to next server")
+            scope.launch {
+                adapter.disconnect()
+                adapter.ensureDisconnected()
+                currentServerIndex++
+                if (currentServerIndex < sortedCandidates.size) {
+                    startInternal(resumeFromCurrentIndex = true)
+                } else {
+                    adapter.log("[AUTO] No more servers remaining")
+                    setState(AutoModeState.Error(ERROR_NO_SERVER))
+                }
             }
+            return
         }
     }
 
@@ -170,9 +182,13 @@ class AutoModeController(
         TunnelStateWatcher.onTunnelLost = null
         skipServerRequested.set(false)
         if (!isRunning) return
-        adapter.log("[AUTO] User requested stop")
+        adapter.log("[AUTO] User requested stop; ensuring connection stopped")
         job?.cancel()
         job = null
+        scope.launch {
+            adapter.disconnect()
+            adapter.ensureDisconnected()
+        }
         setState(AutoModeState.Disconnected)
     }
 
@@ -196,7 +212,10 @@ class AutoModeController(
             job?.cancel()
             job = null
         }
-        scope.launch { adapter.disconnect() }
+        scope.launch {
+            adapter.disconnect()
+            adapter.ensureDisconnected()
+        }
         setState(AutoModeState.Disconnected)
     }
 
@@ -279,12 +298,14 @@ class AutoModeController(
                 } catch (_: VpnPermissionMissingException) {
                     adapter.log("[AUTO] VPN permission missing; stopping Auto Mode")
                     adapter.disconnect()
+                    adapter.ensureDisconnected()
                     setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
                     job = null
                     return
                 } catch (e: Exception) {
                     adapter.log("[AUTO] Connect error: ${e.message}")
                     adapter.disconnect()
+                    adapter.ensureDisconnected()
                     continue
                 }
 
@@ -293,8 +314,11 @@ class AutoModeController(
                 if (!currentCoroutineContext().isActive) return
 
                 if (skipServerRequested.get()) {
-                    adapter.log("[AUTO] Attempt interrupted by Try Next Server")
+                    adapter.log("[AUTO] Server skipped by user")
                     adapter.disconnect()
+                    adapter.ensureDisconnected()
+                    adapter.log("[AUTO] Previous server attempt confirmed stopped.")
+                    skipServerRequested.set(false)
                     break
                 }
 
@@ -316,6 +340,7 @@ class AutoModeController(
                 } else {
                     adapter.log("[AUTO] Server #${currentServerIndex + 1} | Protocol ${protocol.id}: Failed (timeout or unreachable)")
                     adapter.disconnect()
+                    adapter.ensureDisconnected()
                 }
             }
 
@@ -324,6 +349,10 @@ class AutoModeController(
             }
 
             adapter.log("[AUTO] All enabled protocols failed for Server #${currentServerIndex + 1} ($serverDisplay)")
+            adapter.log("[AUTO] Ensuring connection to Server #${currentServerIndex + 1} is stopped before advancing to next server...")
+            adapter.disconnect()
+            adapter.ensureDisconnected()
+            adapter.log("[AUTO] Previous connection fully stopped. Switching to next server.")
             currentServerIndex++
         }
 

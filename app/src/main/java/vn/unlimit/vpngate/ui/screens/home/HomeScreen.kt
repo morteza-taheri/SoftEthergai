@@ -7,6 +7,9 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -118,15 +122,17 @@ fun HomeScreen(
 
     fun refreshView() {
         scope.launch(Dispatchers.IO) {
-            val base = connectionListViewModel.vpnGateConnectionList.value
-            var result = base?.advancedFilter(activeFilter)
-            if (isSearching && keyword.isNotEmpty()) {
-                result = result?.filter(keyword)
+            val base = connectionListViewModel.vpnGateConnectionList.value ?: VPNGateConnectionList()
+            base.filter = activeFilter
+            val result = if (isSearching && keyword.isNotEmpty()) {
+                base.filter(keyword)
+            } else {
+                base.advancedFilter(activeFilter)
             }
-            if (result != null && sortProperty.isNotEmpty()) {
+            if (sortProperty.isNotEmpty()) {
                 result.sort(sortProperty, sortType)
             }
-            val size = result?.size() ?: 0
+            val size = result.size()
             val emptyRes = when {
                 size == 0 && (isSearching && keyword.isNotEmpty()) -> R.string.empty_search_result
                 size == 0 && activeFilter != null -> R.string.empty_filter_result
@@ -173,21 +179,30 @@ fun HomeScreen(
             }
         }
     }
-    // Initial load: database cache → display; network state → refresh or offline display
+    // Initial load:
+    // User requirement: Except for the very first app startup, server list retrieval
+    // must occur ONLY by pressing the corresponding update button.
     LaunchedEffect(Unit) {
         val cached = withContext(Dispatchers.IO) { dataUtil.connectionsCache }
+        val initialFetchDone = withContext(Dispatchers.IO) { dataUtil.isServerListInitialFetchDone() }
         val online = withContext(Dispatchers.IO) { DataUtil.isOnline(context.applicationContext) }
-        when {
-            cached != null && cached.size() > 0 -> {
+
+        if (cached != null && cached.size() > 0) {
+            contentVisible = true
+            refreshView()
+            if (!initialFetchDone && online) {
+                dataUtil.setServerListInitialFetchDone(true)
+                connectionListViewModel.getAPIData()
+            }
+        } else if (!initialFetchDone && online) {
+            dataUtil.setServerListInitialFetchDone(true)
+            connectionListViewModel.getAPIData()
+        } else {
+            if (cached != null && cached.size() > 0) {
                 contentVisible = true
                 refreshView()
-                if (online) {
-                    connectionListViewModel.getAPIData()
-                }
-            }
-            online -> connectionListViewModel.getAPIData()
-            else -> {
-                noNetwork = true
+            } else {
+                noNetwork = !online
                 contentVisible = false
             }
         }
@@ -214,25 +229,70 @@ fun HomeScreen(
         Scaffold(
             topBar = {
                 if (isSearching) {
-                    OutlinedTextField(
-                        value = keyword,
-                        onValueChange = { search(it) },
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        placeholder = { Text(stringResource(R.string.search_hint)) },
-                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = {
-                                isSearching = false
-                                keyword = ""
-                                refreshView()
-                            }) {
-                                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.close))
+                            .background(MaterialTheme.colorScheme.background)
+                            .padding(bottom = 6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = keyword,
+                            onValueChange = { search(it) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            placeholder = { Text(stringResource(R.string.search_hint)) },
+                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                            trailingIcon = {
+                                IconButton(onClick = {
+                                    if (keyword.isNotEmpty()) {
+                                        search("")
+                                    } else {
+                                        isSearching = false
+                                        refreshView()
+                                    }
+                                }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.close))
+                                }
+                            },
+                            singleLine = true,
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            val suggestions = listOf(
+                                "JP" to "🇯🇵 Japan",
+                                "US" to "🇺🇸 USA",
+                                "DE" to "🇩🇪 Germany",
+                                "Croatia" to "🇭🇷 Croatia",
+                                "OpenVPN" to "OpenVPN",
+                                "SoftEther" to "SoftEther",
+                                "SSTP" to "SSTP",
+                                "443" to "Port 443",
+                                "UDP" to "UDP",
+                            )
+                            for ((tag, label) in suggestions) {
+                                val selected = keyword.contains(tag, ignoreCase = true)
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        if (selected) {
+                                            val newKw = keyword.replace(Regex("(?i)\\b$tag\\b"), "").trim()
+                                            search(newKw)
+                                        } else {
+                                            val newKw = if (keyword.isBlank()) tag else "$keyword $tag"
+                                            search(newKw)
+                                        }
+                                    },
+                                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                )
                             }
-                        },
-                        singleLine = true,
-                    )
+                        }
+                    }
                 } else {
                     TopAppBar(
                         title = {

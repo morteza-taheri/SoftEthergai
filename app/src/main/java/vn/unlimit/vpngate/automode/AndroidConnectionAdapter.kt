@@ -66,21 +66,63 @@ class AndroidConnectionAdapter(
     }
 
     override suspend fun disconnect() {
-        val protocol = currentProtocol
         withContext(Dispatchers.Main) {
-            when (protocol) {
-                AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP ->
-                    startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
-                AutoModeProtocol.OPENVPN_TCP, AutoModeProtocol.OPENVPN_UDP -> {
-                    ProfileManager.setConntectedVpnProfileDisconnected(context)
-                    startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
-                }
-                AutoModeProtocol.MS_SSTP ->
-                    startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
-                AutoModeProtocol.L2TP_IPSEC, null -> Unit
+            try {
+                ProfileManager.setConntectedVpnProfileDisconnected(context)
+                startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting OpenVPN", e)
+            }
+            try {
+                startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting SoftEther", e)
+            }
+            try {
+                startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting SSTP", e)
             }
         }
         currentProtocol = null
+    }
+
+    override suspend fun ensureDisconnected(timeoutMs: Long): Boolean {
+        return withContext(Dispatchers.IO) {
+            val startTime = System.currentTimeMillis()
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+            var allStopped = false
+
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                val openVpnActive = try {
+                    de.blinkt.openvpn.core.VpnStatus.isVPNActive()
+                } catch (_: Throwable) {
+                    false
+                }
+                val softEtherActive = try {
+                    val seState = SoftEtherVpnService.currentState
+                    seState != SoftEtherVpnService.STATE_DISCONNECTED && seState != SoftEtherVpnService.STATE_ERROR
+                } catch (_: Throwable) {
+                    false
+                }
+                val sstpActive = try {
+                    prefs.getBoolean(OscPrefKey.ROOT_STATE.toString(), false)
+                } catch (_: Throwable) {
+                    false
+                }
+
+                if (!openVpnActive && !softEtherActive && !sstpActive) {
+                    allStopped = true
+                    break
+                }
+                kotlinx.coroutines.delay(100)
+            }
+
+            // A brief pause (200ms) to ensure OS-level socket and TUN descriptor teardown is complete
+            kotlinx.coroutines.delay(200)
+            log("[AUTO] Connection stop verified (idle=$allStopped, duration=${System.currentTimeMillis() - startTime}ms)")
+            allStopped
+        }
     }
 
     override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
@@ -102,21 +144,25 @@ class AndroidConnectionAdapter(
      */
     fun skipCurrent() {
         activeTunnelWait?.complete(false)
-        val protocol = currentProtocol
-        if (protocol == null) return
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            when (protocol) {
-                AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP ->
-                    startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
-                AutoModeProtocol.OPENVPN_TCP, AutoModeProtocol.OPENVPN_UDP -> {
-                    ProfileManager.setConntectedVpnProfileDisconnected(context)
-                    startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
-                }
-                AutoModeProtocol.MS_SSTP ->
-                    startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
-                AutoModeProtocol.L2TP_IPSEC, null -> Unit
+            try {
+                ProfileManager.setConntectedVpnProfileDisconnected(context)
+                startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting OpenVPN on skip", e)
+            }
+            try {
+                startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting SoftEther on skip", e)
+            }
+            try {
+                startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error disconnecting SSTP on skip", e)
             }
         }
+        currentProtocol = null
     }
 
     @Volatile
