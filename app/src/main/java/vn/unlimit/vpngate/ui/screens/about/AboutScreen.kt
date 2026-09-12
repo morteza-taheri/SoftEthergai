@@ -69,7 +69,7 @@ fun AboutScreen() {
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Image(
-                        painter = painterResource(R.mipmap.ic_launcher),
+                        painter = painterResource(R.drawable.splash_logo),
                         contentDescription = stringResource(R.string.app_icon),
                         modifier = Modifier.size(88.dp),
                     )

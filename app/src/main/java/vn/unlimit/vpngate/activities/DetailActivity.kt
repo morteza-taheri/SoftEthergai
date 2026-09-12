@@ -975,10 +975,6 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
             vpnProfile.mName = mVpnGateConnection!!.getName(useUDP)
-            val ulaV6 = Ipv6Ula.getOrDerive(this)
-            vpnProfile.mUseIPv6 = true
-            vpnProfile.mIPv6Address = "$ulaV6/64"
-            vpnProfile.mUseDefaultRoutev6 = true
             vpnProfile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             if (dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ||
                 dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)

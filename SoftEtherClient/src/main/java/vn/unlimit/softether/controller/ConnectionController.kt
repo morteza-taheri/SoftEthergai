@@ -288,6 +288,7 @@ class ConnectionController(
         // under the client's externalLock) so no data/stats loop can enter
         // native with this handle while it is being freed.
         client.externalHandle = 0
+        protectedFds.clear()
         val handle = nativeHandle
         nativeHandle = 0
         if (handle == 0L) return
@@ -473,21 +474,37 @@ class ConnectionController(
             Log.d(TAG, "DHCP success: IP=${dhcpResult.assignedIp}/${dhcpResult.prefixLength} " +
                     "GW=${dhcpResult.gateway} DNS=${dhcpResult.dnsServer} DNS2=${dhcpResult.dnsServer2}")
             assignedLocalIp = dhcpResult.assignedIp
-            // Update config with DHCP-assigned IP/prefix, while preserving configured public/user DNS
-            // (VPN Gate SecureNAT internal DNS relays like 10.240.254.254 are often broken or blocked)
+            val primaryDns = if (dhcpResult.dnsServer.isNotBlank() && dhcpResult.dnsServer != "0.0.0.0") {
+                dhcpResult.dnsServer
+            } else {
+                config.dnsServer
+            }
+            val secondaryDns = if (dhcpResult.dnsServer2.isNotBlank() && dhcpResult.dnsServer2 != "0.0.0.0" && dhcpResult.dnsServer2 != primaryDns) {
+                dhcpResult.dnsServer2
+            } else if (config.secondaryDnsServer.isNotBlank() && config.secondaryDnsServer != primaryDns) {
+                config.secondaryDnsServer
+            } else if (config.dnsServer.isNotBlank() && config.dnsServer != primaryDns) {
+                config.dnsServer
+            } else {
+                "8.8.8.8"
+            }
             dhcpConfig = config.copy(
                 localAddress = dhcpResult.assignedIp,
                 prefixLength = dhcpResult.prefixLength,
-                dnsServer = config.dnsServer,
-                secondaryDnsServer = config.secondaryDnsServer
+                dnsServer = primaryDns,
+                secondaryDnsServer = secondaryDns
             )
+            protectAdditionalSockets()
             vpnInterface = service.establishVpnInterface(dhcpConfig)
                 ?: throw Exception("Failed to establish VPN interface")
+            protectAdditionalSockets()
         } else {
             Log.w(TAG, "DHCP failed, falling back to hardcoded IP config")
             assignedLocalIp = config.localAddress
+            protectAdditionalSockets()
             vpnInterface = service.establishVpnInterface(config)
                 ?: throw Exception("Failed to establish VPN interface")
+            protectAdditionalSockets()
         }
 
         // Now that we have an IP and VPN interface, transition to CONNECTED
@@ -877,6 +894,14 @@ class ConnectionController(
                 client.nativeSetAuthType(nativeHandle, authTypeInt)
             }
 
+            // Clear protected FDs for fresh session
+            protectedFds.clear()
+
+            // Re-apply duplex mode to the fresh reconnect handle
+            val reconnectFullDuplex = DuplexModeSelector.resolve(service, config)
+            client.setHalfConnection(!reconnectFullDuplex)
+            Log.d(TAG, "Reconnect duplex mode: ${if (reconnectFullDuplex) "FULL" else "HALF"}")
+
             // Connect to server (TLS + protocol + auth + session)
             startNativeStateMonitor()
             val reconnectClientInfo = buildClientInfo(0)
@@ -950,19 +975,37 @@ class ConnectionController(
             if (dhcpResult != null) {
                 Log.d(TAG, "DHCP success on reconnect: IP=${dhcpResult.assignedIp}/${dhcpResult.prefixLength}")
                 assignedLocalIp = dhcpResult.assignedIp
+                val primaryDns = if (dhcpResult.dnsServer.isNotBlank() && dhcpResult.dnsServer != "0.0.0.0") {
+                    dhcpResult.dnsServer
+                } else {
+                    config.dnsServer
+                }
+                val secondaryDns = if (dhcpResult.dnsServer2.isNotBlank() && dhcpResult.dnsServer2 != "0.0.0.0" && dhcpResult.dnsServer2 != primaryDns) {
+                    dhcpResult.dnsServer2
+                } else if (config.secondaryDnsServer.isNotBlank() && config.secondaryDnsServer != primaryDns) {
+                    config.secondaryDnsServer
+                } else if (config.dnsServer.isNotBlank() && config.dnsServer != primaryDns) {
+                    config.dnsServer
+                } else {
+                    "8.8.8.8"
+                }
                 val dhcpConfig = config.copy(
                     localAddress = dhcpResult.assignedIp,
                     prefixLength = dhcpResult.prefixLength,
-                    dnsServer = config.dnsServer,
-                    secondaryDnsServer = config.secondaryDnsServer
+                    dnsServer = primaryDns,
+                    secondaryDnsServer = secondaryDns
                 )
+                protectAdditionalSockets()
                 vpnInterface = service.establishVpnInterface(dhcpConfig)
                     ?: throw Exception("Failed to establish VPN interface during reconnect")
+                protectAdditionalSockets()
             } else {
                 Log.w(TAG, "DHCP failed on reconnect, falling back to hardcoded config")
                 assignedLocalIp = config.localAddress
+                protectAdditionalSockets()
                 vpnInterface = service.establishVpnInterface(config)
                     ?: throw Exception("Failed to establish VPN interface during reconnect")
+                protectAdditionalSockets()
             }
 
             // Transition to CONNECTED and restart data forwarding
@@ -1166,7 +1209,7 @@ class ConnectionController(
     }
 
     // Track FDs we've already protected to avoid redundant protect() calls
-    private val protectedFds = mutableSetOf<Int>()
+    private val protectedFds = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
     /**
      * Protect any new additional TCP sockets from routing through TUN.

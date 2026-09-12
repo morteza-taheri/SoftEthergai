@@ -535,31 +535,34 @@ class SoftEtherVpnService : VpnService() {
             builder.addRoute(route.address, route.prefixLength)
         }
 
-        // IPv6 tunnel: unique per-install ULA address, full default route, public DNS
-        // Multiple clients must not share the same ULA — derive a stable unique one.
-        // Never let IPv6 address setup take down the whole tunnel on a bad value.
-        val localV6 = try {
-            if (config.localAddressV6.isBlank() || config.localAddressV6 == "fd00::2") {
-                deriveUniqueLocalAddressV6()
-            } else {
-                config.localAddressV6
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "IPv6 ULA derivation failed, skipping IPv6 address", e)
-            ""
-        }
-        if (localV6.isNotEmpty()) {
-            try {
-                builder.addAddress(localV6, config.prefixLengthV6)
+        // IPv6 tunnel: only configure if not connected to standard public VPN Gate hubs.
+        // Standard VPN Gate servers run SecureNAT (IPv4 only); adding ::/0 and public IPv6 DNS
+        // causes dual-stack Android devices to blackhole all IPv6 DNS lookups and traffic!
+        val isPublicVpnGate = config.virtualHub.equals("vpngate", ignoreCase = true)
+        if (!isPublicVpnGate && config.localAddressV6.isNotEmpty()) {
+            val localV6 = try {
+                if (config.localAddressV6 == "fd00::2") {
+                    deriveUniqueLocalAddressV6()
+                } else {
+                    config.localAddressV6
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "Invalid IPv6 ULA, skipping: $localV6", e)
+                Log.w(TAG, "IPv6 ULA derivation failed, skipping IPv6 address", e)
+                ""
             }
-        }
-        if (config.dnsServerV6.isNotEmpty()) {
-            builder.addDnsServer(config.dnsServerV6)
-        }
-        config.routesV6.forEach { route ->
-            builder.addRoute(route.address, route.prefixLength)
+            if (localV6.isNotEmpty()) {
+                try {
+                    builder.addAddress(localV6, config.prefixLengthV6)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Invalid IPv6 ULA, skipping: $localV6", e)
+                }
+            }
+            if (config.dnsServerV6.isNotEmpty()) {
+                builder.addDnsServer(config.dnsServerV6)
+            }
+            config.routesV6.forEach { route ->
+                builder.addRoute(route.address, route.prefixLength)
+            }
         }
 
         // Exclude apps from VPN tunnel (they will use normal network instead)
