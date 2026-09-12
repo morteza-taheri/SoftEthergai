@@ -211,7 +211,6 @@ class AndroidConnectionAdapter(
             clientProductName = "VPN Gate Connector Pro",
             clientVersion = BuildConfig.VERSION_NAME,
             clientBuild = BuildConfig.VERSION_CODE,
-            maxConnections = dataUtil.getSoftEtherMaxConnections(),
         )
         SoftEtherVpnService.notificationTargetActivity =
             vn.unlimit.vpngate.activities.MainActivity::class.java

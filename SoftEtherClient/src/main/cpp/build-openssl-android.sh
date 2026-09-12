@@ -79,10 +79,6 @@ setup_ndk_toolchain() {
         # Try Linux path
         NDK_TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
     fi
-    if [ ! -d "$NDK_TOOLCHAIN" ]; then
-        # Try Windows path
-        NDK_TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/windows-x86_64/bin"
-    fi
     
     if [ ! -d "$NDK_TOOLCHAIN" ]; then
         log_error "NDK toolchain not found at $NDK_TOOLCHAIN"
@@ -90,11 +86,6 @@ setup_ndk_toolchain() {
     fi
     
     export PATH="$NDK_TOOLCHAIN:$PATH"
-
-    # GNU make for Windows hosts ships in the NDK prebuilt directory
-    if [ -d "$ANDROID_NDK_ROOT/prebuilt/windows-x86_64/bin" ]; then
-        export PATH="$ANDROID_NDK_ROOT/prebuilt/windows-x86_64/bin:$PATH"
-    fi
 }
 
 # Build OpenSSL for a specific ABI
@@ -148,7 +139,7 @@ build_openssl() {
     
     # Build only the libraries
     log_info "Building OpenSSL libraries..."
-    make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" build_libs
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" build_libs
     
     # Install the libraries and headers
     log_info "Installing OpenSSL libraries..."

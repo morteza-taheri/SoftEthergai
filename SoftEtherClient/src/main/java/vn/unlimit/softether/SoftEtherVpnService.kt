@@ -239,33 +239,19 @@ class SoftEtherVpnService : VpnService() {
         notificationManager.notify(NOTIFICATION_CHANNEL_ERROR_ID.hashCode(), builder.build())
     }
 
-    override fun onRevoke() {
-        Log.i(TAG, "VPN permission revoked by system or another VPN app")
-        mIsUserDisconnect = false
-        stopVpn()
-        super.onRevoke()
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: action=${intent?.action}")
 
-        createNotificationChannel()
-
-        if (intent?.action == ACTION_DISCONNECT) {
-            mIsUserDisconnect = true
-            stopVpn()
-            return START_NOT_STICKY
-        }
-
         // Android requires startForeground() within ~5s of startForegroundService().
-        try {
-            startForeground(
-                NOTIFICATION_ID,
-                createNotification(getString(R.string.softether_connecting), true)
+        // Use the correct text and omit the disconnect action when disconnecting.
+        val isDisconnectAction = intent?.action == ACTION_DISCONNECT
+        startForeground(
+            NOTIFICATION_ID,
+            createNotification(
+                if (isDisconnectAction) getString(R.string.softether_disconnecting) else getString(R.string.softether_connecting),
+                !isDisconnectAction
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error calling startForeground in onStartCommand", e)
-        }
+        )
 
         when (intent?.action) {
             ACTION_CONNECT -> {
@@ -283,6 +269,10 @@ class SoftEtherVpnService : VpnService() {
                     Log.e(TAG, "No configuration provided")
                     stopSelf()
                 }
+            }
+            ACTION_DISCONNECT -> {
+                mIsUserDisconnect = true
+                stopVpn()
             }
             else -> {
                 Log.w(TAG, "Unknown action: ${intent?.action}")
@@ -339,16 +329,9 @@ class SoftEtherVpnService : VpnService() {
     private var isStopping = false
 
     private fun startVpn(config: ConnectionConfig) {
-        isStopping = false
         if (isRunning) {
-            Log.w(TAG, "VPN already running, tearing down previous instance")
-            try {
-                controller?.destroyResources()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error tearing down previous controller", e)
-            }
-            controller = null
-            isRunning = false
+            Log.w(TAG, "VPN already running")
+            return
         }
 
         Log.d(TAG, "Starting VPN with config: ${config.serverHost}:${config.serverPort}")
@@ -371,7 +354,7 @@ class SoftEtherVpnService : VpnService() {
                         Log.e(TAG, "VPN Error: $error")
                         // updateNotification(getString(R.string.softether_disconnected_by_error))
                         mIsUserDisconnect = false
-                        stopVpn()
+                        stopVpn(disconnectByError = true)
                     },
                     onTrafficUpdate = { snapshot ->
                         handleTrafficUpdate(snapshot)
@@ -405,12 +388,12 @@ class SoftEtherVpnService : VpnService() {
                 Log.e(TAG, "Failed to start VPN", e)
                 // updateNotification("Connection failed: ${e.message}")
                 mIsUserDisconnect = false
-                stopVpn()
+                stopVpn(disconnectByError = true)
             }
         }
     }
 
-    private fun stopVpn() {
+    private fun stopVpn(disconnectByError: Boolean = false) {
         if (isStopping) {
             Log.d(TAG, "Already stopping, skipping re-entrant call")
             return
@@ -420,8 +403,8 @@ class SoftEtherVpnService : VpnService() {
         Log.d(TAG, "Stopping VPN")
         isRunning = false
 
-        // Send disconnect broadcast immediately so the UI reacts right away
-        sendConnectionStateBroadcast(STATE_DISCONNECTED)
+        // Send disconnect/error broadcast immediately so the UI reacts right away
+        sendConnectionStateBroadcast(if (disconnectByError) STATE_ERROR else STATE_DISCONNECTED)
         notifyTrafficListeners(SoftEtherTrafficSnapshot.EMPTY)
 
         // Cancel the connection coroutine so it won't interfere
@@ -523,11 +506,24 @@ class SoftEtherVpnService : VpnService() {
             .setSession(config.sessionName)
             .setMtu(config.mtu)
             .addAddress(config.localAddress, config.prefixLength)
-            .addDnsServer(config.dnsServer)
 
-        // Add secondary DNS if it differs from primary and is valid
-        if (config.secondaryDnsServer.isNotEmpty() && config.secondaryDnsServer != config.dnsServer) {
-            builder.addDnsServer(config.secondaryDnsServer)
+        val dnsServers = mutableListOf<String>()
+        if (config.dnsServer.isNotBlank() && config.dnsServer != "0.0.0.0") {
+            dnsServers.add(config.dnsServer)
+        }
+        if (config.secondaryDnsServer.isNotBlank() && config.secondaryDnsServer != "0.0.0.0" && config.secondaryDnsServer != config.dnsServer) {
+            dnsServers.add(config.secondaryDnsServer)
+        }
+        if (dnsServers.isEmpty()) {
+            dnsServers.add("8.8.8.8")
+            dnsServers.add("8.8.4.4")
+        }
+        for (dns in dnsServers) {
+            try {
+                builder.addDnsServer(dns)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error adding DNS server $dns", e)
+            }
         }
 
         // Add routes
@@ -535,34 +531,31 @@ class SoftEtherVpnService : VpnService() {
             builder.addRoute(route.address, route.prefixLength)
         }
 
-        // IPv6 tunnel: only configure if not connected to standard public VPN Gate hubs.
-        // Standard VPN Gate servers run SecureNAT (IPv4 only); adding ::/0 and public IPv6 DNS
-        // causes dual-stack Android devices to blackhole all IPv6 DNS lookups and traffic!
-        val isPublicVpnGate = config.virtualHub.equals("vpngate", ignoreCase = true)
-        if (!isPublicVpnGate && config.localAddressV6.isNotEmpty()) {
-            val localV6 = try {
-                if (config.localAddressV6 == "fd00::2") {
-                    deriveUniqueLocalAddressV6()
-                } else {
-                    config.localAddressV6
-                }
+        // IPv6 tunnel: unique per-install ULA address, full default route, public DNS
+        // Multiple clients must not share the same ULA — derive a stable unique one.
+        // Never let IPv6 address setup take down the whole tunnel on a bad value.
+        val localV6 = try {
+            if (config.localAddressV6.isBlank() || config.localAddressV6 == "fd00::2") {
+                deriveUniqueLocalAddressV6()
+            } else {
+                config.localAddressV6
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "IPv6 ULA derivation failed, skipping IPv6 address", e)
+            ""
+        }
+        if (localV6.isNotEmpty()) {
+            try {
+                builder.addAddress(localV6, config.prefixLengthV6)
             } catch (e: Exception) {
-                Log.w(TAG, "IPv6 ULA derivation failed, skipping IPv6 address", e)
-                ""
+                Log.w(TAG, "Invalid IPv6 ULA, skipping: $localV6", e)
             }
-            if (localV6.isNotEmpty()) {
-                try {
-                    builder.addAddress(localV6, config.prefixLengthV6)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Invalid IPv6 ULA, skipping: $localV6", e)
-                }
-            }
-            if (config.dnsServerV6.isNotEmpty()) {
-                builder.addDnsServer(config.dnsServerV6)
-            }
-            config.routesV6.forEach { route ->
-                builder.addRoute(route.address, route.prefixLength)
-            }
+        }
+        if (config.dnsServerV6.isNotEmpty()) {
+            builder.addDnsServer(config.dnsServerV6)
+        }
+        config.routesV6.forEach { route ->
+            builder.addRoute(route.address, route.prefixLength)
         }
 
         // Exclude apps from VPN tunnel (they will use normal network instead)

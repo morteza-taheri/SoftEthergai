@@ -872,7 +872,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             clientProductName = "VPN Gate Connector Pro",
             clientVersion = BuildConfig.VERSION_NAME,
             clientBuild = BuildConfig.VERSION_CODE,
-            maxConnections = dataUtil.getSoftEtherMaxConnections(),
         )
         val isStartUpDetail = dataUtil.getIntSetting(DataUtil.SETTING_STARTUP_SCREEN, 0) == 0
         SoftEtherVpnService.notificationTargetActivity =

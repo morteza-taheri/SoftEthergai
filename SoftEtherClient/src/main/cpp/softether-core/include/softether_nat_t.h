@@ -34,7 +34,9 @@ typedef struct {
     int error_code;         // NAT_T_ERR_* on failure
 } softether_nat_t_result_t;
 
-// Derive the NAT-T relay hostname for a target IPv4 address.
+// Derive the NAT-T relay hostname for a target IPv4 address (primary relay
+// domain, softether-network.net). nat_t_connect falls back to the ALT domain
+// (uxcom.jp, mirroring UDP_NAT_T_SERVER_TAG_ALT) if the primary fails to resolve.
 // server_ip_net: target IP in network byte order (sin_addr.s_addr).
 // dst must hold at least 96 bytes.
 int nat_t_build_hostname(uint32_t server_ip_net, char* dst, size_t dst_size);
@@ -48,6 +50,21 @@ int nat_t_build_hostname(uint32_t server_ip_net, char* dst, size_t dst_size);
 int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
                   uint32_t timeout_ms, softether_nat_t_result_t* result,
                   const volatile int* cancel_flag);
+
+// Same as nat_t_connect but forces the ALT relay domain (uxcom.jp) instead of
+// the primary (softether-network.net). Useful to verify the ALT NAT-T servers.
+int nat_t_connect_alt(uint32_t server_ip_net, const char* svc_name,
+                      uint32_t timeout_ms, softether_nat_t_result_t* result,
+                      const volatile int* cancel_flag);
+
+// Extended variant: forwards optional hint and target_hostname in the
+// nat_t_connect_request (only when non-empty), mirroring the official client
+// (Network.c:5475-5482). Pass NULL for either to omit it. Uses the primary
+// relay domain with ALT failover (same as nat_t_connect).
+int nat_t_connect_ex(uint32_t server_ip_net, const char* svc_name,
+                     const char* hint, const char* target_hostname,
+                     uint32_t timeout_ms, softether_nat_t_result_t* result,
+                     const volatile int* cancel_flag);
 
 #ifdef __cplusplus
 }

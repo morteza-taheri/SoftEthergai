@@ -37,7 +37,14 @@ static void nat_t_ip_to_str(uint32_t ip_net, char* dst, size_t dst_size) {
     }
 }
 
-int nat_t_build_hostname(uint32_t server_ip_net, char* dst, size_t dst_size) {
+// Relay domains (mirror UDP_NAT_T_SERVER_TAG / _ALT, Network.h:765-766).
+// The ALT domain is used as a DNS-failure fallback in nat_t_connect.
+#define NAT_T_RELAY_TAG_PRIMARY  "x%c.x%c.servers.nat-traversal.softether-network.net."
+#define NAT_T_RELAY_TAG_ALT      "x%c.x%c.servers.nat-traversal.uxcom.jp."
+
+// use_alt: 0 = primary relay domain, 1 = ALT domain (uxcom.jp).
+static int nat_t_build_hostname_internal(uint32_t server_ip_net, int use_alt,
+                                         char* dst, size_t dst_size) {
     if (dst == NULL || dst_size < NAT_T_HOSTNAME_MAX) {
         return -1;
     }
@@ -57,9 +64,13 @@ int nat_t_build_hostname(uint32_t server_ip_net, char* dst, size_t dst_size) {
     tmp[3] = hex[hash[1] & 0xF];
     tmp[4] = '\0';
 
-    snprintf(dst, dst_size, "x%c.x%c.servers.nat-traversal.softether-network.net.",
+    snprintf(dst, dst_size, use_alt ? NAT_T_RELAY_TAG_ALT : NAT_T_RELAY_TAG_PRIMARY,
              tmp[2], tmp[3]);
     return 0;
+}
+
+int nat_t_build_hostname(uint32_t server_ip_net, char* dst, size_t dst_size) {
+    return nat_t_build_hostname_internal(server_ip_net, 0, dst, dst_size);
 }
 
 // Resolve the relay hostname to a single IPv4 address (first A record).
@@ -142,13 +153,9 @@ static int nat_t_parse_response(const uint8_t* buf, uint32_t len, uint64_t tran_
     uint32_t ok = 0;
     pack_get_int(buf, len, "ok", &ok);
     if (ok != 0) {
-        uint32_t multi_candidates = 0;
-        pack_get_int(buf, len, "multi_candidates", &multi_candidates);
-        if (multi_candidates != 0) {
-            result->error_code = NAT_T_ERR_TWO_OR_MORE;
-            return -1;
-        }
-
+        // Success has priority over multi_candidates, exactly as the official
+        // client (Network.c:5414-5445): it only looks at multi_candidates when
+        // ok is false.
         char result_ip_str[INET_ADDRSTRLEN] = {0};
         if (pack_get_str(buf, len, "result_ip", result_ip_str,
                          sizeof(result_ip_str)) != 0) {
@@ -184,11 +191,19 @@ static int nat_t_parse_response(const uint8_t* buf, uint32_t len, uint64_t tran_
     return -1;
 }
 
-int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
-                  uint32_t timeout_ms, softether_nat_t_result_t* result,
-                  const volatile int* cancel_flag) {
+static int nat_t_connect_internal(uint32_t server_ip_net, const char* svc_name,
+                                  const char* hint, const char* target_hostname,
+                                  uint32_t timeout_ms,
+                                  softether_nat_t_result_t* result,
+                                  const volatile int* cancel_flag, int use_alt) {
     if (result == NULL) {
         return -1;
+    }
+    if (hint != NULL && hint[0] == '\0') {
+        hint = NULL;
+    }
+    if (target_hostname != NULL && target_hostname[0] == '\0') {
+        target_hostname = NULL;
     }
     memset(result, 0, sizeof(*result));
     result->udp_fd = -1;
@@ -202,15 +217,29 @@ int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
     }
 
     char relay_hostname[NAT_T_HOSTNAME_MAX];
-    if (nat_t_build_hostname(server_ip_net, relay_hostname, sizeof(relay_hostname)) != 0) {
+    if (nat_t_build_hostname_internal(server_ip_net, use_alt, relay_hostname,
+                                      sizeof(relay_hostname)) != 0) {
         LOGE("nat_t: failed to build relay hostname");
         return -1;
     }
 
     uint32_t relay_ip = 0;
     if (nat_t_resolve_relay(relay_hostname, &relay_ip) != 0) {
-        result->error_code = NAT_T_ERR_GETIP_FAILED;
-        return -1;
+        // Primary relay domain failed to resolve: fail over to the ALT domain
+        // (uxcom.jp). Mirrors the official client's alternate-hostname path in
+        // RUDPGetRegisterHostNameByIP (Network.c:4650-4653). When use_alt was
+        // already forced there is nothing left to try.
+        if (use_alt) {
+            result->error_code = NAT_T_ERR_GETIP_FAILED;
+            return -1;
+        }
+        LOGD("nat_t: primary relay unresolvable, failing over to ALT domain");
+        if (nat_t_build_hostname_internal(server_ip_net, 1, relay_hostname,
+                                          sizeof(relay_hostname)) != 0 ||
+            nat_t_resolve_relay(relay_hostname, &relay_ip) != 0) {
+            result->error_code = NAT_T_ERR_GETIP_FAILED;
+            return -1;
+        }
     }
 
     int fd = -1;
@@ -315,6 +344,12 @@ int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
                 pack_add_int64(p, "tran_id", tran_id);
                 pack_add_str(p, "dest_ip", ip_str);
                 pack_add_int64(p, "cookie", current_cookie);
+                if (hint != NULL) {
+                    pack_add_str(p, "hint", hint);
+                }
+                if (target_hostname != NULL) {
+                    pack_add_str(p, "target_hostname", target_hostname);
+                }
                 pack_add_str(p, "svc_name", svc_name);
                 pack_add_int(p, "nat_traversal_version", NAT_T_TRAVERSAL_VERSION);
 
@@ -353,4 +388,32 @@ int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
         close(fd);
     }
     return -1;
+}
+
+// Public entry points. nat_t_connect uses the primary relay domain
+// (softether-network.net) with an ALT-domain failover on DNS failure;
+// nat_t_connect_alt forces the ALT domain (uxcom.jp) directly — used by the
+// host-side NAT-T verification harness, mirrors a forced IsUseAlternativeHostname().
+// hint / target_hostname are optional (NULL when unused) and are forwarded in
+// the request when non-empty (Network.c:5475-5482).
+int nat_t_connect(uint32_t server_ip_net, const char* svc_name,
+                  uint32_t timeout_ms, softether_nat_t_result_t* result,
+                  const volatile int* cancel_flag) {
+    return nat_t_connect_internal(server_ip_net, svc_name, NULL, NULL,
+                                  timeout_ms, result, cancel_flag, 0);
+}
+
+int nat_t_connect_alt(uint32_t server_ip_net, const char* svc_name,
+                      uint32_t timeout_ms, softether_nat_t_result_t* result,
+                      const volatile int* cancel_flag) {
+    return nat_t_connect_internal(server_ip_net, svc_name, NULL, NULL,
+                                  timeout_ms, result, cancel_flag, 1);
+}
+
+int nat_t_connect_ex(uint32_t server_ip_net, const char* svc_name,
+                     const char* hint, const char* target_hostname,
+                     uint32_t timeout_ms, softether_nat_t_result_t* result,
+                     const volatile int* cancel_flag) {
+    return nat_t_connect_internal(server_ip_net, svc_name, hint, target_hostname,
+                                  timeout_ms, result, cancel_flag, 0);
 }

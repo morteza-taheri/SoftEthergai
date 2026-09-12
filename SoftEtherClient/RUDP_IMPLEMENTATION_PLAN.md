@@ -82,7 +82,6 @@ The only viable path for UDP-only servers is **OpenVPN fallback** using `OpenVPN
 ### Open Items
 
 1. **OpenVPN fallback for UDP-only servers** — parse column 14 base64 OpenVPN config, connect via OpenVPN library. This is the only viable path for UDP-only servers.
-2. **SvcNameHash XOR** — DNS/ICMP transports XOR SHA1 signature with `SvcNameHash`. Not implemented — may cause server-side rejection.
 3. **On-device regression** — ICMP transport gracefully fails on production Android without root. Full NDK/SDK test not possible on this machine.
 
 ### Key Source References
@@ -98,6 +97,39 @@ The only viable path for UDP-only servers is **OpenVPN fallback** using `OpenVPN
 | OpenVPN listener (server) | `SoftEtherVPN_Stable/src/Cedar/Interop_OpenVPN.c:2760` |
 | R-UDP listener (server) | `SoftEtherVPN_Stable/src/Cedar/Server.c:11107` (port 0, random) |
 | NAT-T error codes | `softether_nat_t.h` (0=OK, 5=TWO_OR_MORE, 6=NOT_FOUND) |
+
+---
+
+## RUDP Connection Parity Audit vs Official Client (2026-09-08)
+
+Audit of `softether_nat_t.c` / `rudp_transport.c` against the official client (`SoftEtherVPN_Stable/src/Mayaqua/Network.c`, `Cedar/Protocol.c`, `Cedar/Listener.c`), focused on the **no-TCP connect path** (`NewRUDPClientDirect(VPN_RUDP_SVC_NAME, …)` for `PortUDP ≠ 0`, and `ConnectEx4` parallel race for `PortUDP == 0`).
+
+### Verified identical (no work needed)
+
+| Mechanism | Official | Ours |
+|-----------|----------|------|
+| Session key derivation | `Network.c:4110-4184` (`"zurukko"`→key1, `"yasushineko"`→key2; `Magic_KeepAliveRequest/Response`; client-only `Magic_Disconnect = 0xffffffff00000000 \| Rand32`) | `rudp_transport.c:949-995` |
+| 39-byte init (`Key_Init` + 19 random), resent every 200 ms; server creates session on `<40B` pkt | `Network.c:2750-2789`, `:2077` | `rudp_transport.c:694-703` |
+| V1 segment framing `[Sign][IV][RC4(iv‖Key, hdr+payload)][1..255 pad]` + RC4 keying | `RUDPProcessRecvPacket` (`Network.c:3360-3540`) | `rt_send_segment_now` / `rt_handle_udp_packet` |
+| First payload = BE(`Magic_Disconnect`) | `Network.c:2400` | `rudp_transport.c:1109-1113` |
+| Keepalive + retransmit backoff `RTT*1.2*2^shift` / `200ms*2^shift`, cap 4792 | `Network.c:2680-2682` | `rudp_transport.c:772-793` |
+| NAT-T: relay hostname derivation (SHA1(ip) → 4 lowercase hex), port 5004, version 1, interval 200, backoff `200 * 2^max(tries,6)`, error map, `svc_name` | `Network.c:4627-4663`, `Network.h:765-804` | `softether_nat_t.c` |
+| NAT-T rendezvous socket reuse except same-LAN | `Network.c:5526-5539` | `softether_protocol.c:1643` + `:1937` |
+| Connect flow: UDP-only → parallel race; TCP-available → sequential TCP (IPv4/IPv6 fallback) + TLS → race fallback | `Cedar/Protocol.c:7577` (`PortUDP` split), `Network.c:16287` | `softether_protocol.c:2396-2479` |
+| `svc_name` constant | `VPN_RUDP_SVC_NAME == "SoftEther_VPN"` (`Cedar.h:304`) | `NAT_T_SVC_NAME` (`softether_nat_t.h:13`) |
+
+### Gaps (all implemented 2026-09-08)
+
+1. **SvcNameHash XOR** — DNS/ICMP signature XOR with SHA1(svc_name). `rudp_transport.c`
+2. **`current_rtt` dedup** — sampled on tick advance, deduped via `latest_recv_my_tick2`. `rudp_transport.c`
+3. **ICMP client parity** — random Echo keep-alive, init as type 0+7, receive types 0/7/8/15. `rudp_transport.c`
+4. **ALT relay fallback** — failover to `.uxcom.jp` on DNS failure. `softether_nat_t.c`
+5. **`hint`/`target_hostname`** — forwarded via `nat_t_connect_ex`. `softether_nat_t.c` + `softether_protocol.c`
+6. **`ok` priority over `multi_candidates`** — response parser fix. `softether_nat_t.c`
+
+### Recommended fix scope
+
+All 6 parity gaps implemented; no remaining recommended fixes.
 
 ---
 
@@ -121,46 +153,23 @@ The only viable path for UDP-only servers is **OpenVPN fallback** using `OpenVPN
 | 14  | RUDP loss-adaptive send window + sticky fallback | P1 | ✅ Done (validated on device) |
 | 15  | Post-Phase-14 stability fixes (races, failover, ARP) | P0 | ✅ Done (device-verified) |
 | 16  | TLS shared-SSL_CTX heap corruption fix | P1 | ✅ Done (hardened; deep-concurrency caveat documented) |
+| 17  | Half/full-duplex auto-selection (device-tier) | P2 | ✅ Done (device-validated: full beats half on SM-A736B) |
 
 #### 14 — RUDP loss-adaptive window + sticky fallback (P1) — DONE
 
-- On-device UDP-mode goodput collapsed to ~1/10 of TCP: the wire format has no seq/ack fields, so every lost datagram is a silently lost IP packet and inner TCP collapses; the fixed 30 s suspension re-probe then oscillated between fast-TCP and lossy-UDP forever.
-- Implemented (`softether_rudp.c/.h`, `packet_handler.c`):
-  - Loss-adaptive token-bucket send window (start 256 KB, min 32 KB, max 8 MB, +4 MB/s refill). Peer-tick gaps, recv overflows, and KA timeouts halve it; `rudp_is_send_ready` returns 0 when exhausted so excess blocks ride TCP until refill.
-  - Sticky fallback with exponential backoff: consecutive failed probes suspend UDP data 30 s → ×8 cap; 5 clean minutes reset backoff.
-  - `RUDP_RECV_QUEUE_SIZE` 64 → 256 (absorbs bursts instead of dropping).
-  - `fill_recv_queue` now drains all buffered RUDP frames per call (was one), matching the Phase 13D batched RX path.
-- Acceptance for device run: iperf3 over UDP mode within ~30% of TCP mode on Wi-Fi; `stats:` log shows `ovf`/`gaps` stable (not climbing) and `susp=false` during steady state.
-- **Validated on device** (SM-A736B, Wi-Fi ↔ local SoftEther server via docker, paired-session full-duplex flood through `ThroughputBenchmarkTest`, 12 s window): TCP 44.3/40.6 Mbps TX/RX vs UDP 48.7/44.4 Mbps — UDP ≥ TCP, zero overflows, no suspension. Acceptance met.
-- Known follow-up: concurrent SSL I/O across two connections sharing the cached SSL_CTX can corrupt the TLS layer (scudo abort in EVP_MD_CTX_free) — production keeps one connection's I/O mostly serialized per direction but this needs a proper fix (per-connection CTX or global TLS lock).
+Loss-adaptive token-bucket send window (256 KB start, 32 KB–8 MB range, +4 MB/s refill) + sticky fallback with exponential backoff (30s → ×8 cap, 5 min reset). `RUDP_RECV_QUEUE_SIZE` 64→256. Validated on device: UDP ≥ TCP throughput.
 
 #### 15 — Post-Phase-14 stability fixes (P0) — DONE (device-verified)
 
-Real-world regression reports after shipping 13/14, root-caused and fixed one by one:
+Fixed 5 regression issues: batched RX eth processing, TCP failover, write_mutex race, stable MAC (SHA-256 derived), RUDP recursive lock. Device-verified: 77 MB up / 102 MB down, session alive after speedtest.
 
-| Symptom | Root cause | Fix |
-|---|---|---|
-| Batched RX wrote raw Ethernet frames to TUN → `write failed: EINVAL`, no network at all | `softether_receive_batch` skipped softether_receive's per-frame processing (eth strip, ARP reply, EtherType filter, link housekeeping) | Same processing in batch path; shared helpers (`softether_reply_arp_request`, `softether_maintain_links`) (`5d61d59` predecessor, commit `3e05d12` family) |
-| TCP: single dead additional socket → burst of send failures → full teardown + reconnect storms | `softether_transmit_block` returned -1 on first write error | Candidate-list failover; retire dead additional sockets, retry healthy ones (`ebbd99c`) |
-| Connected-but-no-network after heavy use on local-bridge servers | **Phase 13C race**: TUN path built into shared `send_block` staging without write_mutex while ARP/raw path built under it → corrupted blocks → server kills session | Both staging paths hold write_mutex across build+transmit (`5d61d59`); transmit split into nolock core + wrapper |
-| Same IP flapping between MACs of zombie + live sessions on local-bridge LANs → router ARP entry flaps, downstream lands on dead MACs | Random client MAC per reconnect | MAC derived from SHA-256(server host:port), stable across reconnects; `nativeSetClientMac` JNI (`02c3d8b`) |
-| UDP mode: "connected but no network" after one speedtest — upstream silently dead while downstream control traffic still arrives | **RUDP had no locking**: rudp_poll/rudp_send called from RX thread AND TUN thread; concurrent sends raced the shared `next_iv` cipher chaining (corrupted upstream datagrams servers silently drop), concurrent polls interleaved recv-queue indices | Recursive lock in `rudp_context_t` guarding poll/send/is_send_ready/recv (`f37cce1`) |
+#### 16 — TLS shared-SSL_CTX heap corruption (P1) — DONE
 
-**Device verification (SM-A736B, paid local-bridge server, UDP profile, one-shot speedtest):**
-- Before fixes: ~19 MB into the test then total silence — counters frozen, gateway ARP-storming for our IP, ping 100% loss until manual reconnect.
-- After fixes: 77 MB up / 102 MB down through the tunnel; RUDP carried the initial burst with ~4.2k recv-queue drops under sustained flood, Phase 14 suspension engaged (`susp=true`), traffic continued over TCP; **ping after test 128–159 ms — session alive**.
+Per-connection `SSL_CTX` + process-wide TLS I/O lock. Caveat: prebuilt OpenSSL 3.5.8 has internal multiblock race under extreme concurrency — production single-session unaffected. Verified: paired-session 60s full-duplex, no scudo aborts.
 
-Remaining tuning item (optional, cosmetic): during the RUDP phase of a speedtest, throughput dips while overflows accumulate before suspension engages (~4k drops @ ~50 Mbps). Candidates: faster RUDP queue drain under load or earlier suspension threshold.
+#### 17 — Half/full-duplex auto-selection (device-tier) (P2) — DONE
 
-
-
-#### 16 — TLS shared-SSL_CTX heap corruption (P1) — IN PROGRESS
-
-- **Symptom:** concurrent SSL I/O on two connections sharing the cached `SSL_CTX` aborts with `scudo: invalid chunk state` in `EVP_MD_CTX_free` ← TLS write/free path inside `libsoftether.so`. Reproduced deterministically in the paired-session benchmark (~4 s into a concurrent flood); worked around there by serializing all native calls behind one lock.
-- **Why it matters:** correctness currently depends on timing discipline across Kotlin and C call sites. Any overlapping connection lifetime (cancel-during-connect churn, failover, future multi-connection features) widens the race window; a hit is a native SIGABRT → VPN process death.
-- **Implemented:** per-connection `SSL_CTX` (creation serialized by a create-only mutex; library init still `once`) + process-wide lock around SSL write/lifecycle (handshake stays unlocked). The old RAND_DRBG crash did not resurface.
-- **Honest caveat:** the prebuilt OpenSSL 3.5.7 still has an internal race in its multiblock record-write path under extreme cross-connection concurrency (double-free of a provider-cached `EVP_SIGNATURE`, seen even with separate CTXs). Production single-session traffic never exercises it; the benchmark harness keeps a process-wide TLS I/O serialization as a proven-stable workaround at link speed. A full fix requires rebuilding/switching the TLS library or an upstream investigation — deferred.
-- **Verified:** paired-session benchmark 60 s full-duplex, no scudo aborts — TCP 54.4/51.4 Mbps, UDP 54.0/50.6 Mbps TX/RX; production session unaffected (throughput unchanged).
+`DuplexModeSelector.kt` selects full-duplex (cores≥4, RAM≥4GB, strong link) or half-duplex. JNI `nativeSetHalfConnection`, native `conn->half_connection` flag. Validated on SM-A736B: full beats half.
 
 #### 13A–13G — Completed (compacted)
 
