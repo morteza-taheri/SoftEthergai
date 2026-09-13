@@ -3283,6 +3283,52 @@ int softether_resolve_gateway(softether_connection_t* conn, uint32_t gateway_ip_
     LOGE("Failed to resolve gateway MAC");
     return -1;
 }
+
+// Gratuitous ARP announcement — broadcasts client MAC for assigned IP to update L2 bridge tables
+int softether_send_gratuitous_arp(softether_connection_t* conn) {
+    if (conn == NULL || conn->state != STATE_CONNECTED || conn->assigned_ip == 0) {
+        return -1;
+    }
+
+    uint8_t garp[42];
+    // Ethernet header: broadcast destination, client source MAC, ARP EtherType (0x0806)
+    memset(garp, 0xFF, 6);
+    memcpy(garp + 6, conn->client_mac, 6);
+    garp[12] = 0x08;
+    garp[13] = 0x06;
+
+    // ARP header: Hardware Ethernet (0x0001), Protocol IPv4 (0x0800), HW size 6, Proto size 4
+    garp[14] = 0x00;
+    garp[15] = 0x01;
+    garp[16] = 0x08;
+    garp[17] = 0x00;
+    garp[18] = 6;
+    garp[19] = 4;
+    // Opcode 1 = ARP Request (Gratuitous ARP Request / Announcement)
+    garp[20] = 0x00;
+    garp[21] = 0x01;
+
+    // Sender MAC and IP
+    memcpy(garp + 22, conn->client_mac, 6);
+    garp[28] = (conn->assigned_ip >> 24) & 0xFF;
+    garp[29] = (conn->assigned_ip >> 16) & 0xFF;
+    garp[30] = (conn->assigned_ip >> 8) & 0xFF;
+    garp[31] = conn->assigned_ip & 0xFF;
+
+    // Target MAC: 00:00:00:00:00:00, Target IP: sender's assigned IP
+    memset(garp + 32, 0x00, 6);
+    garp[38] = (conn->assigned_ip >> 24) & 0xFF;
+    garp[39] = (conn->assigned_ip >> 16) & 0xFF;
+    garp[40] = (conn->assigned_ip >> 8) & 0xFF;
+    garp[41] = conn->assigned_ip & 0xFF;
+
+    int ret = softether_send_raw(conn, garp, 42);
+    LOGD("Sent Gratuitous ARP announcement for IP %d.%d.%d.%d",
+         (conn->assigned_ip >> 24) & 0xFF, (conn->assigned_ip >> 16) & 0xFF,
+         (conn->assigned_ip >> 8) & 0xFF, conn->assigned_ip & 0xFF);
+    return ret;
+}
+
 // Data tunnel operations - Send data block
 int softether_send_data(softether_connection_t* conn, const uint8_t* data, uint32_t data_len) {
     if (conn == NULL || data == NULL) {

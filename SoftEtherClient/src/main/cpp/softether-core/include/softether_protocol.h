@@ -293,6 +293,8 @@ int softether_receive_batch(softether_connection_t* conn,
 
 // ARP resolution — resolves gateway MAC after DHCP
 int softether_resolve_gateway(softether_connection_t* conn, uint32_t gateway_ip_host);
+// Gratuitous ARP announcement — broadcasts client MAC for assigned IP
+int softether_send_gratuitous_arp(softether_connection_t* conn);
 
 // Phase 13G: snapshot traffic/health counters into *out
 void softether_get_stats(softether_connection_t* conn, softether_stats_t* out);

@@ -24,151 +24,24 @@ class SoftEtherClient {
     }
 
     /**
-     * Connect to SoftEther VPN server
-     *
-     * @param host Server hostname or IP address
-     * @param port Server port (typically 443, 992, or 5555)
-     * @param username Authentication username
-     * @param password Authentication password
-     * @throws ConnectionException if connection fails
-     */
-    @Throws(ConnectionException::class)
-    fun connect(host: String, port: Int, username: String, password: String) {
-        connect(host, port, username, password, DEFAULT_HUB_NAME)
-    }
-
-    /**
-     * Connect to SoftEther VPN server with hub name
-     *
-     * @param host Server hostname or IP address
-     * @param port Server port (typically 443, 992, or 5555)
-     * @param username Authentication username
-     * @param password Authentication password
-     * @param hubName Virtual hub name (default: "VPN" for VPNGate)
-     * @throws ConnectionException if connection fails
-     */
-    @Throws(ConnectionException::class)
-    fun connect(host: String, port: Int, username: String, password: String, hubName: String) {
-        connect(host, port, username, password, hubName, vn.unlimit.softether.model.AuthMethod.AUTO)
-    }
-
-    /**
-     * Connect to SoftEther VPN server with hub name and explicit auth method
-     *
-     * @param host Server hostname or IP address
-     * @param port Server port (typically 443, 992, or 5555)
-     * @param username Authentication username
-     * @param password Authentication password
-     * @param hubName Virtual hub name (default: "VPN" for VPNGate)
-     * @param authMethod Authentication method to use
-     * @throws ConnectionException if connection fails
-     */
-    @Throws(ConnectionException::class)
-    fun connect(host: String, port: Int, username: String, password: String, hubName: String, authMethod: vn.unlimit.softether.model.AuthMethod = vn.unlimit.softether.model.AuthMethod.AUTO) {
-        Log.d(tag, "Connecting to $host:$port as $username (hub: $hubName, auth: $authMethod)")
-
-        // Create native connection
-        nativeHandle = nativeCreate()
-        if (nativeHandle == 0L) {
-            throw ConnectionException("Failed to create native connection")
-        }
-
-        // Set default timeout
-        nativeSetOption(nativeHandle, OPTION_TIMEOUT, 30000L)
-
-        // Set auth type if not AUTO
-        if (authMethod != vn.unlimit.softether.model.AuthMethod.AUTO) {
-            val authTypeInt = when (authMethod) {
-                vn.unlimit.softether.model.AuthMethod.ANONYMOUS -> 0
-                vn.unlimit.softether.model.AuthMethod.PASSWORD -> 1
-                vn.unlimit.softether.model.AuthMethod.PLAIN_PASSWORD -> 2
-                vn.unlimit.softether.model.AuthMethod.AUTO -> 0
-            }
-            nativeSetAuthType(nativeHandle, authTypeInt)
-        }
-
-        // Build client info for server session list
-        val clientInfo = vn.unlimit.softether.model.ClientInfoFactory.build(
-            productName = "SoftEther VPN Client for Android",
-            productVersion = "2.3.2",
-            productBuild = 132,
-            config = vn.unlimit.softether.model.ConnectionConfig(
-                serverHost = host,
-                serverPort = port,
-                username = username,
-                password = password,
-                virtualHub = hubName
-            )
-        )
-
-        // Connect to server with hub name
-        val result = nativeConnectWithHub(nativeHandle, host, port, username, password, hubName,
-            false,
-            clientInfo.productName, clientInfo.productVersion, clientInfo.productBuild,
-            clientInfo.osName, clientInfo.osVersion, clientInfo.osProductId,
-            clientInfo.hostName, clientInfo.clientIpAddress, clientInfo.clientPort,
-            clientInfo.serverHostName, clientInfo.serverIpAddress, clientInfo.serverPort)
-
-        if (result != SoftEtherError.ERR_NONE) {
-            nativeDestroy(nativeHandle)
-            nativeHandle = 0
-            throw ConnectionException("Connection failed: ${SoftEtherError.getErrorString(result)}")
-        }
-
-        isConnected.set(true)
-        Log.d(tag, "Connected successfully")
-    }
-
-    /**
-     * Set authentication type explicitly before connecting.
-     * @param authMethod The authentication method to use
-     */
-    fun setAuthType(authMethod: vn.unlimit.softether.model.AuthMethod) {
-        if (nativeHandle == 0L) return
-        val authTypeInt = when (authMethod) {
-            vn.unlimit.softether.model.AuthMethod.ANONYMOUS -> 0
-            vn.unlimit.softether.model.AuthMethod.PASSWORD -> 1
-            vn.unlimit.softether.model.AuthMethod.PLAIN_PASSWORD -> 2
-            vn.unlimit.softether.model.AuthMethod.AUTO -> 0
-        }
-        nativeSetAuthType(nativeHandle, authTypeInt)
-    }
-
-    /**
-     * Set the maximum number of TCP connections for multi-connection support
-     * @param maxConnections Target number of connections (1-8, default 4)
-     */
-    fun setMaxConnection(maxConnections: Int) {
-        if (nativeHandle == 0L) return
-        nativeSetMaxConnection(nativeHandle, maxConnections.coerceIn(1, 8))
-    }
-
-    /**
      * Set half/full-duplex mode (Phase 17).
      * @param halfConnection true = half-duplex (directional C2S/S2C split),
      *   false = full-duplex (all connections BOTH). Must be called before connect.
      */
-    fun setHalfConnection(halfConnection: Boolean) {
-        if (nativeHandle == 0L) return
-        nativeSetHalfConnection(nativeHandle, halfConnection)
-    }
-
-    /**
-     * Get the current number of active TCP connections (primary + additional)
-     * @return Number of active connections
-     */
-    fun getNumConnections(): Int {
-        if (nativeHandle == 0L) return 0
-        return nativeGetNumConnections(nativeHandle)
+    fun setHalfConnection(halfConnection: Boolean, targetHandle: Long = 0L) {
+        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
+        if (handle == 0L) return
+        nativeSetHalfConnection(handle, halfConnection)
     }
 
     /**
      * Get all active TCP socket FDs (primary + additional) for VpnService.protect()
      * @return Array of socket FDs, or null if none
      */
-    fun getAllSocketFds(): IntArray? {
-        if (nativeHandle == 0L) return null
-        return nativeGetAllSocketFds(nativeHandle)
+    fun getAllSocketFds(targetHandle: Long = 0L): IntArray? {
+        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
+        if (handle == 0L) return null
+        return nativeGetAllSocketFds(handle)
     }
 
     /**
@@ -269,51 +142,16 @@ class SoftEtherClient {
      *
      * @param timeoutMs Timeout in milliseconds
      */
-    fun setTimeout(timeoutMs: Int) {
-        if (nativeHandle != 0L) {
-            nativeSetOption(nativeHandle, OPTION_TIMEOUT, timeoutMs.toLong())
+    fun setTimeout(timeoutMs: Int, targetHandle: Long = 0L) {
+        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
+        if (handle != 0L) {
+            nativeSetOption(handle, OPTION_TIMEOUT, timeoutMs.toLong())
         }
-    }
-
-    /**
-     * Set keepalive interval
-     *
-     * @param intervalMs Keepalive interval in milliseconds
-     */
-    fun setKeepAliveInterval(intervalMs: Int) {
-        if (nativeHandle != 0L) {
-            nativeSetOption(nativeHandle, OPTION_KEEPALIVE_INTERVAL, intervalMs.toLong())
-        }
-    }
-
-    /**
-     * Set MTU for the connection
-     *
-     * @param mtu Maximum Transmission Unit
-     */
-    fun setMtu(mtu: Int) {
-        if (nativeHandle != 0L) {
-            nativeSetOption(nativeHandle, OPTION_MTU, mtu.toLong())
-        }
-    }
-
-    /**
-     * Cleanup resources
-     */
-    fun cleanup() {
-        disconnect()
     }
 
     // Native methods
     external fun nativeCreate(): Long
     external fun nativeDestroy(handle: Long)
-    external fun nativeConnect(
-        handle: Long,
-        host: String,
-        port: Int,
-        username: String,
-        password: String
-    ): Int
     external fun nativeConnectWithHub(
         handle: Long,
         host: String,
@@ -397,8 +235,6 @@ class SoftEtherClient {
     companion object {
         // Option types for nativeSetOption
         const val OPTION_TIMEOUT = 1
-        const val OPTION_KEEPALIVE_INTERVAL = 2
-        const val OPTION_MTU = 3
         const val OPTION_UDP_PORT = 4
         const val OPTION_UDP_ONLY = 5
         

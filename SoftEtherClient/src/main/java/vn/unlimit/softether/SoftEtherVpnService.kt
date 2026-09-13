@@ -4,15 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -22,6 +21,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -87,7 +87,7 @@ class SoftEtherVpnService : VpnService() {
 
         private val stateListeners = mutableListOf<StateListener>()
         private val trafficListeners = mutableListOf<TrafficListener>()
-        private val mainHandler = Handler(Looper.getMainLooper())
+        internal val mainHandler = Handler(Looper.getMainLooper())
 
         fun addStateListener(listener: StateListener) {
             if (!stateListeners.contains(listener)) {
@@ -142,20 +142,7 @@ class SoftEtherVpnService : VpnService() {
     private var lastStateUpdateTime = 0L
     private var pendingStateUpdate: (() -> Unit)? = null
     private var currentSessionName: String? = null
-
-    @Suppress("DEPRECATION")
-    private val networkReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ConnectivityManager.CONNECTIVITY_ACTION) {
-                val cm = context?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                val activeNetwork = cm?.activeNetworkInfo
-                val isConnected = activeNetwork?.isConnectedOrConnecting == true
-
-                Log.d(TAG, "Network connectivity changed: isConnected=$isConnected")
-                controller?.onNetworkChanged(isConnected)
-            }
-        }
-    }
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -256,12 +243,7 @@ class SoftEtherVpnService : VpnService() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 mIsUserDisconnect = false
-                val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(EXTRA_CONFIG, ConnectionConfig::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(EXTRA_CONFIG)
-                }
+                val config = IntentCompat.getParcelableExtra(intent, EXTRA_CONFIG, ConnectionConfig::class.java)
 
                 if (config != null) {
                     startVpn(config)
@@ -415,12 +397,7 @@ class SoftEtherVpnService : VpnService() {
         // immediately on the main thread so the user sees "disconnected"
         // right away.
         showDisconnectedNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
 
         // Snapshot references and clear them immediately so onDestroy()
         // won't try to free the same resources concurrently.
@@ -744,7 +721,6 @@ class SoftEtherVpnService : VpnService() {
     }
 
     private var pendingStateRunnable: Runnable? = null
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private fun handleConnectionState(state: ConnectionState, hostname: String) {
         // During user-initiated stopVpn() we already sent STATE_DISCONNECTED to listeners,
@@ -857,17 +833,36 @@ class SoftEtherVpnService : VpnService() {
         )
     }
 
-    @Suppress("DEPRECATION")
     private fun registerNetworkReceiver() {
-        val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
-        registerReceiver(networkReceiver, filter)
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network available")
+                controller?.onNetworkChanged(true)
+            }
+
+            override fun onLost(network: Network) {
+                Log.d(TAG, "Network lost")
+                controller?.onNetworkChanged(false)
+            }
+        }
+        networkCallback = callback
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback: ${e.message}")
+        }
     }
 
     private fun unregisterNetworkReceiver() {
+        val callback = networkCallback ?: return
         try {
-            unregisterReceiver(networkReceiver)
-        } catch (e: IllegalArgumentException) {
-            // Receiver was not registered
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.unregisterNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister network callback: ${e.message}")
+        } finally {
+            networkCallback = null
         }
     }
 }
