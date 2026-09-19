@@ -49,8 +49,6 @@ public class NativeUtils {
 
     public static native double[] getOpenSSLSpeed(String algorithm, int testnum);
 
-    public static native byte[] addRssPssPadding(int hashtype, int MSBits, int rsa_size, byte[] from);
-
     static {
         if (!isRoboUnitTest()) {
             System.loadLibrary("ovpnutil");

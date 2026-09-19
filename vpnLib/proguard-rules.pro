@@ -1,8 +1,3 @@
-# Keep the VpnStatus log listener interfaces used by the app's Auto Mode
-# module log window (dropped by the library's own R8 shrink otherwise).
--keep class de.blinkt.openvpn.core.VpnStatus$LogListener
--keep class de.blinkt.openvpn.core.LogItem
--keepclassmembers class de.blinkt.openvpn.core.LogItem {public *;}
 # Add project specific ProGuard rules here.
 # By default, the flags in this file are appended to flags specified
 # in /Users/huangyifei/Library/Android/sdk/tools/proguard/proguard-android.txt
@@ -19,11 +14,10 @@
 # class:
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
--keep class de.blinkt.openvpn.** { *; }
--keep interface de.blinkt.openvpn.** { *; }
--keepclassmembers class de.blinkt.openvpn.** { *; }
 -keep class de.blinkt.openvpn.VpnProfile
 -keepclassmembers class de.blinkt.openvpn.VpnProfile { public *;}
+#-keep class de.blinkt.openvpn.core.**
+#-keepclassmembers class de.blinkt.openvpn.core.** { public *;}
 -keep class de.blinkt.openvpn.core.ConfigParser$ConfigParseError
 -keep class de.blinkt.openvpn.core.ConfigParser
 -keepclassmembers class de.blinkt.openvpn.core.ConfigParser {public *;}

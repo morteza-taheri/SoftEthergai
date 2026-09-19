@@ -277,7 +277,6 @@ class ConnectionController(
             if (nativeHandle == 0L) {
                 throw Exception("Failed to create native connection")
             }
-            client.externalHandle = nativeHandle
 
             performConnectInner()
         } catch (e: Throwable) {
@@ -875,7 +874,6 @@ connectInFlight.set(true)
             if (nativeHandle == 0L) {
                 throw Exception("Failed to create native connection for reconnect")
             }
-            client.externalHandle = nativeHandle
 
             client.setTimeout(config.connectTimeoutMs)
 

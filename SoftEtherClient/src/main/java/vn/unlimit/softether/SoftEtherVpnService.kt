@@ -21,6 +21,8 @@ import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,7 +89,7 @@ class SoftEtherVpnService : VpnService() {
 
         private val stateListeners = mutableListOf<StateListener>()
         private val trafficListeners = mutableListOf<TrafficListener>()
-        internal val mainHandler = Handler(Looper.getMainLooper())
+        private val mainHandler = Handler(Looper.getMainLooper())
 
         fun addStateListener(listener: StateListener) {
             if (!stateListeners.contains(listener)) {
@@ -142,7 +144,18 @@ class SoftEtherVpnService : VpnService() {
     private var lastStateUpdateTime = 0L
     private var pendingStateUpdate: (() -> Unit)? = null
     private var currentSessionName: String? = null
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Log.d(TAG, "Network available")
+            controller?.onNetworkChanged(true)
+        }
+
+        override fun onLost(network: Network) {
+            Log.d(TAG, "Network lost")
+            controller?.onNetworkChanged(false)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -397,7 +410,7 @@ class SoftEtherVpnService : VpnService() {
         // immediately on the main thread so the user sees "disconnected"
         // right away.
         showDisconnectedNotification()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
 
         // Snapshot references and clear them immediately so onDestroy()
         // won't try to free the same resources concurrently.
@@ -483,24 +496,11 @@ class SoftEtherVpnService : VpnService() {
             .setSession(config.sessionName)
             .setMtu(config.mtu)
             .addAddress(config.localAddress, config.prefixLength)
+            .addDnsServer(config.dnsServer)
 
-        val dnsServers = mutableListOf<String>()
-        if (config.dnsServer.isNotBlank() && config.dnsServer != "0.0.0.0") {
-            dnsServers.add(config.dnsServer)
-        }
-        if (config.secondaryDnsServer.isNotBlank() && config.secondaryDnsServer != "0.0.0.0" && config.secondaryDnsServer != config.dnsServer) {
-            dnsServers.add(config.secondaryDnsServer)
-        }
-        if (dnsServers.isEmpty()) {
-            dnsServers.add("8.8.8.8")
-            dnsServers.add("8.8.4.4")
-        }
-        for (dns in dnsServers) {
-            try {
-                builder.addDnsServer(dns)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error adding DNS server $dns", e)
-            }
+        // Add secondary DNS if it differs from primary and is valid
+        if (config.secondaryDnsServer.isNotEmpty() && config.secondaryDnsServer != config.dnsServer) {
+            builder.addDnsServer(config.secondaryDnsServer)
         }
 
         // Add routes
@@ -834,35 +834,18 @@ class SoftEtherVpnService : VpnService() {
     }
 
     private fun registerNetworkReceiver() {
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available")
-                controller?.onNetworkChanged(true)
-            }
-
-            override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost")
-                controller?.onNetworkChanged(false)
-            }
-        }
-        networkCallback = callback
-        try {
-            cm.registerDefaultNetworkCallback(callback)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to register network callback: ${e.message}")
-        }
+        val cm = ContextCompat.getSystemService(this, ConnectivityManager::class.java)
+            ?: return
+        cm.registerDefaultNetworkCallback(networkCallback)
     }
 
     private fun unregisterNetworkReceiver() {
-        val callback = networkCallback ?: return
+        val cm = ContextCompat.getSystemService(this, ConnectivityManager::class.java)
+            ?: return
         try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            cm?.unregisterNetworkCallback(callback)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to unregister network callback: ${e.message}")
-        } finally {
-            networkCallback = null
+            cm.unregisterNetworkCallback(networkCallback)
+        } catch (e: IllegalArgumentException) {
+            // Callback was not registered
         }
     }
 }

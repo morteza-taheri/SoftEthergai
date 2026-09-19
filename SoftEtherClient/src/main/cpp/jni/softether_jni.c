@@ -496,10 +496,9 @@ JNIEXPORT jintArray JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nat
 
     int ret = softether_do_dhcp(conn, &result);
 
-    // After DHCP success, record assigned IP, broadcast Gratuitous ARP, and resolve gateway MAC via ARP
+    // After DHCP success, resolve gateway MAC via ARP
     if (ret == 0 && result.success && result.gateway != 0) {
         conn->assigned_ip = result.assigned_ip;
-        softether_send_gratuitous_arp(conn);
         LOGD("DHCP success, resolving gateway MAC...");
         int arp_ret = softether_resolve_gateway(conn, result.gateway);
         if (arp_ret != 0) {

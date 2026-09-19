@@ -1,8 +1,6 @@
 package vn.unlimit.softether.client
 
 import android.util.Log
-import vn.unlimit.softether.model.ConnectionException
-import vn.unlimit.softether.model.SoftEtherError
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -28,20 +26,18 @@ class SoftEtherClient {
      * @param halfConnection true = half-duplex (directional C2S/S2C split),
      *   false = full-duplex (all connections BOTH). Must be called before connect.
      */
-    fun setHalfConnection(halfConnection: Boolean, targetHandle: Long = 0L) {
-        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
-        if (handle == 0L) return
-        nativeSetHalfConnection(handle, halfConnection)
+    fun setHalfConnection(halfConnection: Boolean) {
+        if (nativeHandle == 0L) return
+        nativeSetHalfConnection(nativeHandle, halfConnection)
     }
 
     /**
      * Get all active TCP socket FDs (primary + additional) for VpnService.protect()
      * @return Array of socket FDs, or null if none
      */
-    fun getAllSocketFds(targetHandle: Long = 0L): IntArray? {
-        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
-        if (handle == 0L) return null
-        return nativeGetAllSocketFds(handle)
+    fun getAllSocketFds(): IntArray? {
+        if (nativeHandle == 0L) return null
+        return nativeGetAllSocketFds(nativeHandle)
     }
 
     /**
@@ -142,16 +138,22 @@ class SoftEtherClient {
      *
      * @param timeoutMs Timeout in milliseconds
      */
-    fun setTimeout(timeoutMs: Int, targetHandle: Long = 0L) {
-        val handle = if (targetHandle != 0L) targetHandle else (externalHandle.takeIf { it != 0L } ?: nativeHandle)
-        if (handle != 0L) {
-            nativeSetOption(handle, OPTION_TIMEOUT, timeoutMs.toLong())
+    fun setTimeout(timeoutMs: Int) {
+        if (nativeHandle != 0L) {
+            nativeSetOption(nativeHandle, OPTION_TIMEOUT, timeoutMs.toLong())
         }
     }
 
     // Native methods
     external fun nativeCreate(): Long
     external fun nativeDestroy(handle: Long)
+    external fun nativeConnect(
+        handle: Long,
+        host: String,
+        port: Int,
+        username: String,
+        password: String
+    ): Int
     external fun nativeConnectWithHub(
         handle: Long,
         host: String,
@@ -237,9 +239,6 @@ class SoftEtherClient {
         const val OPTION_TIMEOUT = 1
         const val OPTION_UDP_PORT = 4
         const val OPTION_UDP_ONLY = 5
-        
-        // Default hub name for VPNGate servers
-        const val DEFAULT_HUB_NAME = "VPN"
 
         private fun intToIpString(ip: Int): String {
             return "${(ip ushr 24) and 0xFF}.${(ip ushr 16) and 0xFF}.${(ip ushr 8) and 0xFF}.${ip and 0xFF}"
