@@ -75,7 +75,7 @@ fun ExcludedAppsSheet(
             val ex = (app.excludedAppDao.getAllExcludedApps())
                 .filter { it.packageName != context.packageName }
             val pm = context.packageManager
-            val installed = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val installed = pm.getInstalledApplications(0)
                 .filter { it.packageName != context.packageName }
                 .map { ExcludedApp(it.packageName, pm.getApplicationLabel(it).toString()) }
                 .sortedBy { it.appName }

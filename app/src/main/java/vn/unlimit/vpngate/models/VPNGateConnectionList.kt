@@ -377,6 +377,7 @@ class VPNGateConnectionList : Parcelable {
         LESS_OR_EQUAL
     }
 
+    @androidx.compose.runtime.Immutable
     class Filter {
         var isShowTCP: Boolean = true
         var isShowUDP: Boolean = true

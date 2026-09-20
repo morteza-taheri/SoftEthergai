@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.room.Room
 import de.blinkt.openvpn.core.OpenVPNService
+import okio.Path.Companion.toOkioPath
 import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.db.AppDatabase
@@ -45,8 +46,27 @@ class App : Application() {
         vpnGateItemDao = appDatabase.vpnGateItemDao()
         excludedAppDao = appDatabase.excludedAppDao()
 
-        // Initialize default excluded apps
-        initializeDefaultExcludedApps()
+        // Initialize default excluded apps in background to prevent blocking application launch
+        Thread {
+            initializeDefaultExcludedApps()
+        }.start()
+
+        // Configure Coil 3 image caching for fast, fluid flag rendering
+        coil3.SingletonImageLoader.setSafe {
+            coil3.ImageLoader.Builder(this)
+                .memoryCache {
+                    coil3.memory.MemoryCache.Builder()
+                        .maxSizePercent(this, 0.25)
+                        .build()
+                }
+                .diskCache {
+                    coil3.disk.DiskCache.Builder()
+                        .directory(cacheDir.resolve("image_cache").toOkioPath())
+                        .maxSizeBytes(20L * 1024 * 1024)
+                        .build()
+                }
+                .build()
+        }
         instance = this
         dataUtil = DataUtil(this)
         isImportToOpenVPN = AppConfig.getBoolean("vpn_import_open_vpn")

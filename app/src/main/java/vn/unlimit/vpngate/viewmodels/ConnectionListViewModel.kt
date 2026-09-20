@@ -23,7 +23,19 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     val vpnGateConnectionList = MutableLiveData<VPNGateConnectionList>()
     val lastUpdatedTime = MutableLiveData<Long>()
     init {
-        vpnGateConnectionList.value = dataUtil.connectionsCache
+        val fast = dataUtil.connectionsCacheFast
+        if (fast != null) {
+            vpnGateConnectionList.value = fast
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
+                val cached = dataUtil.connectionsCache
+                withContext(Dispatchers.Main) {
+                    if (vpnGateConnectionList.value == null && cached != null) {
+                        vpnGateConnectionList.value = cached
+                    }
+                }
+            }
+        }
         lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
     }
     private var isRetried = false
@@ -89,7 +101,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                         "Collected ${result.serverCount} servers" +
                             " (fromCache=${result.fromCache}). Total in database: $itemCount"
                     )
-                    dataUtil.connectionsCache = connectionList
+                    dataUtil.setConnectionCache(connectionList, persistToDb = false)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "Got exception when collecting servers", e)

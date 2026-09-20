@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Parcel
 import android.os.Parcelable
 import android.util.Base64
+import androidx.compose.runtime.Immutable
 import vn.unlimit.vpngate.App.Companion.instance
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.utils.DataUtil
@@ -14,6 +15,7 @@ import kotlin.math.roundToInt
 /**
  * Created by dongh on 14/01/2018.
  */
+@Immutable
 class VPNGateConnection : Parcelable {
     //HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,logType,Operator,Message,OpenVPN_ConfigData_Base64
     var hostName: String? = null
@@ -249,8 +251,7 @@ class VPNGateConnection : Parcelable {
     }
 
     private fun round(value: Double): String {
-        val df = DecimalFormat("####0.###")
-        return df.format(value)
+        return decimalFormatThreadLocal.get()!!.format(value)
     }
 
     override fun describeContents(): Int {
@@ -343,6 +344,10 @@ class VPNGateConnection : Parcelable {
     }
 
     companion object {
+        private val decimalFormatThreadLocal = ThreadLocal.withInitial {
+            DecimalFormat("####0.###")
+        }
+
         /** MS-SSTP protocol-standard listener (locked product decision). */
         const val SSTP_DEFAULT_PORT = 443
 

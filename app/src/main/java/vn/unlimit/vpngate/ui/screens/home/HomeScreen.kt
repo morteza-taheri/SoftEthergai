@@ -120,8 +120,14 @@ fun HomeScreen(
         emptyMessageRes = emptyRes
     }
 
-    fun refreshView() {
-        scope.launch(Dispatchers.IO) {
+    var refreshJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    fun refreshView(debounceMs: Long = 0L) {
+        refreshJob?.cancel()
+        refreshJob = scope.launch(Dispatchers.Default) {
+            if (debounceMs > 0) {
+                kotlinx.coroutines.delay(debounceMs)
+            }
             val base = connectionListViewModel.vpnGateConnectionList.value ?: VPNGateConnectionList()
             base.filter = activeFilter
             val result = if (isSearching && keyword.isNotEmpty()) {
@@ -148,7 +154,7 @@ fun HomeScreen(
     fun search(query: String) {
         keyword = query
         isSearching = query.isNotEmpty()
-        refreshView()
+        refreshView(debounceMs = 150L)
     }
 
     // ----- Observers (same as old MainActivity + HomeFragment)
@@ -468,6 +474,8 @@ fun HomeScreen(
                         }
                     }
                     else -> {
+                        val isIncludeUdp = remember(dataUtil) { dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) }
+                        val baseUrl = remember(dataUtil) { dataUtil.baseUrl ?: "https://www.vpngate.net" }
                         LazyColumn(
                             state = listState,
                             contentPadding = PaddingValues(
@@ -484,7 +492,7 @@ fun HomeScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 2.dp, vertical = 2.dp),
-                                ) {
+                                 ) {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -548,10 +556,12 @@ fun HomeScreen(
                                 key = { conn ->
                                     "${conn.calculateHostName}#${conn.ip}#${conn.tcpPort}#${conn.udpPort}#${conn.countryLong}"
                                 },
+                                contentType = { "server_card" },
                             ) { conn ->
                                 ServerCard(
                                     connection = conn,
-                                    dataUtil = dataUtil,
+                                    isIncludeUdp = isIncludeUdp,
+                                    baseUrl = baseUrl,
                                     onClick = {
                                         try {
                                             val intent = Intent(context, DetailActivity::class.java)

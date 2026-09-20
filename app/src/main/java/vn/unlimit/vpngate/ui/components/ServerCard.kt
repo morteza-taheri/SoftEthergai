@@ -63,8 +63,31 @@ fun ServerCard(
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isIncludeUdp = dataUtil?.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) ?: true
-    val baseUrl = dataUtil?.baseUrl ?: "https://www.vpngate.net"
+    val isIncludeUdp = remember(dataUtil) { dataUtil?.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) ?: true }
+    val baseUrl = remember(dataUtil) { dataUtil?.baseUrl ?: "https://www.vpngate.net" }
+    ServerCard(
+        connection = connection,
+        isIncludeUdp = isIncludeUdp,
+        baseUrl = baseUrl,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        modifier = modifier,
+    )
+}
+
+@Composable
+fun ServerCard(
+    connection: VPNGateConnection,
+    isIncludeUdp: Boolean,
+    baseUrl: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val countryFlagUrl = remember(baseUrl, connection.countryShort) {
+        val code = connection.countryShort?.uppercase()
+        if (!code.isNullOrEmpty()) "$baseUrl/images/flags/$code.png" else null
+    }
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -80,7 +103,7 @@ fun ServerCard(
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FlagImage(
-                    url = "$baseUrl/images/flags/${connection.countryShort?.uppercase() ?: ""}.png",
+                    url = countryFlagUrl,
                     countryCode = connection.countryShort,
                     modifier = Modifier.size(36.dp),
                 )
@@ -136,26 +159,28 @@ fun ServerCard(
                     text = connection.getUpTimeShort(),
                 )
             }
-            val badges = buildList {
-                if (isIncludeUdp && connection.tcpPort > 0) {
-                    add("TCP:${connection.tcpPort}")
-                } else if (isIncludeUdp && !connection.openVpnConfigData.isNullOrEmpty()) {
-                    add("OpenVPN")
-                }
-                if (isIncludeUdp && connection.udpPort > 0) {
-                    add("UDP:${connection.udpPort}")
-                }
-                if (connection.seTcpPort > 0) {
-                    add("SoftEther:${connection.seTcpPort}")
-                } else if (connection.seUdpPort > 0 || connection.seUdpSupported) {
-                    add("SoftEther")
-                }
-                if (connection.isSSTPSupport()) {
-                    val port = connection.sstpConnectPort
-                    if (port > 0) add("SSTP:$port") else add("SSTP")
-                }
-                if (connection.isL2TPSupport()) {
-                    add("L2TP")
+            val badges = remember(connection, isIncludeUdp) {
+                buildList {
+                    if (isIncludeUdp && connection.tcpPort > 0) {
+                        add("TCP:${connection.tcpPort}")
+                    } else if (isIncludeUdp && !connection.openVpnConfigData.isNullOrEmpty()) {
+                        add("OpenVPN")
+                    }
+                    if (isIncludeUdp && connection.udpPort > 0) {
+                        add("UDP:${connection.udpPort}")
+                    }
+                    if (connection.seTcpPort > 0) {
+                        add("SoftEther:${connection.seTcpPort}")
+                    } else if (connection.seUdpPort > 0 || connection.seUdpSupported) {
+                        add("SoftEther")
+                    }
+                    if (connection.isSSTPSupport()) {
+                        val port = connection.sstpConnectPort
+                        if (port > 0) add("SSTP:$port") else add("SSTP")
+                    }
+                    if (connection.isL2TPSupport()) {
+                        add("L2TP")
+                    }
                 }
             }
             if (badges.isNotEmpty()) {
@@ -193,7 +218,6 @@ fun FlagImage(
 ) {
     val derivedCode = countryCode ?: url?.substringAfterLast('/')?.substringBefore('.')?.takeIf { it.length == 2 }
     val emoji = remember(derivedCode) { countryCodeToEmoji(derivedCode) }
-    var imageFailed by remember(url) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -201,20 +225,17 @@ fun FlagImage(
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
         contentAlignment = Alignment.Center,
     ) {
-        if (!url.isNullOrBlank() && !imageFailed) {
+        Text(
+            text = emoji,
+            fontSize = 20.sp,
+            textAlign = TextAlign.Center,
+        )
+        if (!url.isNullOrBlank()) {
             coil3.compose.AsyncImage(
                 model = url,
                 contentDescription = derivedCode,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
-                onError = { imageFailed = true },
-            )
-        }
-        if (url.isNullOrBlank() || imageFailed) {
-            Text(
-                text = emoji,
-                fontSize = 20.sp,
-                textAlign = TextAlign.Center,
             )
         }
     }

@@ -45,13 +45,20 @@ class DataUtil(context: Context?) {
         }
     }
 
+    @Volatile
+    private var inMemoryConnectionsCache: VPNGateConnectionList? = null
+
+    val connectionsCacheFast: VPNGateConnectionList?
+        get() = inMemoryConnectionsCache
+
     var connectionsCache: VPNGateConnectionList?
         /**
-         * Get connection cache from internal Room database
+         * Get connection cache from in-memory cache or fallback to Room database
          *
          * @return VPNGateConnectionList
          */
         get() {
+            inMemoryConnectionsCache?.let { return it }
             try {
                 Log.d(TAG, "get connectionsCache from internal database")
                 val app = App.instance
@@ -59,7 +66,9 @@ class DataUtil(context: Context?) {
                     val items = app.vpnGateItemDao.getAll()
                     if (items.isNotEmpty()) {
                         Log.d(TAG, "Retrieved ${items.size} servers from internal database")
-                        return VPNGateConnectionList().fromVPNGateItems(items)
+                        val list = VPNGateConnectionList().fromVPNGateItems(items)
+                        inMemoryConnectionsCache = list
+                        return list
                     }
                 }
             } catch (e: Exception) {
@@ -71,38 +80,45 @@ class DataUtil(context: Context?) {
          * Set connection cache and persist into internal Room database
          */
         set(value) {
-            try {
-                if (value != null && value.size() > 0) {
+            setConnectionCache(value, persistToDb = true)
+        }
+
+    fun setConnectionCache(value: VPNGateConnectionList?, persistToDb: Boolean = true) {
+        inMemoryConnectionsCache = value
+        try {
+            if (value != null && value.size() > 0) {
+                if (persistToDb) {
                     val app = App.instance
                     if (app != null) {
                         val items = value.toVPNGateItems()
                         app.vpnGateItemDao.replaceAll(items)
                         Log.d(TAG, "Saved ${items.size} healthy servers into internal database")
                     }
-                    setServerListInitialFetchDone(true)
                 }
-                val cache = Cache()
-                val calendar = Calendar.getInstance()
-                val minute = getCacheSaveTimeMinutes()
-                if (minute < 0) {
-                    calendar.set(Calendar.YEAR, 9999)
-                } else {
-                    calendar.add(Calendar.MINUTE, minute)
-                }
-                cache.expires = calendar.time
-                val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-                val out = FileOutputStream(outFile)
-                val writer = JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8))
-                gson!!.toJson(cache, Cache::class.java, writer)
-                writer.close()
-                setConnectionCacheExpire(cache.expires)
-                val updateEditor = sharedPreferencesSetting!!.edit()
-                updateEditor.putLong(CONNECTION_CACHE_UPDATED_AT_KEY, System.currentTimeMillis())
-                updateEditor.apply()
-            } catch (e: Exception) {
-                e.printStackTrace()
+                setServerListInitialFetchDone(true)
             }
+            val cache = Cache()
+            val calendar = Calendar.getInstance()
+            val minute = getCacheSaveTimeMinutes()
+            if (minute < 0) {
+                calendar.set(Calendar.YEAR, 9999)
+            } else {
+                calendar.add(Calendar.MINUTE, minute)
+            }
+            cache.expires = calendar.time
+            val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
+            val out = FileOutputStream(outFile)
+            val writer = JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8))
+            gson!!.toJson(cache, Cache::class.java, writer)
+            writer.close()
+            setConnectionCacheExpire(cache.expires)
+            val updateEditor = sharedPreferencesSetting!!.edit()
+            updateEditor.putLong(CONNECTION_CACHE_UPDATED_AT_KEY, System.currentTimeMillis())
+            updateEditor.apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
+    }
 
     /**
      * Clear connection cache
@@ -110,6 +126,7 @@ class DataUtil(context: Context?) {
      * @return boolean
      */
     fun clearConnectionCache(): Boolean {
+        inMemoryConnectionsCache = null
         val inFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
         return inFile.isFile && inFile.delete()
     }
