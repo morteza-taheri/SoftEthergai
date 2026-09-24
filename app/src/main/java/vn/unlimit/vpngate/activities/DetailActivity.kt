@@ -380,6 +380,10 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
 
     @SuppressLint("SetTextI18n")
     public override fun onCreate(savedInstanceState: Bundle?) {
+        try {
+            window.decorView
+        } catch (_: Throwable) {
+        }
         super.onCreate(savedInstanceState)
         dataUtil = (application as App).dataUtil!!
         excludeAppsManager = ExcludeAppsManager(this)
@@ -975,20 +979,10 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
             vpnProfile.mName = mVpnGateConnection!!.getName(useUDP)
-            // Inject the per-install ULA so the tunnel sources fd00::/8 and the
-            // server's NAT66 can route IPv6 (the server never pushes ifconfig-ipv6).
-            val ulaV6 = Ipv6Ula.getOrDerive(this)
-            vpnProfile.mUseIPv6 = true
-            vpnProfile.mIPv6Address = "$ulaV6/64"
-            vpnProfile.mUseDefaultRoutev6 = true
             vpnProfile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
-            if (dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ||
-                dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)
-            ) {
-                vpnProfile.mOverrideDNS = true
-                vpnProfile.mDNS1 = resolvePrimaryDns()
-                vpnProfile.mDNS2 = resolveSecondaryDns()
-            }
+            vpnProfile.mOverrideDNS = true
+            vpnProfile.mDNS1 = resolvePrimaryDns()
+            vpnProfile.mDNS2 = resolveSecondaryDns()
             excludeAppsManager.configureSplitTunneling(vpnProfile)
             ProfileManager.setTemporaryProfile(applicationContext, vpnProfile)
         } catch (e: IOException) {
@@ -1307,6 +1301,7 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                 clientProductName = "VPN Gate Connector Pro",
                 clientVersion = BuildConfig.VERSION_NAME,
                 clientBuild = BuildConfig.VERSION_CODE,
+                maxConnections = dataUtil.getSoftEtherMaxConnections(),
             )
 
             val isStartUpDetail = dataUtil.getIntSetting(DataUtil.SETTING_STARTUP_SCREEN, 0) == 0

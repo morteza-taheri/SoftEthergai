@@ -185,6 +185,34 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
         }
         registerListeners()
         bindService()
+
+        viewModelScope.launch {
+            vn.unlimit.vpngate.state.GlobalVpnTracker.vpnState.collect { gState ->
+                if (gState.status == vn.unlimit.vpngate.state.VpnConnectionStatus.DISCONNECTED ||
+                    gState.status == vn.unlimit.vpngate.state.VpnConnectionStatus.ERROR) {
+                    if (isSoftEtherConnected || isSSTPConnected) {
+                        isSoftEtherConnected = false
+                        isSSTPConnected = false
+                        isConnecting = false
+                        isSoftEtherConnecting = false
+                        update {
+                            it.copy(
+                                powerActivated = false,
+                                powerEnabled = true,
+                                connecting = false,
+                                connectText = appContext.getString(R.string.connect),
+                                statusText = appContext.getString(
+                                    R.string.tap_to_connect_last,
+                                    connectionName,
+                                ),
+                                showCheckIp = false,
+                                showNetStats = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {
@@ -872,6 +900,9 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             clientProductName = "VPN Gate Connector Pro",
             clientVersion = BuildConfig.VERSION_NAME,
             clientBuild = BuildConfig.VERSION_CODE,
+            maxConnections = dataUtil.getSoftEtherMaxConnections(),
+            excludedApps = (App.instance?.excludedAppDao?.getAllExcludedApps() ?: emptyList())
+                .map { it.packageName },
         )
         val isStartUpDetail = dataUtil.getIntSetting(DataUtil.SETTING_STARTUP_SCREEN, 0) == 0
         SoftEtherVpnService.notificationTargetActivity =
@@ -1040,13 +1071,9 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             vpnProfile!!.mName = mVpnGateConnection!!.getName(useUdp)
             vpnProfile?.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             excludeAppsManager.configureSplitTunneling(vpnProfile)
-            if (dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ||
-                dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)
-            ) {
-                vpnProfile!!.mOverrideDNS = true
-                vpnProfile!!.mDNS1 = resolvePrimaryDns()
-                vpnProfile!!.mDNS2 = resolveSecondaryDns()
-            }
+            vpnProfile!!.mOverrideDNS = true
+            vpnProfile!!.mDNS1 = resolvePrimaryDns()
+            vpnProfile!!.mDNS2 = resolveSecondaryDns()
             ProfileManager.setTemporaryProfile(appContext, vpnProfile)
         } catch (e: IOException) {
             e.printStackTrace()

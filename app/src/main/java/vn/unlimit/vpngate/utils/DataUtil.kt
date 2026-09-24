@@ -12,6 +12,7 @@ import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonWriter
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.BuildConfig
+import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.models.Cache
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
@@ -45,20 +46,13 @@ class DataUtil(context: Context?) {
         }
     }
 
-    @Volatile
-    private var inMemoryConnectionsCache: VPNGateConnectionList? = null
-
-    val connectionsCacheFast: VPNGateConnectionList?
-        get() = inMemoryConnectionsCache
-
     var connectionsCache: VPNGateConnectionList?
         /**
-         * Get connection cache from in-memory cache or fallback to Room database
+         * Get connection cache from internal Room database
          *
          * @return VPNGateConnectionList
          */
         get() {
-            inMemoryConnectionsCache?.let { return it }
             try {
                 Log.d(TAG, "get connectionsCache from internal database")
                 val app = App.instance
@@ -66,9 +60,7 @@ class DataUtil(context: Context?) {
                     val items = app.vpnGateItemDao.getAll()
                     if (items.isNotEmpty()) {
                         Log.d(TAG, "Retrieved ${items.size} servers from internal database")
-                        val list = VPNGateConnectionList().fromVPNGateItems(items)
-                        inMemoryConnectionsCache = list
-                        return list
+                        return VPNGateConnectionList().fromVPNGateItems(items)
                     }
                 }
             } catch (e: Exception) {
@@ -80,14 +72,8 @@ class DataUtil(context: Context?) {
          * Set connection cache and persist into internal Room database
          */
         set(value) {
-            setConnectionCache(value, persistToDb = true)
-        }
-
-    fun setConnectionCache(value: VPNGateConnectionList?, persistToDb: Boolean = true) {
-        inMemoryConnectionsCache = value
-        try {
-            if (value != null && value.size() > 0) {
-                if (persistToDb) {
+            try {
+                if (value != null && value.size() > 0) {
                     val app = App.instance
                     if (app != null) {
                         val items = value.toVPNGateItems()
@@ -95,30 +81,25 @@ class DataUtil(context: Context?) {
                         Log.d(TAG, "Saved ${items.size} healthy servers into internal database")
                     }
                 }
-                setServerListInitialFetchDone(true)
+                val cache = Cache()
+                val calendar = Calendar.getInstance()
+                val minute = getCacheSaveTimeMinutes()
+                if (minute < 0) {
+                    calendar.set(Calendar.YEAR, 9999)
+                } else {
+                    calendar.add(Calendar.MINUTE, minute)
+                }
+                cache.expires = calendar.time
+                val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
+                val out = FileOutputStream(outFile)
+                val writer = JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8))
+                gson!!.toJson(cache, Cache::class.java, writer)
+                writer.close()
+                setConnectionCacheExpire(cache.expires)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            val cache = Cache()
-            val calendar = Calendar.getInstance()
-            val minute = getCacheSaveTimeMinutes()
-            if (minute < 0) {
-                calendar.set(Calendar.YEAR, 9999)
-            } else {
-                calendar.add(Calendar.MINUTE, minute)
-            }
-            cache.expires = calendar.time
-            val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-            val out = FileOutputStream(outFile)
-            val writer = JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8))
-            gson!!.toJson(cache, Cache::class.java, writer)
-            writer.close()
-            setConnectionCacheExpire(cache.expires)
-            val updateEditor = sharedPreferencesSetting!!.edit()
-            updateEditor.putLong(CONNECTION_CACHE_UPDATED_AT_KEY, System.currentTimeMillis())
-            updateEditor.apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
-    }
 
     /**
      * Clear connection cache
@@ -126,7 +107,6 @@ class DataUtil(context: Context?) {
      * @return boolean
      */
     fun clearConnectionCache(): Boolean {
-        inMemoryConnectionsCache = null
         val inFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
         return inFile.isFile && inFile.delete()
     }
@@ -245,10 +225,28 @@ class DataUtil(context: Context?) {
         setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(5, 60))
     }
 
+    /**
+     * Auto Mode protocol priority profile: ordered ids of ENABLED protocols
+     * (priority = list order). Empty list = fall back to the single default
+     * protocol. New protocols are picked up automatically — nothing is
+     * hard-coded here (§32 §33).
+     */
+    fun getAutoModeProtocolPriority(): List<AutoModeProtocol> =
+        getStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, null)
+            ?.split(',')
+            ?.mapNotNull { id ->
+                AutoModeProtocol.entries.firstOrNull { it.id == id.trim() }
+            }
+            .orEmpty()
+
+    fun setAutoModeProtocolPriority(protocols: List<AutoModeProtocol>) {
+        setStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, protocols.joinToString(",") { it.id })
+    }
+
     // SoftEther client concurrent TCP connections (1–8, native MAX_SE_CONNECTIONS;
-    // default 4 preserves the pre-setting runtime behavior of softether_protocol.c)
+    // default 1 ensures single-stream stability and avoids unprotected secondary sockets)
     fun getSoftEtherMaxConnections(): Int =
-        getIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, 4).coerceIn(1, 8)
+        getIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, 1).coerceIn(1, 8)
 
     fun setSoftEtherMaxConnections(value: Int) {
         setIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, value.coerceIn(1, 8))
@@ -299,6 +297,20 @@ class DataUtil(context: Context?) {
         editor.apply()
     }
 
+    fun getCachedMirrors(): List<String> {
+        val json = getStringSetting("KEY_CACHED_MIRRORS", null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<String>>() {}.type
+            gson?.fromJson<List<String>>(json, type).orEmpty()
+        }.getOrDefault(emptyList())
+    }
+
+    fun setCachedMirrors(mirrors: List<String>) {
+        if (mirrors.isEmpty()) return
+        val json = gson?.toJson(mirrors.take(15)) ?: return
+        setStringSetting("KEY_CACHED_MIRRORS", json)
+    }
+
     // Developer Mode: on = keep all diagnostic logging (default, for
     // troubleshooting); off = suppress every collector/auto-mode log line
     // for speed (logcat writes, logcat tap and the Auto Mode log window).
@@ -316,17 +328,8 @@ class DataUtil(context: Context?) {
         return minutes.getOrElse(index) { minutes[DEFAULT_CACHE_TIME_INDEX] }
     }
 
-    fun isServerListInitialFetchDone(): Boolean {
-        return getBooleanSetting(KEY_SERVER_LIST_INITIAL_FETCH_DONE, false)
-    }
-
-    fun setServerListInitialFetchDone(done: Boolean = true) {
-        setBooleanSetting(KEY_SERVER_LIST_INITIAL_FETCH_DONE, done)
-    }
-
     companion object {
         const val TAG = "DataUtil"
-        const val KEY_SERVER_LIST_INITIAL_FETCH_DONE: String = "KEY_SERVER_LIST_INITIAL_FETCH_DONE"
         const val SETTING_CACHE_TIME_KEY: String = "SETTING_CACHE_TIME_KEY"
         const val SETTING_DEVELOPER_MODE: String = "SETTING_DEVELOPER_MODE"
 
@@ -348,6 +351,7 @@ class DataUtil(context: Context?) {
         const val SETTING_THEME: String = "SETTING_THEME"
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
                 const val SETTING_DEFAULT_VPN_PROTOCOL: String = "SETTING_DEFAULT_VPN_PROTOCOL"
+        const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
         const val SETTING_SOFTETHER_MAX_CONNECTIONS: String = "SETTING_SOFTETHER_MAX_CONNECTIONS"
         const val AUTO_LAST_SUCCESS_HOST: String = "AUTO_LAST_SUCCESS_HOST"
@@ -369,23 +373,18 @@ class DataUtil(context: Context?) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 cm?.run {
                     cm.getNetworkCapabilities(cm.activeNetwork)?.run {
-                        result = when {
-                            hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> true
-                            hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> true
-                            hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> true
-                            else -> false
-                        }
+                        result = hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                                hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                                hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                                hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                                hasTransport(NetworkCapabilities.TRANSPORT_VPN)
                     }
                 }
             } else {
                 cm?.run {
                     @Suppress("DEPRECATION")
                     cm.activeNetworkInfo?.run {
-                        if (type == ConnectivityManager.TYPE_WIFI) {
-                            result = true
-                        } else if (type == ConnectivityManager.TYPE_MOBILE) {
-                            result = true
-                        }
+                        result = isConnected
                     }
                 }
             }

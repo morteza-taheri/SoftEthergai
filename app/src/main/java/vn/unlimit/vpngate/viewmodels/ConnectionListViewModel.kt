@@ -23,19 +23,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     val vpnGateConnectionList = MutableLiveData<VPNGateConnectionList>()
     val lastUpdatedTime = MutableLiveData<Long>()
     init {
-        val fast = dataUtil.connectionsCacheFast
-        if (fast != null) {
-            vpnGateConnectionList.value = fast
-        } else {
-            viewModelScope.launch(Dispatchers.IO) {
-                val cached = dataUtil.connectionsCache
-                withContext(Dispatchers.Main) {
-                    if (vpnGateConnectionList.value == null && cached != null) {
-                        vpnGateConnectionList.value = cached
-                    }
-                }
-            }
-        }
+        vpnGateConnectionList.value = dataUtil.connectionsCache
         lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
     }
     private var isRetried = false
@@ -53,13 +41,16 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      * VPN Gate main HTML + official API + official mirrors, merges
      * them with the protocol-first engine and exposes the result.
      * The former GitHub-hosted JSON enrichment is gone; on network
-     * failure the last-known-good snapshot is served instead.
+     * failure the last-known-good snapshot or bundled seed is served instead.
      */
-    fun getAPIData() {
+    fun getAPIData(isUserInitiated: Boolean = false) {
         if (isLoading.value == true) {
             return
         }
-        Log.d(TAG, "Start vpnItem from multi-source collector")
+        if (isUserInitiated) {
+            isRetried = false
+        }
+        Log.d(TAG, "Start vpnItem from multi-source collector (userInitiated=$isUserInitiated)")
         isLoading.postValue(true)
         isError.postValue(false)
         viewModelScope.launch {
@@ -90,18 +81,32 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                     return@launch
                 }
 
+                isRetried = false
                 vpnGateConnectionList.value = connectionList
-                lastUpdatedTime.postValue(result.savedAt)
+                if (!result.fromCache && result.savedAt > 0L) {
+                    lastUpdatedTime.postValue(result.savedAt)
+                    dataUtil.setConnectionCacheUpdatedAt(result.savedAt)
+                } else {
+                    val existing = dataUtil.connectionCacheUpdatedAt
+                    if (existing > 0L) {
+                        lastUpdatedTime.postValue(existing)
+                    } else if (result.savedAt > 0L) {
+                        lastUpdatedTime.postValue(result.savedAt)
+                    }
+                }
                 val items = connectionList.toVPNGateItems()
                 withContext(Dispatchers.IO) {
-                    App.instance?.vpnGateItemDao?.replaceAll(items)
+                    val dbCount = App.instance?.vpnGateItemDao?.count() ?: 0
+                    if (!result.fromCache || dbCount == 0) {
+                        App.instance?.vpnGateItemDao?.replaceAll(items)
+                        dataUtil.connectionsCache = connectionList
+                    }
                     val itemCount = App.instance?.vpnGateItemDao?.count() ?: 0
                     Log.i(
                         TAG,
                         "Collected ${result.serverCount} servers" +
                             " (fromCache=${result.fromCache}). Total in database: $itemCount"
                     )
-                    dataUtil.setConnectionCache(connectionList, persistToDb = false)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "Got exception when collecting servers", e)

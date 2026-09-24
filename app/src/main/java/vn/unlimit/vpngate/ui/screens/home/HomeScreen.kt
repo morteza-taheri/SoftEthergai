@@ -7,39 +7,30 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.FilterList
-import androidx.compose.material.icons.rounded.KeyboardDoubleArrowUp
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -120,25 +111,17 @@ fun HomeScreen(
         emptyMessageRes = emptyRes
     }
 
-    var refreshJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-
-    fun refreshView(debounceMs: Long = 0L) {
-        refreshJob?.cancel()
-        refreshJob = scope.launch(Dispatchers.Default) {
-            if (debounceMs > 0) {
-                kotlinx.coroutines.delay(debounceMs)
+    fun refreshView() {
+        scope.launch(Dispatchers.IO) {
+            val base = connectionListViewModel.vpnGateConnectionList.value
+            var result = base?.advancedFilter(activeFilter)
+            if (isSearching && keyword.isNotEmpty()) {
+                result = result?.filter(keyword)
             }
-            val base = connectionListViewModel.vpnGateConnectionList.value ?: VPNGateConnectionList()
-            base.filter = activeFilter
-            val result = if (isSearching && keyword.isNotEmpty()) {
-                base.filter(keyword)
-            } else {
-                base.advancedFilter(activeFilter)
-            }
-            if (sortProperty.isNotEmpty()) {
+            if (result != null && sortProperty.isNotEmpty()) {
                 result.sort(sortProperty, sortType)
             }
-            val size = result.size()
+            val size = result?.size() ?: 0
             val emptyRes = when {
                 size == 0 && (isSearching && keyword.isNotEmpty()) -> R.string.empty_search_result
                 size == 0 && activeFilter != null -> R.string.empty_filter_result
@@ -154,7 +137,7 @@ fun HomeScreen(
     fun search(query: String) {
         keyword = query
         isSearching = query.isNotEmpty()
-        refreshView(debounceMs = 150L)
+        refreshView()
     }
 
     // ----- Observers (same as old MainActivity + HomeFragment)
@@ -185,251 +168,162 @@ fun HomeScreen(
             }
         }
     }
-    // Initial load:
-    // User requirement: Except for the very first app startup, server list retrieval
-    // must occur ONLY by pressing the corresponding update button.
+    // Initial load: database cache → display; network state → refresh or offline display
     LaunchedEffect(Unit) {
         val cached = withContext(Dispatchers.IO) { dataUtil.connectionsCache }
-        val initialFetchDone = withContext(Dispatchers.IO) { dataUtil.isServerListInitialFetchDone() }
         val online = withContext(Dispatchers.IO) { DataUtil.isOnline(context.applicationContext) }
-
-        if (cached != null && cached.size() > 0) {
-            contentVisible = true
-            refreshView()
-            if (!initialFetchDone && online) {
-                dataUtil.setServerListInitialFetchDone(true)
-                connectionListViewModel.getAPIData()
-            }
-        } else if (!initialFetchDone && online) {
-            dataUtil.setServerListInitialFetchDone(true)
-            connectionListViewModel.getAPIData()
-        } else {
-            if (cached != null && cached.size() > 0) {
+        when {
+            cached != null && cached.size() > 0 -> {
                 contentVisible = true
                 refreshView()
-            } else {
-                noNetwork = !online
-                contentVisible = false
+                if (online) {
+                    connectionListViewModel.getAPIData()
+                }
+            }
+            else -> {
+                connectionListViewModel.getAPIData()
             }
         }
     }
     // A successful API load also flips content visible via the isLoading observer.
 
     // ----- Render
-    val listState = rememberLazyListState()
-    var showToTop by remember { mutableStateOf(false) }
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible > 0 && listState.firstVisibleItemIndex > 4
-        }.distinctUntilChanged().collect { showToTop = it }
-    }
-    BackHandler(enabled = isSearching) {
-        isSearching = false
-        keyword = ""
-        refreshView()
-    }
-
     Box(modifier = Modifier.fillMaxSize()) {
-        Scaffold(
-            topBar = {
-                if (isSearching) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.background)
-                            .padding(bottom = 6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = keyword,
-                            onValueChange = { search(it) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            placeholder = { Text(stringResource(R.string.search_hint)) },
-                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                            trailingIcon = {
-                                IconButton(onClick = {
-                                    if (keyword.isNotEmpty()) {
-                                        search("")
-                                    } else {
+        when {
+            isError -> FullScreenError(onRetry = {
+                isError = false
+                connectionListViewModel.getAPIData(isUserInitiated = true)
+            })
+            noNetwork -> FullScreenNoNetwork()
+            !contentVisible || (isLoading && (list == null || list!!.size() == 0)) -> FullScreenLoading()
+            else -> {
+                val listState = rememberLazyListState()
+                var showToTop by remember { mutableStateOf(false) }
+                LaunchedEffect(listState) {
+                    snapshotFlow {
+                        val info = listState.layoutInfo
+                        val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        lastVisible > 0 && listState.firstVisibleItemIndex > 4
+                    }.distinctUntilChanged().collect { showToTop = it }
+                }
+                BackHandler(enabled = isSearching) {
+                    isSearching = false
+                    keyword = ""
+                    refreshView()
+                }
+                Scaffold(
+                    topBar = {
+                        if (isSearching) {
+                            OutlinedTextField(
+                                value = keyword,
+                                onValueChange = { search(it) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                placeholder = { Text(stringResource(R.string.search_hint)) },
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                trailingIcon = {
+                                    IconButton(onClick = {
                                         isSearching = false
+                                        keyword = ""
                                         refreshView()
+                                    }) {
+                                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close))
                                     }
-                                }) {
-                                    Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.close))
-                                }
-                            },
-                            singleLine = true,
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 2.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            val suggestions = listOf(
-                                "JP" to "🇯🇵 Japan",
-                                "US" to "🇺🇸 USA",
-                                "DE" to "🇩🇪 Germany",
-                                "Croatia" to "🇭🇷 Croatia",
-                                "OpenVPN" to "OpenVPN",
-                                "SoftEther" to "SoftEther",
-                                "SSTP" to "SSTP",
-                                "443" to "Port 443",
-                                "UDP" to "UDP",
-                            )
-                            for ((tag, label) in suggestions) {
-                                val selected = keyword.contains(tag, ignoreCase = true)
-                                FilterChip(
-                                    selected = selected,
-                                    onClick = {
-                                        if (selected) {
-                                            val newKw = keyword.replace(Regex("(?i)\\b$tag\\b"), "").trim()
-                                            search(newKw)
-                                        } else {
-                                            val newKw = if (keyword.isBlank()) tag else "$keyword $tag"
-                                            search(newKw)
-                                        }
-                                    },
-                                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    TopAppBar(
-                        title = {
-                            Column {
-                                Text(stringResource(R.string.home))
-                                val updatedFormatted = if (lastUpdatedTime > 0L) {
-                                    DateTimeFormatterUtil.formatLastUpdated(lastUpdatedTime)
-                                } else ""
-                                val subtitleText = if (updatedFormatted.isNotEmpty()) {
-                                    stringResource(R.string.server_list_last_updated, updatedFormatted)
-                                } else {
-                                    stringResource(R.string.server_list_never_updated)
-                                }
-                                Text(
-                                    text = subtitleText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                        actions = {
-                            IconButton(
-                                onClick = {
-                                    isError = false
-                                    noNetwork = false
-                                    connectionListViewModel.getAPIData()
                                 },
-                                enabled = !isLoading,
-                            ) {
-                                if (isLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                } else {
-                                    Icon(
-                                        Icons.Rounded.Refresh,
-                                        contentDescription = stringResource(R.string.refresh_servers),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                            IconButton(onClick = { isSearching = true }) {
-                                Icon(
-                                    Icons.Rounded.Search,
-                                    contentDescription = stringResource(R.string.search),
-                                )
-                            }
-                            IconButton(onClick = { showSortSheet = true }) {
-                                Icon(
-                                    Icons.Rounded.Tune,
-                                    contentDescription = stringResource(R.string.sort),
-                                )
-                            }
-                            IconButton(onClick = { showFilterSheet = true }) {
-                                Icon(
-                                    Icons.Rounded.FilterList,
-                                    contentDescription = stringResource(R.string.filter),
-                                    tint = if (activeFilter != null) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.background,
-                        ),
-                    )
-                }
-            },
-            floatingActionButton = {
-                AnimatedVisibility(visible = showToTop) {
-                    ExtendedFloatingActionButton(
-                        onClick = {
-                            scope.launch { listState.animateScrollToItem(0) }
-                        },
-                        icon = {
-                            Icon(
-                                Icons.Rounded.KeyboardDoubleArrowUp,
-                                contentDescription = stringResource(R.string.to_top),
+                                singleLine = true,
                             )
-                        },
-                        text = {},
-                    )
-                }
-            },
-        ) { padding ->
-            val serverItems = remember(list) { list?.toList() ?: emptyList() }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-            ) {
-                when {
-                    noNetwork && serverItems.isEmpty() -> {
-                        Column(
+                        } else {
+                            TopAppBar(
+                                title = {
+                                    Column {
+                                        Text(stringResource(R.string.app_name))
+                                        val updatedFormatted = if (lastUpdatedTime > 0L) {
+                                            DateTimeFormatterUtil.formatLastUpdated(lastUpdatedTime)
+                                        } else ""
+                                        val subtitleText = if (updatedFormatted.isNotEmpty()) {
+                                            stringResource(R.string.server_list_last_updated, updatedFormatted)
+                                        } else {
+                                            stringResource(R.string.server_list_never_updated)
+                                        }
+                                        Text(
+                                            text = subtitleText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                actions = {
+                                    IconButton(
+                                        onClick = { connectionListViewModel.getAPIData(isUserInitiated = true) },
+                                        enabled = !isLoading,
+                                    ) {
+                                        if (isLoading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Filled.Refresh,
+                                                contentDescription = stringResource(R.string.refresh),
+                                            )
+                                        }
+                                    }
+                                    IconButton(onClick = { isSearching = true }) {
+                                        Icon(
+                                            Icons.Filled.Search,
+                                            contentDescription = stringResource(R.string.search),
+                                        )
+                                    }
+                                    IconButton(onClick = { showSortSheet = true }) {
+                                        Icon(
+                                            Icons.Filled.Sort,
+                                            contentDescription = stringResource(R.string.sort),
+                                        )
+                                    }
+                                    IconButton(onClick = { showFilterSheet = true }) {
+                                        Icon(
+                                            Icons.Filled.FilterList,
+                                            contentDescription = stringResource(R.string.filter),
+                                            tint = if (activeFilter != null) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                        )
+                                    }
+                                },
+                                colors = TopAppBarDefaults.topAppBarColors(
+                                    containerColor = MaterialTheme.colorScheme.background,
+                                ),
+                            )
+                        }
+                    },
+                    floatingActionButton = {
+                        AnimatedVisibility(visible = showToTop) {
+                            ExtendedFloatingActionButton(
+                                onClick = {
+                                    scope.launch { listState.animateScrollToItem(0) }
+                                },
+                                icon = {
+                                    Icon(
+                                        Icons.Filled.VerticalAlignTop,
+                                        contentDescription = stringResource(R.string.to_top),
+                                    )
+                                },
+                                text = {},
+                            )
+                        }
+                    },
+                ) { padding ->
+                    val serverItems = remember(list) { list?.toList() ?: emptyList() }
+                    if (serverItems.isEmpty()) {
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(24.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            FullScreenNoNetwork()
-                            Button(
-                                onClick = {
-                                    noNetwork = false
-                                    connectionListViewModel.getAPIData()
-                                },
-                                modifier = Modifier.padding(top = 16.dp),
-                            ) {
-                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.size(8.dp))
-                                Text(stringResource(R.string.get_servers))
-                            }
-                        }
-                    }
-                    isError && serverItems.isEmpty() -> {
-                        FullScreenError(onRetry = {
-                            isError = false
-                            connectionListViewModel.getAPIData()
-                        })
-                    }
-                    (isLoading || !contentVisible) && serverItems.isEmpty() -> {
-                        FullScreenLoading()
-                    }
-                    serverItems.isEmpty() -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
+                                .padding(padding),
                             contentAlignment = Alignment.Center,
                         ) {
                             Column(
@@ -437,18 +331,27 @@ fun HomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.padding(24.dp),
                             ) {
-                                Text(
-                                    text = stringResource(R.string.update_server_list_first),
-                                    style = MaterialTheme.typography.titleMedium,
+                                emptyMessageRes?.let {
+                                    Text(
+                                        if (it == R.string.empty_search_result) {
+                                            stringResource(it, keyword)
+                                        } else {
+                                            stringResource(it)
+                                        },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } ?: Text(
+                                    stringResource(R.string.no_server_available),
+                                    style = MaterialTheme.typography.bodyLarge,
                                     textAlign = TextAlign.Center,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
 
                                 Button(
                                     onClick = { connectionListViewModel.getAPIData() },
                                     enabled = !isLoading,
-                                    shape = RoundedCornerShape(12.dp),
                                 ) {
                                     if (isLoading) {
                                         CircularProgressIndicator(
@@ -462,120 +365,68 @@ fun HomeScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
                                             Icon(
-                                                Icons.Rounded.Refresh,
+                                                Icons.Filled.Refresh,
                                                 contentDescription = null,
                                                 modifier = Modifier.size(18.dp),
                                             )
-                                            Text(stringResource(R.string.get_servers))
+                                            Text(stringResource(R.string.refresh_servers))
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    else -> {
-                        val isIncludeUdp = remember(dataUtil) { dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) }
-                        val baseUrl = remember(dataUtil) { dataUtil.baseUrl ?: "https://www.vpngate.net" }
-                        LazyColumn(
-                            state = listState,
-                            contentPadding = PaddingValues(
-                                start = 10.dp, end = 10.dp, top = 4.dp, bottom = 16.dp,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding),
                         ) {
-                            item(key = "server_list_header") {
-                                Card(
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 2.dp, vertical = 2.dp),
-                                 ) {
+                            LazyColumn(
+                                state = listState,
+                                contentPadding = PaddingValues(
+                                    start = 10.dp, end = 10.dp, top = 4.dp, bottom = 16.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                item(key = "server_list_header") {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                            .padding(horizontal = 6.dp, vertical = 2.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = stringResource(R.string.servers_count_label, serverItems.size),
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                            )
-                                            val updatedStr = DateTimeFormatterUtil.formatLastUpdated(dataUtil.connectionCacheUpdatedAt)
-                                            Text(
-                                                text = if (updatedStr.isNotBlank()) {
-                                                    stringResource(R.string.server_list_last_updated, updatedStr)
-                                                } else {
-                                                    stringResource(R.string.server_list_never_updated)
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                isError = false
-                                                noNetwork = false
-                                                connectionListViewModel.getAPIData()
-                                            },
-                                            enabled = !isLoading,
-                                            shape = RoundedCornerShape(10.dp),
-                                        ) {
-                                            if (isLoading) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(16.dp),
-                                                    strokeWidth = 2.dp,
-                                                    color = MaterialTheme.colorScheme.onPrimary,
-                                                )
-                                            } else {
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                ) {
-                                                    Icon(
-                                                        Icons.Rounded.Refresh,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp),
-                                                    )
-                                                    Text(stringResource(R.string.update_servers))
-                                                }
-                                            }
-                                        }
+                                        Text(
+                                            text = stringResource(R.string.server_list_count, serverItems.size),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 }
-                            }
-                            items(
-                                items = serverItems,
-                                key = { conn ->
-                                    "${conn.calculateHostName}#${conn.ip}#${conn.tcpPort}#${conn.udpPort}#${conn.countryLong}"
-                                },
-                                contentType = { "server_card" },
-                            ) { conn ->
-                                ServerCard(
-                                    connection = conn,
-                                    isIncludeUdp = isIncludeUdp,
-                                    baseUrl = baseUrl,
-                                    onClick = {
-                                        try {
-                                            val intent = Intent(context, DetailActivity::class.java)
-                                            intent.putExtra(
-                                                BaseProvider.PASS_DETAIL_VPN_CONNECTION,
-                                                conn,
-                                            )
-                                            context.startActivity(intent)
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
+                                items(
+                                    items = serverItems,
+                                    key = { conn ->
+                                        "${conn.calculateHostName}#${conn.ip}#${conn.tcpPort}#${conn.udpPort}#${conn.countryLong}"
                                     },
-                                    onLongClick = { copyTarget = conn },
-                                )
+                                ) { conn ->
+                                    ServerCard(
+                                        connection = conn,
+                                        dataUtil = dataUtil,
+                                        onClick = {
+                                            try {
+                                                val intent = Intent(context, DetailActivity::class.java)
+                                                intent.putExtra(
+                                                    BaseProvider.PASS_DETAIL_VPN_CONNECTION,
+                                                    conn,
+                                                )
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                e.printStackTrace()
+                                            }
+                                        },
+                                        onLongClick = { copyTarget = conn },
+                                    )
+                                }
                             }
                         }
                     }

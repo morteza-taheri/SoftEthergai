@@ -5,7 +5,6 @@ import android.os.Build
 import android.os.Parcel
 import android.os.Parcelable
 import android.util.Base64
-import androidx.compose.runtime.Immutable
 import vn.unlimit.vpngate.App.Companion.instance
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.utils.DataUtil
@@ -15,7 +14,6 @@ import kotlin.math.roundToInt
 /**
  * Created by dongh on 14/01/2018.
  */
-@Immutable
 class VPNGateConnection : Parcelable {
     //HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,logType,Operator,Message,OpenVPN_ConfigData_Base64
     var hostName: String? = null
@@ -39,7 +37,6 @@ class VPNGateConnection : Parcelable {
     var isSSTPSupport = 0
     var seTcpPort = 0
     var seUdpPort = 0
-    var sstpPort = 0
     // SoftEther UDP offered without a published port (§6/§9): the UI
     // shows "supported — port unknown" instead of hiding the option.
     var seUdpSupported = false
@@ -52,11 +49,12 @@ class VPNGateConnection : Parcelable {
         get() = seUdpSupported && seUdpPort <= 0
 
     /**
-     * Port to use for an MS-SSTP connection. Uses explicit SSTP port if known,
-     * falls back to TCP / SoftEther TCP port, or protocol-standard 443.
+     * Port to use for an MS-SSTP connection. The collected SSTP fact
+     * may carry an unknown port; the protocol-standard TCP listener
+     * 443 is the documented default (locked product decision).
      */
     val sstpConnectPort: Int
-        get() = if (sstpPort > 0) sstpPort else if (tcpPort > 0) tcpPort else if (seTcpPort > 0) seTcpPort else SSTP_DEFAULT_PORT
+        get() = if (tcpPort > 0) tcpPort else SSTP_DEFAULT_PORT
 
     private constructor(`in`: Parcel) {
         hostName = `in`.readString()
@@ -81,9 +79,6 @@ class VPNGateConnection : Parcelable {
         seTcpPort = `in`.readInt()
         seUdpPort = `in`.readInt()
         seUdpSupported = `in`.readInt() == 1
-        if (`in`.dataAvail() > 0) {
-            sstpPort = `in`.readInt()
-        }
     }
 
     //Empty constructor
@@ -112,7 +107,6 @@ class VPNGateConnection : Parcelable {
         out.writeInt(seTcpPort)
         out.writeInt(seUdpPort)
         out.writeInt(if (seUdpSupported) 1 else 0)
-        out.writeInt(sstpPort)
     }
 
     private fun decodeBase64(base64str: String): String? {
@@ -170,7 +164,7 @@ class VPNGateConnection : Parcelable {
      * from the blob also becomes the SoftEther TCP port.
      * Explicit port columns from an extended feed are never overridden.
      */
-    fun derivePortsFromOpenVpnConfig() {
+    private fun derivePortsFromOpenVpnConfig() {
         val config = openVpnConfigData ?: return
         var proto: String? = null
         var remotePort = 0
@@ -251,7 +245,8 @@ class VPNGateConnection : Parcelable {
     }
 
     private fun round(value: Double): String {
-        return decimalFormatThreadLocal.get()!!.format(value)
+        val df = DecimalFormat("####0.###")
+        return df.format(value)
     }
 
     override fun describeContents(): Int {
@@ -344,10 +339,6 @@ class VPNGateConnection : Parcelable {
     }
 
     companion object {
-        private val decimalFormatThreadLocal = ThreadLocal.withInitial {
-            DecimalFormat("####0.###")
-        }
-
         /** MS-SSTP protocol-standard listener (locked product decision). */
         const val SSTP_DEFAULT_PORT = 443
 

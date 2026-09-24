@@ -1,8 +1,6 @@
 {
-  "name": "VpnM",
-  "description": "Multi-protocol VPN client for Android supporting SoftEther, OpenVPN, MS-SSTP, and L2TP.",
+  "name": "VPN Gate Connector",
+  "description": "Fast and reliable VPN client for VPN Gate servers with SoftEther, OpenVPN, and SSTP protocols.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

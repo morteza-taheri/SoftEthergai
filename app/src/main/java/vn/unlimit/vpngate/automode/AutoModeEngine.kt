@@ -47,9 +47,14 @@ object AutoModeEngine {
                         val created = AutoModeController(
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
                 adapter = adapter,
-                protocolPriorityProvider = {
-                    ProtocolPriorityManager.getEnabledProtocols(du)
+                protocolProvider = {
+                    AutoModeProtocol.fromId(
+                        du.getStringSetting(DataUtil.SETTING_DEFAULT_VPN_PROTOCOL, AutoModeProtocol.DEFAULT_ID)
+                    )
                 },
+                // §6 Protocol Priority Profile read from Settings at start;
+                // empty profile falls back to the single default above.
+                protocolPriorityProvider = { du.getAutoModeProtocolPriority() },
                 serverProvider = { serversProvider?.invoke() ?: defaultServers(du) },
                 onSuccess = { candidate, protocol ->
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_HOST, candidate.hostname ?: candidate.ip ?: "")

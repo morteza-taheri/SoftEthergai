@@ -33,135 +33,27 @@ class VPNGateConnectionList : Parcelable {
     }
 
     /**
-     * Filter connection by keyword using multi-token search
+     * Filter connection by keyword
      *
      * @param inKeyword keyword to filter
      * @return
      */
     fun filter(inKeyword: String): VPNGateConnectionList {
         mKeyword = inKeyword
-        val dao = vpnGateItemDao
-        if (dao != null) {
-            val result = dao.filterAndSort(buildQuery())
+        val result = vpnGateItemDao!!.filterAndSort(buildQuery())
+        synchronized(this) {
             clear()
             result.forEach { data!!.add(VPNGateConnection().fromVPNGateItem(it)) }
-        } else {
-            val filtered = filterInMemory(inKeyword)
-            clear()
-            data!!.addAll(filtered)
         }
         return this
     }
 
     private fun getFilterQuery(): String {
-        val raw = mKeyword?.trim() ?: return ""
-        if (raw.isEmpty()) return ""
-
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.isEmpty()) return ""
-
-        val tokenClauses = mutableListOf<String>()
-        for (token in tokens) {
-            val sanitized = token.lowercase(Locale.getDefault()).replace("'", "''")
-            val subClauses = mutableListOf<String>()
-
-            // General text match
-            subClauses.add("countryLong LIKE '%$sanitized%'")
-            subClauses.add("countryShort LIKE '%$sanitized%'")
-            subClauses.add("hostName LIKE '%$sanitized%'")
-            subClauses.add("ip LIKE '%$sanitized%'")
-            subClauses.add("operator LIKE '%$sanitized%'")
-            subClauses.add("message LIKE '%$sanitized%'")
-
-            // Protocol keywords
-            when (sanitized) {
-                "openvpn", "ovpn" -> {
-                    subClauses.add("(tcpPort > 0 OR udpPort > 0 OR (openVpnConfigData IS NOT NULL AND openVpnConfigData != ''))")
-                }
-                "softether", "se", "sslvpn", "ssl-vpn" -> {
-                    subClauses.add("(seTcpPort > 0 OR seUdpPort > 0 OR seUdpSupported = 1)")
-                }
-                "sstp", "ms-sstp" -> {
-                    subClauses.add("(isSSTPSupport = 1)")
-                }
-                "l2tp", "ipsec", "l2tp/ipsec" -> {
-                    subClauses.add("(isL2TPSupport = 1)")
-                }
-                "tcp" -> {
-                    subClauses.add("(tcpPort > 0 OR seTcpPort > 0)")
-                }
-                "udp" -> {
-                    subClauses.add("(udpPort > 0 OR seUdpPort > 0 OR seUdpSupported = 1)")
-                }
-            }
-
-            // Numeric port match if token is a valid port integer
-            val portNum = sanitized.toIntOrNull()
-            if (portNum != null && portNum in 1..65535) {
-                subClauses.add("tcpPort = $portNum")
-                subClauses.add("udpPort = $portNum")
-                subClauses.add("seTcpPort = $portNum")
-                subClauses.add("seUdpPort = $portNum")
-            }
-
-            tokenClauses.add("(${subClauses.joinToString(" OR ")})")
+        if (mKeyword != null) {
+            val keyword = mKeyword!!.lowercase(Locale.getDefault()).replace("'", "''")
+            return "countryLong LIKE '%$keyword%' OR hostName LIKE '%$keyword%' OR operator LIKE '%$keyword%' OR ip LIKE '%$keyword%'"
         }
-
-        return tokenClauses.joinToString(" AND ")
-    }
-
-    fun filterInMemory(keyword: String): List<VPNGateConnection> {
-        val current = data ?: return emptyList()
-        val raw = keyword.trim().lowercase(Locale.getDefault())
-        if (raw.isEmpty()) return current.toList()
-
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.isEmpty()) return current.toList()
-
-        return current.filter { conn ->
-            tokens.all { token ->
-                matchesToken(conn, token)
-            }
-        }
-    }
-
-    private fun matchesToken(conn: VPNGateConnection, token: String): Boolean {
-        if (conn.countryLong?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-        if (conn.countryShort?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-        if (conn.hostName?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-        if (conn.ip?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-        if (conn.operator?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-        if (conn.message?.lowercase(Locale.getDefault())?.contains(token) == true) return true
-
-        when (token) {
-            "openvpn", "ovpn" -> {
-                if (conn.tcpPort > 0 || conn.udpPort > 0 || !conn.openVpnConfigData.isNullOrBlank()) return true
-            }
-            "softether", "se", "sslvpn", "ssl-vpn" -> {
-                if (conn.seTcpPort > 0 || conn.seUdpPort > 0 || conn.seUdpSupported) return true
-            }
-            "sstp", "ms-sstp" -> {
-                if (conn.isSSTPSupport()) return true
-            }
-            "l2tp", "ipsec", "l2tp/ipsec" -> {
-                if (conn.isL2TPSupport()) return true
-            }
-            "tcp" -> {
-                if (conn.tcpPort > 0 || conn.seTcpPort > 0) return true
-            }
-            "udp" -> {
-                if (conn.udpPort > 0 || conn.seUdpPort > 0 || conn.seUdpSupported) return true
-            }
-        }
-
-        val portNum = token.toIntOrNull()
-        if (portNum != null && portNum in 1..65535) {
-            if (conn.tcpPort == portNum || conn.udpPort == portNum ||
-                conn.seTcpPort == portNum || conn.seUdpPort == portNum ||
-                conn.sstpConnectPort == portNum) return true
-        }
-
-        return false
+        return ""
     }
 
     private fun getOrderQuery(): String {
@@ -197,49 +89,35 @@ class VPNGateConnectionList : Parcelable {
             if (skipProcessSort) {
                 return
             }
-            val dao = vpnGateItemDao
-            if (dao != null) {
-                val sortedData: List<VPNGateItem>? = dao.filterAndSort(buildQuery())
+            val sortedData: List<VPNGateItem>? =
+                vpnGateItemDao?.filterAndSort(buildQuery())
+            synchronized(this) {
                 this.clear()
-                sortedData?.forEach { data!!.add(VPNGateConnection().fromVPNGateItem(it)) }
-            } else {
-                sortInMemory(property, type)
+                sortedData!!.forEach { data!!.add(VPNGateConnection().fromVPNGateItem(it)) }
             }
         }
     }
 
-    fun sortInMemory(property: String?, type: Int) {
-        val d = data ?: return
-        val isAsc = type == ORDER.ASC
-        d.sortWith(Comparator { a, b ->
-            val res = when (property) {
-                "COUNTRY", SortProperty.COUNTRY -> (a.countryLong ?: "").compareTo(b.countryLong ?: "", ignoreCase = true)
-                "SPEED", SortProperty.SPEED -> a.speed.compareTo(b.speed)
-                "PING", SortProperty.PING -> a.ping.compareTo(b.ping)
-                "SCORE", SortProperty.SCORE -> a.score.compareTo(b.score)
-                "UPTIME", SortProperty.UPTIME -> a.uptime.compareTo(b.uptime)
-                "SESSION", SortProperty.SESSION -> a.numVpnSession.compareTo(b.numVpnSession)
-                else -> 0
-            }
-            if (isAsc) res else -res
-        })
-    }
-
     fun add(vpnGateConnection: VPNGateConnection) {
-        data!!.add(vpnGateConnection)
+        synchronized(data!!) { data!!.add(vpnGateConnection) }
     }
 
     fun clear() {
-        data!!.clear()
+        synchronized(data!!) { data!!.clear() }
     }
 
     fun addAll(list: VPNGateConnectionList) {
-        data!!.addAll(list.data!!)
+        synchronized(data!!) { data!!.addAll(list.data!!) }
     }
 
     fun get(index: Int): VPNGateConnection? {
+        // Compose Lazy prefetch may call this on a binder thread while a
+        // background refresh runs clear()/add(); guard the read against the
+        // concurrent mutation or d[index] throws IndexOutOfBounds.
         val d = data ?: return null
-        return if (index in 0 until d.size) d[index] else null
+        synchronized(d) {
+            return if (index in 0 until d.size) d[index] else null
+        }
     }
 
     fun toList(): List<VPNGateConnection> {
@@ -248,7 +126,8 @@ class VPNGateConnectionList : Parcelable {
     }
 
     fun size(): Int {
-        return data!!.size
+        val d = data ?: return 0
+        synchronized(d) { return d.size }
     }
 
     fun advancedFilter(filter: Filter?): VPNGateConnectionList {
@@ -335,10 +214,12 @@ class VPNGateConnectionList : Parcelable {
     }
 
     fun advancedFilter(): VPNGateConnectionList {
-        clear()
         val filteredResult: List<VPNGateItem>? = vpnGateItemDao?.filterAndSort(buildQuery())
-        filteredResult?.forEach {
-            data!!.add(VPNGateConnection().fromVPNGateItem(it))
+        synchronized(this) {
+            clear()
+            filteredResult?.forEach {
+                data!!.add(VPNGateConnection().fromVPNGateItem(it))
+            }
         }
         return this
     }
@@ -377,7 +258,6 @@ class VPNGateConnectionList : Parcelable {
         LESS_OR_EQUAL
     }
 
-    @androidx.compose.runtime.Immutable
     class Filter {
         var isShowTCP: Boolean = true
         var isShowUDP: Boolean = true

@@ -45,8 +45,8 @@ class ConnectionController(
 ) {
     companion object {
         private const val TAG = "ConnectionController"
-        private const val MAX_RECONNECT_ATTEMPTS = 3
-        private const val RECONNECT_DELAY_MS = 3000L
+        private const val MAX_RECONNECT_ATTEMPTS = 2
+        private const val RECONNECT_DELAY_MS = 1000L
         private const val STATS_INTERVAL_MS = 1000L
         private const val RX_BATCH_MAX_PACKETS = 32  // Phase 13D: frames per receiveBatch call
         private const val NATIVE_TEARDOWN_TIMEOUT_MS = 500L
@@ -55,7 +55,13 @@ class ConnectionController(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val client = SoftEtherClient()
     private val isCancelled = AtomicBoolean(false)
+    private val isDestroyed = AtomicBoolean(false)
     private val isReconnecting = AtomicBoolean(false)
+    @Volatile
+    private var statisticsJob: Job? = null
+    @Volatile
+    private var reconnectJob: Job? = null
+    private var keepAliveManager: KeepAliveManager? = null
     // True while a connect flow owns the native handle (performConnect alive).
     // Deliberately NOT derived from currentState: disconnect() resets the state
     // to DISCONNECTED immediately, but the blocked nativeConnectWithHub JNI
@@ -475,12 +481,15 @@ class ConnectionController(
             Log.d(TAG, "DHCP success: IP=${dhcpResult.assignedIp}/${dhcpResult.prefixLength} " +
                     "GW=${dhcpResult.gateway} DNS=${dhcpResult.dnsServer} DNS2=${dhcpResult.dnsServer2}")
             assignedLocalIp = dhcpResult.assignedIp
-            // Update config with DHCP-assigned values
+            // Update config with DHCP-assigned values.
+            // DNS: keep the app-configured public resolvers (8.8.8.8 / 8.8.4.4)
+            // instead of adopting the VPN Gate SecureNAT internal relay
+            // (e.g. 10.240.254.254). Those relays are frequently broken or
+            // blocked, which manifests as "tunnel connected but no internet".
+            // The DHCP IP/prefix is still honoured for the TUN interface.
             dhcpConfig = config.copy(
                 localAddress = dhcpResult.assignedIp,
                 prefixLength = dhcpResult.prefixLength,
-                dnsServer = if (dhcpResult.dnsServer != "0.0.0.0") dhcpResult.dnsServer else config.dnsServer,
-                secondaryDnsServer = if (dhcpResult.dnsServer2 != "0.0.0.0") dhcpResult.dnsServer2 else config.secondaryDnsServer
             )
             vpnInterface = service.establishVpnInterface(dhcpConfig)
                 ?: throw Exception("Failed to establish VPN interface")
@@ -565,6 +574,19 @@ class ConnectionController(
             Log.w(TAG, "Connect in progress, skipping mutex-protected native teardown")
         }
 
+        // Stop keepalive
+        try {
+            keepAliveManager?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping KeepAliveManager", e)
+        }
+        keepAliveManager = null
+
+        statisticsJob?.cancel()
+        statisticsJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+
         // Stop TunTerminal first to avoid reading from closed interface
         try {
             tunTerminal?.stop()
@@ -581,10 +603,6 @@ class ConnectionController(
         }
         vpnInterface = null
 
-        // Don't call scope.cancel() — it permanently kills the scope, making reconnect impossible.
-        // The isCancelled flag (set above) causes all data forwarding loops, keepalive,
-        // and statistics logging to exit naturally via their while-loop conditions.
-
         currentState = ConnectionState.DISCONNECTED
         Log.d(TAG, "VPN disconnected. Stats: sent=${bytesSent.get()} bytes (${packetsSent.get()} pkts), " +
                 "received=${bytesReceived.get()} bytes (${packetsReceived.get()} pkts)")
@@ -597,8 +615,30 @@ class ConnectionController(
      */
     fun destroyResources() {
         Log.d(TAG, "Destroying resources (fast cleanup)")
+        isDestroyed.set(true)
         isCancelled.set(true)
+        currentState = ConnectionState.DISCONNECTED
         client.externalHandle = 0
+
+        statisticsJob?.cancel()
+        statisticsJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        // Stop keepalive manager
+        try {
+            keepAliveManager?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping KeepAliveManager", e)
+        }
+        keepAliveManager = null
+
+        // Permanently cancel this controller's coroutine scope so background loops and timers die
+        try {
+            scope.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling scope", e)
+        }
 
         // Stop TunTerminal first to avoid reading from closed interface
         try {
@@ -616,19 +656,6 @@ class ConnectionController(
         }
         vpnInterface = null
 
-        // Force-close sockets to interrupt any blocking nativeConnectWithHub
-        // that may be holding connect_mutex.  This makes softether_connect_with_hub
-        // return with an error so softether_destroy can proceed without deadlock.
-        // If a connect flow is in flight, DEFER native teardown entirely: a
-        // force-close + 200ms sleep is not enough (the connect retries on new
-        // sockets / NAT-T), and destroying here frees the connection under the
-        // connect thread. The connect flow tears the handle down itself as soon
-        // as nativeConnectWithHub returns.
-        if (isConnectInFlight()) {
-            Log.w(TAG, "Connect in flight - deferring native destroy to connect flow")
-            return
-        }
-
         val handle = nativeHandle
         nativeHandle = 0
         protectedFds.clear()
@@ -638,11 +665,9 @@ class ConnectionController(
             } catch (e: Exception) {
                 Log.e(TAG, "Error force-closing socket", e)
             }
-            // Bounded wait for the connect flow to finish owning the native
-            // handle instead of a fixed Thread.sleep heuristic. If a connect
-            // flow was in flight it defers teardown entirely (see connectInFlight
-            // guard above), so in the common case this returns immediately; on a
-            // slow TLS read it still bounds the wait before nativeDestroy.
+            if (isConnectInFlight()) {
+                Log.w(TAG, "Connect in flight - force closed socket, waiting for connect flow to exit")
+            }
             if (!nativeTeardownGate.await(NATIVE_TEARDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 Log.w(TAG, "Timed out waiting for connect flow to release native handle before destroy")
             }
@@ -690,7 +715,8 @@ class ConnectionController(
         this.tunTerminal = TunTerminal(tunInterface, scope)
         val terminal = this.tunTerminal!!
 
-        val keepAliveManager = KeepAliveManager(client)
+        val keepAlive = KeepAliveManager(client)
+        this.keepAliveManager = keepAlive
 
         // Start TUN interface reading.
         // Phase 13E: packets are sent directly from the TUN read loop as
@@ -710,13 +736,13 @@ class ConnectionController(
                         maybePublishTrafficSnapshot()
                     } else if (result < 0 && isConnected() && !isCancelled.get()) {
                         Log.w(TAG, "Send failed: $result")
-                        scope.launch { attemptReconnect() }
+                        triggerReconnect()
                     }
                 } catch (e: Exception) {
                     if (!isCancelled.get()) {
                         Log.e(TAG, "Send error", e)
                         if (isConnected()) {
-                            scope.launch { attemptReconnect() }
+                            triggerReconnect()
                         }
                     }
                 }
@@ -727,7 +753,7 @@ class ConnectionController(
                     // Don't call onError() here — it triggers stopVpn() in VpnService
                     // which destroys everything. Instead, let attemptReconnect handle
                     // the full lifecycle (tear down + reconnect + new TUN).
-                    scope.launch { attemptReconnect() }
+                    triggerReconnect()
                 }
             }
         )
@@ -768,13 +794,13 @@ class ConnectionController(
                             // delay — native receive blocks up to 100ms in
                             // poll() when idle, so this loop only wakes ~10x/s
                             // at idle and instantly when data arrives.
-                            keepAliveManager.recordReceived()
+                            keepAlive.recordReceived()
                         }
                         else -> {
                             // Error receiving
                             Log.e(TAG, "Receive error: $total")
                             if (isConnected() && !isCancelled.get()) {
-                                scope.launch { attemptReconnect() }
+                                triggerReconnect()
                             }
                             break
                         }
@@ -784,7 +810,7 @@ class ConnectionController(
                 } catch (e: Exception) {
                     Log.e(TAG, "Receive loop error", e)
                     if (isConnected() && !isCancelled.get()) {
-                        scope.launch { attemptReconnect() }
+                        triggerReconnect()
                     }
                     break
                 }
@@ -792,7 +818,24 @@ class ConnectionController(
         }
 
         // Start keepalive
-        startKeepalive(keepAliveManager)
+        startKeepalive(keepAlive)
+    }
+
+    private fun triggerReconnect() {
+        if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
+            Log.w(TAG, "triggerReconnect skipped: cancelled=${isCancelled.get()}, destroyed=${isDestroyed.get()}, state=$currentState")
+            return
+        }
+        synchronized(this) {
+            if (reconnectJob?.isActive == true) return
+            reconnectJob = scope.launch {
+                try {
+                    attemptReconnect()
+                } finally {
+                    isReconnecting.set(false)
+                }
+            }
+        }
     }
 
     /**
@@ -800,8 +843,8 @@ class ConnectionController(
      * tear down old TUN/native → reconnect → DHCP → establish VPN interface → restart data forwarding
      */
     private suspend fun attemptReconnect() {
-        if (isReconnecting.getAndSet(true)) {
-            Log.w(TAG, "Reconnection already in progress")
+        if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED || isReconnecting.getAndSet(true)) {
+            Log.w(TAG, "Reconnection skipped: cancelled=${isCancelled.get()}, destroyed=${isDestroyed.get()}, state=$currentState")
             return
         }
 
@@ -817,6 +860,11 @@ class ConnectionController(
             }
 
             Log.w(TAG, "Attempting automatic reconnection (${reconnectAttempts.get()}/$MAX_RECONNECT_ATTEMPTS)")
+
+            if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
+                Log.w(TAG, "Reconnection aborted: destroyed or disconnected")
+                return
+            }
 
             // Reset isCancelled so loops and subsequent operations can proceed
             isCancelled.set(false)
@@ -850,12 +898,19 @@ class ConnectionController(
                 }
             }
 
+            if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
+                Log.w(TAG, "Reconnection aborted after teardown")
+                return
+            }
+
             currentState = ConnectionState.CONNECTING
+            onStateChange(ConnectionState.CONNECTING)
 
             // Wait before reconnecting
             delay(RECONNECT_DELAY_MS)
 
-            if (isCancelled.get()) {
+            if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
+                Log.w(TAG, "Reconnection aborted after delay")
                 return
             }
 
@@ -866,7 +921,7 @@ class ConnectionController(
             // connection under the blocked reconnect thread (use-after-free
             // crash inside softether_protocol_login / ssl_write). Cleared in
             // the outer finally below.
-connectInFlight.set(true)
+            connectInFlight.set(true)
             nativeTeardownGate = CountDownLatch(1)
 
             // Create new native connection
@@ -920,11 +975,16 @@ connectInFlight.set(true)
                 throw Exception("Reconnection failed with error code: $result")
             }
 
-            if (isCancelled.get()) {
+            if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
                 val handle = nativeHandle
                 nativeHandle = 0
-                client.nativeDisconnect(handle)
-                client.nativeDestroy(handle)
+                protectedFds.clear()
+                try {
+                    client.nativeDisconnect(handle)
+                    client.nativeDestroy(handle)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error disconnecting cancelled reconnect handle", e)
+                }
                 return
             }
 
@@ -966,11 +1026,10 @@ connectInFlight.set(true)
             if (dhcpResult != null) {
                 Log.d(TAG, "DHCP success on reconnect: IP=${dhcpResult.assignedIp}/${dhcpResult.prefixLength}")
                 assignedLocalIp = dhcpResult.assignedIp
+                // DNS: keep the app-configured public resolvers (see primary connect path).
                 val dhcpConfig = config.copy(
                     localAddress = dhcpResult.assignedIp,
                     prefixLength = dhcpResult.prefixLength,
-                    dnsServer = if (dhcpResult.dnsServer != "0.0.0.0") dhcpResult.dnsServer else config.dnsServer,
-                    secondaryDnsServer = if (dhcpResult.dnsServer2 != "0.0.0.0") dhcpResult.dnsServer2 else config.secondaryDnsServer
                 )
                 vpnInterface = service.establishVpnInterface(dhcpConfig)
                     ?: throw Exception("Failed to establish VPN interface during reconnect")
@@ -979,6 +1038,22 @@ connectInFlight.set(true)
                 assignedLocalIp = config.localAddress
                 vpnInterface = service.establishVpnInterface(config)
                     ?: throw Exception("Failed to establish VPN interface during reconnect")
+            }
+
+            if (isCancelled.get() || isDestroyed.get() || currentState == ConnectionState.DISCONNECTED) {
+                Log.d(TAG, "Reconnection aborted after establishVpnInterface")
+                try { vpnInterface?.close() } catch (e: Exception) {}
+                vpnInterface = null
+                val handle = nativeHandle
+                nativeHandle = 0
+                protectedFds.clear()
+                try {
+                    client.nativeDisconnect(handle)
+                    client.nativeDestroy(handle)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error disconnecting cancelled reconnect handle", e)
+                }
+                return
             }
 
             // Transition to CONNECTED and restart data forwarding
@@ -1018,7 +1093,7 @@ connectInFlight.set(true)
      */
     private fun startKeepalive(keepAliveManager: KeepAliveManager) {
         keepAliveManager.setInterval(config.keepAliveIntervalMs.toLong())
-        keepAliveManager.setTimeout(30000L) // 30 second timeout
+        keepAliveManager.setTimeout(10000L) // 10 second timeout
         keepAliveManager.start()
 
         scope.launch {
@@ -1033,7 +1108,7 @@ connectInFlight.set(true)
 
                     if (keepAliveManager.isConnectionDead()) {
                         Log.e(TAG, "Connection appears dead (keepalive timeout)")
-                        scope.launch { attemptReconnect() }
+                        triggerReconnect()
                         break
                     }
                 } catch (e: CancellationException) {
@@ -1048,14 +1123,15 @@ connectInFlight.set(true)
      * Start periodic statistics logging
      */
     private fun startStatisticsLogging() {
-        scope.launch {
+        statisticsJob?.cancel()
+        statisticsJob = scope.launch {
             while (!isCancelled.get() &&
-                currentState != ConnectionState.DISCONNECTED &&
-                currentState != ConnectionState.ERROR
+                !isDestroyed.get() &&
+                currentState == ConnectionState.CONNECTED
             ) {
                 try {
                     delay(STATS_INTERVAL_MS)
-                    if (isConnected()) {
+                    if (isConnected() && !isCancelled.get() && !isDestroyed.get()) {
                         publishTrafficSnapshot()
                         Log.d(TAG, "Stats: sent=${bytesSent.get()} bytes (${packetsSent.get()} pkts), " +
                                 "received=${bytesReceived.get()} bytes (${packetsReceived.get()} pkts)")

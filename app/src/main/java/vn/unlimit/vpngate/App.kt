@@ -8,7 +8,6 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.room.Room
 import de.blinkt.openvpn.core.OpenVPNService
-import okio.Path.Companion.toOkioPath
 import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.db.AppDatabase
@@ -46,41 +45,11 @@ class App : Application() {
         vpnGateItemDao = appDatabase.vpnGateItemDao()
         excludedAppDao = appDatabase.excludedAppDao()
 
-        // Initialize default excluded apps in background to prevent blocking application launch
-        Thread {
-            initializeDefaultExcludedApps()
-        }.start()
-
-        // Configure Coil 3 image caching for fast, fluid flag rendering
-        coil3.SingletonImageLoader.setSafe {
-            coil3.ImageLoader.Builder(this)
-                .memoryCache {
-                    coil3.memory.MemoryCache.Builder()
-                        .maxSizePercent(this, 0.25)
-                        .build()
-                }
-                .diskCache {
-                    coil3.disk.DiskCache.Builder()
-                        .directory(cacheDir.resolve("image_cache").toOkioPath())
-                        .maxSizeBytes(20L * 1024 * 1024)
-                        .build()
-                }
-                .build()
-        }
+        // Initialize default excluded apps
+        initializeDefaultExcludedApps()
         instance = this
         dataUtil = DataUtil(this)
         isImportToOpenVPN = AppConfig.getBoolean("vpn_import_open_vpn")
-
-        // First launch language detection: fa if device is Persian, else en
-        val savedLang = dataUtil!!.getStringSetting("app_saved_language", null)
-        if (savedLang == null) {
-            val sysLang = java.util.Locale.getDefault().language
-            val initialLang = if (sysLang.equals("fa", ignoreCase = true)) "fa" else "en"
-            dataUtil!!.setStringSetting("app_saved_language", initialLang)
-            AppCompatDelegate.setApplicationLocales(
-                androidx.core.os.LocaleListCompat.forLanguageTags(initialLang)
-            )
-        }
 
         // Apply the user-selected appearance (System / Light / Dark) before any
         // activity is created so the whole app follows Theme.Material3.DayNight.
@@ -100,6 +69,7 @@ class App : Application() {
         vn.unlimit.vpngate.automode.AutoModeLogStore.setPaused(!dataUtil!!.getDeveloperMode())
         // Initialize global VPN connection state tracker
         vn.unlimit.vpngate.state.GlobalVpnTracker.init(this)
+        vn.unlimit.vpngate.automode.TunnelStateWatcher.attach(this)
 
         // Make notification open DetailActivity
         OpenVPNService.setNotificationActivityClass(

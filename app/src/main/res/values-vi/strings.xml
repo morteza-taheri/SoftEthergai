@@ -180,6 +180,10 @@
     <!-- Auto Mode -->
     <string name="auto_mode">Chế độ tự động</string>
     <string name="setting_auto_protocol_label">Giao thức VPN mặc định</string>
+    <string name="setting_auto_protocol_priority_label">Ưu tiên giao thức tự động kết nối</string>
+    <string name="setting_auto_protocol_priority_hint">Bật và sắp xếp các giao thức; tự động kết nối sẽ thử theo thứ tự từ trên xuống trên từng máy chủ.</string>
+    <string name="setting_auto_protocol_priority_default">Mặc định (một giao thức)</string>
+    <string name="setting_auto_protocol_priority_rank">Ưu tiên #%1$d</string>
     <string name="setting_auto_timeout_label">Thời gian chờ kết nối chế độ tự động</string>
     <string name="setting_softether_max_connections_label">Số kết nối SoftEther tối đa</string>
     <string name="setting_softether_max_connections_value">%1$d kết nối</string>

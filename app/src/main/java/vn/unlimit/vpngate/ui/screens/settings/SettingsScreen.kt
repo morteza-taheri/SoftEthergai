@@ -18,29 +18,40 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Block
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Dns
-import androidx.compose.material.icons.rounded.Hub
-import androidx.compose.material.icons.rounded.Language
-import androidx.compose.material.icons.rounded.Launch
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Router
-import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material.icons.rounded.Storage
-import androidx.compose.material.icons.rounded.Timer
-import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material.icons.rounded.VpnLock
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Launch
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Reorder
+import androidx.compose.material.icons.outlined.Router
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.outlined.Translate
+import androidx.compose.material.icons.outlined.VpnLock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -128,7 +139,6 @@ fun SettingsScreen(
     var developerMode by remember { mutableStateOf(dataUtil.getDeveloperMode()) }
     var excludedAppsCount by remember { mutableStateOf(excludeAppsManager.getExcludedAppsCount()) }
     var showExcludedApps by remember { mutableStateOf(false) }
-    var showProtocolPrioritySheet by remember { mutableStateOf(false) }
     var autoProtocol by remember {
         mutableStateOf(
             AutoModeProtocol.fromId(
@@ -146,6 +156,7 @@ fun SettingsScreen(
     var showStartupPicker by remember { mutableStateOf(false) }
     var showCacheTimePicker by remember { mutableStateOf(false) }
     var showAutoProtocolPicker by remember { mutableStateOf(false) }
+    var showProtocolPriorityDialog by remember { mutableStateOf(false) }
     var showAutoTimeoutPicker by remember { mutableStateOf(false) }
     var showSoftetherConnectionsPicker by remember { mutableStateOf(false) }
 
@@ -215,7 +226,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.enable_notification_speed),
                         subtitle = stringResource(R.string.enable_notification_speed_hint),
-                        icon = Icons.Rounded.Speed,
+                        icon = Icons.Outlined.Speed,
                         checked = notifySpeed,
                         onChecked = {
                             notifySpeed = it
@@ -227,7 +238,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.udp_setting_label),
                         subtitle = stringResource(R.string.udp_setting_hint),
-                        icon = Icons.Rounded.Router,
+                        icon = Icons.Outlined.Router,
                         checked = includeUdp,
                         onChecked = {
                             includeUdp = it
@@ -239,7 +250,7 @@ fun SettingsScreen(
                     SettingSwitchRow(
                         title = stringResource(R.string.use_domain_label),
                         subtitle = stringResource(R.string.use_domain_hint),
-                        icon = Icons.Rounded.Language,
+                        icon = Icons.Outlined.Language,
                         checked = useDomain,
                         onChecked = {
                             useDomain = it
@@ -251,7 +262,7 @@ fun SettingsScreen(
                         SettingSwitchRow(
                             title = stringResource(R.string.block_ads_setting_label),
                             subtitle = stringResource(R.string.block_ads_setting_hint),
-                            icon = Icons.Rounded.Block,
+                            icon = Icons.Outlined.Block,
                             checked = blockAds,
                             onChecked = {
                                 blockAds = it
@@ -291,7 +302,7 @@ fun SettingsScreen(
                         SettingSwitchRow(
                             title = stringResource(R.string.dns_setting_label),
                             subtitle = stringResource(R.string.dns_setting_hint),
-                            icon = Icons.Rounded.Dns,
+                            icon = Icons.Outlined.Dns,
                             checked = useCustomDns,
                             onChecked = {
                                 useCustomDns = it
@@ -388,17 +399,26 @@ fun SettingsScreen(
             // ---------------- Auto Mode section
             item {
                 SettingsSection(title = stringResource(R.string.auto_mode)) {
-                    SettingActionRow(
-                        title = stringResource(R.string.setting_protocol_priority_title),
-                        subtitle = stringResource(R.string.setting_protocol_priority_summary),
-                        icon = Icons.Rounded.VpnLock,
-                        onClick = { showProtocolPrioritySheet = true },
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_auto_protocol_label),
+                        value = autoProtocol.id.lowercase().replace('_', ' '),
+                        icon = Icons.Outlined.VpnLock,
+                        onClick = { showAutoProtocolPicker = true },
+                    )
+                    SettingDivider()
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_auto_protocol_priority_label),
+                        value = dataUtil.getAutoModeProtocolPriority()
+                            .joinToString(" → ") { it.id.lowercase().replace('_', ' ') }
+                            .ifEmpty { stringResource(R.string.setting_auto_protocol_priority_default) },
+                        icon = Icons.Outlined.Reorder,
+                        onClick = { showProtocolPriorityDialog = true },
                     )
                     SettingDivider()
                     SettingValueRow(
                         title = stringResource(R.string.setting_auto_timeout_label),
                         value = "$autoTimeout s",
-                        icon = Icons.Rounded.Timer,
+                        icon = Icons.Outlined.Timer,
                         onClick = { showAutoTimeoutPicker = true },
                     )
                     SettingDivider()
@@ -408,14 +428,14 @@ fun SettingsScreen(
                             R.string.setting_softether_max_connections_value,
                             softetherMaxConnections,
                         ),
-                        icon = Icons.Rounded.Hub,
+                        icon = Icons.Outlined.Hub,
                         onClick = { showSoftetherConnectionsPicker = true },
                     )
                     SettingDivider()
                     SettingActionRow(
                         title = stringResource(R.string.setting_excluded_apps_label),
                         subtitle = stringResource(R.string.exclude_apps_text, excludedAppsCount),
-                        icon = Icons.Rounded.Apps,
+                        icon = Icons.Outlined.Apps,
                         onClick = { showExcludedApps = true },
                     )
                 }
@@ -428,7 +448,7 @@ fun SettingsScreen(
                         title = stringResource(R.string.setting_cache_label),
                         value = cacheTimes[cacheTimeIndex],
                         subtitle = stringResource(R.string.setting_cache_subtitle),
-                        icon = Icons.Rounded.Storage,
+                        icon = Icons.Outlined.Storage,
                         onClick = { showCacheTimePicker = true },
                     )
                     if (cacheExpires != null) {
@@ -436,7 +456,7 @@ fun SettingsScreen(
                         SettingActionRow(
                             title = stringResource(R.string.setting_cache_auto_clear_label),
                             subtitle = DateTimeFormatterUtil.formatDate(cacheExpires),
-                            icon = Icons.Rounded.DeleteOutline,
+                            icon = Icons.Outlined.DeleteOutline,
                             actionLabel = stringResource(R.string.setting_cache_clear),
                             onClick = { clearListServerCache(true) },
                         )
@@ -450,14 +470,14 @@ fun SettingsScreen(
                     SettingValueRow(
                         title = stringResource(R.string.setting_startup_screen),
                         value = startupScreens[startupScreenIndex],
-                        icon = Icons.Rounded.Launch,
+                        icon = Icons.Outlined.Launch,
                         onClick = { showStartupPicker = true },
                     )
                     SettingDivider()
                     SettingValueRow(
                         title = stringResource(R.string.setting_language_label),
                         value = languageNames[languageIndex],
-                        icon = Icons.Rounded.Translate,
+                        icon = Icons.Outlined.Translate,
                         onClick = { showLanguagePicker = true },
                     )
                     SettingDivider()
@@ -465,14 +485,14 @@ fun SettingsScreen(
                         title = stringResource(R.string.setting_theme_label),
                         value = themeNames[themeIndex],
                         subtitle = stringResource(R.string.setting_theme_subtitle),
-                        icon = Icons.Rounded.Palette,
+                        icon = Icons.Outlined.Palette,
                         onClick = { showThemePicker = true },
                     )
                     SettingDivider()
                     SettingSwitchRow(
                         title = stringResource(R.string.setting_developer_mode_label),
                         subtitle = stringResource(R.string.setting_developer_mode_summary),
-                        icon = Icons.Rounded.Code,
+                        icon = Icons.Outlined.Code,
                         checked = developerMode,
                         onChecked = {
                             developerMode = it
@@ -511,18 +531,12 @@ fun SettingsScreen(
             selectedIndex = languageIndex,
             onSelect = { index ->
                 languageIndex = index
-                val langTag = when (index) {
-                    1 -> "en"
-                    2 -> "fa"
-                    else -> ""
+                val locales = when (index) {
+                    1 -> LocaleListCompat.forLanguageTags("en")
+                    2 -> LocaleListCompat.forLanguageTags("fa")
+                    else -> LocaleListCompat.getEmptyLocaleList()
                 }
-                if (langTag.isNotEmpty()) {
-                    dataUtil.setStringSetting("app_saved_language", langTag)
-                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(langTag))
-                } else {
-                    dataUtil.setStringSetting("app_saved_language", "")
-                    AppCompatDelegate.setApplicationLocales(LocaleListCompat.getEmptyLocaleList())
-                }
+                AppCompatDelegate.setApplicationLocales(locales)
             },
             onDismiss = { showLanguagePicker = false },
         )
@@ -579,6 +593,13 @@ fun SettingsScreen(
         )
     }
 
+    if (showProtocolPriorityDialog) {
+        ProtocolPriorityDialog(
+            dataUtil = dataUtil,
+            onDismiss = { showProtocolPriorityDialog = false },
+        )
+    }
+
     if (showAutoTimeoutPicker) {
         val values = (5..60).toList()
         SingleChoiceDialog(
@@ -616,13 +637,6 @@ fun SettingsScreen(
             },
         )
     }
-
-    if (showProtocolPrioritySheet) {
-        ProtocolPrioritySheet(
-            dataUtil = dataUtil,
-            onDismiss = { showProtocolPrioritySheet = false },
-        )
-    }
 }
 
 @Composable
@@ -637,3 +651,90 @@ private fun cacheTimeLabels(): List<String> = listOf(
     stringResource(R.string.cache_time_24h),
     stringResource(R.string.cache_time_never),
 )
+
+/**
+ * §6-§10 Protocol Priority Profile editor: enable/disable protocols and
+ * reorder them (priority = list order). Persisted via DataUtil.
+ */
+@Composable
+private fun ProtocolPriorityDialog(
+    dataUtil: DataUtil,
+    onDismiss: () -> Unit,
+) {
+    var ordered by remember {
+        mutableStateOf(AutoModeProtocol.entries.toList())
+    }
+    var enabledIds by remember {
+        mutableStateOf(dataUtil.getAutoModeProtocolPriority().map { it.id }.toSet())
+    }
+
+    fun persist() {
+        dataUtil.setAutoModeProtocolPriority(ordered.filter { it.id in enabledIds })
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.setting_auto_protocol_priority_label)) },
+        text = {
+            Column {
+                Text(
+                    stringResource(R.string.setting_auto_protocol_priority_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                ordered.forEachIndexed { index, protocol ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Checkbox(
+                            checked = protocol.id in enabledIds,
+                            onCheckedChange = { checked ->
+                                enabledIds =
+                                    if (checked) enabledIds + protocol.id else enabledIds - protocol.id
+                                persist()
+                            },
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                protocol.id.lowercase().replace('_', ' ')
+                                    .replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            if (protocol.id in enabledIds) {
+                                Text(
+                                    stringResource(
+                                        R.string.setting_auto_protocol_priority_rank,
+                                        ordered.filter { it.id in enabledIds }.indexOf(protocol) + 1,
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                        IconButton(
+                            enabled = index > 0,
+                            onClick = {
+                                ordered = ordered.toMutableList().apply {
+                                    add(index - 1, removeAt(index))
+                                }
+                                persist()
+                            },
+                        ) { Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "up") }
+                        IconButton(
+                            enabled = index < ordered.lastIndex,
+                            onClick = {
+                                ordered = ordered.toMutableList().apply {
+                                    add(index + 1, removeAt(index))
+                                }
+                                persist()
+                            },
+                        ) { Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "down") }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
+        },
+    )
+}

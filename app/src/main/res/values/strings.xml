@@ -242,13 +242,7 @@
     <string name="no_server_available">No servers available. Please refresh the server list.</string>
     <string name="refresh">Refresh</string>
     <string name="refresh_servers">Refresh Servers</string>
-    <string name="get_servers">Get Server List</string>
     <string name="update_server_list_first">Please update the server list first</string>
-    <string name="server_list_last_updated">Updated: %1$s</string>
-    <string name="server_list_never_updated">Not updated yet</string>
-    <string name="servers_count_label">%1$d servers available</string>
-    <string name="server_list_count">%1$d servers available</string>
-    <string name="auto_mode_no_servers_banner">Server list is empty. Please fetch the servers before connecting.</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">Connect to \"%1$s\" via L2TP/IPSec</string>
     <string name="l2tp_connect_hint">To connect to server \"%1$s\" via L2TP/IPSec VPN. Please follow several step bellow</string>
@@ -257,6 +251,10 @@
     <!-- Auto Mode -->
     <string name="auto_mode">Auto Mode</string>
     <string name="setting_auto_protocol_label">Default VPN Protocol</string>
+    <string name="setting_auto_protocol_priority_label">Auto Connect Protocol Priority</string>
+    <string name="setting_auto_protocol_priority_hint">Enable protocols and order them; Auto Connect tries them top-down on each server.</string>
+    <string name="setting_auto_protocol_priority_default">Default (single protocol)</string>
+    <string name="setting_auto_protocol_priority_rank">Priority #%1$d</string>
     <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
     <string name="setting_softether_max_connections_label">SoftEther Max Connections</string>
     <string name="setting_softether_max_connections_value">%1$d connections</string>
@@ -293,6 +291,9 @@
     <string name="auto_mode_permission_battery_skip">Later</string>
     <string name="auto_mode_connected_secure">Connected &amp; Protected</string>
     <string name="title_home">Server List</string>
+    <string name="server_list_count">%1$d servers</string>
+    <string name="server_list_last_updated">Last updated: %1$s</string>
+    <string name="server_list_never_updated">Not updated yet</string>
     <string name="title_servers">Servers</string>
     <string name="title_free_server">Free Server</string>
     <string name="title_personal">Personal</string>
@@ -357,17 +358,4 @@
     <string name="softether_session_setup">Establishing SoftEther session…</string>
     <string name="softether_disconnecting">Disconnecting SoftEther…</string>
     <string name="error_unknown">An unknown error occurred. Please try again.</string>
-    <string name="update_servers">Update Servers</string>
-    <string name="setting_protocol_priority_title">Auto Connect Protocol Priority</string>
-    <string name="setting_protocol_priority_summary">Select enabled protocols and customize their priority order</string>
-    <string name="proto_softether_udp">SoftEther UDP</string>
-    <string name="proto_softether_tcp">SoftEther TCP</string>
-    <string name="proto_sstp">MS-SSTP</string>
-    <string name="proto_openvpn_udp">OpenVPN UDP</string>
-    <string name="proto_openvpn_tcp">OpenVPN TCP</string>
-    <string name="move_up">Move up</string>
-    <string name="move_down">Move down</string>
-    <string name="no_suitable_server_found">No suitable server found</string>
-    <string name="show_traffic_in_notification">Show Traffic in Notification</string>
-    <string name="show_traffic_in_notification_desc">Display download/upload speed and usage in status notification</string>
 </resources>

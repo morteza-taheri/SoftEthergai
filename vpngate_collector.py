@@ -899,6 +899,39 @@ def select_hosts_table(candidates: List[Any]) -> Optional[Any]:
     return candidates[0] if candidates else None
 
 
+def extract_country_from_row(
+    row_text: str,
+    hostname: str,
+    isp_hostname: str,
+) -> str:
+    """V4 idea: the country is the text appearing before the DDNS
+    hostname in the flattened row. Used only as a fallback when the
+    country column is unavailable, never to override the column."""
+    text = clean(row_text)
+
+    if hostname:
+        idx = text.lower().find(hostname.lower())
+
+        if idx > 0:
+            prefix = text[:idx].strip()
+
+            # Drop table chrome artifacts.
+            prefix = re.sub(
+                r"\b(?:country|physical location)\b",
+                "",
+                prefix,
+                flags=re.IGNORECASE,
+            ).strip()
+
+            if prefix:
+                parts = prefix.split()
+
+                if len(parts) <= 5:
+                    return " ".join(parts[-5:])
+
+    return ""
+
+
 # HTML PROTOCOL PARSER
 # ============================================================
 
@@ -917,6 +950,191 @@ def parse_sstp(value: str) -> Tuple[bool, str, Optional[int]]:
     port = to_int(m.group(2)) if m.group(2) else None
 
     return True, host, port
+
+
+def parse_html_protocols(
+    row_text: str,
+    server: Dict[str, Any],
+    source: str
+) -> None:
+    """V4 idea: parse protocol sections from the flattened row text.
+
+    The VPN Gate row is ordered approximately as:
+        SSL-VPN | TCP: xxxx | UDP: Supported | L2TP/IPsec |
+        OpenVPN | TCP: xxxx | UDP: xxxx | MS-SSTP |
+        SSTP Hostname: host[:port]
+
+    Each section is isolated with a REQUIRED lookahead so the lazy
+    group must actually expand (the old optional-group form matched
+    zero-width and never reached the ports).
+
+    This is a GAP-FILLER only: every mark here first checks the
+    field state, so the column-scoped paths above stay authoritative
+    and their values are never overwritten.
+    """
+    text = clean(row_text)
+
+    # --------------------------------------------------------
+    # SoftEther / SSL-VPN (bounded by the next section label)
+    # --------------------------------------------------------
+    se_section_m = re.search(
+        r"SSL-VPN(.*?)(?=L2TP/IPsec|OpenVPN|MS-SSTP|$)",
+        text,
+        re.IGNORECASE,
+    )
+
+    if se_section_m:
+        se_section = se_section_m.group(1)
+
+        p = server["protocols"]
+
+        if not p["softether"]["supported"]:
+            mark_supported(server, "softether", source)
+
+        if not p["softether"]["tcp"]["supported"]:
+            tcp_m = re.search(r"TCP[:\s]*(\d+)", se_section, re.I)
+
+            if tcp_m and valid_port(to_int(tcp_m.group(1))):
+                set_field(
+                    server,
+                    "protocols.softether.tcp.supported",
+                    True,
+                    source,
+                )
+                set_field(
+                    server,
+                    "protocols.softether.tcp.port",
+                    to_int(tcp_m.group(1)),
+                    source,
+                )
+
+        if not p["softether"]["udp"]["supported"]:
+            if re.search(r"UDP[:\s]*Supported", se_section, re.I):
+                set_field(
+                    server,
+                    "protocols.softether.udp.supported",
+                    True,
+                    source,
+                )
+            else:
+                udp_m = re.search(r"UDP[:\s]*(\d+)", se_section, re.I)
+
+                if udp_m and valid_port(to_int(udp_m.group(1))):
+                    set_field(
+                        server,
+                        "protocols.softether.udp.supported",
+                        True,
+                        source,
+                    )
+                    set_field(
+                        server,
+                        "protocols.softether.udp.port",
+                        to_int(udp_m.group(1)),
+                        source,
+                    )
+
+    # --------------------------------------------------------
+    # L2TP/IPsec (label presence in the server's own row)
+    # --------------------------------------------------------
+    if not server["protocols"]["l2tpIpsec"]["supported"]:
+        l2tp_section_m = re.search(
+            r"L2TP/IPsec(.*?)(?=OpenVPN|MS-SSTP|SSL-VPN|$)",
+            text,
+            re.IGNORECASE,
+        )
+
+        if l2tp_section_m and re.search(
+            r"L2TP", l2tp_section_m.group(0), re.I
+        ):
+            mark_supported(server, "l2tpIpsec", source)
+            if not server["protocols"]["l2tpIpsec"]["port"]:
+                set_field(
+                    server,
+                    "protocols.l2tpIpsec.port",
+                    1701,
+                    source,
+                )
+
+    # --------------------------------------------------------
+    # OpenVPN (bounded by the next section label)
+    # --------------------------------------------------------
+    ovpn_section_m = re.search(
+        r"OpenVPN(.*?)(?=MS-SSTP|L2TP/IPsec|SSL-VPN|$)",
+        text,
+        re.IGNORECASE,
+    )
+
+    if ovpn_section_m:
+        ovpn_section = ovpn_section_m.group(1)
+
+        if not server["protocols"]["openvpn"]["supported"]:
+            mark_supported(server, "openvpn", source)
+
+        if not server["protocols"]["openvpn"]["tcp"]["supported"]:
+            tcp_m = re.search(r"TCP[:\s]*(\d+)", ovpn_section, re.I)
+
+            if tcp_m and valid_port(to_int(tcp_m.group(1))):
+                set_field(
+                    server,
+                    "protocols.openvpn.tcp.supported",
+                    True,
+                    source,
+                )
+                set_field(
+                    server,
+                    "protocols.openvpn.tcp.port",
+                    to_int(tcp_m.group(1)),
+                    source,
+                )
+
+        if not server["protocols"]["openvpn"]["udp"]["supported"]:
+            udp_m = re.search(r"UDP[:\s]*(\d+)", ovpn_section, re.I)
+
+            if udp_m and valid_port(to_int(udp_m.group(1))):
+                set_field(
+                    server,
+                    "protocols.openvpn.udp.supported",
+                    True,
+                    source,
+                )
+                set_field(
+                    server,
+                    "protocols.openvpn.udp.port",
+                    to_int(udp_m.group(1)),
+                    source,
+                )
+
+    # --------------------------------------------------------
+    # MS-SSTP (label presence; hostname/port from the section text)
+    # --------------------------------------------------------
+    if not server["protocols"]["sstp"]["supported"]:
+        sstp_section_m = re.search(
+            r"MS-SSTP(.*?)(?=SSL-VPN|L2TP/IPsec|OpenVPN|$)",
+            text,
+            re.IGNORECASE,
+        )
+
+        if sstp_section_m:
+            supported, sstp_host, sstp_port = parse_sstp(
+                sstp_section_m.group(0)
+            )
+
+            if supported:
+                mark_supported(server, "sstp", source)
+                set_field(
+                    server,
+                    "protocols.sstp.hostname",
+                    sstp_host,
+                    source,
+                )
+
+                if valid_port(sstp_port):
+                    set_field(
+                        server,
+                        "protocols.sstp.port",
+                        sstp_port,
+                        source,
+                    )
 
 
 # ============================================================
@@ -1073,6 +1291,23 @@ def parse_html(
                 clean(country_long),
                 source,
             )
+        else:
+            # V4 idea: derive the country from the row text before the
+            # DDNS hostname (no flag image needed). Only fills when the
+            # column path found nothing, so the column path stays
+            # authoritative.
+            row_text = tr.get_text(" ", strip=True)
+            fallback_long = extract_country_from_row(
+                row_text, hostname, ""
+            )
+
+            if fallback_long:
+                set_field(
+                    server,
+                    "identity.countryLong",
+                    fallback_long,
+                    source,
+                )
 
         # Sessions / uptime / cumulative users.
         sessions_cell = cell(tds, "sessions")
@@ -1366,6 +1601,19 @@ def parse_html(
                         sstp_port,
                         source,
                     )
+
+        # ---- V4 idea: protocol facts from the flattened row text as a
+        #      bounded-section fallback. The VPN Gate row reads
+        #      "SSL-VPN … TCP: xxxx … UDP: Supported … L2TP/IPsec …
+        #       OpenVPN … TCP: xxxx … UDP: xxxx … MS-SSTP …".
+        #      Each section is isolated by a REQUIRED lookahead so the
+        #      lazy group actually expands; marks only fill gaps left by
+        #      the column-scoped paths above (never override them).
+        parse_html_protocols(
+            tr.get_text(" ", strip=True),
+            server,
+            source,
+        )
 
         # ---- Operator + score.
         op_cell = cell(tds, "operator")

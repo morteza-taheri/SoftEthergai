@@ -16,8 +16,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,7 +75,7 @@ fun ExcludedAppsSheet(
             val ex = (app.excludedAppDao.getAllExcludedApps())
                 .filter { it.packageName != context.packageName }
             val pm = context.packageManager
-            val installed = pm.getInstalledApplications(0)
+            val installed = pm.getInstalledApplications(PackageManager.GET_META_DATA)
                 .filter { it.packageName != context.packageName }
                 .map { ExcludedApp(it.packageName, pm.getApplicationLabel(it).toString()) }
                 .sortedBy { it.appName }
@@ -110,11 +110,11 @@ fun ExcludedAppsSheet(
                     .fillMaxWidth()
                     .padding(top = 8.dp),
                 placeholder = { Text(stringResource(R.string.search_apps_hint)) },
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Rounded.Close, contentDescription = null)
+                            Icon(Icons.Filled.Close, contentDescription = null)
                         }
                     }
                 },

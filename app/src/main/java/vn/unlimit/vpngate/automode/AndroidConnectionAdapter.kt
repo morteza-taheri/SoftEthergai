@@ -67,62 +67,14 @@ class AndroidConnectionAdapter(
 
     override suspend fun disconnect() {
         withContext(Dispatchers.Main) {
-            try {
-                ProfileManager.setConntectedVpnProfileDisconnected(context)
-                startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting OpenVPN", e)
-            }
-            try {
-                startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting SoftEther", e)
-            }
-            try {
-                startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting SSTP", e)
-            }
+            // Signal all VPN services to disconnect to ensure clean state
+            startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
+            ProfileManager.setConntectedVpnProfileDisconnected(context)
+            startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
+            startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
         }
         currentProtocol = null
-    }
-
-    override suspend fun ensureDisconnected(timeoutMs: Long): Boolean {
-        return withContext(Dispatchers.IO) {
-            val startTime = System.currentTimeMillis()
-            val prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
-            var allStopped = false
-
-            while (System.currentTimeMillis() - startTime < timeoutMs) {
-                val openVpnActive = try {
-                    de.blinkt.openvpn.core.VpnStatus.isVPNActive()
-                } catch (_: Throwable) {
-                    false
-                }
-                val softEtherActive = try {
-                    val seState = SoftEtherVpnService.currentState
-                    seState != SoftEtherVpnService.STATE_DISCONNECTED && seState != SoftEtherVpnService.STATE_ERROR
-                } catch (_: Throwable) {
-                    false
-                }
-                val sstpActive = try {
-                    prefs.getBoolean(OscPrefKey.ROOT_STATE.toString(), false)
-                } catch (_: Throwable) {
-                    false
-                }
-
-                if (!openVpnActive && !softEtherActive && !sstpActive) {
-                    allStopped = true
-                    break
-                }
-                kotlinx.coroutines.delay(100)
-            }
-
-            // A brief pause (200ms) to ensure OS-level socket and TUN descriptor teardown is complete
-            kotlinx.coroutines.delay(200)
-            log("[AUTO] Connection stop verified (idle=$allStopped, duration=${System.currentTimeMillis() - startTime}ms)")
-            allStopped
-        }
+        kotlinx.coroutines.delay(200) // Brief grace period for OS TUN interface and native sockets to release
     }
 
     override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
@@ -144,25 +96,13 @@ class AndroidConnectionAdapter(
      */
     fun skipCurrent() {
         activeTunnelWait?.complete(false)
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            try {
-                ProfileManager.setConntectedVpnProfileDisconnected(context)
-                startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting OpenVPN on skip", e)
-            }
-            try {
-                startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting SoftEther on skip", e)
-            }
-            try {
-                startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error disconnecting SSTP on skip", e)
-            }
-        }
         currentProtocol = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            startService(SoftEtherVpnService.ACTION_DISCONNECT, SoftEtherVpnService::class.java)
+            ProfileManager.setConntectedVpnProfileDisconnected(context)
+            startService(OpenVPNService.DISCONNECT_VPN, OpenVPNService::class.java)
+            startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
+        }
     }
 
     @Volatile
@@ -211,6 +151,9 @@ class AndroidConnectionAdapter(
             clientProductName = "VPN Gate Connector Pro",
             clientVersion = BuildConfig.VERSION_NAME,
             clientBuild = BuildConfig.VERSION_CODE,
+            maxConnections = dataUtil.getSoftEtherMaxConnections(),
+            excludedApps = (App.instance?.excludedAppDao?.getAllExcludedApps() ?: emptyList())
+                .map { it.packageName },
         )
         SoftEtherVpnService.notificationTargetActivity =
             vn.unlimit.vpngate.activities.MainActivity::class.java
@@ -242,13 +185,10 @@ class AndroidConnectionAdapter(
             val profile = cp.convertProfile()
             profile.mName = conn.getName(useUdp)
             profile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
-            if (dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ||
-                dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)
-            ) {
-                profile.mOverrideDNS = true
-                profile.mDNS1 = resolvePrimaryDns()
-                profile.mDNS2 = resolveSecondaryDns()
-            }
+            vn.unlimit.vpngate.utils.ExcludeAppsManager(context).configureSplitTunneling(profile)
+            profile.mOverrideDNS = true
+            profile.mDNS1 = resolvePrimaryDns()
+            profile.mDNS2 = resolveSecondaryDns()
             ProfileManager.setTemporaryProfile(context, profile)
             VPNLaunchHelper.startOpenVpn(profile, context, null, true)
             dataUtil.setBooleanSetting(DataUtil.LAST_CONNECT_USE_UDP, useUdp)
@@ -285,11 +225,7 @@ class AndroidConnectionAdapter(
 
     private fun startService(action: String, service: Class<*>) {
         val intent = Intent(context, service).setAction(action)
-        try {
-            context.startService(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to startService with action $action", e)
-        }
+        startForegroundCompatible(intent, service)
     }
 
     private fun startForegroundCompatible(intent: Intent, service: Class<*>) {

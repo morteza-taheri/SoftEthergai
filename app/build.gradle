@@ -11,13 +11,9 @@ repositories {
 android {
     compileSdk = project.ext.compileSdkVersion
     defaultConfig {
-        applicationId "vn.unlimit.vpngatepro"
         minSdkVersion project.ext.minSdkVersion
         targetSdkVersion project.ext.targetSdkVersion
-        versionCode 133
-        versionName "2.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField "String", "FLAVOR", "\"pro\""
         ksp {
             arg('room.schemaLocation', "$projectDir/schemas")
         }
@@ -29,11 +25,44 @@ android {
         }
     }
     signingConfigs {
-        debugConfig {
-            storeFile file("${rootDir}/debug.keystore")
-            storePassword "android"
-            keyAlias "androiddebugkey"
-            keyPassword "android"
+        // When the release keystore is not present locally (it is blackbox-
+        // encrypted and only deployed on CI), fall back to the default debug
+        // keystore so every variant can build without secrets.
+        // Password resolution order: SIGN_KEY_PASSWORD env var (CI) →
+        // signKeyPassword in local.properties (developer machines, never
+        // committed) → debug keystore.
+        def keystoreFile = file("../keyStore/release.jks")
+        def localProps = new Properties()
+        def localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            localPropsFile.withInputStream { localProps.load(it) }
+        }
+        def signPassword = System.getenv("SIGN_KEY_PASSWORD") ?: localProps.getProperty("signKeyPassword")
+        if (keystoreFile.exists() && signPassword != null) {
+            pro {
+                storeFile keystoreFile
+                storePassword String.valueOf(signPassword)
+                keyAlias "key_pro"
+                keyPassword String.valueOf(signPassword)
+            }
+        } else {
+            def debugKeystore = file("${System.getProperty('user.home')}/.android/debug.keystore")
+            pro {
+                storeFile debugKeystore
+                storePassword "android"
+                keyAlias "androiddebugkey"
+                keyPassword "android"
+            }
+        }
+    }
+    flavorDimensions = ["tier"]
+    productFlavors {
+        pro {
+            dimension "tier"
+            applicationId "vn.unlimit.vpngatepro"
+            signingConfig signingConfigs.pro
+            versionCode 138
+            versionName "2.4.5"
         }
     }
 
@@ -45,8 +74,35 @@ android {
         }
 
         debug {
-            signingConfig signingConfigs.debugConfig
             versionNameSuffix "-dev"
+        }
+    }
+    androidComponents {
+        // Keep only the proRelease variant on non-CI machines so the IDE's
+        // Build Variants panel shows a single entry.
+        if (System.getenv("CI") == null) {
+            beforeVariants(selector().withBuildType("debug")) { variant ->
+                variant.enabled = false
+            }
+        }
+        onVariants(selector().withBuildType("debug")) { variant ->
+            def keystoreFile = rootProject.file("keyStore/release.jks")
+            // When the release keystore is not present locally, debug builds
+            // fall back to the default debug keystore.
+            if (keystoreFile.exists()) {
+                def flavorName = variant.productFlavors[0].second
+                def androidExt = project.extensions.getByName("android")
+                def signingConfig = androidExt.signingConfigs.findByName(flavorName)
+                if (signingConfig != null) {
+                    variant.signingConfig.setConfig(signingConfig)
+                    // Sign the androidTest APK with the same key so it matches the
+                    // target's signature (otherwise connectedAndroidTest fails with
+                    // "Permission Denial: starting instrumentation ... signature matching")
+                    if (variant.androidTest != null) {
+                        variant.androidTest.signingConfig.setConfig(signingConfig)
+                    }
+                }
+            }
         }
     }
     useLibrary 'android.test.runner'
@@ -115,6 +171,5 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4'
     implementation 'androidx.compose.runtime:runtime-livedata'
     implementation 'io.coil-kt.coil3:coil-compose:3.3.0'
-    implementation 'io.coil-kt.coil3:coil-network-okhttp:3.3.0'
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

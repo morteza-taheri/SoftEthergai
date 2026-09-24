@@ -1,7 +1,15 @@
 package vn.unlimit.vpngate.state
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.preference.PreferenceManager
 import de.blinkt.openvpn.core.ConnectionStatus
 import de.blinkt.openvpn.core.VpnStatus
@@ -10,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import vn.unlimit.softether.SoftEtherVpnService
+import vn.unlimit.vpngate.automode.TunnelStateWatcher
 
 /**
  * High-level connection states across all VPN protocols.
@@ -70,13 +79,62 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         }
     }
 
+    private var vpnNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var appContext: Context? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     fun init(context: Context) {
         if (isInitialized) return
         isInitialized = true
+        appContext = context.applicationContext
         prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
         prefs?.registerOnSharedPreferenceChangeListener(sstpListener)
         SoftEtherVpnService.addStateListener(this)
         VpnStatus.addStateListener(this)
+        registerSystemVpnWatcher(context.applicationContext)
+    }
+
+    private fun registerSystemVpnWatcher(context: Context) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        try {
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d("GlobalVpnTracker", "System VPN network available: $network")
+                }
+
+                override fun onLost(network: Network) {
+                    Log.d("GlobalVpnTracker", "System VPN network lost: $network")
+                    mainHandler.postDelayed({
+                        val hasVpnTransport = cm.allNetworks.any { net ->
+                            runCatching {
+                                cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                            }.getOrDefault(false)
+                        }
+                        if (!hasVpnTransport && currentStatus == VpnConnectionStatus.CONNECTED) {
+                            Log.w("GlobalVpnTracker", "All system VPN transports lost while connected! Triggering fast disconnect.")
+                            TunnelStateWatcher.onTunnelLost?.invoke()
+                            updateState(VpnConnectionStatus.DISCONNECTED)
+                            runCatching {
+                                val ctx = appContext ?: return@runCatching
+                                val seIntent = Intent(ctx, SoftEtherVpnService::class.java).apply {
+                                    action = SoftEtherVpnService.ACTION_DISCONNECT
+                                }
+                                ctx.startService(seIntent)
+                            }
+                        }
+                    }, 500)
+                }
+            }
+            vpnNetworkCallback = callback
+            cm.registerNetworkCallback(request, callback)
+        } catch (e: Exception) {
+            Log.e("GlobalVpnTracker", "Failed to register VPN NetworkCallback", e)
+        }
     }
 
     fun updateState(

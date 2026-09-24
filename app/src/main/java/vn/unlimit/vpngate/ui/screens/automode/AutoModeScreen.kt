@@ -116,6 +116,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.automode.AutoModeController
+import vn.unlimit.vpngate.automode.AutoModeEngine
 import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
@@ -255,6 +256,24 @@ fun AutoModeScreen(
                     ).show()
                     onNavigateHome()
                 }
+                // Kick off a background fetch so the list is populated by the
+                // time the user lands on Home (result saved to DB + cache).
+                try {
+                    AutoModeEngine.defaultServers(viewModel.dataUtil)
+                } catch (_: Throwable) {
+                    // Network failures are tolerated; Home shows its own error state
+                }
+                return@launch
+            }
+            if (count == 0) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.update_server_list_first),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    onNavigateHome()
+                }
                 return@launch
             }
 
@@ -321,17 +340,12 @@ fun AutoModeScreen(
         )
     }
 
-    val cachedList = viewModel.dataUtil.connectionsCache
-    var serverCount by remember { mutableStateOf(cachedList?.size() ?: 0) }
-    LaunchedEffect(state) {
-        withContext(Dispatchers.IO) {
-            val app = context.applicationContext as? App
-            val count = app?.vpnGateItemDao?.count() ?: (viewModel.dataUtil.connectionsCache?.size() ?: 0)
-            withContext(Dispatchers.Main) {
-                serverCount = count
-            }
-        }
-    }
+    // Default protocol from settings
+    val defaultProtocolId = viewModel.dataUtil.getStringSetting(
+        DataUtil.SETTING_DEFAULT_VPN_PROTOCOL,
+        AutoModeProtocol.DEFAULT_ID,
+    )
+    val defaultProtocol = AutoModeProtocol.fromId(defaultProtocolId)
 
     Scaffold { padding ->
         Column(
@@ -342,40 +356,39 @@ fun AutoModeScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (serverCount == 0 && state is AutoModeState.Disconnected) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 20.dp),
+            // Protocol info badge
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.auto_mode_no_servers_banner),
-                            style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
-                        Button(
-                            onClick = { onNavigateHome() },
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.get_servers))
-                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.setting_auto_protocol_label),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                    Text(
+                        text = defaultProtocol.id.replace('_', ' '),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
 
