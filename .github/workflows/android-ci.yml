@@ -85,8 +85,8 @@ jobs:
         # compileSdk/targetSdk 37 (root build.gradle), so without this step
         # every Gradle task fails with "Failed to find ... android-37".
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0"
+          yes | sdkmanager --sdk_root=/opt/android-sdk-linux --licenses > /dev/null || true
+          sdkmanager --sdk_root=/opt/android-sdk-linux "platforms;android-37" "build-tools;37.0.0"
 
       - name: Build OpenSSL headers
         run: |
