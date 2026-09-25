@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import vn.unlimit.vpngate.state.GlobalVpnTracker
 
 /**
  * Auto Mode orchestration core (Â§27): a thin layer on top of the app's

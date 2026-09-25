@@ -37,6 +37,9 @@
 -keep class de.blinkt.openvpn.core.VpnStatus$StateListener
 -keep class de.blinkt.openvpn.core.VpnStatus
 -keepclassmembers class de.blinkt.openvpn.core.VpnStatus {public *;}
+-keep class de.blinkt.openvpn.core.VpnStatus$LogListener
+-keep class de.blinkt.openvpn.core.LogItem
+-keepclassmembers class de.blinkt.openvpn.core.LogItem {public *;}
 -keep class de.blinkt.openvpn.utils.**
 -keepclassmembers class de.blinkt.openvpn.utils.** { public *;}
 -keep class de.blinkt.openvpn.core.keepVPNAlive

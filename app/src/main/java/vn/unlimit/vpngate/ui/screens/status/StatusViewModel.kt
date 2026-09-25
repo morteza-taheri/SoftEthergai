@@ -20,6 +20,7 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import de.blinkt.openvpn.VpnProfile
 import de.blinkt.openvpn.core.ConfigParser
 import de.blinkt.openvpn.core.ConnectionStatus
@@ -194,19 +195,16 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isSoftEtherConnected = false
                         isSSTPConnected = false
                         isConnecting = false
-                        isSoftEtherConnecting = false
                         update {
                             it.copy(
                                 powerActivated = false,
                                 powerEnabled = true,
                                 connecting = false,
-                                connectText = appContext.getString(R.string.connect),
                                 statusText = appContext.getString(
                                     R.string.tap_to_connect_last,
                                     connectionName,
                                 ),
                                 showCheckIp = false,
-                                showNetStats = false,
                             )
                         }
                     }
