@@ -80,6 +80,14 @@ jobs:
       - name: Java version
         run: java --version
 
+      - name: Install Android SDK platform 37
+        # The runner image ships an older SDK; the project pins
+        # compileSdk/targetSdk 37 (root build.gradle), so without this step
+        # every Gradle task fails with "Failed to find ... android-37".
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-37" "build-tools;37.0.0"
+
       - name: Build OpenSSL headers
         run: |
           cd SoftEtherClient/src/main/cpp && ./build-openssl-android.sh --headers-only
