@@ -35,6 +35,16 @@ diagnostics_report.json
 __pycache__/
 .pytest_cache/
 
+# Native build output. NDK/CMake drop CMakeCache.txt, *.o, *.ninja_*,
+# .ninja_log and configure_fingerprint.bin here, all of which embed absolute
+# machine paths and must never be committed.
+.cxx/
+.externalNativeBuild/
+**/build/intermediates/cxx/
+
+# Signing material that is generated locally, never committed.
+/debug.keystore
+
 # Local release APKs (built without the CI signing key)
 release-apks/
 

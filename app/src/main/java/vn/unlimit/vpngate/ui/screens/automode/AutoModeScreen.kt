@@ -454,15 +454,29 @@ fun AutoModeScreen(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = when (error.message) {
-                                AutoModeController.ERROR_NO_SERVER ->
+                            text = when {
+                                // VpnM Phase 1.5: the empty-list guard carries an
+                                // already-localised, actionable message, so it
+                                // must not be swallowed by the generic branch.
+                                error.message == context.getString(
+                                    R.string.update_server_list_first,
+                                ) -> error.message
+                                error.message == AutoModeController.ERROR_NO_SERVER ->
                                     stringResource(R.string.auto_mode_error_no_server)
-                                AutoModeController.ERROR_VPN_PERMISSION ->
+                                error.message == AutoModeController.ERROR_VPN_PERMISSION ->
                                     stringResource(R.string.auto_mode_error_vpn_permission)
                                 else -> stringResource(R.string.auto_mode_error_generic)
                             },
                             style = MaterialTheme.typography.bodyMedium,
                         )
+                    }
+                    // VpnM Phase 1.5: give the user the way out the spec asks
+                    // for — go update the server list.
+                    if (error.message == context.getString(R.string.update_server_list_first)) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(onClick = onNavigateHome) {
+                            Text(stringResource(R.string.auto_mode_go_to_server_list))
+                        }
                     }
                 }
             }

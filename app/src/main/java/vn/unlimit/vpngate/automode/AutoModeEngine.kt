@@ -81,6 +81,11 @@ object AutoModeEngine {
                         timeoutMs = 1200,
                     )
                 },
+                // VpnM Phase 1.5: an empty list must not run the attempt loop.
+                emptyServerListMessage = {
+                    vn.unlimit.vpngate.App.instance!!
+                        .getString(vn.unlimit.vpngate.R.string.update_server_list_first)
+                },
             )
             controller = created
             _state.value = created.state.value

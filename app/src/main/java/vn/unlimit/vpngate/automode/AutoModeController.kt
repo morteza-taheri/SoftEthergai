@@ -36,6 +36,12 @@ class AutoModeController(
     private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
     /** Optional pre-filter to eliminate blocked candidates via fast reachability testing. */
     private val reachabilityFilter: (suspend (List<AutoModeCandidate>, AutoModeProtocol) -> List<AutoModeCandidate>)? = null,
+    /**
+     * VpnM §Phase 1.5 — message shown when the user presses Auto Connect while
+     * the server list is empty. Injected so the controller stays free of
+     * Android resources and remains JVM-unit-testable.
+     */
+    private val emptyServerListMessage: () -> String = { "no servers available" },
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -92,6 +98,24 @@ class AutoModeController(
 
     val isRunning: Boolean
         get() = job?.isActive == true
+
+    /**
+     * VpnM Phase 3 "Cursor": 0-based position of the server currently being
+     * attempted within the resolved (filtered + sorted) list, plus the size of
+     * that list. [totalServerCount] stays 0 until a run resolves a list.
+     *
+     * Distinct from the per-run attempt counter carried by the Connecting
+     * state: that one counts servers actually dialled, this one reports the
+     * position in the full ordering, which is what makes "Try next server"
+     * from #5 land on #6.
+     */
+    @Volatile
+    var currentServerIndex: Int = -1
+        private set
+
+    @Volatile
+    var totalServerCount: Int = 0
+        private set
 
     /**
      * User-requested skip of the current server (Try next server button).
@@ -235,6 +259,41 @@ class AutoModeController(
 
     /** Â§3 button semantics across the four states. */
     fun onButtonPressed() {
+        // Stop / disconnect must stay synchronous: the caller asserts the state
+        // right after the call returns. Only the "start" branch needs the
+        // suspendable server-list check, and start() already resolves the list
+        // inside the run coroutine, so the guard lives there instead of here.
+        onButtonPressedWithoutGuard()
+    }
+
+    /**
+     * Button semantics plus the VpnM Phase 1.5 empty-list guard.
+     *
+     * An empty server list used to run the whole attempt loop and end in a
+     * generic "Error" with no hint. Now it refuses up-front and reports the
+     * dedicated message, leaving the UI free to point the user at the server
+     * list.
+     *
+     * @return true when a run was actually started.
+     */
+    suspend fun startOrRefuseIfNoServers(): Boolean {
+        if (_state.value !is AutoModeState.Disconnected && _state.value !is AutoModeState.Error) {
+            // Already connecting or connected: the button means stop/disconnect,
+            // not "start", so the guard does not apply.
+            onButtonPressedWithoutGuard()
+            return false
+        }
+        if (serverProvider().isEmpty()) {
+            overrideServers = null
+            setState(AutoModeState.Error(emptyServerListMessage()))
+            return false
+        }
+        overrideServers = null
+        start()
+        return true
+    }
+
+    private fun onButtonPressedWithoutGuard() {
         when (_state.value) {
             is AutoModeState.Disconnected, is AutoModeState.Error -> {
                 overrideServers = null
@@ -282,6 +341,14 @@ class AutoModeController(
 
         val all = overrideServers ?: serverProvider()
         overrideServers = null
+        // VpnM Phase 1.5: refuse an empty list up-front. Without this the run
+        // would fall through to the generic ERROR_NO_SERVER, telling the user
+        // to retry a connection that can never start.
+        if (all.isEmpty()) {
+            adapter.log("[AUTO] Server list is empty; refusing to start")
+            setState(AutoModeState.Error(emptyServerListMessage()))
+            return
+        }
         // Server ordering is independent of protocol ordering (quality DESC).
         val qualitySorted = all.sortedWith(byQuality)
         adapter.log("[AUTO] Servers available = ${all.size}")
@@ -320,6 +387,12 @@ class AutoModeController(
 
             val key = "${server.ip}|${server.hostname ?: ""}"
             if (!attempted.add(key)) continue
+
+            // VpnM Phase 3 "Cursor": the absolute position of the server being
+            // tried, counted over the whole (post-filter) list, so the UI can say
+            // "server #5 of 20" rather than only "attempt 1 of 3".
+            currentServerIndex = servers.indexOf(server).coerceAtLeast(0)
+            totalServerCount = servers.size
 
             // Capability check: only protocols this server actually supports,
             // in profile priority order. Unsupported protocols are never attempted.

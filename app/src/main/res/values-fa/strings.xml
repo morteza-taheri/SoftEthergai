@@ -215,7 +215,7 @@
     <string name="no_server_available">هیچ سروری در دسترس نیست. لطفاً لیست سرورها را به‌روزرسانی کنید.</string>
     <string name="refresh">به‌روزرسانی</string>
     <string name="refresh_servers">به‌روزرسانی سرورها</string>
-    <string name="update_server_list_first">اول لیست سرور ها را بروز رسانی کن</string>
+    <string name="update_server_list_first">لیست سرورها خالی است. لطفاً ابتدا لیست سرورها را بروزرسانی کنید.</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">اتصال به «%1$s» از طریق L2TP/IPSec</string>
     <string name="l2tp_connect_hint">برای اتصال به سرور «%1$s» از طریق VPN با L2TP/IPSec مراحل زیر را دنبال کنید</string>
