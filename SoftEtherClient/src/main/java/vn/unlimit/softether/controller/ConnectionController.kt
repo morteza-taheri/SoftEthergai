@@ -113,17 +113,6 @@ class ConnectionController(
         }
     }
 
-    private fun interruptNativeConnection() {
-        val handle = nativeHandle
-        if (handle != 0L) {
-            try {
-                client.nativeDisconnect(handle)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error interrupting native connection", e)
-            }
-        }
-    }
-
     /** DHCP-assigned local IP address (available after successful connect) */
     var assignedLocalIp: String? = null
         private set

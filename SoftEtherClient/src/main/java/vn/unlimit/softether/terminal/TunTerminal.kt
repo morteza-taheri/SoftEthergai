@@ -1,4 +1,4 @@
-package vn.unlimit.softether.terminal
+﻿package vn.unlimit.softether.terminal
 
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
@@ -34,7 +34,7 @@ class TunTerminal(
     /**
      * Start reading from TUN interface.
      * [onPacket] receives (buffer, offset, length) slices of an internal
-     * scratch buffer that is reused for the next packet — consumers must
+     * scratch buffer that is reused for the next packet â€” consumers must
      * not retain the slice beyond the callback (Phase 13E: zero-copy).
      */
     fun start(onPacket: (ByteArray, Int, Int) -> Unit, onError: (Exception) -> Unit) {
@@ -119,7 +119,7 @@ class TunTerminal(
 
                 when {
                     length > 0 -> {
-                        // Got a packet — pass the slice directly, no copy
+                        // Got a packet â€” pass the slice directly, no copy
                         onPacketReceived?.invoke(buffer, 0, length)
                     }
                     length < 0 -> {
@@ -145,73 +145,5 @@ class TunTerminal(
 
         isRunning.set(false)
         Log.d(TAG, "TUN read loop ended")
-    }
-
-    /**
-     * Check if running
-     */
-    fun isRunning(): Boolean = isRunning.get()
-
-    /**
-     * Get VPN interface MTU
-     */
-    fun getMtu(): Int {
-        // MTU is typically set during VPN interface establishment
-        return 1500 // Default MTU
-    }
-
-    /**
-     * Get VPN interface file descriptor
-     */
-    fun getFileDescriptor(): Int {
-        return vpnInterface.fd
-    }
-}
-
-/**
- * TUN packet information
- */
-data class TunPacket(
-    val data: ByteArray,
-    val timestamp: Long = System.currentTimeMillis()
-) {
-    /**
-     * Get IP version (4 or 6)
-     */
-    fun getIpVersion(): Int {
-        return if (data.isNotEmpty()) {
-            (data[0].toInt() ushr 4) and 0x0F
-        } else {
-            0
-        }
-    }
-
-    /**
-     * Get protocol type
-     */
-    fun getProtocol(): Int {
-        return if (data.size > 9) {
-            data[9].toInt() and 0xFF
-        } else {
-            0
-        }
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as TunPacket
-
-        if (timestamp != other.timestamp) return false
-        if (!data.contentEquals(other.data)) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = data.contentHashCode()
-        result = 31 * result + timestamp.hashCode()
-        return result
     }
 }

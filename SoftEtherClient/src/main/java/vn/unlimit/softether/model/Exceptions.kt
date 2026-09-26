@@ -1,26 +1,6 @@
 package vn.unlimit.softether.model
 
 /**
- * Custom exception for connection errors
- */
-class ConnectionException(message: String, val errorCode: Int = SoftEtherError.ERR_UNKNOWN) : Exception(message)
-
-/**
- * Authentication exception
- */
-class AuthenticationException(message: String) : Exception(message)
-
-/**
- * Protocol exception for protocol-related errors
- */
-class ProtocolException(message: String) : Exception(message)
-
-/**
- * Timeout exception
- */
-class TimeoutException(message: String) : Exception(message)
-
-/**
  * SoftEther error codes matching native implementation
  */
 object SoftEtherError {
