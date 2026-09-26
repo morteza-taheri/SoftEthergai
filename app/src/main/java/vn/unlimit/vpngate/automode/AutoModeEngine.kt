@@ -3,6 +3,8 @@ package vn.unlimit.vpngate.automode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
@@ -17,6 +19,15 @@ object AutoModeEngine {
 
     @Volatile
     private var controller: AutoModeController? = null
+
+    private val _state = MutableStateFlow<AutoModeState>(AutoModeState.Disconnected)
+
+    /**
+     * Observable Auto Mode state that exists even before the engine is
+     * created, so read-only consumers (the server list highlight) can follow
+     * the run without triggering [ensure].
+     */
+    val stateFlow: StateFlow<AutoModeState> = _state
 
     fun state() = ensure().state
 
@@ -63,14 +74,23 @@ object AutoModeEngine {
                 },
                 // §3 §4 §5 §14 Read timeout from Settings per attempt (per-server, not total)
                 attemptTimeoutMs = du.getAutoModeTimeoutSeconds().toLong() * 1000,
+                reachabilityFilter = { candidates, protocol ->
+                    vn.unlimit.vpngate.network.ServerReachabilityTester.filterReachableCandidates(
+                        candidates,
+                        protocol,
+                        timeoutMs = 1200,
+                    )
+                },
             )
             controller = created
+            _state.value = created.state.value
             // Try next server button: interrupt the in-flight attempt via
             // the adapter (fail the tunnel wait + tear down the service).
             created.setSkipSignal { adapter.skipCurrent() }
             // Mirror the Auto Mode state into the status notification.
             val appContext = vn.unlimit.vpngate.App.instance!!.applicationContext
             created.onStateChange = { state ->
+                _state.value = state
                 when (state) {
                     is AutoModeState.Connecting -> AutoModeNotifier.notifyConnecting(
                         appContext, state.hostname, state.attempt, state.total,

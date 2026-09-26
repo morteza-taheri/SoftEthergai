@@ -294,6 +294,18 @@
     <string name="server_list_count">%1$d servers</string>
     <string name="server_list_last_updated">Last updated: %1$s</string>
     <string name="server_list_never_updated">Not updated yet</string>
+    <!-- Server list quick reachability test -->
+    <string name="server_test_action">Quick test reachable servers</string>
+    <string name="server_test_progress">Testing %1$d / %2$d…</string>
+    <string name="server_test_result">Reachable: %1$d / %2$d</string>
+    <string name="reachability_reachable">%1$d ms</string>
+    <string name="reachability_unreachable">Blocked</string>
+    <string name="server_active_connected">Connected</string>
+    <string name="server_active_connecting">Connecting…</string>
+    <string name="sort_reachability">Quick test (reachable first)</string>
+    <string name="filter_only_reachable">Only servers reachable in the quick test</string>
+    <string name="empty_reachable_filter_result">No reachable server from the last quick test. Run the test from the list toolbar.</string>
+
     <string name="title_servers">Servers</string>
     <string name="title_free_server">Free Server</string>
     <string name="title_personal">Personal</string>

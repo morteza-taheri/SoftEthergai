@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -58,6 +60,8 @@ fun FilterSheet(
     var speedOperator by remember { mutableStateOf(mFilter.speedFilterOperator) }
     var sessionText by remember { mutableStateOf(mFilter.sessionCount?.toString() ?: "") }
     var sessionOperator by remember { mutableStateOf(mFilter.sessionCountFilterOperator) }
+    // Quick reachability test filter (in-memory, applied by the server list).
+    var reachableOnly by remember { mutableStateOf(mFilter.isReachableOnly) }
     val operatorLabels = listOf(
         stringResource(R.string.operator_equal),
         stringResource(R.string.operator_greater),
@@ -106,6 +110,20 @@ fun FilterSheet(
             FilterChip(selected = showSoftether, onClick = { showSoftether = !showSoftether }, label = {
                 Text(stringResource(R.string.show_softether_server))
             })
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Switch(
+                    checked = reachableOnly,
+                    onCheckedChange = { reachableOnly = it },
+                )
+                Text(
+                    stringResource(R.string.filter_only_reachable),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
             NumericFilterRow(
                 label = stringResource(R.string.ping),
                 text = pingText,
@@ -154,6 +172,7 @@ fun FilterSheet(
                     mFilter.isShowL2TP = showL2tp
                     mFilter.isShowSSTP = showSstp
                     mFilter.isShowSoftEther = showSoftether
+                    mFilter.isReachableOnly = reachableOnly
                     mFilter.ping = pingText.toIntOrNull()
                     mFilter.pingFilterOperator = pingOperator
                     mFilter.speed = speedText.toIntOrNull()

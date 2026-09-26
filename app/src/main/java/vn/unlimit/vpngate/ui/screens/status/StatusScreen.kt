@@ -45,7 +45,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.net.toUri
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.ui.components.PowerButton
-import vn.unlimit.vpngate.ui.screens.settings.ExcludedAppsSheet
 import vn.unlimit.vpngate.ui.screens.status.StatusUiState
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
@@ -63,7 +62,6 @@ fun StatusScreen(
     val activity = context as? android.app.Activity
     val viewModel: StatusViewModel = viewModel()
     val state by viewModel.state.observeAsState(StatusUiState())
-    var showExcludedApps by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // Wire VPN permission requests from the ViewModel to the OS dialog.
@@ -156,14 +154,6 @@ fun StatusScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp),
                         )
-                        TextButton(onClick = { showExcludedApps = true }) {
-                            Text(
-                                stringResource(
-                                    R.string.exclude_apps_text,
-                                    state.excludedAppsCount,
-                                ),
-                            )
-                        }
                         if (state.showCheckIp) {
                             TextButton(onClick = {
                                 try {
@@ -230,13 +220,6 @@ fun StatusScreen(
                 }
             }
         }
-    }
-
-    if (showExcludedApps) {
-        ExcludedAppsSheet(
-            manager = excludeAppsManager,
-            onDismiss = { showExcludedApps = false },
-        )
     }
 }
 

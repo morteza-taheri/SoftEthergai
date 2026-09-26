@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
@@ -33,6 +34,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -42,6 +44,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
@@ -61,14 +64,21 @@ import kotlinx.coroutines.withContext
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.activities.DetailActivity
+import vn.unlimit.vpngate.automode.AutoModeEngine
+import vn.unlimit.vpngate.automode.AutoModeState
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
+import vn.unlimit.vpngate.network.ServerReachabilityTester
 import vn.unlimit.vpngate.provider.BaseProvider
+import vn.unlimit.vpngate.state.GlobalVpnState
+import vn.unlimit.vpngate.state.GlobalVpnTracker
+import vn.unlimit.vpngate.state.VpnConnectionStatus
 import vn.unlimit.vpngate.utils.DateTimeFormatterUtil
 import vn.unlimit.vpngate.ui.components.FullScreenError
 import vn.unlimit.vpngate.ui.components.FullScreenLoading
 import vn.unlimit.vpngate.ui.components.FullScreenNoNetwork
 import vn.unlimit.vpngate.ui.components.ServerCard
+import vn.unlimit.vpngate.ui.components.ServerCardHighlight
 import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.viewmodels.ConnectionListViewModel
 
@@ -105,6 +115,19 @@ fun HomeScreen(
     var noNetwork by remember { mutableStateOf(false) }
     var contentVisible by remember { mutableStateOf(false) }
 
+    // ----- Quick reachability test of the listed servers (toolbar action)
+    val testing by ServerReachabilityTester.isTesting.collectAsState()
+    val testedCount by ServerReachabilityTester.testedCount.collectAsState()
+    val testTotal by ServerReachabilityTester.totalCount.collectAsState()
+    val resultsVersion by ServerReachabilityTester.resultsVersion.collectAsState()
+
+    // ----- Server the app is dialing / already bound to (list highlight)
+    val autoState by AutoModeEngine.stateFlow.collectAsState()
+    val globalVpnState by GlobalVpnTracker.vpnState.collectAsState()
+    val activeServer = remember(autoState, globalVpnState) {
+        activeServerOf(autoState, globalVpnState) { dataUtil.lastVPNConnection }
+    }
+
     // ----- Data helpers (same threading model as HomeFragment)
     fun applyView(listModel: VPNGateConnectionList?, emptyRes: Int?) {
         list = listModel
@@ -119,11 +142,18 @@ fun HomeScreen(
                 result = result?.filter(keyword)
             }
             if (result != null && sortProperty.isNotEmpty()) {
-                result.sort(sortProperty, sortType)
+                if (sortProperty == VPNGateConnectionList.SortProperty.REACHABILITY) {
+                    // Not a database column: clear the SQL ordering and let
+                    // the in-memory quick-test ordering (serverItems) do it.
+                    result.sort(null, sortType, skipProcessSort = true)
+                } else {
+                    result.sort(sortProperty, sortType)
+                }
             }
             val size = result?.size() ?: 0
             val emptyRes = when {
                 size == 0 && (isSearching && keyword.isNotEmpty()) -> R.string.empty_search_result
+                size == 0 && activeFilter?.isReachableOnly == true -> R.string.empty_reachable_filter_result
                 size == 0 && activeFilter != null -> R.string.empty_filter_result
                 size == 0 -> R.string.no_server_available
                 else -> null
@@ -255,6 +285,30 @@ fun HomeScreen(
                                 },
                                 actions = {
                                     IconButton(
+                                        onClick = {
+                                            val targets = list?.toList() ?: emptyList()
+                                            if (targets.isNotEmpty()) {
+                                                scope.launch {
+                                                    ServerReachabilityTester.testConnections(targets)
+                                                }
+                                            }
+                                        },
+                                        enabled = !testing && (list?.size() ?: 0) > 0,
+                                    ) {
+                                        if (testing) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Filled.NetworkCheck,
+                                                contentDescription = stringResource(R.string.server_test_action),
+                                            )
+                                        }
+                                    }
+                                    IconButton(
                                         onClick = { connectionListViewModel.getAPIData(isUserInitiated = true) },
                                         enabled = !isLoading,
                                     ) {
@@ -318,7 +372,42 @@ fun HomeScreen(
                         }
                     },
                 ) { padding ->
-                    val serverItems = remember(list) { list?.toList() ?: emptyList() }
+                    val baseItems = remember(list) { list?.toList() ?: emptyList() }
+                    // Snapshot of the quick-test results, keyed on
+                    // resultsVersion so a finished probe refreshes the rows.
+                    val reachabilitySnapshot = remember(resultsVersion) {
+                        ServerReachabilityTester.resultsMap.toMap()
+                    }
+                    // Quick-test view: optional healthy-only filter plus the
+                    // health ordering (both in memory, never in SQL).
+                    val serverItems = remember(
+                        baseItems,
+                        reachabilitySnapshot,
+                        sortProperty,
+                        sortType,
+                        activeFilter?.isReachableOnly,
+                    ) {
+                        var items = baseItems
+                        if (activeFilter?.isReachableOnly == true) {
+                            items = ServerReachabilityTester.onlyReachable(items)
+                        }
+                        if (sortProperty == VPNGateConnectionList.SortProperty.REACHABILITY) {
+                            items = ServerReachabilityTester.orderByReachability(
+                                items,
+                                descending = sortType == VPNGateConnectionList.ORDER.DESC,
+                            )
+                        }
+                        items
+                    }
+                    // The database-level empty message cannot know about the
+                    // in-memory healthy-only filter, so it is resolved here.
+                    val emptyResForView = emptyMessageRes ?: if (
+                        serverItems.isEmpty() && baseItems.isNotEmpty()
+                    ) {
+                        R.string.empty_reachable_filter_result
+                    } else {
+                        null
+                    }
                     if (serverItems.isEmpty()) {
                         Box(
                             modifier = Modifier
@@ -331,7 +420,7 @@ fun HomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.padding(24.dp),
                             ) {
-                                emptyMessageRes?.let {
+                                emptyResForView?.let {
                                     Text(
                                         if (it == R.string.empty_search_result) {
                                             stringResource(it, keyword)
@@ -389,18 +478,57 @@ fun HomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 item(key = "server_list_header") {
-                                    Row(
+                                    Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(horizontal = 6.dp, vertical = 2.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text(
-                                            text = stringResource(R.string.server_list_count, serverItems.size),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
+                                        val testSummary = when {
+                                            testing -> stringResource(
+                                                R.string.server_test_progress,
+                                                testedCount,
+                                                testTotal,
+                                            )
+                                            ServerReachabilityTester.testedCount(baseItems) > 0 -> stringResource(
+                                                R.string.server_test_result,
+                                                ServerReachabilityTester.reachableCount(baseItems),
+                                                baseItems.size,
+                                            )
+                                            else -> ""
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.server_list_count, serverItems.size),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            if (testSummary.isNotEmpty()) {
+                                                Text(
+                                                    text = testSummary,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = if (testing) {
+                                                        MaterialTheme.colorScheme.primary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    },
+                                                )
+                                            }
+                                        }
+                                        if (testing) {
+                                            LinearProgressIndicator(
+                                                progress = {
+                                                    if (testTotal <= 0) 0f
+                                                    else testedCount.toFloat() / testTotal.toFloat()
+                                                },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 4.dp),
+                                            )
+                                        }
                                     }
                                 }
                                 items(
@@ -412,6 +540,12 @@ fun HomeScreen(
                                     ServerCard(
                                         connection = conn,
                                         dataUtil = dataUtil,
+                                        reachability = reachabilitySnapshot[conn.ip],
+                                        highlight = when {
+                                            !matchesActiveServer(conn, activeServer) -> null
+                                            activeServer?.connecting == true -> ServerCardHighlight.CONNECTING
+                                            else -> ServerCardHighlight.CONNECTED
+                                        },
                                         onClick = {
                                             try {
                                                 val intent = Intent(context, DetailActivity::class.java)
@@ -507,3 +641,45 @@ private fun copyToClipboard(context: Context, text: String) {
 
 private const val SORT_PROPERTY_KEY = "SORT_PROPERTY_KEY"
 private const val SORT_TYPE_KEY = "SORT_TYPE_KEY"
+
+/** Target of the server-list highlight: the server the app is dialing / bound to. */
+private data class ActiveServer(
+    val ip: String?,
+    val hostname: String?,
+    val connecting: Boolean,
+)
+
+/**
+ * Active target of the list highlight. An Auto Mode run wins because it knows
+ * the exact server it is dialing; otherwise the global VPN tracker snapshot is
+ * used, falling back to the last connected profile when the tracker only
+ * reports an anonymous tunnel (SoftEther/SSTP expose no server IP).
+ */
+private fun activeServerOf(
+    state: AutoModeState,
+    global: GlobalVpnState,
+    lastConnection: () -> VPNGateConnection?,
+): ActiveServer? = when (state) {
+    is AutoModeState.Connecting -> ActiveServer(state.ip, state.hostname, connecting = true)
+    is AutoModeState.Connected -> ActiveServer(state.ip, state.hostname, connecting = false)
+    else -> when (global.status) {
+        VpnConnectionStatus.CONNECTING, VpnConnectionStatus.CONNECTED -> {
+            val last = lastConnection()
+            ActiveServer(
+                ip = global.serverIp ?: last?.ip,
+                hostname = global.serverHost ?: last?.hostName,
+                connecting = global.status == VpnConnectionStatus.CONNECTING,
+            )
+        }
+        else -> null
+    }
+}
+
+/** Matches the active target against a list row by IP, then by hostname. */
+private fun matchesActiveServer(connection: VPNGateConnection, active: ActiveServer?): Boolean {
+    if (active == null) return false
+    val ip = active.ip
+    if (!ip.isNullOrBlank() && connection.ip == ip) return true
+    val hostname = active.hostname
+    return !hostname.isNullOrBlank() && connection.hostName == hostname
+}

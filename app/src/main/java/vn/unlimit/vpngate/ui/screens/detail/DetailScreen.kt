@@ -53,7 +53,6 @@ import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.ui.components.FlagImage
 import vn.unlimit.vpngate.ui.components.ProtocolBadge
-import vn.unlimit.vpngate.ui.screens.settings.ExcludedAppsSheet
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
 
@@ -70,7 +69,6 @@ fun DetailScreen(activity: DetailActivity) {
     val dataUtil = remember { app.dataUtil!! }
     val conn = activity.connection
     val state by activity.uiState.observeAsState(DetailUiState())
-    var showExcludedApps by remember { mutableStateOf(false) }
     var operatorMessageShown by remember { mutableStateOf<String?>(null) }
 
     // One-shot flows from the activity.
@@ -265,16 +263,6 @@ fun DetailScreen(activity: DetailActivity) {
                                 Text(stringResource(R.string.l2tp_connect))
                             }
                         }
-                        OutlinedButton(
-                            onClick = { showExcludedApps = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                stringResource(
-                                    R.string.exclude_apps_text, state.excludedAppsCount,
-                                ),
-                            )
-                        }
                     }
                 }
             }
@@ -315,17 +303,6 @@ fun DetailScreen(activity: DetailActivity) {
                 },
             )
         }
-    }
-
-    if (showExcludedApps) {
-        val manager = remember { activity.excludeAppsManager() }
-        ExcludedAppsSheet(
-            manager = manager,
-            onDismiss = {
-                showExcludedApps = false
-                activity.bindDataRefresh()
-            },
-        )
     }
 }
 

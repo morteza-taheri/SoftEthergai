@@ -34,6 +34,8 @@ class AutoModeController(
     private val onSuccess: (AutoModeCandidate, AutoModeProtocol) -> Unit = { _, _ -> },
     /** Per-attempt timeout in ms (Â§11). */
     private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
+    /** Optional pre-filter to eliminate blocked candidates via fast reachability testing. */
+    private val reachabilityFilter: (suspend (List<AutoModeCandidate>, AutoModeProtocol) -> List<AutoModeCandidate>)? = null,
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -281,9 +283,28 @@ class AutoModeController(
         val all = overrideServers ?: serverProvider()
         overrideServers = null
         // Server ordering is independent of protocol ordering (quality DESC).
-        val servers = all.sortedWith(byQuality)
+        val qualitySorted = all.sortedWith(byQuality)
         adapter.log("[AUTO] Servers available = ${all.size}")
         adapter.log("[AUTO] Sorted by quality")
+
+        val servers = if (reachabilityFilter != null && qualitySorted.isNotEmpty() && priorities.isNotEmpty()) {
+            adapter.log("[AUTO] Pre-filtering reachable servers via probe...")
+            val primaryProtocol = priorities.first()
+            val filtered = try {
+                reachabilityFilter.invoke(qualitySorted, primaryProtocol)
+            } catch (e: Exception) {
+                adapter.log("[AUTO] Reachability probe failed: ${e.message}; using original list")
+                qualitySorted
+            }
+            if (filtered.isNotEmpty()) {
+                adapter.log("[AUTO] Reachable servers selected: ${filtered.size}")
+                filtered
+            } else {
+                qualitySorted
+            }
+        } else {
+            qualitySorted
+        }
 
         if (servers.isEmpty()) {
             adapter.log("[AUTO] No compatible server found")

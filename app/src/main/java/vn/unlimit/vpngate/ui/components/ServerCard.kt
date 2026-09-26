@@ -6,19 +6,24 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Speed
@@ -48,12 +53,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.models.VPNGateConnection
+import vn.unlimit.vpngate.network.ReachabilityResult
 import vn.unlimit.vpngate.utils.DataUtil
+
+/** Highlight of the server the app is currently connecting to / connected to. */
+enum class ServerCardHighlight { CONNECTING, CONNECTED }
 
 /**
  * Redesigned server card: leading flag, country + hostname, metric chips
  * (speed / ping / sessions / score) and protocol badges. Mirrors the info
  * shown by the old item_vpn.xml list row.
+ *
+ * @param reachability result of the quick reachability test (null = untested)
+ * @param highlight set when the app is connecting to / connected to this server
  */
 @Composable
 fun ServerCard(
@@ -62,9 +74,16 @@ fun ServerCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    reachability: ReachabilityResult? = null,
+    highlight: ServerCardHighlight? = null,
 ) {
     val isIncludeUdp = dataUtil?.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) ?: true
     val baseUrl = dataUtil?.baseUrl ?: "https://www.vpngate.net"
+    val reachabilityColor = if (reachability?.isReachable == true) {
+        vn.unlimit.vpngate.ui.theme.ExtendedTheme.autoConnected
+    } else {
+        MaterialTheme.colorScheme.error
+    }
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -73,9 +92,18 @@ fun ServerCard(
                 onLongClick = onLongClick,
             ),
         shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surface,
+        color = if (highlight != null) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = if (highlight != null) {
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
         tonalElevation = 1.dp,
-        shadowElevation = 1.dp,
+        shadowElevation = if (highlight != null) 4.dp else 1.dp,
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -102,6 +130,10 @@ fun ServerCard(
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
+                    highlight?.let {
+                        ActiveServerBadge(it)
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                     Text(
                         connection.ip ?: "",
                         style = MaterialTheme.typography.labelMedium,
@@ -112,6 +144,33 @@ fun ServerCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (reachability != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (reachability.isReachable) {
+                                    Icons.Filled.CheckCircle
+                                } else {
+                                    Icons.Filled.ErrorOutline
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = reachabilityColor,
+                            )
+                            Text(
+                                text = if (reachability.isReachable) {
+                                    stringResource(R.string.reachability_reachable, reachability.rttMs)
+                                } else {
+                                    stringResource(R.string.reachability_unreachable)
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = reachabilityColor,
+                            )
+                        }
+                    }
                 }
             }
             Row(
@@ -154,6 +213,26 @@ fun ServerCard(
                 }
             }
         }
+    }
+}
+
+/** "Connected" / "Connecting…" badge of the server the app is bound to. */
+@Composable
+private fun ActiveServerBadge(highlight: ServerCardHighlight) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.primary,
+    ) {
+        Text(
+            text = when (highlight) {
+                ServerCardHighlight.CONNECTED -> stringResource(R.string.server_active_connected)
+                ServerCardHighlight.CONNECTING -> stringResource(R.string.server_active_connecting)
+            },
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary,
+            maxLines = 1,
+        )
     }
 }
 

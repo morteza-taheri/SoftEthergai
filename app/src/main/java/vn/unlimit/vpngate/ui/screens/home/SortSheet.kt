@@ -49,6 +49,9 @@ fun SortSheet(
         SortOption(R.string.score, VPNGateConnectionList.SortProperty.SCORE),
         SortOption(R.string.uptime, VPNGateConnectionList.SortProperty.UPTIME),
         SortOption(R.string.session, VPNGateConnectionList.SortProperty.SESSION),
+        // Quick reachability test result: healthy servers first (lowest RTT),
+        // then the untested ones, then the blocked ones.
+        SortOption(R.string.sort_reachability, VPNGateConnectionList.SortProperty.REACHABILITY),
     )
 
     ModalBottomSheet(onDismissRequest = onDismiss) {

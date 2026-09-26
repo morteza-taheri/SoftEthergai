@@ -264,6 +264,12 @@ class VPNGateConnectionList : Parcelable {
         var isShowL2TP: Boolean = true
         var isShowSSTP: Boolean = true
         var isShowSoftEther: Boolean = true
+        /**
+         * Quick reachability test filter (not a database column): it is
+         * applied in memory by the server list against
+         * ServerReachabilityTester results, so [getWhereQuery] ignores it.
+         */
+        var isReachableOnly: Boolean = false
         var ping: Int? = null
         var pingFilterOperator: NumberFilterOperator = NumberFilterOperator.LESS_OR_EQUAL
         var speed: Int? = null
@@ -284,6 +290,13 @@ class VPNGateConnectionList : Parcelable {
         const val SCORE: String = "score"
         const val UPTIME: String = "uptime"
         const val SESSION: String = "numVpnSession"
+
+        /**
+         * Quick reachability test ordering. Not a database column, so the
+         * list is ordered in memory (reachable first, then untested, then
+         * blocked) instead of through SQL.
+         */
+        const val REACHABILITY: String = "reachability"
     }
 
 
