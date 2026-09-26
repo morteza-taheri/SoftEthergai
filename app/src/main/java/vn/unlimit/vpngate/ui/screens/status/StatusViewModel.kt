@@ -56,12 +56,12 @@ data class StatusUiState(
     val statusText: String = "",
     val showCheckIp: Boolean = false,
     val excludedAppsCount: Int = 0,
-    val downloadSession: String = "0 B",
-    val downloadSpeed: String = "0 kbps",
-    val uploadSession: String = "0 B",
-    val uploadSpeed: String = "0 kbps",
-    val totalDownload: String = "0 B",
-    val totalUpload: String = "0 B",
+    val downloadSession: String = TrafficStats.zeroVolume(),
+    val downloadSpeed: String = TrafficStats.zeroSpeed(),
+    val uploadSession: String = TrafficStats.zeroVolume(),
+    val uploadSpeed: String = TrafficStats.zeroSpeed(),
+    val totalDownload: String = TrafficStats.zeroVolume(),
+    val totalUpload: String = TrafficStats.zeroVolume(),
 )
 
 /**
@@ -109,6 +109,15 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     private var lastOpenVpnOutBytes = 0L
     private var lastOpenVpnDiffInBytes = 0L
     private var lastOpenVpnDiffOutBytes = 0L
+
+    // Cache of the formatted lifetime totals, so the per-second traffic tick does
+    // not hit SharedPreferences. Invalidated by comparing the raw counters.
+    private var cachedLifetimeTotals: List<String>? = null
+    private var cachedInTotal = -1L
+    private var cachedOutTotal = -1L
+
+    /** Timestamp of the last OpenVPN BYTECOUNT tick, to measure the real interval. */
+    private var lastByteCountAtMs = 0L
     private lateinit var prefs: SharedPreferences
     private lateinit var prefsListener: SharedPreferences.OnSharedPreferenceChangeListener
     private lateinit var excludeAppsManager: vn.unlimit.vpngate.utils.ExcludeAppsManager
@@ -403,22 +412,25 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun updateOpenVpnTrafficUi() {
+        // Measured interval, not the nominal 2 s: a coalesced or late BYTECOUNT
+        // tick would otherwise be reported at the wrong rate, and the integer
+        // division of the old `diff / mBytecountInterval` threw away any sub-unit
+        // precision (a 500 B burst in 2 s read as 250 B/s -> 2 kbit/s, not 2.0).
+        val now = System.currentTimeMillis()
+        val interval = if (lastByteCountAtMs > 0L) now - lastByteCountAtMs else
+            OpenVPNManagement.mBytecountInterval * 1000L
+        lastByteCountAtMs = now
+        val inRate = TrafficStats.bytesPerSecond(lastOpenVpnDiffInBytes, interval)
+        val outRate = TrafficStats.bytesPerSecond(lastOpenVpnDiffOutBytes, interval)
+        val totals = lifetimeTotals()
         update {
             it.copy(
                 downloadSession = OpenVPNService.humanReadableByteCount(lastOpenVpnInBytes, false, appContext.resources),
-                downloadSpeed = OpenVPNService.humanReadableByteCount(
-                    lastOpenVpnDiffInBytes / OpenVPNManagement.mBytecountInterval,
-                    true,
-                    appContext.resources,
-                ),
+                downloadSpeed = OpenVPNService.humanReadableByteCount(inRate, true, appContext.resources),
                 uploadSession = OpenVPNService.humanReadableByteCount(lastOpenVpnOutBytes, false, appContext.resources),
-                uploadSpeed = OpenVPNService.humanReadableByteCount(
-                    lastOpenVpnDiffOutBytes / OpenVPNManagement.mBytecountInterval,
-                    true,
-                    appContext.resources,
-                ),
-                totalDownload = OpenVPNService.humanReadableByteCount(TotalTraffic.inTotal, false, appContext.resources),
-                totalUpload = OpenVPNService.humanReadableByteCount(TotalTraffic.outTotal, false, appContext.resources),
+                uploadSpeed = OpenVPNService.humanReadableByteCount(outRate, true, appContext.resources),
+                totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
+                totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
             )
         }
     }
@@ -536,15 +548,15 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun renderSoftEtherTraffic(snapshot: SoftEtherTrafficSnapshot) {
-        TotalTraffic.getTotalTraffic(appContext)
+        val totals = lifetimeTotals()
         update {
             it.copy(
                 downloadSession = OpenVPNService.humanReadableByteCount(snapshot.inBytes, false, appContext.resources),
                 downloadSpeed = OpenVPNService.humanReadableByteCount(snapshot.inBytesPerSecond(), true, appContext.resources),
                 uploadSession = OpenVPNService.humanReadableByteCount(snapshot.outBytes, false, appContext.resources),
                 uploadSpeed = OpenVPNService.humanReadableByteCount(snapshot.outBytesPerSecond(), true, appContext.resources),
-                totalDownload = OpenVPNService.humanReadableByteCount(TotalTraffic.inTotal, false, appContext.resources),
-                totalUpload = OpenVPNService.humanReadableByteCount(TotalTraffic.outTotal, false, appContext.resources),
+                totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
+                totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
             )
         }
     }
@@ -559,17 +571,39 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun renderSstpTraffic(snapshot: SstpTrafficSnapshot) {
-        TotalTraffic.getTotalTraffic(appContext)
+        val totals = lifetimeTotals()
         update {
             it.copy(
                 downloadSession = OpenVPNService.humanReadableByteCount(snapshot.inBytes, false, appContext.resources),
                 downloadSpeed = OpenVPNService.humanReadableByteCount(snapshot.inBytesPerSecond(), true, appContext.resources),
                 uploadSession = OpenVPNService.humanReadableByteCount(snapshot.outBytes, false, appContext.resources),
                 uploadSpeed = OpenVPNService.humanReadableByteCount(snapshot.outBytesPerSecond(), true, appContext.resources),
-                totalDownload = OpenVPNService.humanReadableByteCount(TotalTraffic.inTotal, false, appContext.resources),
-                totalUpload = OpenVPNService.humanReadableByteCount(TotalTraffic.outTotal, false, appContext.resources),
+                totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
+                totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
             )
         }
+    }
+
+    /**
+     * Formatted lifetime totals, re-reading them from disk only when the
+     * in-memory counters are still zero.
+     *
+     * [TotalTraffic.getTotalTraffic] reads SharedPreferences whenever the
+     * static totals are 0, so calling it on every 1 s traffic tick meant a disk
+     * read per tick for a user whose totals are legitimately 0. Caching the
+     * result keeps the tick path free of I/O; the cache is dropped whenever the
+     * totals actually change (i.e. on a "clear statistics" or a real update).
+     */
+    private fun lifetimeTotals(): List<String> {
+        if (cachedLifetimeTotals == null ||
+            TotalTraffic.inTotal != cachedInTotal ||
+            TotalTraffic.outTotal != cachedOutTotal
+        ) {
+            cachedLifetimeTotals = TotalTraffic.getTotalTraffic(appContext)
+            cachedInTotal = TotalTraffic.inTotal
+            cachedOutTotal = TotalTraffic.outTotal
+        }
+        return cachedLifetimeTotals!!
     }
 
     private fun refreshTrafficMonitor() {
@@ -591,14 +625,19 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun resetTrafficUi() {
+        // Session counters and speeds are per-connection, so zeroing them is
+        // correct. The *totals* are lifetime figures persisted across
+        // disconnects and must survive a disconnect — re-read them instead of
+        // resetting, otherwise pulling the tunnel down wipes the user's stats.
+        val totals = lifetimeTotals()
         update {
             it.copy(
-                downloadSession = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
-                downloadSpeed = OpenVPNService.humanReadableByteCount(0, true, appContext.resources),
-                uploadSession = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
-                uploadSpeed = OpenVPNService.humanReadableByteCount(0, true, appContext.resources),
-                totalDownload = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
-                totalUpload = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
+                downloadSession = TrafficStats.zeroVolume(),
+                downloadSpeed = TrafficStats.zeroSpeed(),
+                uploadSession = TrafficStats.zeroVolume(),
+                uploadSpeed = TrafficStats.zeroSpeed(),
+                totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
+                totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
             )
         }
     }
@@ -743,12 +782,22 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearStatistics() {
+        // Three independent persisted counters back the "total" row, and two of
+        // them are written by the tunnel services, not by TotalTraffic. Clearing
+        // only TotalTraffic left the SoftEther/SSTP totals in place, and the next
+        // getTotalTraffic() read them back from disk — so the numbers the user
+        // asked to erase reappeared. Clear all three sources.
         TotalTraffic.clearTotal(appContext)
+        SoftEtherVpnService.clearPersistedTraffic(appContext)
+        SstpVpnService.clearPersistedTraffic(appContext)
+        cachedLifetimeTotals = null
+        cachedInTotal = -1L
+        cachedOutTotal = -1L
         Toast.makeText(appContext, "Statistics clear completed", Toast.LENGTH_SHORT).show()
         update {
             it.copy(
-                totalUpload = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
-                totalDownload = OpenVPNService.humanReadableByteCount(0, false, appContext.resources),
+                totalUpload = TrafficStats.zeroVolume(),
+                totalDownload = TrafficStats.zeroVolume(),
             )
         }
     }

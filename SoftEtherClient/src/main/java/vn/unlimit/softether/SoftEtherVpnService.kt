@@ -114,6 +114,27 @@ class SoftEtherVpnService : VpnService() {
             trafficListeners.remove(listener)
         }
 
+        /**
+         * Zeroes the persisted lifetime totals. Called by the Status screen's
+         * "clear statistics" action: these counters are written by this service
+         * independently of de.blinkt.openvpn's TotalTraffic, so the app has to
+         * clear them explicitly or they get re-read and re-displayed after the
+         * clear.
+         *
+         * Takes a [Context] rather than reading the running service, because the
+         * service instance is not guaranteed to exist while the user is on the
+         * Status screen.
+         */
+        fun clearPersistedTraffic(context: Context) {
+            context.applicationContext.getSharedPreferences(
+                context.packageName + TRAFFIC_PREFS_SUFFIX,
+                Context.MODE_PRIVATE
+            ).edit()
+                .putLong(DOWNLOADED_DATA_KEY, 0L)
+                .putLong(UPLOADED_DATA_KEY, 0L)
+                .apply()
+        }
+
         var notificationTargetActivity: Class<*>? = null
 
         private fun notifyListeners(state: String, assignedIp: String) {
