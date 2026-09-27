@@ -109,11 +109,25 @@ jobs:
           sdkmanager --sdk_root=$SDK "build-tools;37.0.0" || true
 
           echo "platforms after: $(ls $SDK/platforms 2>/dev/null | tr '\n' ' ')"
-          if ! ls $SDK/platforms | grep -q '^android-37'; then
+
+          # The container installs the minor-versioned directory (android-37.x)
+          # but Gradle resolves the platform by the plain hash string
+          # 'android-37'. Without this alias every later task fails with
+          # "Failed to find target with hash string 'android-37'".
+          if ! ls $SDK/platforms | grep -qx 'android-37'; then
+            src=$(ls -d $SDK/platforms/android-37* 2>/dev/null | grep -v beta | head -n 1 || true)
+            if [ -n "$src" ]; then
+              echo "aliasing $src -> $SDK/platforms/android-37"
+              ln -sfn "$src" "$SDK/platforms/android-37"
+            fi
+          fi
+
+          if ! ls $SDK/platforms | grep -qx 'android-37'; then
             echo "::error::android-37 platform is still missing after install"
+            ls -la $SDK/platforms
             exit 1
           fi
-          echo "android-37 platform present"
+          echo "android-37 platform present: $(ls -d $SDK/platforms/android-37)"
 
       - name: Build OpenSSL headers
         run: |
