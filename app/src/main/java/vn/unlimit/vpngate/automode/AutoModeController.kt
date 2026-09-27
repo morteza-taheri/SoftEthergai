@@ -43,12 +43,18 @@ class AutoModeController(
      */
     private val emptyServerListMessage: () -> String = { "no servers available" },
     /**
-     * VpnM Phase 5 — active tunnel liveness signal. Return true when the
-     * tunnel has shown a sign of life since the previous call (a keepalive
-     * reply, a successful read, a state refresh). null disables the watchdog
-     * and leaves the previous passive-only behaviour in place.
+     * VpnM Phase 5 — active tunnel liveness signal. The factory builds the
+     * probe used while CONNECTED; null disables the watchdog and leaves the
+     * previous passive-only behaviour in place.
+     *
+     * The probe is owned per connection rather than injected as a lambda
+     * because it has a lifetime: it must be started when a tunnel is verified
+     * and stopped when that tunnel ends, otherwise a stale probe would keep
+     * answering for a tunnel that no longer exists. The factory is still
+     * injected so tests can supply a scripted probe and the controller keeps
+     * no Android dependency.
      */
-    private val livenessProof: (() -> Boolean)? = null,
+    private val livenessProbeFactory: ((CoroutineScope) -> TunnelLivenessProbe)? = { TunnelLivenessProbe(it) },
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -158,6 +164,7 @@ class AutoModeController(
             connectedWatcher?.cancel()
             connectedWatcher = null
             TunnelStateWatcher.onTunnelLost = null
+            stopLivenessProbe()
             job?.cancel()
             job = null
             scope.launch {
@@ -213,23 +220,29 @@ class AutoModeController(
      * VpnM Phase 5. The pre-existing checks are passive: the stack's state
      * listener and GlobalVpnTracker both only report a loss when something
      * volunteers one. A tunnel that dies quietly never volunteers, so the UI
-     * stays green. [livenessProof] supplies the active half: it must return
-     * true when the tunnel has shown a sign of life since it was last called.
-     * It is injected (null = feature off) so the controller keeps no Android
-     * dependency and stays JVM-testable.
+     * stays green. The active half is a real round trip through the tunnel
+     * (see [TunnelLivenessProbe]): the watchdog fires when no such round trip
+     * has completed for a while, which is the case the passive checks miss.
      */
     private fun startConnectedWatcher(protocol: AutoModeProtocol) {
         connectedWatcher?.cancel()
+        // A new tunnel invalidates the previous probe entirely.
+        stopLivenessProbe()
         TunnelStateWatcher.onTunnelLost = {
             if (_state.value is AutoModeState.Connected) {
                 adapter.log("[AUTO] Tunnel disconnected externally / revoked by system")
                 connectedWatcher?.cancel()
                 connectedWatcher = null
+                stopLivenessProbe()
                 TunnelStateWatcher.onTunnelLost = null
                 setState(AutoModeState.Disconnected)
             }
         }
-        val watchdog = if (livenessProof != null) TunnelLivenessWatchdog() else null
+        val probe = livenessProbeFactory?.let { factory ->
+            factory(scope).also { it.start(protocol) }
+        }
+        livenessProbe = probe
+        val watchdog = if (probe != null) TunnelLivenessWatchdog() else null
         // The tunnel was just verified, so proof is fresh by definition.
         watchdog?.onProvenAlive(System.currentTimeMillis())
         connectedWatcher = scope.launch {
@@ -241,16 +254,17 @@ class AutoModeController(
                     connectedWatcher?.cancel()
                     connectedWatcher = null
                     TunnelStateWatcher.onTunnelLost = null
+                    stopLivenessProbe()
                     setState(AutoModeState.Disconnected)
                     break
                 }
                 // Active liveness: only consulted after the passive checks pass,
                 // so a genuine OS-level loss is still reported first.
                 val wd = watchdog
-                val proof = livenessProof
-                if (wd != null && proof != null) {
+                val activeProbe = livenessProbe
+                if (wd != null && activeProbe != null) {
                     val now = System.currentTimeMillis()
-                    if (proof.invoke()) {
+                    if (activeProbe.consumeProof()) {
                         wd.onProvenAlive(now)
                     } else if (wd.onSample(now)) {
                         adapter.log(
@@ -260,6 +274,7 @@ class AutoModeController(
                         )
                         connectedWatcher?.cancel()
                         connectedWatcher = null
+                        stopLivenessProbe()
                         TunnelStateWatcher.onTunnelLost = null
                         setState(AutoModeState.Disconnected)
                         break
@@ -275,6 +290,23 @@ class AutoModeController(
 
     private var connectedWatcher: kotlinx.coroutines.Job? = null
 
+    /**
+     * Probe for the currently connected tunnel, or null when the watchdog is
+     * disabled or no tunnel is connected. Every path that ends a connection
+     * must stop it, so a stopped probe can never keep proving life for a
+     * tunnel that is gone.
+     */
+    private var livenessProbe: TunnelLivenessProbe? = null
+
+    /**
+     * Stop and forget the liveness probe. Idempotent, and used by every path
+     * that ends a connection so no code path can leave a probe running.
+     */
+    private fun stopLivenessProbe() {
+        livenessProbe?.stop()
+        livenessProbe = null
+    }
+
     fun start() {
         if (isRunning) {
             adapter.log("[AUTO] start ignored: already running")
@@ -288,6 +320,7 @@ class AutoModeController(
         connectedWatcher?.cancel()
         connectedWatcher = null
         TunnelStateWatcher.onTunnelLost = null
+        stopLivenessProbe()
         skipRequested.set(false)
         overrideServers = null
         if (!isRunning) return
@@ -340,6 +373,7 @@ class AutoModeController(
         connectedWatcher?.cancel()
         connectedWatcher = null
         TunnelStateWatcher.onTunnelLost = null
+        stopLivenessProbe()
         skipRequested.set(false)
         overrideServers = null
         if (isRunning) {

@@ -86,6 +86,10 @@ object AutoModeEngine {
                     vn.unlimit.vpngate.App.instance!!
                         .getString(vn.unlimit.vpngate.R.string.update_server_list_first)
                 },
+                // VpnM Phase 5: active liveness. A real round trip through the
+                // tunnel proves it still carries traffic, which the passive
+                // stack/OS signals cannot do for a quietly dead tunnel.
+                livenessProbeFactory = { probeScope -> TunnelLivenessProbe(probeScope) },
             )
             controller = created
             _state.value = created.state.value

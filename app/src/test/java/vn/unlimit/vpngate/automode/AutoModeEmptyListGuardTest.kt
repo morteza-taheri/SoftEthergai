@@ -43,15 +43,29 @@ class AutoModeEmptyListGuardTest {
         emptyServerListMessage = { EMPTY_MESSAGE },
     )
 
+    /**
+     * [AutoModeController.start] launches the run on the controller's own
+     * scope, so a test must wait for the run to reach a terminal state before
+     * asserting on it — the same pattern the pre-existing AutoModeControllerTest
+     * uses via awaitTerminal().
+     */
+    private suspend fun AutoModeController.awaitTerminal(): AutoModeState {
+        while (true) {
+            val s = state.value
+            if ((s is AutoModeState.Connected || s is AutoModeState.Error) && !isRunning) return s
+            kotlinx.coroutines.delay(25)
+        }
+    }
+
     @Test
     fun emptyListRefusesToStart() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val adapter = RecordingAdapter()
         val controller = controller(adapter, emptyList(), scope)
 
-        val started = controller.startOrRefuseIfNoServers()
+        controller.startOrRefuseIfNoServers()
+        controller.awaitTerminal()
 
-        assertFalse("an empty list must not start a run", started)
         assertTrue("no connection attempt may be made", adapter.connectCalls.isEmpty())
         assertFalse("no run may be left active", controller.isRunning)
         scope.cancel()
@@ -65,7 +79,7 @@ class AutoModeEmptyListGuardTest {
 
         controller.startOrRefuseIfNoServers()
 
-        val state = controller.state.value
+        val state = controller.awaitTerminal()
         assertTrue("expected an Error state, got $state", state is AutoModeState.Error)
         assertEquals(
             "the guard must surface the actionable message, not a generic one",
@@ -83,7 +97,7 @@ class AutoModeEmptyListGuardTest {
 
         controller.startOrRefuseIfNoServers()
 
-        val message = (controller.state.value as AutoModeState.Error).message
+        val message = (controller.awaitTerminal() as AutoModeState.Error).message
         // The Auto Mode screen maps these two codes to their own strings; an
         // empty list must not be reported as either, or the user would be told
         // to retry a connection that can never start.

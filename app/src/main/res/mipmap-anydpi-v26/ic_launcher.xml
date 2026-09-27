@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!--
+      Layers are generated from the artwork in launcher_icons/ :
+        ic_launcher_background.png  ->  navy gradient, scaled to the full 108dp layer
+        ic_launcher_foreground.png  ->  glowing shield/keyhole card, inset so the
+                                        artwork spans 62dp, inside the 66dp safe zone
+
+      Both are plain rasters in mipmap-<density>/, so the density variants are
+      selected by resource resolution exactly like the legacy ic_launcher.png.
+    -->
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
 </adaptive-icon>

@@ -225,7 +225,21 @@ class AndroidConnectionAdapter(
 
     private fun startService(action: String, service: Class<*>) {
         val intent = Intent(context, service).setAction(action)
-        startForegroundCompatible(intent, service)
+        // A DISCONNECT intent makes each service stop itself without ever
+        // calling startForeground(). Sending that through
+        // startForegroundService() on Android O+ therefore trips
+        // ForegroundServiceDidNotStartInTimeException and kills the app — and
+        // this path runs on every failed server attempt, not only a manual
+        // disconnect. Teardown intents are plain background work, so a normal
+        // start is both correct and sufficient.
+        val isTeardown = action == SoftEtherVpnService.ACTION_DISCONNECT ||
+                action == OpenVPNService.DISCONNECT_VPN ||
+                action == ACTION_VPN_DISCONNECT
+        if (isTeardown || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            context.startService(intent)
+        } else {
+            startForegroundCompatible(intent, service)
+        }
     }
 
     private fun startForegroundCompatible(intent: Intent, service: Class<*>) {
