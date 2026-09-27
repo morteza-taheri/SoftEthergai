@@ -84,9 +84,36 @@ jobs:
         # The runner image ships an older SDK; the project pins
         # compileSdk/targetSdk 37 (root build.gradle), so without this step
         # every Gradle task fails with "Failed to find ... android-37".
+        #
+        # The platform ships under a minor-versioned directory (android-37.0)
+        # and its sdkmanager package id has moved between releases, so resolve
+        # the id from the repository itself instead of hardcoding it, then
+        # verify the directory exists. A silent no-op here surfaces much later
+        # as an opaque "Failed to find target with hash string 'android-37'".
         run: |
-          yes | sdkmanager --sdk_root=/opt/android-sdk-linux --licenses > /dev/null || true
-          sdkmanager --sdk_root=/opt/android-sdk-linux "platforms;android-37.0" "build-tools;37.0.0"
+          set -e
+          SDK=/opt/android-sdk-linux
+          yes | sdkmanager --sdk_root=$SDK --licenses > /dev/null 2>&1 || true
+
+          echo "platforms before: $(ls $SDK/platforms 2>/dev/null | tr '\n' ' ')"
+          sdkmanager --sdk_root=$SDK --list \
+            | grep -E '^\s*platforms;android-37' \
+            | awk '{print $1}' \
+            | sort -u > /tmp/pkgs.txt || true
+          echo "candidate platform packages:"
+          cat /tmp/pkgs.txt
+
+          if [ -s /tmp/pkgs.txt ]; then
+            sdkmanager --sdk_root=$SDK $(cat /tmp/pkgs.txt | tr '\n' ' ')
+          fi
+          sdkmanager --sdk_root=$SDK "build-tools;37.0.0" || true
+
+          echo "platforms after: $(ls $SDK/platforms 2>/dev/null | tr '\n' ' ')"
+          if ! ls $SDK/platforms | grep -q '^android-37'; then
+            echo "::error::android-37 platform is still missing after install"
+            exit 1
+          fi
+          echo "android-37 platform present"
 
       - name: Build OpenSSL headers
         run: |
