@@ -23,12 +23,28 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import vn.unlimit.vpngate.R
+import vn.unlimit.vpngate.ui.screens.settings.FirstRunLanguagePicker
 import vn.unlimit.vpngate.ui.theme.VpnGateTheme
 
 @SuppressLint("CustomSplashScreen")
 class SplashActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // VpnM Phase 6.3: on the very first launch, ask for the language before
+        // showing anything else. The choice is applied via
+        // AppCompatDelegate.setApplicationLocales, which recreates the activity,
+        // so MainActivity is only started once the user has decided.
+        val du = vn.unlimit.vpngate.App.instance?.dataUtil
+        if (du != null && du.isFirstRun()) {
+            setContent {
+                VpnGateTheme {
+                    FirstRunLanguagePicker(dataUtil = du, onDone = { launchMain() })
+                }
+            }
+            return
+        }
+
         setContent {
             VpnGateTheme {
                 SplashContent()

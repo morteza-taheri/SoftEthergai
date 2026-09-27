@@ -269,6 +269,11 @@
     <string name="auto_mode_server_protocol">Protocol: %1$s</string>
     <string name="auto_mode_server_speed">Speed: %1$d Mbps</string>
     <string name="auto_mode_server_ping">Ping: %1$d ms</string>
+    <string name="language_pick_title">Choose your language</string>
+    <string name="language_pick_subtitle">You can change this later in Settings</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_english">English</string>
+    <string name="language_system_default">Use device language</string>
     <string name="auto_mode_go_to_server_list">Go to server list</string>
     <string name="auto_mode_error_no_server">Could not connect to any available server.</string>
     <string name="auto_mode_error_generic">Auto Mode failed. Tap to try again.</string>

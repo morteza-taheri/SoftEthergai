@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  VpnM Phase 6.1: the pro flavor used to override app_name with "VPN Gate
+  Connector Pro". Because a flavor's res/ overrides the main source set, the
+  published build showed that name instead of "VpnM". The value now matches
+  app/src/main/res/values/strings.xml, so the app is called VpnM everywhere.
+  This file is kept (rather than deleted) so the pro flavor can still diverge
+  other strings later without re-adding a source set.
+-->
 <resources>
-    <string name="app_name" translatable="false">VPN Gate Connector Pro</string>
+    <string name="app_name" translatable="false">VpnM</string>
 </resources>

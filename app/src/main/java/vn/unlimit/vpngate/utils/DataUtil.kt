@@ -211,11 +211,36 @@ class DataUtil(context: Context?) {
         return sharedPreferencesSetting!!.getBoolean(key, defVal)
     }
 
-        fun setBooleanSetting(key: String?, value: Boolean) {
+    fun setBooleanSetting(key: String?, value: Boolean) {
         val editor = sharedPreferencesSetting!!.edit()
         editor.putBoolean(key, value)
         editor.apply()
     }
+
+    /**
+     * VpnM Phase 6.3 — the language the user selected, or null when they have
+     * not chosen one and the app should follow the system language.
+     *
+     * The first-run picker is what first writes a value here; until then this
+     * returns null, which is also the correct "follow the system" state.
+     */
+    fun getSelectedLocale(): String? =
+        getStringSetting(SETTING_LOCALE, null)?.takeIf { it.isNotBlank() }
+
+    /** Persists the user's language choice. Pass null to follow the system. */
+    fun setSelectedLocale(tag: String?) {
+        val editor = sharedPreferencesSetting!!.edit()
+        if (tag.isNullOrBlank()) editor.remove(SETTING_LOCALE) else editor.putString(SETTING_LOCALE, tag)
+        editor.apply()
+    }
+
+    /**
+     * True until the user has answered the first-run language prompt. Drives
+     * whether the picker is shown.
+     */
+    fun isFirstRun(): Boolean = !getBooleanSetting(SETTING_LOCALE_ANSWERED, false)
+
+    fun markLocaleAnswered() = setBooleanSetting(SETTING_LOCALE_ANSWERED, true)
 
     // §3 §4 §5 Auto Mode connection timeout per-server (5–60 seconds, default 12)
     fun getAutoModeTimeoutSeconds(): Int =
@@ -349,6 +374,19 @@ class DataUtil(context: Context?) {
         const val USE_DOMAIN_TO_CONNECT: String = "USE_DOMAIN_TO_CONNECT"
         const val SETTING_STARTUP_SCREEN: String = "SETTING_STARTUP_SCREEN"
         const val SETTING_THEME: String = "SETTING_THEME"
+
+    /**
+     * VpnM Phase 6.3 — the language the user picked. Empty / absent means
+     * "follow the system language", which is also the state a fresh install
+     * starts in before the first-run picker is answered.
+     *
+     * Holds an IETF language tag ("en", "fa", "vi") suitable for
+     * AppCompatDelegate.setApplicationLocales.
+     */
+    const val SETTING_LOCALE: String = "SETTING_LOCALE"
+
+    /** VpnM Phase 6.3 — set once the user answers the first-run language prompt. */
+    const val SETTING_LOCALE_ANSWERED: String = "SETTING_LOCALE_ANSWERED"
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
                 const val SETTING_DEFAULT_VPN_PROTOCOL: String = "SETTING_DEFAULT_VPN_PROTOCOL"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"

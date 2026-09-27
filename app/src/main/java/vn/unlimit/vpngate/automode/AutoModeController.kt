@@ -42,6 +42,13 @@ class AutoModeController(
      * Android resources and remains JVM-unit-testable.
      */
     private val emptyServerListMessage: () -> String = { "no servers available" },
+    /**
+     * VpnM Phase 5 — active tunnel liveness signal. Return true when the
+     * tunnel has shown a sign of life since the previous call (a keepalive
+     * reply, a successful read, a state refresh). null disables the watchdog
+     * and leaves the previous passive-only behaviour in place.
+     */
+    private val livenessProof: (() -> Boolean)? = null,
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -202,6 +209,14 @@ class AutoModeController(
     /**
      * While CONNECTED the main run has finished; this watcher monitors for
      * external tunnel disconnects / revocations.
+     *
+     * VpnM Phase 5. The pre-existing checks are passive: the stack's state
+     * listener and GlobalVpnTracker both only report a loss when something
+     * volunteers one. A tunnel that dies quietly never volunteers, so the UI
+     * stays green. [livenessProof] supplies the active half: it must return
+     * true when the tunnel has shown a sign of life since it was last called.
+     * It is injected (null = feature off) so the controller keeps no Android
+     * dependency and stays JVM-testable.
      */
     private fun startConnectedWatcher(protocol: AutoModeProtocol) {
         connectedWatcher?.cancel()
@@ -214,16 +229,41 @@ class AutoModeController(
                 setState(AutoModeState.Disconnected)
             }
         }
+        val watchdog = if (livenessProof != null) TunnelLivenessWatchdog() else null
+        // The tunnel was just verified, so proof is fresh by definition.
+        watchdog?.onProvenAlive(System.currentTimeMillis())
         connectedWatcher = scope.launch {
             while (currentCoroutineContext().isActive) {
                 kotlinx.coroutines.delay(1000)
-                if (_state.value is AutoModeState.Connected && !GlobalVpnTracker.isConnected) {
+                if (_state.value !is AutoModeState.Connected) break
+                if (!GlobalVpnTracker.isConnected) {
                     adapter.log("[AUTO] GlobalVpnTracker confirmed disconnected")
                     connectedWatcher?.cancel()
                     connectedWatcher = null
                     TunnelStateWatcher.onTunnelLost = null
                     setState(AutoModeState.Disconnected)
                     break
+                }
+                // Active liveness: only consulted after the passive checks pass,
+                // so a genuine OS-level loss is still reported first.
+                val wd = watchdog
+                val proof = livenessProof
+                if (wd != null && proof != null) {
+                    val now = System.currentTimeMillis()
+                    if (proof.invoke()) {
+                        wd.onProvenAlive(now)
+                    } else if (wd.onSample(now)) {
+                        adapter.log(
+                            "[AUTO] No proof of life for " +
+                                "${TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS}ms; " +
+                                "tunnel considered lost",
+                        )
+                        connectedWatcher?.cancel()
+                        connectedWatcher = null
+                        TunnelStateWatcher.onTunnelLost = null
+                        setState(AutoModeState.Disconnected)
+                        break
+                    }
                 }
             }
         }
@@ -267,25 +307,16 @@ class AutoModeController(
     }
 
     /**
-     * Button semantics plus the VpnM Phase 1.5 empty-list guard.
-     *
-     * An empty server list used to run the whole attempt loop and end in a
-     * generic "Error" with no hint. Now it refuses up-front and reports the
-     * dedicated message, leaving the UI free to point the user at the server
-     * list.
+     * Starts a run. The VpnM Phase 1.5 empty-list guard lives inside
+     * [runAutoMode], where the candidate list is actually resolved, so there is
+     * no separate pre-check here.
      *
      * @return true when a run was actually started.
      */
-    suspend fun startOrRefuseIfNoServers(): Boolean {
+    fun startOrRefuseIfNoServers(): Boolean {
         if (_state.value !is AutoModeState.Disconnected && _state.value !is AutoModeState.Error) {
-            // Already connecting or connected: the button means stop/disconnect,
-            // not "start", so the guard does not apply.
+            // Already connecting or connected: the button means stop/disconnect.
             onButtonPressedWithoutGuard()
-            return false
-        }
-        if (serverProvider().isEmpty()) {
-            overrideServers = null
-            setState(AutoModeState.Error(emptyServerListMessage()))
             return false
         }
         overrideServers = null

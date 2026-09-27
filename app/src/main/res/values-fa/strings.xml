@@ -216,6 +216,12 @@
     <string name="refresh">به‌روزرسانی</string>
     <string name="refresh_servers">به‌روزرسانی سرورها</string>
     <string name="update_server_list_first">لیست سرورها خالی است. لطفاً ابتدا لیست سرورها را بروزرسانی کنید.</string>
+    <string name="language_pick_title">زبان خود را انتخاب کنید</string>
+    <string name="language_pick_subtitle">می‌توانید بعداً این را از تنظیمات تغییر دهید</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_english">English</string>
+    <string name="language_system_default">استفاده از زبان دستگاه</string>
+    <string name="auto_mode_go_to_server_list">رفتن به لیست سرورها</string>
     <!-- L2TPConnect -->
     <string name="l2tp_connect_title">اتصال به «%1$s» از طریق L2TP/IPSec</string>
     <string name="l2tp_connect_hint">برای اتصال به سرور «%1$s» از طریق VPN با L2TP/IPSec مراحل زیر را دنبال کنید</string>
