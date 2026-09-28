@@ -84,6 +84,7 @@
     <string name="sort_asc">Ascending</string>
     <string name="sort_desc">Descending</string>
     <string name="apply">Apply</string>
+    <string name="save">Save</string>
     <string name="cancel">Cancel</string>
     <string name="feature_not_available">You can\'t do this action at this moment</string>
     <!--- Settings -->
@@ -235,6 +236,14 @@
     <string name="dns_ip_2">DNS 2 (optional)</string>
     <string name="dns_ip_1_hint" translatable="false">8.8.8.8</string>
     <string name="dns_ip_2_hint" translatable="false">8.8.4.4</string>
+    <!-- Custom DNS presets -->
+    <string name="dns_preset_label">DNS Preset</string>
+    <string name="dns_preset_google">Google</string>
+    <string name="dns_preset_cloudflare">Cloudflare</string>
+    <string name="dns_preset_shecan">Shecan</string>
+    <string name="dns_preset_quad9">Quad9</string>
+    <string name="dns_preset_custom">Custom</string>
+    <string name="dns_invalid_ip">Invalid IP address</string>
     <string name="use_domain_label">Use domain to connect</string>
     <string name="use_domain_hint">Use domain .opengw.net to connect to VPN Server instead of Server IP Address</string>
     <string name="empty_search_result">No sever found with keyword \"%1$s\"</string>

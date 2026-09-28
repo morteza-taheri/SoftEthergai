@@ -40,10 +40,11 @@ class DeveloperModeLogGateTest {
     }
 
     @Test
-    fun defaultStateIsEnabled() {
-        // The default must be ON: troubleshooting logs are the norm.
-        assertTrue(CollectorLog.enabled)
-        assertFalse(!CollectorLog.enabled)
+    fun developerModeDefaultIsOff() {
+        // Fresh install: Developer Mode (verbose logging) must be OFF. The
+        // user's explicit choice is stored in SharedPreferences and therefore
+        // survives restarts unchanged.
+        assertFalse(vn.unlimit.vpngate.utils.DataUtil.DEFAULT_DEVELOPER_MODE)
     }
 
     /**

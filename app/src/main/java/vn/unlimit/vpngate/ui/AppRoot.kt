@@ -7,12 +7,12 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Autorenew
@@ -75,8 +75,8 @@ private val destinations = listOf(
     NavDestination(
         NavRoutes.HOME,
         R.string.home,
-        Icons.Filled.Home,
-        Icons.Outlined.Home,
+        Icons.Filled.Dns,
+        Icons.Outlined.Dns,
     ),
     NavDestination(
         NavRoutes.STATUS,

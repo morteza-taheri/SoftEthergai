@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -51,6 +53,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -88,6 +91,7 @@ import vn.unlimit.vpngate.data.model.CollectorLog
 import vn.unlimit.vpngate.provider.BaseProvider
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
+import vn.unlimit.vpngate.utils.DnsPresets
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
 import java.text.DateFormat
 
@@ -115,8 +119,17 @@ fun SettingsScreen(
     var blockAds by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false)) }
     var includeUdp by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)) }
     var useCustomDns by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)) }
-    var dns1 by remember { mutableStateOf(dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_1, "8.8.8.8") ?: "") }
-    var dns2 by remember { mutableStateOf(dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_2, "") ?: "") }
+    // Defaults shown for the fields when nothing is stored yet. These are only
+    // *applied* to the tunnel when Custom DNS is ON, so a fresh install keeps
+    // the app's existing default DNS behavior.
+    var dns1 by remember {
+        mutableStateOf(dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_1, DnsPresets.GOOGLE.primary) ?: "")
+    }
+    var dns2 by remember {
+        mutableStateOf(dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_2, DnsPresets.GOOGLE.secondary) ?: "")
+    }
+    // Which preset the current address pair corresponds to (CUSTOM when hand-typed).
+    var dnsPresetId by remember { mutableStateOf(DnsPresets.idFor(dns1, dns2)) }
     var useDomain by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) }
     var cacheTimeIndex by remember {
         mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_CACHE_TIME_KEY, DataUtil.DEFAULT_CACHE_TIME_INDEX).coerceIn(0, 8))
@@ -316,11 +329,11 @@ fun SettingsScreen(
                                         putBoolean(kittoku.osc.preference.OscPrefKey.DNS_DO_USE_CUSTOM_SERVER.toString(), true)
                                         putString(
                                             kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS.toString(),
-                                            dns1.ifEmpty { "8.8.8.8" },
+                                            dns1.ifEmpty { DnsPresets.GOOGLE.primary },
                                         )
                                         putString(
                                             kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS_SECONDARY.toString(),
-                                            dns2.ifEmpty { "8.8.4.4" },
+                                            dns2.ifEmpty { DnsPresets.GOOGLE.secondary },
                                         )
                                     } else {
                                         remove(kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS.toString())
@@ -341,9 +354,53 @@ fun SettingsScreen(
                                     .padding(start = 16.dp, end = 16.dp, bottom = 12.dp, top = 4.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
+                                Text(
+                                    stringResource(R.string.dns_preset_label),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                // Preset radio group. Selecting one fills both fields;
+                                // "Custom" leaves whatever the user typed alone.
+                                val presetOptions: List<Pair<String, String>> =
+                                    DnsPresets.all.map { it.id to stringResource(it.labelRes) } +
+                                            (DnsPresets.ID_CUSTOM to stringResource(R.string.dns_preset_custom))
+                                presetOptions.forEach { (id, label) ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .selectable(
+                                                    selected = dnsPresetId == id,
+                                                    onClick = {
+                                                        dnsPresetId = id
+                                                        DnsPresets.byId(id)?.let { preset ->
+                                                            dns1 = preset.primary
+                                                            dns2 = preset.secondary
+                                                        }
+                                                    },
+                                                )
+                                                .padding(vertical = 2.dp),
+                                        ) {
+                                            RadioButton(
+                                                selected = dnsPresetId == id,
+                                                onClick = {
+                                                    dnsPresetId = id
+                                                    DnsPresets.byId(id)?.let { preset ->
+                                                        dns1 = preset.primary
+                                                        dns2 = preset.secondary
+                                                    }
+                                                },
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                                        }
+                                    }
                                 OutlinedTextField(
                                     value = dns1,
-                                    onValueChange = { dns1 = it },
+                                    onValueChange = {
+                                        dns1 = it
+                                        dnsPresetId = DnsPresets.idFor(it, dns2)
+                                    },
                                     label = { Text(stringResource(R.string.dns_ip_1)) },
                                     placeholder = { Text("8.8.8.8") },
                                     modifier = Modifier.fillMaxWidth(),
@@ -353,7 +410,10 @@ fun SettingsScreen(
                                 )
                                 OutlinedTextField(
                                     value = dns2,
-                                    onValueChange = { dns2 = it },
+                                    onValueChange = {
+                                        dns2 = it
+                                        dnsPresetId = DnsPresets.idFor(dns1, it)
+                                    },
                                     label = { Text(stringResource(R.string.dns_ip_2)) },
                                     placeholder = { Text("8.8.4.4") },
                                     modifier = Modifier.fillMaxWidth(),
@@ -373,16 +433,26 @@ fun SettingsScreen(
                                         if (isValidIp(dns1) && isValidIp(dns2)) {
                                             dataUtil.setStringSetting(DataUtil.CUSTOM_DNS_IP_1, dns1)
                                             dataUtil.setStringSetting(DataUtil.CUSTOM_DNS_IP_2, dns2)
+                                            dataUtil.setStringSetting(
+                                                DataUtil.CUSTOM_DNS_PRESET,
+                                                DnsPresets.idFor(dns1, dns2),
+                                            )
                                             prefs.edit()
                                                 .putString(kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS.toString(), dns1)
                                                 .putString(
                                                     kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS_SECONDARY.toString(),
-                                                    dns2.ifEmpty { "8.8.4.4" },
+                                                    dns2.ifEmpty { DnsPresets.GOOGLE.secondary },
                                                 )
                                                 .apply()
-                                            Toast.makeText(context, context.getString(R.string.apply), Toast.LENGTH_SHORT).show()
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(context.getString(R.string.apply))
+                                            }
                                         } else {
-                                            Toast.makeText(context, "Invalid IP address", Toast.LENGTH_SHORT).show()
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    context.getString(R.string.dns_invalid_ip),
+                                                )
+                                            }
                                         }
                                     },
                                     modifier = Modifier.align(Alignment.End),
@@ -634,6 +704,18 @@ fun SettingsScreen(
             onDismiss = {
                 showExcludedApps = false
                 excludedAppsCount = excludeAppsManager.getExcludedAppsCount()
+            },
+            onSaved = { success ->
+                // The sheet has already closed, so the confirmation snackbar is
+                // hosted here in Settings where it stays visible.
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(
+                            if (success) R.string.apps_updated_successfully
+                            else R.string.error_saving_apps,
+                        ),
+                    )
+                }
             },
         )
     }

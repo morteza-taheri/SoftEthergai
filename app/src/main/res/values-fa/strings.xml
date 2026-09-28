@@ -62,6 +62,7 @@
     <string name="sort_asc">صعودی</string>
     <string name="sort_desc">نزولی</string>
     <string name="apply">اعمال</string>
+    <string name="save">ذخیره</string>
     <string name="cancel">انصراف</string>
     <string name="feature_not_available">این عملیات در حال حاضر امکان‌پذیر نیست</string>
     <!-- Settings -->
@@ -208,6 +209,13 @@
     <string name="dns_setting_label">استفاده از DNS سفارشی</string>
     <string name="dns_setting_hint">استفاده از DNS سفارشی هنگام اتصال به سرور VPN به‌جای DNS پیش‌فرض گوگل (۸.۸.۸.۸/۸.۸.۴.۴).\nبا فعال‌سازی، تنظیم مسدودسازی تبلیغات خاموش می‌شود</string>
     <string name="dns_ip_2">DNS ۲ (اختیاری)</string>
+    <string name="dns_preset_label">DNS از پیش‌تنظیم‌شده</string>
+    <string name="dns_preset_google">گوگل</string>
+    <string name="dns_preset_cloudflare">کلودفلر</string>
+    <string name="dns_preset_shecan">شکن</string>
+    <string name="dns_preset_quad9">Quad9</string>
+    <string name="dns_preset_custom">سفارشی</string>
+    <string name="dns_invalid_ip">آدرس IP نامعتبر است</string>
     <string name="use_domain_label">اتصال با دامنه</string>
     <string name="use_domain_hint">استفاده از دامنهٔ .opengw.net برای اتصال به سرور VPN به‌جای نشانی IP سرور</string>
     <string name="empty_search_result">سروری با کلیدواژهٔ «%1$s» پیدا نشد</string>

@@ -51,4 +51,17 @@ class SoftEtherMaxConnectionsTest {
             if (negative.maxConnections in 1..8) negative.maxConnections else 4
         assertEquals(4, appliedNegative)
     }
+
+    /**
+     * The app-level setting default must match the reference client shipped in
+     * this repository: `softether_protocol.c` initializes
+     * `conn->max_connection = 4` and `ConnectionConfig.maxConnections` is 4,
+     * so a fresh install asks for the same 4 connections.
+     */
+    @Test
+    fun appSettingDefault_matchesReferenceClientDefault() {
+        assertEquals(4, vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SOFTETHER_MAX_CONNECTIONS)
+        assertEquals(4, baseConfig().maxConnections)
+        assertEquals(8, vn.unlimit.vpngate.utils.DataUtil.MAX_SOFTETHER_CONNECTIONS)
+    }
 }

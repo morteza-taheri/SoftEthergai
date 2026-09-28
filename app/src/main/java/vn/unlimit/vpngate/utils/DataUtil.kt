@@ -268,13 +268,19 @@ class DataUtil(context: Context?) {
         setStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, protocols.joinToString(",") { it.id })
     }
 
-    // SoftEther client concurrent TCP connections (1–8, native MAX_SE_CONNECTIONS;
-    // default 1 ensures single-stream stability and avoids unprotected secondary sockets)
+    // SoftEther client concurrent TCP connections (1–8, native MAX_SE_CONNECTIONS).
+    //
+    // The default mirrors the reference client shipped in-tree
+    // (SoftEtherClient): softether_protocol.c initializes
+    // `conn->max_connection = 4` and ConnectionConfig.maxConnections defaults
+    // to 4, so a fresh install asks for the same 4 connections the native
+    // layer would use on its own. Users can still pick any value 1..8.
     fun getSoftEtherMaxConnections(): Int =
-        getIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, 1).coerceIn(1, 8)
+        getIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, DEFAULT_SOFTETHER_MAX_CONNECTIONS)
+            .coerceIn(1, MAX_SOFTETHER_CONNECTIONS)
 
     fun setSoftEtherMaxConnections(value: Int) {
-        setIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, value.coerceIn(1, 8))
+        setIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, value.coerceIn(1, MAX_SOFTETHER_CONNECTIONS))
     }
 
     fun hasAds(): Boolean {
@@ -336,10 +342,11 @@ class DataUtil(context: Context?) {
         setStringSetting("KEY_CACHED_MIRRORS", json)
     }
 
-    // Developer Mode: on = keep all diagnostic logging (default, for
-    // troubleshooting); off = suppress every collector/auto-mode log line
-    // for speed (logcat writes, logcat tap and the Auto Mode log window).
-    fun getDeveloperMode(): Boolean = getBooleanSetting(SETTING_DEVELOPER_MODE, true)
+    // Developer Mode: on = keep all diagnostic logging; off = suppress every
+    // collector/auto-mode log line for speed (logcat writes, logcat tap and the
+    // Auto Mode log window). A fresh install starts OFF; the user's choice is
+    // persisted so it survives restarts.
+    fun getDeveloperMode(): Boolean = getBooleanSetting(SETTING_DEVELOPER_MODE, DEFAULT_DEVELOPER_MODE)
 
     fun setDeveloperMode(enabled: Boolean) {
         setBooleanSetting(SETTING_DEVELOPER_MODE, enabled)
@@ -371,6 +378,9 @@ class DataUtil(context: Context?) {
         const val USE_CUSTOM_DNS: String = "USE_CUSTOM_DNS"
         const val CUSTOM_DNS_IP_1: String = "CUSTOM_DNS_IP_1"
         const val CUSTOM_DNS_IP_2: String = "CUSTOM_DNS_IP_2"
+
+        /** Id of the selected [DnsPresets] entry (or [DnsPresets.ID_CUSTOM]). */
+        const val CUSTOM_DNS_PRESET: String = "CUSTOM_DNS_PRESET"
         const val USE_DOMAIN_TO_CONNECT: String = "USE_DOMAIN_TO_CONNECT"
         const val SETTING_STARTUP_SCREEN: String = "SETTING_STARTUP_SCREEN"
         const val SETTING_THEME: String = "SETTING_THEME"
@@ -392,6 +402,21 @@ class DataUtil(context: Context?) {
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
         const val SETTING_SOFTETHER_MAX_CONNECTIONS: String = "SETTING_SOFTETHER_MAX_CONNECTIONS"
+
+        /**
+         * Default target number of concurrent SoftEther TCP connections.
+         *
+         * Taken from the reference client in this repository
+         * (SoftEtherClient): `softether_protocol.c` initializes
+         * `conn->max_connection = 4`, and `ConnectionConfig.maxConnections`
+         * defaults to 4 — so 4 is what the native layer uses when the app does
+         * not override it. Hard upper bound is the native `MAX_SE_CONNECTIONS`.
+         */
+        const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 4
+        const val MAX_SOFTETHER_CONNECTIONS: Int = 8
+
+        /** Developer Mode (verbose logging) ships disabled on a fresh install. */
+        const val DEFAULT_DEVELOPER_MODE: Boolean = false
         const val AUTO_LAST_SUCCESS_HOST: String = "AUTO_LAST_SUCCESS_HOST"
         const val AUTO_LAST_SUCCESS_PROTOCOL: String = "AUTO_LAST_SUCCESS_PROTOCOL"
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"

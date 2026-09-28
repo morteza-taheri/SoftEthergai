@@ -28,13 +28,14 @@ object VpnProtocolNames {
  *
  * Developer Mode gate (Settings): when disabled, every collector log call
  * becomes a no-op — no string building, no logcat writes, no logcat tap —
- * to keep the app fast. Default is ON for troubleshooting.
+ * to keep the app fast. Ships OFF (a fresh install has no verbose logging);
+ * App.onCreate then syncs it with the persisted user choice.
  */
 object CollectorLog {
     var sink: (String) -> Unit = { println(it) }
 
     @Volatile
-    var enabled: Boolean = true
+    var enabled: Boolean = false
 
     fun d(message: String) {
         if (enabled) sink(message)

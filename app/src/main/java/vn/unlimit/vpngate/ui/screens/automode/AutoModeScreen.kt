@@ -340,12 +340,12 @@ fun AutoModeScreen(
         )
     }
 
-    // Default protocol from settings
-    val defaultProtocolId = viewModel.dataUtil.getStringSetting(
-        DataUtil.SETTING_DEFAULT_VPN_PROTOCOL,
-        AutoModeProtocol.DEFAULT_ID,
-    )
-    val defaultProtocol = AutoModeProtocol.fromId(defaultProtocolId)
+    // NOTE: the "Default Protocol" badge that used to sit at the top of this
+    // screen was removed to reduce clutter (user request). The value itself is
+    // untouched: it still lives in DataUtil.SETTING_DEFAULT_VPN_PROTOCOL, is
+    // edited in Settings, and is consumed by AutoModeController through
+    // protocolProvider() (see AutoModeController.runAutoMode). Nothing below
+    // depends on `defaultProtocol` for the connection flow.
 
     Scaffold { padding ->
         Column(
@@ -356,42 +356,6 @@ fun AutoModeScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Protocol info badge
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 24.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Tune,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.setting_auto_protocol_label),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = defaultProtocol.id.replace('_', ' '),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-
             // Hero Connection Button
             AutoConnectHeroButton(
                 state = state,

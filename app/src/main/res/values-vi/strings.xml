@@ -54,6 +54,7 @@
     <string name="sort_asc">Tăng dần</string>
     <string name="sort_desc">Giảm dần</string>
     <string name="apply">Áp dụng</string>
+    <string name="save">Lưu</string>
     <string name="cancel">Hủy</string>
     <string name="feature_not_available">Hiện tại bạn chưa thể sử dụng tính năng này</string>
     <!--- Settings -->
@@ -164,6 +165,13 @@
     <string name="dns_setting_label">Dùng DNS tuỳ chỉnh</string>
     <string name="dns_setting_hint">Dùng DNS tuỳ chỉnh thay thế Google DNS (8.8.8.8/8.8.4.4) mặc định khi kết nối VPN.\nNếu bật cài đặt này sẽ tắt cài đặt chặn quảng cáo</string>
     <string name="dns_ip_2">DNS 2 (tuỳ chọn)</string>
+    <string name="dns_preset_label">DNS dựng sẵn</string>
+    <string name="dns_preset_google">Google</string>
+    <string name="dns_preset_cloudflare">Cloudflare</string>
+    <string name="dns_preset_shecan">Shecan</string>
+    <string name="dns_preset_quad9">Quad9</string>
+    <string name="dns_preset_custom">Tuỳ chỉnh</string>
+    <string name="dns_invalid_ip">Địa chỉ IP không hợp lệ</string>
     <string name="use_domain_label">Dùng tên miền để kết nối</string>
     <string name="use_domain_hint">Dùng tên miền .opengw.net để kết nối tới máy chủ VPN thay vì sử dụng địa chỉ IP</string>
     <string name="empty_search_result">Không tìm thấy máy chủ nào với từ khoá \"%1$s\"</string>
