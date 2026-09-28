@@ -197,14 +197,33 @@ jobs:
           done
 
           echo "===== 7. compileSdk / targetSdk as Gradle sees them ====="
-          ./gradlew --no-daemon -q :app:properties --offline 2>&1 \
-            | grep -iE 'compileSdk|targetSdk|buildToolsVersion|minSdk' \
-            | sed 's/^/  /'
+          ./gradlew --no-daemon :app:properties --offline 2>&1 | tail -n 40 | sed 's/^/  /'
 
-          echo "===== 8. Gradle platform resolution attempt ====="
+          echo "===== 8. FULL unfiltered output of the failing resolution ====="
+          ./gradlew --no-daemon --offline --stacktrace \
+            :app:testProDebugUnitTest --dry-run 2>&1 | tail -n 60 | sed 's/^/  /'
+
+          echo "===== 8b. does Gradle succeed on a different variant? ====="
           ./gradlew --no-daemon --offline :app:assembleProRelease --dry-run 2>&1 \
-            | grep -iE 'android-3[5-9]|Failed to find|hash string|platforms/' \
-            | sed 's/^/  /'
+            | tail -n 25 | sed 's/^/  /'
+
+          echo "===== 8c. probe compileSdk 36.1 which the image also ships ====="
+          ./gradlew --no-daemon --offline -Pandroid.injected.compileSdk=36.1 \
+            :app:assembleProRelease --dry-run 2>&1 | tail -n 25 | sed 's/^/  /'
+
+          echo "===== 9. the malformed-looking platform, raw ====="
+          for p in "$SDK"/platforms/android-37.2 "$SDK"/platforms/android-37.2-beta3; do
+            [ -d "$p" ] || continue
+            echo "--- $p/source.properties (raw) ---"
+            cat -A "$p/source.properties" 2>/dev/null | head -n 20
+            echo "--- $p/package.xml apiLevel / path lines ---"
+            grep -oE '(path|display-name|api-level|revision)' "$p/package.xml" 2>/dev/null | head -n 12
+          done
+
+          echo "===== 10. build-tools present? ====="
+          ls -1 "$SDK/build-tools" 2>&1 | sed 's/^/  /'
+          echo "--- build-tools/37.0.0 contents ---"
+          ls -1 "$SDK/build-tools/37.0.0" 2>&1 | head -n 20 | sed 's/^/  /'
 
           echo "===== 9. interpretation ====="
           echo "MISSING android.jar in every android-37* dir => platform never"
