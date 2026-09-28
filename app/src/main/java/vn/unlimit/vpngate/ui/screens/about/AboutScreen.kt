@@ -69,7 +69,10 @@ fun AboutScreen() {
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Image(
-                        painter = painterResource(R.mipmap.ic_launcher),
+                        // Must be a raster, not a mipmap: R.mipmap.ic_launcher
+                        // resolves to the adaptive-icon XML on API 26+, which
+                        // painterResource cannot decode.
+                        painter = painterResource(R.drawable.ic_app_logo),
                         contentDescription = stringResource(R.string.app_icon),
                         modifier = Modifier.size(88.dp),
                     )
