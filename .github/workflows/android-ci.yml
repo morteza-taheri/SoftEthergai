@@ -129,6 +129,89 @@ jobs:
           fi
           echo "android-37 platform present: $(ls -d $SDK/platforms/android-37)"
 
+      - name: Diagnose android-37 resolution
+        # Read-only diagnosis of "Failed to find target with hash string
+        # 'android-37'". Reports only: it never installs, symlinks or mutates
+        # the SDK, and it must never fail the build.
+        continue-on-error: true
+        run: |
+          set +e
+          SDK=/opt/android-sdk-linux
+          echo "===== 1. environment ====="
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+          echo "ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-<unset>}"
+          echo "HOME=$HOME"
+          echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+
+          echo "===== 2. candidate SDK roots ====="
+          for d in /opt/android-sdk-linux /opt/android-sdk /usr/local/lib/android/sdk /root/Android/Sdk /github/home/Android/Sdk "$HOME/Android/Sdk"; do
+            if [ -d "$d" ]; then
+              echo "EXISTS  $d"
+              echo "        platforms: $(ls $d/platforms 2>/dev/null | tr '\n' ' ')"
+            else
+              echo "ABSENT  $d"
+            fi
+          done
+
+          echo "===== 3. SDK hints in local.properties / gradle.properties ====="
+          echo "--- local.properties ---"
+          cat local.properties 2>/dev/null || echo "(none)"
+          echo "--- gradle.properties sdk lines ---"
+          grep -i 'sdk' gradle.properties 2>/dev/null || echo "(none)"
+
+          echo "===== 4. platforms directory, full listing ====="
+          ls -la "$SDK/platforms" 2>&1
+          echo
+          echo "--- every android-37* entry: type, target, file count ---"
+          for p in "$SDK"/platforms/android-37*; do
+            [ -e "$p" ] || continue
+            if [ -L "$p" ]; then
+              echo "SYMLINK   $p -> $(readlink "$p")  (resolved: $(readlink -f "$p"))"
+            else
+              echo "DIRECTORY $p"
+            fi
+            echo "          file count: $(find "$p" -type f 2>/dev/null | wc -l)"
+          done
+
+          echo "===== 5. required files per candidate ====="
+          for p in "$SDK"/platforms/android-37*; do
+            [ -e "$p" ] || continue
+            echo "--- $p ---"
+            for f in android.jar source.properties package.xml build.prop core-for-system-modules.jar; do
+              if [ -f "$p/$f" ]; then
+                echo "  PRESENT $f  ($(stat -c%s "$p/$f") bytes)"
+              else
+                echo "  MISSING $f"
+              fi
+            done
+            echo "  top-level entries:"
+            ls -1 "$p" 2>&1 | sed 's/^/    /'
+          done
+
+          echo "===== 6. source.properties contents ====="
+          for p in "$SDK"/platforms/android-37*; do
+            [ -f "$p/source.properties" ] || continue
+            echo "--- $p/source.properties ---"
+            cat "$p/source.properties"
+          done
+
+          echo "===== 7. compileSdk / targetSdk as Gradle sees them ====="
+          ./gradlew --no-daemon -q :app:properties --offline 2>&1 \
+            | grep -iE 'compileSdk|targetSdk|buildToolsVersion|minSdk' \
+            | sed 's/^/  /'
+
+          echo "===== 8. Gradle platform resolution attempt ====="
+          ./gradlew --no-daemon --offline :app:assembleProRelease --dry-run 2>&1 \
+            | grep -iE 'android-3[5-9]|Failed to find|hash string|platforms/' \
+            | sed 's/^/  /'
+
+          echo "===== 9. interpretation ====="
+          echo "MISSING android.jar in every android-37* dir => platform never"
+          echo "  unpacked; the install step silently did nothing."
+          echo "android.jar present but Gradle still fails => Gradle is reading"
+          echo "  a different SDK root, or rejects the directory name/hash."
+
       - name: Build OpenSSL headers
         run: |
           cd SoftEtherClient/src/main/cpp && ./build-openssl-android.sh --headers-only
