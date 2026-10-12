@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("softetherclient")
 
+# Build the native test library (libsoftether_test.so).
+#
+# DEEP-REVIEW-VERIFY L-01/L-02: default OFF, so the test library is NOT part of
+# a plain release build. It is enabled explicitly by the debug and androidTest
+# Gradle configurations via `-DBUILD_TESTING=ON`. See the guarded target near
+# the bottom of this file for the full rationale.
+option(BUILD_TESTING "Build the native test library" OFF)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -91,49 +99,88 @@ if(SE_TRACE_PACKETS)
 endif()
 
 # Debug/Release specific flags
+#
+# DEEP-REVIEW-VERIFY L-02/L-03: the release artifact must not ship debug
+# symbols or build-machine source paths. Previously the release branch only
+# added -O2, so the shipped libsoftether.so still contained .symtab, .strtab,
+# full .debug_* sections (loc/abbrev/info/ranges/str/line) and embedded paths
+# such as `/src/main/cpp/softether-core/src/proto/softether_protocol.c` — a
+# symbol/source-path disclosure plus a size cost. -Wl,-s asks the linker to
+# drop static symbols and debug info.
+#
+# This is safe for a JNI library: the runtime linker resolves JNI entry points
+# through .dynsym, which -Wl,-s preserves. Only .symtab / .strtab / .debug_*
+# are removed.
+#
+# The debug branch is deliberately left untouched so the debug APK can still
+# symbolicate (that is why this is scoped to the else() below and not applied
+# globally).
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(softether PRIVATE -g -O0)
 else()
     target_compile_options(softether PRIVATE -O2)
+    # Strip static symbols + debug info from the release shared library.
+    target_link_options(softether PRIVATE -Wl,-s)
 endif()
 
 # Test library sources
+#
+# Kept defined unconditionally so the list remains available for reference and
+# for any future consumer; it is only *used* inside the BUILD_TESTING guard
+# below, which is what keeps the test target out of the release artifact.
 set(TEST_SOURCES
     test/native_test.c
     test/test_jni_bridge.c
     ${SOFTETHER_SOURCES}
 )
 
-# Create test shared library
-add_library(softether_test SHARED ${TEST_SOURCES})
+# Test-only shared library: native_test + test_jni_bridge plus the production
+# sources they exercise.
+#
+# DEEP-REVIEW-VERIFY L-01/L-02: this target was previously built
+# unconditionally, so libsoftether_test.so (≈5.7 MB per ABI, ~21 MB across the
+# four ABIs) was packaged into EVERY variant — including the release APK — and
+# exposed test-only JNI entry points (native_test, test_jni_bridge, JNI_OnLoad)
+# to end users. R8/`shrinkResources` cannot remove a native library, so the
+# packaging fix has to be made here, at the CMake layer.
+#
+# The default is OFF, so a plain release build never produces this target. It is
+# enabled explicitly by the debug and androidTest Gradle configurations via
+# `-DBUILD_TESTING=ON` (see SoftEtherClient/build.gradle). This keeps Android
+# instrumentation tests (which `System.loadLibrary("softether_test")`) working
+# while removing the library from release output.
+if(BUILD_TESTING)
+    # Create test shared library
+    add_library(softether_test SHARED ${TEST_SOURCES})
 
-# Include directories for test library
-target_include_directories(softether_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/softether-core/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/test
-)
+    # Include directories for test library
+    target_include_directories(softether_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/softether-core/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test
+    )
 
-# Link libraries for test library
-target_link_libraries(softether_test
-    ${log-lib}
-    ${android-lib}
-    ${z-lib}
-)
+    # Link libraries for test library
+    target_link_libraries(softether_test
+        ${log-lib}
+        ${android-lib}
+        ${z-lib}
+    )
 
-# Link prebuilt OpenSSL for test library if available
-if(USE_PREBUILT_OPENSSL)
-    target_link_libraries(softether_test ${OPENSSL_LIBRARIES})
-else()
-    target_link_libraries(softether_test ssl crypto)
+    # Link prebuilt OpenSSL for test library if available
+    if(USE_PREBUILT_OPENSSL)
+        target_link_libraries(softether_test ${OPENSSL_LIBRARIES})
+    else()
+        target_link_libraries(softether_test ssl crypto)
+    endif()
+
+    # Compiler flags for test library
+    target_compile_options(softether_test PRIVATE
+        -Wall
+        -Wno-unused-parameter
+        -Wno-unused-variable
+        -fPIC
+    )
 endif()
-
-# Compiler flags for test library
-target_compile_options(softether_test PRIVATE
-    -Wall
-    -Wno-unused-parameter
-    -Wno-unused-variable
-    -fPIC
-)
 
 # Export compile commands for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

@@ -38,6 +38,15 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            externalNativeBuild {
+                cmake {
+                    // DEEP-REVIEW-VERIFY L-01/L-02: the release variant keeps the
+                    // CMake default for BUILD_TESTING (OFF), so the native test
+                    // library is excluded from the release artifact. Stated
+                    // explicitly so a future edit cannot silently re-enable it.
+                    arguments "-DBUILD_TESTING=OFF"
+                }
+            }
         }
         debug {
             debuggable true
@@ -45,6 +54,13 @@ android {
                 cmake {
                     cppFlags "-O0 -g"
                     cFlags "-O0 -g"
+                    // DEEP-REVIEW-VERIFY L-01/L-02: the debug variant builds the
+                    // native test library. There is no `testBuildType` override in
+                    // this project, so androidTest runs against the debug variant
+                    // and `src/androidTest` (NativeConnectionTest.kt, which calls
+                    // System.loadLibrary("softether_test")) resolves the library
+                    // from here.
+                    arguments "-DBUILD_TESTING=ON"
                 }
             }
         }
