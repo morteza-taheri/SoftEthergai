@@ -369,3 +369,100 @@ JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_na
     
     return create_test_result(env, &result);
 }
+
+// F.28AI — JNI bridge for native race stress tests
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestA3NatTForceCloseVsDestroy(
+    JNIEnv *env, jobject thiz, jint iterations) {
+    
+    LOGD("nativeTestA3NatTForceCloseVsDestroy called with iterations=%d", iterations);
+    
+    native_test_result_t result = test_a3_nat_t_force_close_vs_destroy((int)iterations);
+    
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestA6NatTStress(
+    JNIEnv *env, jobject thiz, jint iterations) {
+    
+    LOGD("nativeTestA6NatTStress called with iterations=%d", iterations);
+    
+    native_test_result_t result = test_a6_nat_t_stress((int)iterations);
+    
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestB3DhcpVsDisconnect(
+    JNIEnv *env, jobject thiz, jint iterations) {
+    
+    LOGD("nativeTestB3DhcpVsDisconnect called with iterations=%d", iterations);
+    
+    native_test_result_t result = test_b3_dhcp_vs_disconnect((int)iterations);
+    
+    return create_test_result(env, &result);
+}
+
+// F.28AL-B — JNI bridge for the B3s DHCP success/disconnect race harness.
+// Case IDs mirror native_test.h B3S_CASE_* (1=C1, 2=C2, 3=C3, 4=C4, 5=C5, 6=C6).
+// TEST-ONLY: exercises the raw framed data channel with a test-side responder;
+// no production code path is altered.
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestB3sDhcpSuccessRace(
+    JNIEnv *env, jobject thiz, jint caseId, jint iterations) {
+
+    LOGD("nativeTestB3sDhcpSuccessRace called with caseId=%d iterations=%d",
+         caseId, iterations);
+
+    native_test_result_t result =
+        test_b3s_dhcp_success_race((int)caseId, (int)iterations);
+
+    return create_test_result(env, &result);
+}
+
+// FIX-NATIVE-P0-BOUNDS — bridge wrappers for the JNI array-length validation
+// tests (N-01..N-05) and the RUDP lock-leak test (N-08). The length tests need
+// the live JNIEnv to build the deliberately wrong arrays, so they are driven
+// from here; the assertions themselves live in native_test.c.
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestNativeSendRejectsOversizedLength(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestNativeSendRejectsOversizedLength called");
+    native_test_result_t result = test_nativeSend_rejectsOversizedLength(env);
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestNativeReceiveRejectsOversizedMaxLength(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestNativeReceiveRejectsOversizedMaxLength called");
+    native_test_result_t result = test_nativeReceive_rejectsOversizedMaxLength(env);
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestNativeReceiveBatchRejectsOversizedLengthsArray(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestNativeReceiveBatchRejectsOversizedLengthsArray called");
+    native_test_result_t result =
+        test_nativeReceiveBatch_rejectsOversizedLengthsArray(env);
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestNativeSendRawRejectsOversizedLength(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestNativeSendRawRejectsOversizedLength called");
+    native_test_result_t result = test_nativeSendRaw_rejectsOversizedLength(env);
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestNativeSetClientMacRejectsWrongLengthArray(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestNativeSetClientMacRejectsWrongLengthArray called");
+    native_test_result_t result =
+        test_nativeSetClientMac_rejectsWrongLengthArray(env);
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestRudpRecvSmallBufferReleasesLock(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestRudpRecvSmallBufferReleasesLock called");
+    native_test_result_t result = test_rudp_recv_smallBufferReleasesLock();
+    return create_test_result(env, &result);
+}

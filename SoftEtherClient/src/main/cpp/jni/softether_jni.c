@@ -212,7 +212,25 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSe
         LOGE("Invalid handle");
         return -1;
     }
-    
+
+    // N-01: validate the requested length against the real array size before
+    // handing it to the native layer. Without this, a Java caller could pass a
+    // length larger than `data` and make softether_send read past the buffer.
+    // Mirrors the bounds check in nativeSendSlice.
+    if (data == NULL) {
+        LOGE("Invalid data array");
+        return -1;
+    }
+    if (length < 0) {
+        LOGE("Invalid length: %d", length);
+        return -1;
+    }
+    jsize array_len = (*env)->GetArrayLength(env, data);
+    if (length > array_len) {
+        LOGE("Send length out of bounds: length=%d array=%d", length, array_len);
+        return -1;
+    }
+
     jbyte* data_bytes = (*env)->GetByteArrayElements(env, data, NULL);
     if (data_bytes == NULL) {
         LOGE("Failed to get data bytes");
@@ -266,7 +284,25 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeRe
         LOGE("Invalid handle");
         return -1;
     }
-    
+
+    // N-02: validate maxLength against the real array size. Without this, a
+    // Java caller could pass a maxLength larger than `buffer` and make
+    // softether_receive / the RUDP path memcpy past the end of it.
+    if (buffer == NULL) {
+        LOGE("Invalid buffer array");
+        return -1;
+    }
+    if (maxLength < 0) {
+        LOGE("Invalid maxLength: %d", maxLength);
+        return -1;
+    }
+    jsize buffer_len = (*env)->GetArrayLength(env, buffer);
+    if (maxLength > buffer_len) {
+        LOGE("Receive maxLength out of bounds: maxLength=%d buffer=%d",
+             maxLength, buffer_len);
+        return -1;
+    }
+
     jbyte* buffer_bytes = (*env)->GetByteArrayElements(env, buffer, NULL);
     if (buffer_bytes == NULL) {
         LOGE("Failed to get buffer bytes");
@@ -309,6 +345,25 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeRe
     if (buffer == NULL || lengths == NULL || maxPackets <= 0 || maxLength <= 0) {
         LOGE("Invalid arguments for receiveBatch");
         return -1;
+    }
+
+    // N-03: the existing check only rejects non-positive values; it never
+    // compares them against the real array sizes. The native layer writes up
+    // to `maxLength` bytes into `buffer` and up to `maxPackets` entries into
+    // `lengths`, so both bounds must hold or we corrupt the Java heap.
+    {
+        jsize buffer_len = (*env)->GetArrayLength(env, buffer);
+        if (maxLength > buffer_len) {
+            LOGE("receiveBatch maxLength out of bounds: maxLength=%d buffer=%d",
+                 maxLength, buffer_len);
+            return -1;
+        }
+        jsize lengths_len = (*env)->GetArrayLength(env, lengths);
+        if (maxPackets > lengths_len) {
+            LOGE("receiveBatch maxPackets out of bounds: maxPackets=%d lengths=%d",
+                 maxPackets, lengths_len);
+            return -1;
+        }
     }
 
     jbyte* buffer_bytes = (*env)->GetByteArrayElements(env, buffer, NULL);
@@ -537,6 +592,15 @@ JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeFo
 JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetClientMac(
     JNIEnv *env, jobject thiz, jlong handle, jbyteArray mac) {
     if (handle == 0 || mac == NULL) return;
+
+    // N-05: softether_set_client_mac copies exactly 6 bytes out of the array,
+    // so a shorter array would read past its end. Require exactly 6.
+    jsize mac_len = (*env)->GetArrayLength(env, mac);
+    if (mac_len != 6) {
+        LOGE("setClientMac requires a 6-byte array, got %d", mac_len);
+        return;
+    }
+
     jbyte* m = (*env)->GetByteArrayElements(env, mac, NULL);
     if (m == NULL) return;
     softether_connection_t* conn = (softether_connection_t*)handle;
@@ -560,6 +624,17 @@ JNIEXPORT jbyteArray JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_na
 JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSendRaw(
     JNIEnv *env, jobject thiz, jlong handle, jbyteArray data, jint length) {
     if (handle == 0 || data == NULL || length <= 0) return -1;
+
+    // N-04: `length > 0` alone is not enough — it must also not exceed the
+    // real array size, otherwise softether_send_raw reads past `data`.
+    {
+        jsize array_len = (*env)->GetArrayLength(env, data);
+        if (length > array_len) {
+            LOGE("SendRaw length out of bounds: length=%d array=%d", length, array_len);
+            return -1;
+        }
+    }
+
     jbyte* buf = (*env)->GetByteArrayElements(env, data, NULL);
     if (buf == NULL) return -1;
     softether_connection_t* conn = (softether_connection_t*)handle;

@@ -995,16 +995,26 @@ int rudp_send_keepalive(rudp_context_t* ctx) {
 int rudp_recv(rudp_context_t* ctx, uint8_t* buffer, uint32_t* len, uint32_t max_len) {
     if (ctx == NULL || buffer == NULL || len == NULL) return -1;
 
+    int ret = 0;
+
+    // NOTE: ctx->lock is a RECURSIVE mutex (PTHREAD_MUTEX_RECURSIVE, see the
+    // pthread_mutex_init in rudp_create). A recursive mutex means a thread that
+    // already holds the lock can re-enter it without deadlocking, but any OTHER
+    // thread calling rudp_recv / rudp_send / rudp_poll will block forever if a
+    // path returns while still holding the lock. Every return between the lock
+    // below and the unlock must therefore fall through to `out`.
     pthread_mutex_lock(&ctx->lock);
+
     if (ctx->recv_queue_count <= 0) {
-        pthread_mutex_unlock(&ctx->lock);
-        return 0;
+        ret = 0;
+        goto out;
     }
 
     rudp_queued_block_t* entry = &ctx->recv_queue[ctx->recv_queue_head];
     if (entry->len > max_len) {
         *len = 0;
-        return -1;
+        ret = -1;
+        goto out;
     }
 
     memcpy(buffer, entry->data, entry->len);
@@ -1012,7 +1022,9 @@ int rudp_recv(rudp_context_t* ctx, uint8_t* buffer, uint32_t* len, uint32_t max_
 
     ctx->recv_queue_head = (ctx->recv_queue_head + 1) % RUDP_RECV_QUEUE_SIZE;
     ctx->recv_queue_count--;
-    pthread_mutex_unlock(&ctx->lock);
+    ret = (int)entry->len;
 
-    return (int)entry->len;
+out:
+    pthread_mutex_unlock(&ctx->lock);
+    return ret;
 }
