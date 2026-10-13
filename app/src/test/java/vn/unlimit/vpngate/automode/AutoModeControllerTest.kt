@@ -1940,11 +1940,20 @@ val sstp = AutoModeCandidate(
             AutoModeController.ERROR_NATIVE_UNRESOLVED,
             (s as AutoModeState.Error).message,
         )
-        assertEquals(
-            "terminal log line must be unchanged",
-            "[AUTO] Native slot still owned by an unresolved operation; " +
-                    "stopping without blaming this server",
-            adapter.logs.lastOrNull { it.contains("Native slot still owned") },
+        // T5-SLOT (commit 5e51e37) appended the dynamic
+        // "(<NativeLifetimeRegistry.process.describe()>)" segment to this
+        // terminal line. describe() is state-dependent ("idle", or
+        // "attempt=N phase=TEARDOWN, ..."), so a strict equality on the full
+        // line is brittle: it breaks whenever the registry reports a different
+        // holder. Assert the two stable substrings that are the real invariant
+        // — the same pattern AutoModeNativeBusyTest already uses. The dynamic
+        // describe() portion is deliberately NOT part of the invariant.
+        assertTrue(
+            "terminal log line must contain the unresolved-operation marker",
+            adapter.logs.any {
+                it.contains("Native slot still owned by an unresolved operation") &&
+                        it.contains("stopping without blaming this server")
+            },
         )
         assertEquals(
             "expected exactly 3 dial attempts (1 initial + 2 retries)",
