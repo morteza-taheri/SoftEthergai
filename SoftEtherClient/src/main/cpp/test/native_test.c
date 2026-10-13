@@ -3546,6 +3546,14 @@ native_test_result_t test_nativeSendRaw_rejectsOversizedLength(JNIEnv* env) {
 // guard must fire, so the call returns without calling softether_set_client_mac
 // (which would read 6 bytes). The test asserts the process is still healthy by
 // touching the array afterwards. (prototype declared at the top of this section)
+//
+// Only the REJECTION path is exercised here. A valid-length (6-byte) array would
+// pass the length guard and reach softether_set_client_mac(), which requires a
+// real handle: it dereferences conn->client_mac via memcpy. Testing the
+// acceptance path therefore requires a live connection and is out of scope for
+// this hermetic test. NOTE: unlike N-01..N-04, this entry point is safe with a
+// dummy handle ONLY because the guard fires first — see the section comment
+// above, which holds here only for the wrong-length case.
 native_test_result_t test_nativeSetClientMac_rejectsWrongLengthArray(JNIEnv* env) {
   long start_time = get_test_timestamp_ms();
   if (env == NULL) return bounds_result(false, "N-05: env NULL", start_time);
@@ -3558,27 +3566,16 @@ native_test_result_t test_nativeSetClientMac_rejectsWrongLengthArray(JNIEnv* env
   Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetClientMac(
       env, NULL, BOUNDS_TEST_DUMMY_HANDLE, mac);
 
-  // Also exercise the exact-length path so the guard is not rejecting
-  // everything: a 6-byte array must be accepted without crashing.
-  jbyteArray mac_ok = (*env)->NewByteArray(env, 6);
-  bool six_ok = (mac_ok != NULL);
-  if (six_ok) {
-    Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetClientMac(
-        env, NULL, BOUNDS_TEST_DUMMY_HANDLE, mac_ok);
-    (*env)->DeleteLocalRef(env, mac_ok);
-  }
-
   // Still alive and the JNI env is still usable => the over-read did not occur.
   jsize check = (*env)->GetArrayLength(env, mac);
   (*env)->DeleteLocalRef(env, mac);
 
-  bool pass = (check == bad_len) && six_ok;
+  bool pass = (check == bad_len);
   {
     char msg[192];
     snprintf(msg, sizeof(msg),
-             "N-05 setClientMac: short array rejected (env healthy=%d), "
-             "6-byte accepted=%d",
-             (check == bad_len), six_ok);
+             "N-05 setClientMac: short array rejected (env healthy=%d)",
+             (check == bad_len));
     return bounds_result(pass, msg, start_time);
   }
 }
