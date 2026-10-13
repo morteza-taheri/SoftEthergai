@@ -440,6 +440,58 @@ int socket_recv(softether_socket_t* sock, uint8_t* buffer, size_t max_len) {
     return socket_recv_all(sock, buffer, max_len, sock->timeout_ms);
 }
 
+// Apply SO_RCVTIMEO / SO_SNDTIMEO to a raw socket fd.
+//
+// NATIVE-FIX-HANDSHAKE-TIMEOUT (P1): socket_connect_timeout() deliberately
+// switches a freshly connected fd back to BLOCKING mode. On a blocking socket
+// the ONLY thing that can interrupt a stalled recv()/send() is
+// SO_RCVTIMEO / SO_SNDTIMEO; with the kernel default (0 = no timeout) a
+// blocking recv() waits forever. That is the single root cause identified by
+// AUDIT_AUTOCONNECT_LOGIC.md §1.2 and §5: the TLS handshake runs on such a
+// socket, so SSL_do_handshake() could block indefinitely while holding
+// g_openssl_lock + g_tls_use_lock.
+//
+// This is the single implementation of "give this fd the connect timeout".
+// socket_set_timeout() (which takes a softether_socket_t*) delegates to it, and
+// the connect paths in softether_protocol.c call it directly because they hold
+// only the raw fd — the socket struct has already been destroyed by then.
+//
+// With a timeout applied, a stalled recv()/send() returns EAGAIN, which OpenSSL
+// surfaces as SSL_ERROR_WANT_READ / WANT_WRITE. That is exactly the condition
+// the existing retry loop in aes_wrapper.c (ssl_connect, max_attempts) already
+// handles, so this helper makes that loop effective without modifying it.
+//
+// timeout_ms <= 0 is a deliberate no-op: the caller asked for no bound, and the
+// kernel default is left in place.
+//
+// @return 0 on success (including the no-op case), -1 if fd < 0 or either
+//   setsockopt failed.
+int socket_apply_timeout(int fd, int timeout_ms) {
+    if (fd < 0) {
+        return -1;
+    }
+    if (timeout_ms <= 0) {
+        return 0;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    int rc_recv = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int rc_send = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (rc_recv != 0 || rc_send != 0) {
+        LOGE("Failed to apply socket timeout %d ms to fd=%d: %s",
+             timeout_ms, fd, strerror(errno));
+        return -1;
+    }
+
+    LOGD("Applied socket timeout %d ms to fd=%d (SO_RCVTIMEO+SO_SNDTIMEO)",
+         timeout_ms, fd);
+    return 0;
+}
+
 int socket_set_timeout(softether_socket_t* sock, int timeout_ms) {
     if (sock == NULL) {
         return -1;
@@ -447,14 +499,8 @@ int socket_set_timeout(softether_socket_t* sock, int timeout_ms) {
     
     sock->timeout_ms = timeout_ms;
     
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    
-    setsockopt(sock->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sock->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    
-    return 0;
+    // Single implementation lives in socket_apply_timeout().
+    return socket_apply_timeout(sock->fd, timeout_ms);
 }
 
 int socket_set_nodelay(softether_socket_t* sock, int enable) {

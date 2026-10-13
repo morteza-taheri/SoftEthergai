@@ -22,6 +22,15 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// NATIVE-FIX-HANDSHAKE-TIMEOUT (P1): apply SO_RCVTIMEO / SO_SNDTIMEO to a raw
+// socket fd. Defined in tcp_socket.c.
+//
+// Declared here rather than in softether_socket.h because this phase's
+// authorized file list does not include the header. softether_socket.h is still
+// included above and remains the home of the rest of the socket API; this is a
+// single cross-translation-unit prototype for the one helper this phase adds.
+int socket_apply_timeout(int fd, int timeout_ms);
+
 // Atomically claim ownership of a shared SSL context slot. Exactly one
 // concurrent caller receives the pointer and must destroy it; all others get
 // NULL. Prevents double-destroy races between softether_disconnect,
@@ -1700,7 +1709,44 @@ typedef struct {
 
     // Output (written by thread, read by main after join)
     transport_result_t result;
+
+    // NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): set by race_thread_trampoline() when
+    // the thread body returns, and polled by the bounded join in
+    // softether_connect_parallel_race(). It lives in the heap-allocated context
+    // array so a thread that is detached after the join budget expires can still
+    // publish its exit safely.
+    volatile int exited;
 } transport_thread_ctx_t;
+
+// ---------------------------------------------------------------------------
+// NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): bounded-join trampoline.
+//
+// Android's Bionic libc provides NEITHER pthread_timedjoin_np NOR
+// pthread_tryjoin_np — verified across the NDK 25.1 / 25.2 / 26.1 / 27.0 / 28.2
+// sysroots, whose pthread.h declares only pthread_join(). A timed join
+// therefore cannot be expressed with the pthread API alone, so every transport
+// thread is started through this trampoline, which publishes a per-thread
+// "exited" flag that the race can poll against its own budget.
+// ---------------------------------------------------------------------------
+typedef struct {
+    void* (*func)(void*);
+    void* arg;
+    volatile int* exited;
+} race_trampoline_t;
+
+static void* race_thread_trampoline(void* p) {
+    race_trampoline_t* t = (race_trampoline_t*)p;
+    void* (*func)(void*) = t->func;
+    void* arg = t->arg;
+    volatile int* exited = t->exited;
+
+    func(arg);
+
+    // Publish "the thread body has returned" before the thread exits, so the
+    // race can join it without waiting for the kernel to reap it.
+    __sync_lock_test_and_set(exited, 1);
+    return NULL;
+}
 
 // Staggered delay per transport type (milliseconds).
 static uint32_t transport_delay_ms(int type) {
@@ -1774,6 +1820,20 @@ static void* transport_thread_tcp(void* arg) {
         close(fd);
         r->error = ERR_TCP_CONNECT;
         return NULL;
+    }
+
+    // NATIVE-FIX-HANDSHAKE-TIMEOUT (P1): the same blocking-socket problem
+    // applies to this transport's own handshake. socket_connect_timeout() left
+    // this fd in blocking mode with no SO_RCVTIMEO, so this SSL_do_handshake()
+    // could also block forever — and because this fd is LOCAL to this thread it
+    // is NOT reachable by softether_force_close_socket(), which shuts down only
+    // conn->socket_fd (AUDIT_AUTOCONNECT_LOGIC.md §A6-1). Bounding it here is
+    // what lets the race's bounded join actually finish instead of detaching a
+    // thread that is still holding g_openssl_lock.
+    if (socket_apply_timeout(fd, (int)ctx->timeout_ms) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, timeout_ms=%u); handshake "
+             "may block until the race detaches this thread",
+             transport_name(TRANSPORT_TCP), fd, ctx->timeout_ms);
     }
 
     // TLS handshake
@@ -2187,8 +2247,16 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
 
     // Count active transports
     int num_transports = 0;
-    transport_thread_ctx_t threads[TRANSPORT_ICMP + 1];
-    memset(threads, 0, sizeof(threads));
+    // NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): heap-allocated, NOT a stack array.
+    // A transport thread that is detached after the join budget expires may
+    // still be running and reading its context, so the context must outlive this
+    // function's stack frame. Freed below only when every thread was joined.
+    transport_thread_ctx_t* threads =
+        (transport_thread_ctx_t*)calloc(TRANSPORT_ICMP + 1, sizeof(transport_thread_ctx_t));
+    if (threads == NULL) {
+        LOGE("Parallel race: no memory for transport contexts");
+        return -1;
+    }
 
     // Compute per-transport timeout (race deadline = max(5000, timeout))
     uint32_t race_timeout_ms = conn->timeout_ms;
@@ -2257,13 +2325,17 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
 
     if (num_transports == 0) {
         LOGE("No transports to attempt");
+        free(threads);
         return -1;
     }
 
     LOGD("Parallel race: %d transports, race timeout %u ms", num_transports, race_timeout_ms);
 
-    // Launch all transport threads
+    // Launch all transport threads through the bounded-join trampoline (P5b), so
+    // each one publishes its own exit flag for the bounded join below.
     pthread_t thread_ids[TRANSPORT_ICMP + 1];
+    race_trampoline_t trampolines[TRANSPORT_ICMP + 1];
+    memset(trampolines, 0, sizeof(trampolines));
     for (int i = 0; i < num_transports; i++) {
         void* (*func)(void*);
         switch (threads[i].transport_type) {
@@ -2275,7 +2347,10 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
             default:                   func = NULL; break;
         }
         if (func) {
-            pthread_create(&thread_ids[i], NULL, func, &threads[i]);
+            trampolines[i].func = func;
+            trampolines[i].arg = &threads[i];
+            trampolines[i].exited = &threads[i].exited;
+            pthread_create(&thread_ids[i], NULL, race_thread_trampoline, &trampolines[i]);
         }
     }
 
@@ -2297,9 +2372,60 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
     // Cancel all threads
     __sync_lock_test_and_set(&cancel_flag, 1);
 
-    // Join all threads
+    // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): BOUNDED join -------------------
+    // The poll loop above already spent the first race_timeout_ms budget, so the
+    // join gets its own fresh one. Without this bound, a transport thread still
+    // inside SSL_do_handshake when the race deadline fires would make
+    // pthread_join() block forever and the whole connect would never return —
+    // AUDIT_AUTOCONNECT_LOGIC.md §A3-2, the uninterruptible variant, because
+    // softether_force_close_socket() can only reach conn->socket_fd.
+    //
+    // On timeout the thread is detached, NOT cancelled: pthread_cancel() could
+    // kill a thread while it holds g_openssl_lock and leave that mutex locked
+    // forever, which is strictly worse than the leak it would fix. The connect
+    // still proceeds with whichever transports did exit, exactly as if the slow
+    // transports had never been started.
+    uint64_t join_deadline = softether_tick_ms() + race_timeout_ms;
+    int detached_count = 0;
     for (int i = 0; i < num_transports; i++) {
-        pthread_join(thread_ids[i], NULL);
+        while (trampolines[i].exited == 0) {
+            if (softether_tick_ms() >= join_deadline) break;
+            usleep(10000);  // 10ms poll
+        }
+        if (trampolines[i].exited != 0) {
+            pthread_join(thread_ids[i], NULL);
+        } else {
+            LOGW("[RACE] transport thread %d did not exit within %u ms after race "
+                 "deadline; detaching to avoid an unbounded join",
+                 i, race_timeout_ms);
+            pthread_detach(thread_ids[i]);
+            detached_count++;
+        }
+    }
+
+    // Snapshot the winner's fields BEFORE the context array may be freed.
+    int winner_fd = -1;
+    void* winner_ssl_ctx = NULL;
+    void* winner_ssl = NULL;
+    rudp_transport_t* winner_transport = NULL;
+    int winner_type = -1;
+    if (winner != NULL) {
+        winner_fd = winner->socket_fd;
+        winner_ssl_ctx = winner->ssl_ctx;
+        winner_ssl = winner->ssl;
+        winner_transport = winner->transport;
+        winner_type = winner->transport_type;
+    }
+
+    if (detached_count == 0) {
+        free(threads);
+    } else {
+        // A detached thread may still be running and reading its context, so the
+        // array is deliberately retained rather than freed under a live thread.
+        // A bounded, one-off leak on an already-failing connect path is the
+        // correct trade against a use-after-free.
+        LOGW("Parallel race: %d transport thread(s) detached; retaining transport "
+             "contexts to avoid a use-after-free", detached_count);
     }
 
     if (winner == NULL) {
@@ -2308,13 +2434,12 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
     }
 
     // Promote winner to conn
-    LOGD("Parallel race: %s won (fd=%d)", transport_name(winner->transport_type),
-         winner->socket_fd);
-    conn->socket_fd = winner->socket_fd;
-    conn->ssl_ctx = winner->ssl_ctx;
-    conn->ssl = winner->ssl;
-    if (winner->transport != NULL) {
-        conn->nat_t_transport = winner->transport;
+    LOGD("Parallel race: %s won (fd=%d)", transport_name(winner_type), winner_fd);
+    conn->socket_fd = winner_fd;
+    conn->ssl_ctx = winner_ssl_ctx;
+    conn->ssl = winner_ssl;
+    if (winner_transport != NULL) {
+        conn->nat_t_transport = winner_transport;
         conn->using_nat_t = 1;
     }
 
@@ -2486,6 +2611,46 @@ static int softether_connect_with_hub_nolock(softether_connection_t* conn, const
         }
 
         if (tcp_ok) {
+            // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P1) -------------------------
+            // Give the socket that carries the TLS handshake a real timeout.
+            //
+            // socket_connect_timeout() switched this fd back to BLOCKING mode,
+            // and socket_recreate_for_family() early-returns for the default
+            // AF_INET fd, so SO_RCVTIMEO / SO_SNDTIMEO were never applied on
+            // this path. A blocking recv() with the kernel default timeout (0)
+            // waits forever, which is the single root cause identified by
+            // AUDIT_AUTOCONNECT_LOGIC.md §1.2 / §5.
+            //
+            // With SO_RCVTIMEO set, a stalled recv()/send() returns EAGAIN and
+            // OpenSSL reports SSL_ERROR_WANT_READ / WANT_WRITE — precisely the
+            // condition the existing retry loop in aes_wrapper.c
+            // (ssl_connect, max_attempts) already handles. The loop therefore
+            // becomes effective without modifying aes_wrapper.c.
+            //
+            // Fail-open deliberately: a regression in the helper must never turn
+            // a connect that would otherwise succeed into a failure. The warning
+            // below is the visible signal that the bound was NOT established.
+            int so_timeout_applied =
+                (socket_apply_timeout(conn->socket_fd, conn->timeout_ms) == 0);
+
+            // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P5a) -------------------------
+            // Permanent diagnostic, and the discriminator required by the
+            // audit's §D.4 item 1: if a handshake later stalls, this line proves
+            // whether the socket timeout was applied at all. Emitted once per
+            // handshake entry — deliberately NOT inside the per-attempt retry
+            // loop, which would flood the log.
+            LOGD("[TLS] handshake entry: conn->timeout_ms=%d, socket_fd=%d, "
+                 "SO_RCVTIMEO applied=%s",
+                 conn->timeout_ms, conn->socket_fd,
+                 so_timeout_applied ? "yes" : "no");
+
+            if (!so_timeout_applied) {
+                LOGW("TLS handshake proceeding WITHOUT a socket timeout "
+                     "(fd=%d, timeout_ms=%d); a stalled handshake can still "
+                     "block indefinitely",
+                     conn->socket_fd, conn->timeout_ms);
+            }
+
             result = perform_tls_handshake(conn, connect_host);
             if (result != ERR_NONE) {
                 LOGE("TLS handshake failed over TCP");
