@@ -49,6 +49,7 @@ import vn.unlimit.softether.SoftEtherVpnService
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.BuildConfig
 import vn.unlimit.vpngate.R
+import vn.unlimit.vpngate.models.SstpPortKind
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.provider.BaseProvider
 import vn.unlimit.vpngate.ui.screens.detail.DetailScreen
@@ -308,7 +309,7 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             val targetClass = if (isStartUpDetail) DetailActivity::class.java else MainActivity::class.java
             SstpVpnService.notificationTargetActivity = targetClass
             SstpVpnService.mDisplaySpeed =
-                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
         }
         val intent = Intent(applicationContext, SstpVpnService::class.java).setAction(action)
         if (action == ACTION_VPN_CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -610,11 +611,11 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             Handler(Looper.getMainLooper()).postDelayed({
                 val intent = Intent(this, OpenVPNService::class.java)
                 OpenVPNService.mDisplaySpeed =
-                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
                 SoftEtherVpnService.mDisplaySpeed =
-                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
                 SstpVpnService.mDisplaySpeed =
-                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                    dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
                 intent.action = OpenVPNService.START_SERVICE
                 bindService(intent, mConnection, BIND_AUTO_CREATE)
             }, 300)
@@ -966,11 +967,24 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
     }
 
     private fun loadVpnProfile(useUDP: Boolean): Boolean {
-        val data = if (useUDP) {
-            mVpnGateConnection!!.openVpnConfigDataUdp!!.toByteArray()
-        } else {
-            mVpnGateConnection!!.getOpenVpnConfigDataString()!!.toByteArray()
+        val connection = mVpnGateConnection
+        if (connection == null) {
+            Log.e(TAG, "loadVpnProfile: no server selected")
+            return false
         }
+        val config = if (useUDP) {
+            connection.openVpnConfigDataUdp
+        } else {
+            connection.getOpenVpnConfigDataString()
+        }
+        if (config.isNullOrEmpty()) {
+            // A server can be stored without an OpenVPN profile, for example
+            // when only the HTML feed was collected. Report it as an unloadable
+            // profile so the caller shows error_load_profile.
+            Log.w(TAG, "loadVpnProfile: no OpenVPN config stored for ${connection.hostName}")
+            return false
+        }
+        val data = config.toByteArray()
         dataUtil.setBooleanSetting(DataUtil.LAST_CONNECT_USE_UDP, useUDP)
         dataUtil.setStringSetting(DataUtil.LAST_CONNECT_METHOD, "openvpn")
         val cp = ConfigParser()
@@ -978,7 +992,7 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         try {
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
-            vpnProfile.mName = mVpnGateConnection!!.getName(useUDP)
+            vpnProfile.mName = connection.getName(useUDP)
             vpnProfile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             vpnProfile.mOverrideDNS = true
             vpnProfile.mDNS1 = resolvePrimaryDns()
@@ -1145,10 +1159,19 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             options.add(ProtocolOption(VpnProtocol.SOFTETHER_UDP, detail))
         }
         if (conn.isSSTPSupport()) {
-            val detail = if (conn.tcpPort > 0) {
-                getString(R.string.protocol_available_port, conn.sstpConnectPort)
-            } else {
-                getString(R.string.protocol_available_default_port, conn.sstpConnectPort)
+            // Stage 2F-A (J-4/L-3): this used to branch on conn.tcpPort, the
+            // OpenVPN TCP port. A server offering OpenVPN over TCP therefore
+            // had its SSTP *default* 443 shown as "Available on port 443", and
+            // a server with a genuinely published SSTP port but no OpenVPN
+            // showed it as a default. The description now comes from SSTP's own
+            // provenance. All three strings already existed.
+            val detail = when (conn.sstpPortKind) {
+                SstpPortKind.EXPLICIT ->
+                    getString(R.string.protocol_available_port, conn.sstpConnectPort)
+                SstpPortKind.DEFAULT ->
+                    getString(R.string.protocol_available_default_port, conn.sstpConnectPort)
+                SstpPortKind.UNKNOWN ->
+                    getString(R.string.protocol_supported_port_unknown)
             }
             options.add(ProtocolOption(VpnProtocol.MS_SSTP, detail))
         }
@@ -1273,10 +1296,9 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             if (isUdpOnly) {
                 Log.i(TAG, "UDP-only server (no SoftEther TCP port): NAT-T path implied")
             }
-            val serverPort = when {
-                isUdpOnly -> mVpnGateConnection!!.seUdpPort
-                useTcp -> mVpnGateConnection!!.seTcpPort
-                else -> mVpnGateConnection!!.seUdpPort
+            val serverPort = mVpnGateConnection!!.seTcpPort
+            if (serverPort <= 0) {
+                Log.i(TAG, "No SoftEther TCP listener published: NAT-T/UDP race only")
             }
 
             val config = vn.unlimit.softether.model.ConnectionConfig(

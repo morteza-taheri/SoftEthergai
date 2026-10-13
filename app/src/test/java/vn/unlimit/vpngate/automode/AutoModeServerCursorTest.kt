@@ -55,7 +55,7 @@ class AutoModeServerCursorTest {
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
-        protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
+        protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
         serverProvider = { servers },
         attemptTimeoutMs = 100,
     )

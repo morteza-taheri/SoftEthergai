@@ -25,10 +25,46 @@ class SoftEtherClient {
      * Set half/full-duplex mode (Phase 17).
      * @param halfConnection true = half-duplex (directional C2S/S2C split),
      *   false = full-duplex (all connections BOTH). Must be called before connect.
+     *
+     * @deprecated F.28AL-AUTOCONNECT-BUG3-FIX: guards on this object's private
+     *   `nativeHandle`, which is 0 on the controller-managed connect path, so the
+     *   call silently no-ops. Use [setHalfConnection(handle, halfConnection)] with
+     *   the caller's own handle instead. Retained unchanged for backward
+     *   compatibility with callers that keep their own handle in this object.
      */
+    @Deprecated(
+        message = "Guards on the client's private handle, which is 0 on the " +
+            "controller-managed connect path. Use setHalfConnection(handle, halfConnection).",
+        replaceWith = ReplaceWith("setHalfConnection(handle, halfConnection)"),
+    )
     fun setHalfConnection(halfConnection: Boolean) {
         if (nativeHandle == 0L) return
         nativeSetHalfConnection(nativeHandle, halfConnection)
+    }
+
+    /**
+     * F.28AL-AUTOCONNECT-BUG3-FIX: explicit-handle half/full-duplex setter.
+     *
+     * Root cause fixed here (see F28AL_AUTOCONNECT_BUG3_AUDIT_REPORT.md, A2/A3/H2):
+     * the legacy [setHalfConnection] guarded on this object's **private**
+     * `nativeHandle`, which is never assigned a real handle when the connection
+     * is managed by `ConnectionController` — that controller keeps its own
+     * handle and publishes it to [externalHandle] only **after**
+     * `nativeConnectWithHub` returns. On the Auto Mode connect path this method
+     * runs *before* connect, so the legacy guard was `0L` and the call silently
+     * no-op'd, disabling duplex selection.
+     *
+     * This overload takes the caller's handle explicitly, so the caller's
+     * `nativeHandle` (the very same value passed to `nativeConnectWithHub`) is
+     * used regardless of this object's internal state. `handle == 0L` still
+     * short-circuits: an invalid handle must never reach native.
+     *
+     * @param handle the native connection handle owned by the caller.
+     * @param halfConnection true = half-duplex, false = full-duplex.
+     */
+    fun setHalfConnection(handle: Long, halfConnection: Boolean) {
+        if (handle == 0L) return
+        nativeSetHalfConnection(handle, halfConnection)
     }
 
     /**
@@ -137,10 +173,50 @@ class SoftEtherClient {
      * Set connection timeout
      *
      * @param timeoutMs Timeout in milliseconds
+     *
+     * @deprecated F.28AL-AUTOCONNECT-BUG3-FIX: guards on this object's private
+     *   `nativeHandle`, which is 0 on the controller-managed connect path, so this
+     *   method silently no-ops and the native connection keeps its 30000 ms default
+     *   (see F28AL_AUTOCONNECT_BUG3_AUDIT_REPORT.md). Use [setTimeout(handle, timeoutMs)]
+     *   with the caller's own handle instead. Retained unchanged for backward
+     *   compatibility, now resolving through the published [externalHandle] first.
      */
+    @Deprecated(
+        message = "Guards on the client's private handle, which is 0 on the " +
+            "controller-managed connect path. Use setTimeout(handle, timeoutMs).",
+        replaceWith = ReplaceWith("setTimeout(handle, timeoutMs)"),
+    )
     fun setTimeout(timeoutMs: Int) {
-        if (nativeHandle != 0L) {
-            nativeSetOption(nativeHandle, OPTION_TIMEOUT, timeoutMs.toLong())
+        val h = externalHandle.takeIf { it != 0L } ?: nativeHandle
+        if (h != 0L) {
+            nativeSetOption(h, OPTION_TIMEOUT, timeoutMs.toLong())
+        }
+    }
+
+    /**
+     * F.28AL-AUTOCONNECT-BUG3-FIX: explicit-handle connection-timeout setter.
+     *
+     * Root cause fixed here (see F28AL_AUTOCONNECT_BUG3_AUDIT_REPORT.md, A2/A3/H2):
+     * the legacy [setTimeout] guarded on this object's **private** `nativeHandle`,
+     * which is never assigned a real handle when the connection is managed by
+     * `ConnectionController`. That controller keeps its own handle and publishes it
+     * to [externalHandle] only **after** `nativeConnectWithHub` returns — but
+     * `setTimeout` must run **before** the native race, so at that moment both
+     * `nativeHandle` and `externalHandle` are still `0L` and the legacy call
+     * silently no-op'd. The native connection therefore kept its 30000 ms default
+     * (`softether_protocol.c:962`) and ignored the user-configured per-attempt
+     * timeout entirely.
+     *
+     * This overload takes the caller's handle explicitly, so the value is applied
+     * regardless of this object's internal state. `handle == 0L` still
+     * short-circuits: an invalid handle must never reach native.
+     *
+     * @param handle the native connection handle owned by the caller.
+     * @param timeoutMs Timeout in milliseconds.
+     */
+    fun setTimeout(handle: Long, timeoutMs: Int) {
+        if (handle != 0L) {
+            nativeSetOption(handle, OPTION_TIMEOUT, timeoutMs.toLong())
         }
     }
 

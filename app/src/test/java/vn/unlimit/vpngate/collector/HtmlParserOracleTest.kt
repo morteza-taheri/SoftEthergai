@@ -8,6 +8,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import vn.unlimit.vpngate.data.model.OpenVpnRemote
+import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
@@ -145,17 +147,36 @@ class HtmlParserOracleTest {
             assertEquals(hm.groupValues[1], sstp["hostname"])
             if (hm.groupValues[2].isNotEmpty()) {
                 assertEquals(hm.groupValues[2].toInt(), VpnUtil.toInt(sstp["port"]))
+                assertEquals(VpnPortSource.EXPLICIT, sstp["portSource"])
             } else {
                 assertNull(sstp["port"])
+                // An unpublished SSTP port may only be the protocol
+                // default; it can never be the OpenVPN TCP port.
+                assertEquals(VpnPortSource.DEFAULT, sstp["portSource"])
             }
         }
+
+        // --- Port provenance: a printed port is EXPLICIT, an absent
+        //     SoftEther UDP port stays UNKNOWN ---
+        assertEquals(
+            VpnPortSource.EXPLICIT,
+            VpnRecords.transport(se, "tcp")["portSource"],
+        )
+        val seUdpPort = VpnUtil.toInt(VpnRecords.transport(se, "udp")["port"])
+        assertEquals(
+            if (seUdpPort == 0) VpnPortSource.UNKNOWN else VpnPortSource.EXPLICIT,
+            VpnRecords.transport(se, "udp")["portSource"],
+        )
+        assertEquals(VpnPortSource.EXPLICIT, VpnRecords.transport(ov, "udp")["portSource"])
 
         // --- L2TP ---
         val l2tpSupportedAnywhere = cells.any { "L2TP" in it }
         val l2 = VpnRecords.map(p["l2tpIpsec"])
         assertEquals(l2tpSupportedAnywhere, VpnRecords.bool(l2["supported"]))
         if (l2tpSupportedAnywhere) {
-            assertEquals(1701, VpnUtil.toInt(l2["port"]))
+            assertEquals(VpnProtocolDefaults.L2TP_PORT, VpnUtil.toInt(l2["port"]))
+            // The page prints no L2TP port, so 1701 is a DEFAULT.
+            assertEquals(VpnPortSource.DEFAULT, l2["portSource"])
         }
 
         // --- Performance sanity ---

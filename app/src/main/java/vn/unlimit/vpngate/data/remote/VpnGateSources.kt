@@ -8,14 +8,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import vn.unlimit.vpngate.data.model.CollectorLog
-import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.parser.VpnGateHtmlParser
-import java.net.URI
 
 /**
- * The three live sources of the Mode B collector (§23): the VPN Gate
- * main HTML page, the official iPhone CSV API, and official mirrors
- * discovered from /en/sites.aspx.
+ * The live sources of the collector, as typed identities.
+ *
+ * Stage 2C-A: every candidate is a [SourceIdentity] from the start, so a
+ * mirror can never be reported as the canonical feed, and a body is only
+ * accepted after HTTP, redirect, content-type, schema and parse-sanity
+ * checks have all passed.
  */
 object VpnGateUrls {
     const val MAIN_URL = "https://www.vpngate.net/en/"
@@ -26,7 +27,11 @@ object VpnGateUrls {
     const val MIRRORS_HTTP_URL = "http://www.vpngate.net/en/sites.aspx"
     const val MAX_MIRRORS = 12
 
-    // Reliable official IP mirrors provided by VPN Gate project to bypass DNS/SNI censorship
+    const val HTML_PATH = "/en/"
+    const val API_PATH = "/api/iphone/"
+    const val DIRECTORY_PATH = "/en/sites.aspx"
+
+    /** Reliable official IP mirrors provided by VPN Gate project to bypass DNS/SNI censorship */
     val BOOTSTRAP_MIRRORS = listOf(
         "http://150.40.105.19:35399",
         "http://150.40.105.6:11803",
@@ -37,21 +42,96 @@ object VpnGateUrls {
     )
 }
 
+/**
+ * Builds the candidate list per source class. Canonical and mirror
+ * candidates never share an identity object, so "the mirror won the race"
+ * is visible in the logs and in every record's provenance.
+ */
+object VpnGateSourceCandidates {
+
+    fun canonicalHtml(): List<SourceIdentity> = listOfNotNull(
+        SourceUrl.parse(VpnGateUrls.MAIN_URL, SourceKind.CANONICAL_HTML),
+        SourceUrl.parse(VpnGateUrls.MAIN_HTTP_URL, SourceKind.CANONICAL_HTML),
+    )
+
+    fun canonicalApi(): List<SourceIdentity> = listOfNotNull(
+        SourceUrl.parse(VpnGateUrls.API_URL, SourceKind.CANONICAL_API),
+        SourceUrl.parse(VpnGateUrls.API_HTTP_URL, SourceKind.CANONICAL_API),
+    )
+
+    fun canonicalDirectory(): List<SourceIdentity> = listOfNotNull(
+        SourceUrl.parse(VpnGateUrls.MIRRORS_URL, SourceKind.CANONICAL_HTML)
+            ?.withPath(VpnGateUrls.DIRECTORY_PATH),
+        SourceUrl.parse(VpnGateUrls.MIRRORS_HTTP_URL, SourceKind.CANONICAL_HTML)
+            ?.withPath(VpnGateUrls.DIRECTORY_PATH),
+    )
+
+    fun bootstrapMirrors(): List<SourceIdentity> = VpnGateUrls.BOOTSTRAP_MIRRORS.mapNotNull {
+        SourceUrl.forMirror(it, SourceKind.BOOTSTRAP_MIRROR, MirrorOrigin.BOOTSTRAP_LIST)
+    }
+
+    /** Cached mirror URLs become identities deterministically; junk is dropped. */
+    fun cachedMirrors(urls: List<String>): List<SourceIdentity> = urls.mapNotNull { url ->
+        val identity = SourceUrl.forMirror(url, SourceKind.CACHED_MIRROR, MirrorOrigin.MIRROR_CACHE)
+        if (identity == null) {
+            CollectorLog.d("Mirror cache entry ignored (not a usable mirror URL): $url")
+        }
+        identity
+    }
+
+    /**
+     * The mirror set for one run: discovered, then cached, then the
+     * built-in bootstrap list, de-duplicated by authority and capped.
+     * Each entry gets a stable `mirror_<n>` id, which is the source tag
+     * every record collected from that mirror will carry.
+     */
+    fun numberedMirrors(
+        discovered: List<SourceIdentity>,
+        cached: List<SourceIdentity>,
+    ): List<SourceIdentity> {
+        val combined = (discovered + cached + bootstrapMirrors())
+            .distinctBy { it.baseUrl }
+            .take(VpnGateUrls.MAX_MIRRORS)
+        return combined.mapIndexed { index, identity ->
+            identity.withMirrorId(MIRROR_TAG_PREFIX + (index + 1))
+        }
+    }
+
+    const val MIRROR_TAG_PREFIX = "mirror_"
+}
+
+/**
+ * Concurrent race, kept for latency, but acceptance is now a structural
+ * validation rather than a keyword test. First VALID body wins; a body
+ * that only satisfies a keyword predicate can no longer win.
+ */
 private suspend fun raceFetch(
-    urls: List<String>,
+    candidates: List<SourceIdentity>,
     fetcher: HttpFetcher,
-    predicate: (String) -> Boolean,
+    validate: (FetchedSource) -> SourceValidation,
     timeoutMs: Long = 12_000L,
-): String? = coroutineScope {
-    val result = CompletableDeferred<String>()
-    val jobs = urls.distinct().map { url ->
+): FetchedSource? = coroutineScope {
+    val result = CompletableDeferred<FetchedSource>()
+
+    val jobs = candidates.distinctBy { it.url }.map { identity ->
         launch(Dispatchers.IO) {
             runCatching {
-                val body = fetcher.get(url)
-                if (body != null && predicate(body)) {
-                    if (result.complete(body)) {
-                        CollectorLog.d("Fastest successful response from: $url")
+                val response = fetcher.get(identity.url, identity.redirectPolicy())
+                if (response == null) {
+                    CollectorLog.d("No response from ${identity.sourceTag}: ${identity.url}")
+                    return@runCatching
+                }
+                val source = FetchedSource(identity, response)
+                val check = validate(source)
+                if (check.accepted) {
+                    CollectorLog.d("Accepted ${identity.sourceTag} from ${identity.url} (${check.detail})")
+                    if (result.complete(source)) {
+                        CollectorLog.d("Fastest valid response from: ${identity.url}")
                     }
+                } else {
+                    CollectorLog.d(
+                        "Rejected ${identity.sourceTag} from ${identity.url}: ${check.reason} (${check.detail})",
+                    )
                 }
             }
         }
@@ -73,116 +153,106 @@ private suspend fun raceFetch(
     }
 }
 
+/**
+ * Canonical + mirror HTML. Every accepted body keeps its own identity:
+ * `"html"` for the canonical page, `mirror_<n>` for a mirror.
+ */
 class VpnGateHtmlSource(private val fetcher: HttpFetcher) {
-    suspend fun fetch(extraCandidates: List<String> = emptyList()): String? {
-        val candidates = buildList {
-            add(VpnGateUrls.MAIN_URL)
-            add(VpnGateUrls.MAIN_HTTP_URL)
-            addAll(extraCandidates)
-            VpnGateUrls.BOOTSTRAP_MIRRORS.forEach { mirror ->
-                val base = mirror.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                add("$base/en/")
-            }
-        }
+    suspend fun fetch(extraCandidates: List<SourceIdentity> = emptyList()): FetchedSource? {
+        val candidates = VpnGateSourceCandidates.canonicalHtml() +
+            extraCandidates.map { it.withPath(VpnGateUrls.HTML_PATH) }
         return raceFetch(
             candidates,
             fetcher,
-            predicate = { it.contains("vpngate_main_table") || it.contains("OpenVPN") || it.contains("SoftEther") },
+            validate = { VpnGateSourceValidation.validateHtml(it) },
             timeoutMs = 12_000L,
         )
     }
 }
 
+/**
+ * The canonical CSV feed. Mirror endpoints on this path are intentionally
+ * NOT candidates: a mirror's CSV schema is not defined in this project,
+ * and an undefined schema is refused rather than parsed on a guess.
+ */
 class VpnGateApiSource(private val fetcher: HttpFetcher) {
-    suspend fun fetch(extraCandidates: List<String> = emptyList()): String? {
-        val candidates = buildList {
-            add(VpnGateUrls.API_URL)
-            add(VpnGateUrls.API_HTTP_URL)
-            addAll(extraCandidates)
-            VpnGateUrls.BOOTSTRAP_MIRRORS.forEach { mirror ->
-                val base = mirror.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                add("$base/api/iphone/")
-            }
-        }
+    suspend fun fetch(extraCandidates: List<SourceIdentity> = emptyList()): FetchedSource? {
+        val candidates = VpnGateSourceCandidates.canonicalApi() + extraCandidates
         return raceFetch(
             candidates,
             fetcher,
-            predicate = { it.contains("#HostName") || it.contains("*vpn_servers") },
+            validate = { VpnGateSourceValidation.validateApi(it) },
             timeoutMs = 12_000L,
         )
     }
 }
 
+/** Discovery of official mirrors from the canonical `sites.aspx` directory. */
 class VpnGateMirrorSource(private val fetcher: HttpFetcher) {
-    /**
-     * Discover official mirrors — port of the Python oracle's
-     * discover_mirrors: only IP:port or *.opengw.net hosts, capped
-     * at [VpnGateUrls.MAX_MIRRORS].
-     */
-    suspend fun discoverMirrors(cachedMirrors: List<String> = emptyList()): List<String> {
-        val candidateSitesUrls = buildList {
-            add(VpnGateUrls.MIRRORS_URL)
-            add(VpnGateUrls.MIRRORS_HTTP_URL)
-            cachedMirrors.forEach { mirror ->
-                val base = mirror.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                add("$base/en/sites.aspx")
-            }
-            VpnGateUrls.BOOTSTRAP_MIRRORS.forEach { mirror ->
-                val base = mirror.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                add("$base/en/sites.aspx")
-            }
-        }
 
-        val html = raceFetch(
-            candidateSitesUrls,
+    /**
+     * Discover official mirrors and return them as numbered identities.
+     * The persisted cache is a list of URLs; each one is turned back into
+     * an identity deterministically, and anything that is not a usable
+     * mirror URL is dropped instead of being trusted.
+     */
+    suspend fun discoverMirrors(cachedMirrorUrls: List<String> = emptyList()): List<SourceIdentity> {
+        val cached = VpnGateSourceCandidates.cachedMirrors(cachedMirrorUrls)
+        val bootstrap = VpnGateSourceCandidates.bootstrapMirrors()
+
+        val discoveryCandidates =
+            VpnGateSourceCandidates.canonicalDirectory() +
+                cached.map { it.withPath(VpnGateUrls.DIRECTORY_PATH) } +
+                bootstrap.map { it.withPath(VpnGateUrls.DIRECTORY_PATH) }
+
+        val page = raceFetch(
+            discoveryCandidates,
             fetcher,
-            predicate = { it.contains("vpngate.net Mirror Sites") || it.contains("sites.aspx") },
+            validate = { VpnGateSourceValidation.validateDirectory(it) },
             timeoutMs = 8_000L,
         )
 
-        val discovered = mutableListOf<String>()
-        if (html != null) {
-            val doc = VpnGateHtmlParser.makeSoup(html)
-            val ipHost = Regex("^\\d+\\.\\d+\\.\\d+\\.\\d+(?::\\d+)?$")
-
-            for (a in doc.getElementsByTag("a")) {
-                val href = VpnUtil.clean(a.attr("href"))
-
-                if (!href.startsWith("http://") && !href.startsWith("https://")) {
-                    continue
-                }
-
-                val host = try {
-                    URI(href).authority?.lowercase() ?: ""
-                } catch (e: Exception) {
-                    ""
-                }
-
-                if (host.isEmpty()) continue
-                if ("vpngate.net" in host) continue
-
-                // Ignore unrelated university pages such as
-                // www.tsukuba.ac.jp/english/.
-                if ("tsukuba.ac.jp" in host) continue
-
-                // VPN Gate mirror candidates are usually IP:PORT or
-                // dedicated opengw hosts.
-                if (ipHost.matches(host) || "opengw.net" in host) {
-                    val cleanHref = href.trimEnd('/')
-                    if (cleanHref !in discovered) {
-                        discovered.add(cleanHref)
-                    }
-                }
-            }
+        val discovered = if (page == null) {
+            emptyList()
+        } else {
+            extractMirrors(page.body)
         }
 
-        val combined = (discovered + cachedMirrors + VpnGateUrls.BOOTSTRAP_MIRRORS)
-            .distinct()
-            .take(VpnGateUrls.MAX_MIRRORS)
-
-        CollectorLog.d("Mirrors available: ${combined.size} (discovered=${discovered.size})")
+        val combined = VpnGateSourceCandidates.numberedMirrors(discovered, cached)
+        CollectorLog.d(
+            "Mirrors available: ${combined.size} " +
+                "(discovered=${discovered.size}, cached=${cached.size}, bootstrap=${bootstrap.size})",
+        )
         return combined
     }
 
-    suspend fun fetchMirror(url: String): String? = fetcher.get(url)
+    /** Mirror links that pass the official directory's own shape rules. */
+    fun extractMirrors(html: String): List<SourceIdentity> {
+        val discovered = mutableListOf<SourceIdentity>()
+        val doc = VpnGateHtmlParser.makeSoup(html)
+        for (a in doc.getElementsByTag("a")) {
+            val href = a.attr("href").trim()
+            if (!VpnGateSourceValidation.isAcceptableMirrorHref(href)) continue
+            val clean = href.trimEnd('/')
+            val identity = SourceUrl.forMirror(
+                clean,
+                SourceKind.DISCOVERED_MIRROR,
+                MirrorOrigin.CANONICAL_DIRECTORY,
+            ) ?: continue
+            if (discovered.none { it.baseUrl == identity.baseUrl }) {
+                discovered.add(identity)
+            }
+        }
+        return discovered
+    }
+
+    suspend fun fetchMirror(url: String): FetchedSource? {
+        val identity = SourceUrl.forMirror(url, SourceKind.DISCOVERED_MIRROR)
+            ?: return withContext(Dispatchers.IO) { null }
+        return raceFetch(
+            listOf(identity.withPath(VpnGateUrls.HTML_PATH)),
+            fetcher,
+            validate = { VpnGateSourceValidation.validateHtml(it) },
+        )
+    }
 }

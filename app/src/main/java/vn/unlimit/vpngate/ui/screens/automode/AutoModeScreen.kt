@@ -256,10 +256,12 @@ fun AutoModeScreen(
                     ).show()
                     onNavigateHome()
                 }
-                // Kick off a background fetch so the list is populated by the
-                // time the user lands on Home (result saved to DB + cache).
+                // Kick off a background acquisition so the list is populated by
+                // the time the user lands on Home. It goes through the same
+                // acceptance gate as the Update button: a fallback may fill an
+                // empty store, a degraded dataset may not.
                 try {
-                    AutoModeEngine.defaultServers(viewModel.dataUtil)
+                    AutoModeEngine.defaultServers()
                 } catch (_: Throwable) {
                     // Network failures are tolerated; Home shows its own error state
                 }
@@ -340,12 +342,10 @@ fun AutoModeScreen(
         )
     }
 
-    // NOTE: the "Default Protocol" badge that used to sit at the top of this
-    // screen was removed to reduce clutter (user request). The value itself is
-    // untouched: it still lives in DataUtil.SETTING_DEFAULT_VPN_PROTOCOL, is
-    // edited in Settings, and is consumed by AutoModeController through
-    // protocolProvider() (see AutoModeController.runAutoMode). Nothing below
-    // depends on `defaultProtocol` for the connection flow.
+    // The "Default Protocol" setting and its badge were both removed. Auto
+    // Connect Protocol Priority (Settings) is now the single source of which
+    // protocol is tried and in what order, read by AutoModeController through
+    // protocolPriorityProvider(). Nothing here depends on a default protocol.
 
     Scaffold { padding ->
         Column(
@@ -427,6 +427,8 @@ fun AutoModeScreen(
                                 ) -> error.message
                                 error.message == AutoModeController.ERROR_NO_SERVER ->
                                     stringResource(R.string.auto_mode_error_no_server)
+                                error.message == AutoModeController.ERROR_NO_ENABLED_PROTOCOL ->
+                                    stringResource(R.string.auto_mode_error_no_enabled_protocol)
                                 error.message == AutoModeController.ERROR_VPN_PERMISSION ->
                                     stringResource(R.string.auto_mode_error_vpn_permission)
                                 else -> stringResource(R.string.auto_mode_error_generic)

@@ -8,8 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.remote.HttpFetcher
+import vn.unlimit.vpngate.data.remote.HttpResponse
+import vn.unlimit.vpngate.data.remote.RedirectPolicy
 import vn.unlimit.vpngate.data.remote.VpnGateUrls
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.parser.VpnGateApiParser
@@ -26,18 +29,36 @@ class RepositoryTest {
     @get:Rule
     val tempFolder = TemporaryFolder()
 
+    /**
+     * Stage 2C-A: the fetch boundary now returns the response metadata, so
+     * the fake answers with an [HttpResponse] per URL. The mirror serves
+     * the same canonical-like table as the main site, which keeps the
+     * assertions deterministic no matter which candidate wins the race.
+     */
     private class FakeFetcher(val pages: Map<String, String>) : HttpFetcher {
         var fetchCount = 0
 
-        override suspend fun get(url: String): String? {
+        override suspend fun get(
+            url: String,
+            redirectPolicy: RedirectPolicy?,
+        ): HttpResponse? {
             fetchCount++
-            return pages[url]
+            val body = pages[url] ?: return null
+            val contentType = if (url.contains("/api/iphone/")) "text/csv" else "text/html; charset=utf-8"
+            return HttpResponse(
+                requestedUrl = url,
+                finalUrl = url,
+                status = 200,
+                contentType = contentType,
+                body = body,
+            )
         }
     }
 
     private fun mirrorDirectoryPage(mirrorUrl: String): String =
         """
         <html><body>
+        <h2>VPNGate.net Mirror Sites</h2>
         <a href="$mirrorUrl">mirror</a>
         <a href="https://www.vpngate.net/en/">main site (ignored)</a>
         <a href="http://www.tsukuba.ac.jp/english/">university (ignored)</a>
@@ -46,15 +67,14 @@ class RepositoryTest {
 
     private fun fixtureFetcher(): FakeFetcher {
         val mirrorUrl = "http://140.199.128.1:1770/"
+        val table = CollectorTestFixtures.load(CollectorTestFixtures.TABLE_SAMPLE)
         return FakeFetcher(
             mapOf(
-                VpnGateUrls.MAIN_URL to
-                    CollectorTestFixtures.load(CollectorTestFixtures.TABLE_SAMPLE),
+                VpnGateUrls.MAIN_URL to table,
                 VpnGateUrls.API_URL to
                     CollectorTestFixtures.load(CollectorTestFixtures.API_SAMPLE),
                 VpnGateUrls.MIRRORS_URL to mirrorDirectoryPage(mirrorUrl),
-                mirrorUrl to
-                    CollectorTestFixtures.load(CollectorTestFixtures.NESTED_SAMPLE),
+                "${mirrorUrl}en/" to table,
             )
         )
     }
@@ -113,6 +133,13 @@ class RepositoryTest {
         val good = goodRepo.refresh()
         assertNotNull(good)
         assertEquals(false, good!!.fromCache)
+
+        // Stage 2C-B: collection no longer promotes itself to last-known-good.
+        // The snapshot is written by the storage acceptance path, once the
+        // dataset has passed integrity, so this test seeds it the same way
+        // the updater does.
+        val goodItems = good.connectionList.toVPNGateItems()
+        assertTrue(goodRepo.saveLastKnownGood(goodItems))
 
         // Total network failure -> last-known-good snapshot served.
         val brokenRepo = VpnServerRepository(fetcher = FakeFetcher(emptyMap()), cacheDir = cacheDir)
@@ -173,7 +200,9 @@ class RepositoryTest {
     }
 
     @Test
-    fun sstpConnectPortDefaultsTo443() {
+    fun sstpConnectPortIsZeroWhenSstpIsUnsupported() {
+        // The API/CSV source never states SSTP support, so nothing may
+        // be invented: the effective SSTP port is 0, not 443.
         val record = VpnGateApiParser.parseApi(
             "*vpn_servers\n" + CollectorTestFixtures.makeApiRow(
                 mapOf("OpenVPN_ConfigData_Base64" to "")
@@ -183,9 +212,10 @@ class RepositoryTest {
 
         val conn = VpnConnectionMapper.toConnection(record)!!
         assertEquals(0, conn.tcpPort)
-        // Locked decision: protocol-standard default when unknown.
-        assertEquals(vn.unlimit.vpngate.models.VPNGateConnection.SSTP_DEFAULT_PORT, conn.sstpConnectPort)
-        assertEquals(443, conn.sstpConnectPort)
+        assertEquals(false, conn.isSSTPSupport())
+        assertEquals(0, conn.sstpPort)
+        assertEquals(VpnPortSource.UNKNOWN, conn.sstpPortSource)
+        assertEquals(0, conn.sstpConnectPort)
     }
 
     @Test
@@ -210,21 +240,22 @@ class RepositoryTest {
     }
 
     @Test
-    fun mapperFallsBackToSamePortForSoftEtherUdp() {
-        // Same-listener convention: UDP supported, no UDP port, but a
-        // known TCP port -> UDP inherits the TCP port.
+    fun softEtherUdpNeverInheritsTheTcpPort() {
+        // TEST A: UDP supported, no published UDP port, TCP 995 present.
+        // The UDP port must stay unknown instead of copying 995.
         val record = VpnRecords.newServer()
         VpnRecords.setField(record, "identity.hostname", "se-both.opengw.net", "html")
         VpnRecords.setField(record, "identity.ip", "10.20.30.41", "html")
         VpnRecords.setField(record, "protocols.softether.tcp.supported", true, "html")
-        VpnRecords.setField(record, "protocols.softether.tcp.port", 992, "html")
+        VpnRecords.setField(record, "protocols.softether.tcp.port", 995, "html")
         VpnRecords.setField(record, "protocols.softether.udp.supported", true, "html")
         VpnRecords.sourceAdd(record, "html")
 
         val conn = VpnConnectionMapper.toConnection(record)!!
-        assertEquals(992, conn.seTcpPort)
-        assertEquals(992, conn.seUdpPort)
+        assertEquals(995, conn.seTcpPort)
         assertEquals(true, conn.seUdpSupported)
-        assertTrue(!conn.isSeUdpPortUnknown)
+        assertEquals(0, conn.seUdpPort)
+        assertEquals(true, conn.isSeUdpPortUnknown)
+        assertTrue("UDP must not borrow the TCP port", conn.seUdpPort != conn.seTcpPort)
     }
 }

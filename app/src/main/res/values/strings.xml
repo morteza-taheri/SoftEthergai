@@ -259,12 +259,14 @@
     <string name="l2tp_tap_to_connect">2. Tap to created VPN Connection to connect</string>
     <!-- Auto Mode -->
     <string name="auto_mode">Auto Mode</string>
-    <string name="setting_auto_protocol_label">Default VPN Protocol</string>
     <string name="setting_auto_protocol_priority_label">Auto Connect Protocol Priority</string>
     <string name="setting_auto_protocol_priority_hint">Enable protocols and order them; Auto Connect tries them top-down on each server.</string>
-    <string name="setting_auto_protocol_priority_default">Default (single protocol)</string>
+    <string name="setting_auto_protocol_priority_default">None enabled</string>
     <string name="setting_auto_protocol_priority_rank">Priority #%1$d</string>
     <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
+    <string name="setting_auto_reconnect_label">Auto-Reconnect in Auto Mode</string>
+    <string name="setting_auto_reconnect_hint">Automatically try to reconnect after an unexpected disconnect while Auto Mode is active.</string>
+    <string name="error_reconnect_limit">Reconnect limit reached — stopping</string>
     <string name="setting_softether_max_connections_label">SoftEther Max Connections</string>
     <string name="setting_softether_max_connections_value">%1$d connections</string>
     <string name="auto_mode_state_disconnected">Disconnected</string>
@@ -284,6 +286,7 @@
     <string name="language_english">English</string>
     <string name="language_system_default">Use device language</string>
     <string name="auto_mode_go_to_server_list">Go to server list</string>
+    <string name="auto_mode_error_no_enabled_protocol">No protocol is enabled. Turn on at least one protocol in Auto Connect Protocol Priority.</string>
     <string name="auto_mode_error_no_server">Could not connect to any available server.</string>
     <string name="auto_mode_error_generic">Auto Mode failed. Tap to try again.</string>
     <string name="auto_mode_error_vpn_permission">VPN permission is required for Auto Mode. Please allow it and try again.</string>
@@ -348,6 +351,9 @@
     <string name="app_icon">App icon</string>
     <string name="add_apps_to_exclude">Add Apps to Exclude</string>
     <string name="exclude_app_description">Selected apps will bypass the VPN tunnel and use your regular internet connection</string>
+    <!-- Excluded Apps sheet: section headers splitting the list by app origin (§8). -->
+    <string name="excluded_apps_section_user">User apps</string>
+    <string name="excluded_apps_section_system">System apps</string>
     <string name="search_apps_hint">Search apps...</string>
     <string name="exclude_apps_text">Excluding %d app(s) from VPN</string>
     <string name="apps_updated_successfully">Apps updated successfully</string>
@@ -385,4 +391,10 @@
     <string name="softether_session_setup">Establishing SoftEther session…</string>
     <string name="softether_disconnecting">Disconnecting SoftEther…</string>
     <string name="error_unknown">An unknown error occurred. Please try again.</string>
+    <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_interval_label">Server List Update Interval</string>
+    <string name="setting_server_update_interval_subtitle">How often the server list refreshes on its own. You can always update it manually.</string>
+    <string name="setting_server_update_interval_hours">Every %1$d hours</string>
+    <string name="setting_server_update_interval_1h">Every hour</string>
+    <string name="setting_server_update_interval_24h">Every day</string>
 </resources>

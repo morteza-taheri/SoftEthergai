@@ -187,10 +187,9 @@
     <string name="l2tp_tap_to_connect">2. Bấm vào kết nối VPN vừa tạo để kết nối</string>
     <!-- Auto Mode -->
     <string name="auto_mode">Chế độ tự động</string>
-    <string name="setting_auto_protocol_label">Giao thức VPN mặc định</string>
     <string name="setting_auto_protocol_priority_label">Ưu tiên giao thức tự động kết nối</string>
     <string name="setting_auto_protocol_priority_hint">Bật và sắp xếp các giao thức; tự động kết nối sẽ thử theo thứ tự từ trên xuống trên từng máy chủ.</string>
-    <string name="setting_auto_protocol_priority_default">Mặc định (một giao thức)</string>
+    <string name="setting_auto_protocol_priority_default">Chưa bật giao thức nào</string>
     <string name="setting_auto_protocol_priority_rank">Ưu tiên #%1$d</string>
     <string name="setting_auto_timeout_label">Thời gian chờ kết nối chế độ tự động</string>
     <string name="setting_softether_max_connections_label">Số kết nối SoftEther tối đa</string>
@@ -206,6 +205,7 @@
     <string name="auto_mode_server_protocol">Giao thức: %1$s</string>
     <string name="auto_mode_server_speed">Tốc độ: %1$d Mbps</string>
     <string name="auto_mode_server_ping">Ping: %1$d ms</string>
+    <string name="auto_mode_error_no_enabled_protocol">Chưa bật giao thức nào. Vui lòng bật ít nhất một giao thức trong Thứ tự ưu tiên giao thức kết nối tự động.</string>
     <string name="auto_mode_error_no_server">Không thể kết nối tới bất kỳ máy chủ khả dụng nào.</string>
     <string name="auto_mode_error_generic">Chế độ tự động thất bại. Chạm để thử lại.</string>
     <string name="auto_mode_error_vpn_permission">Chế độ tự động cần quyền VPN. Vui lòng cho phép và thử lại.</string>
@@ -261,6 +261,8 @@
     <string name="app_icon">Biểu tượng ứng dụng</string>
     <string name="add_apps_to_exclude">Thêm ứng dụng cần loại trừ</string>
     <string name="exclude_app_description">Các ứng dụng đã chọn sẽ bỏ qua tunnel VPN và sử dụng kết nối internet thông thường</string>
+    <string name="excluded_apps_section_user">Ứng dụng người dùng</string>
+    <string name="excluded_apps_section_system">Ứng dụng hệ thống</string>
     <string name="search_apps_hint">Tìm kiếm ứng dụng...</string>
     <string name="exclude_apps_text">Đang loại trừ %d ứng dụng khỏi VPN</string>
     <string name="apps_updated_successfully">Đã cập nhật ứng dụng thành công</string>
@@ -296,4 +298,10 @@
     <string name="softether_disconnecting">Đang ngắt kết nối SoftEther…</string>
     <string name="vpn_permission_denied">Quyền VPN bị từ chối</string>
     <string name="error_unknown">Có lỗi xảy ra. Vui lòng thử lại.</string>
+    <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_interval_label">Server List Update Interval</string>
+    <string name="setting_server_update_interval_subtitle">How often the server list refreshes on its own. You can always update it manually.</string>
+    <string name="setting_server_update_interval_hours">Every %1$d hours</string>
+    <string name="setting_server_update_interval_1h">Every hour</string>
+    <string name="setting_server_update_interval_24h">Every day</string>
 </resources>

@@ -22,20 +22,74 @@ import vn.unlimit.vpngate.state.GlobalVpnTracker
 class AutoModeController(
     private val scope: CoroutineScope,
     private val adapter: ConnectionAdapter,
-    /** Â§24 protocol is read from Settings at the moment of start. */
-    private val protocolProvider: () -> AutoModeProtocol,
 
-    /** Protocol priority profile (ordered). Falls back to [protocolProvider] when empty. */
+    /**
+     * Protocol priority profile (ordered) — the single source of truth for
+     * which protocols Auto Connect tries and in what order.
+     *
+     * There is no "default protocol" input and no fallback list: a non-empty
+     * profile is used verbatim, and an empty one means the user enabled no
+     * protocol at all, so the run refuses instead of dialling a protocol the
+     * user switched off. The default is therefore empty, not permissive.
+     */
     private val protocolPriorityProvider: () -> List<AutoModeProtocol> =
-        { listOf(protocolProvider()) },
+        { emptyList() },
     /** Candidate list source (the in-app collector repository cache). */
     private val serverProvider: suspend () -> List<AutoModeCandidate>,
     /** Called when a tunnel is verified so the caller can persist it (Â§19). */
     private val onSuccess: (AutoModeCandidate, AutoModeProtocol) -> Unit = { _, _ -> },
     /** Per-attempt timeout in ms (Â§11). */
     private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
-    /** Optional pre-filter to eliminate blocked candidates via fast reachability testing. */
-    private val reachabilityFilter: (suspend (List<AutoModeCandidate>, AutoModeProtocol) -> List<AutoModeCandidate>)? = null,
+    /**
+     * Stage 2F-F.28AL-Y: delay between NATIVE_BUSY retries, in milliseconds.
+     *
+     * Injected so the JVM test suite can drive the retry loop with a tiny delay
+     * instead of the production 2s; there is no kotlinx-coroutines-test on the
+     * classpath, so virtual time is not available. Production wires
+     * [NATIVE_BUSY_RETRY_DELAY_MS] here.
+     */
+    private val nativeBusyRetryDelayMs: Long = NATIVE_BUSY_RETRY_DELAY_MS,
+    /**
+     * Stage 2F-F.28AL-Y-IMPL: per-server cumulative NATIVE_BUSY retry-delay
+     * budget, in milliseconds (design review §8.4/§8.7).
+     *
+     * Injected like [nativeBusyRetryDelayMs] so the JVM suite can drive budget
+     * exhaustion without virtual time (no kotlinx-coroutines-test on the
+     * classpath). Production leaves this at [PER_SERVER_RETRY_DELAY_BUDGET_MS].
+     *
+     * Accounting is NOMINAL: each scheduled retry delay counts as one
+     * [NATIVE_BUSY_RETRY_DELAY_MS] regardless of the injected wait, so the
+     * budget means the same thing in production and in tests.
+     */
+    private val perServerRetryDelayBudgetMs: Long = PER_SERVER_RETRY_DELAY_BUDGET_MS,
+    /**
+     * Optional pre-filter to eliminate blocked candidates via fast reachability testing.
+     *
+     * Stage 2F-F.13 (Y4): the argument is a list of protocol/endpoint pairs this
+     * controller has already selected, not a server list plus a protocol to
+     * interpret. The filter therefore cannot re-decide capability.
+     *
+     * Stage 2F-F.17 (D1): it returns a [ReachabilityGate] rather than a bare list,
+     * so "nothing survived" can be told apart from "everything was definitively
+     * unreachable" — the two need opposite handling and a list cannot express it.
+     */
+    private val reachabilityFilter: (suspend (List<ReachabilityTarget>) -> ReachabilityGate)? = null,
+    /**
+     * Stage 2F-F.15 (D4 + Y1-b): the measured round-trip time Auto Connect has
+     * recorded for one server/protocol endpoint, or null if none.
+     *
+     * Injected rather than read from `ServerReachabilityTester` directly so this
+     * class keeps no dependency on the probing layer — the same separation
+     * [reachabilityFilter] already has. The production lambda is bound in
+     * `AutoModeEngine` and must read the **AUTO_CONNECT** namespace keyed by IP
+     * **and** protocol; an IP-only lookup here would reintroduce exactly the
+     * cross-protocol contamination Stage 2F-F.14 removed.
+     *
+     * The default returns null everywhere: no RTT is better than a fabricated
+     * one, and a caller that does not wire a probe simply ranks without the
+     * tie-break.
+     */
+    private val activeRttProvider: (ip: String, protocol: AutoModeProtocol) -> Long? = { _, _ -> null },
     /**
      * VpnM §Phase 1.5 — message shown when the user presses Auto Connect while
      * the server list is empty. Injected so the controller stays free of
@@ -55,6 +109,37 @@ class AutoModeController(
      * no Android dependency.
      */
     private val livenessProbeFactory: ((CoroutineScope) -> TunnelLivenessProbe)? = { TunnelLivenessProbe(it) },
+    /**
+     * Whether *someone else* already owns a connection attempt.
+     *
+     * Injected rather than read from [GlobalVpnTracker] directly so this class
+     * stays free of Android types and remains JVM-unit-testable: the tracker
+     * builds a `Handler(Looper.getMainLooper())` when its object initialiser
+     * runs, which has no meaning off-device. Production supplies
+     * `{ GlobalVpnTracker.isBusy }`, so the app still has exactly one source of
+     * truth for the tunnel state — the controller just does not reach for it
+     * itself. The default `false` means "nothing else is connecting".
+     */
+    private val isTunnelBusy: () -> Boolean = { false },
+    /**
+     * R8 (§11.13.2, OQ-6): whether the "Auto-Reconnect in Auto Mode" setting is
+     * ENABLED.
+     *
+     * Injected rather than read from [DataUtil] directly for the same reason as
+     * [isTunnelBusy]: this class stays free of Android/SharedPreferences types
+     * and remains JVM-unit-testable. Production supplies
+     * `{ du.getAutoReconnectInAutoMode() }`; the default `true` matches the
+     * user-confirmed ENABLED default (§11.13.2), so a caller that does not model
+     * the setting gets the documented behaviour rather than a silent DISABLED.
+     */
+    private val autoReconnectEnabled: () -> Boolean = { true },
+    /**
+     * R8 (§11.13.3, OQ-3): delay before the first reconnect attempt, in ms.
+     *
+     * Injected so the JVM suite drives the reconnect path with a tiny delay
+     * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
+     */
+    private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -72,12 +157,247 @@ class AutoModeController(
 
         /** Debug logging sink (Â§26). */
         fun log(message: String)
+
+        /**
+         * Stage 2F-F.2 (Q-7): whether Auto Connect may drive [protocol]
+         * unattended at all.
+         *
+         * A protocol that cannot be automated is rejected BEFORE any attempt,
+         * rather than being entered, logged and then waited out for the full
+         * per-attempt timeout on a connection that could never have succeeded.
+         *
+         * Defaults to `true` so a test double that does not model the policy is
+         * not forced to restate it; the real adapter is the only thing that
+         * narrows it.
+         */
+        fun canAutoConnect(protocol: AutoModeProtocol): Boolean = true
+
+        /**
+         * Stage 2F-F.28 Fix D: arm the tunnel watcher for [protocol] BEFORE the
+         * connect request is issued.
+         *
+         * The controller calls this, then [connect], then [awaitArmedTunnel], so
+         * a CONNECTED can no longer slip through the gap between issuing the
+         * connection and starting to listen for it.
+         *
+         * Default is a no-op so existing test doubles keep compiling; the real
+         * adapter overrides it.
+         */
+        fun armTunnelWatch(protocol: AutoModeProtocol) {}
+
+        /**
+         * Stage 2F-F.28 Fix D: wait for the tunnel armed by [armTunnelWatch].
+         *
+         * Defaults to [awaitTunnel] so an adapter that does not model the split
+         * behaves exactly as before.
+         */
+        suspend fun awaitArmedTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean =
+            awaitTunnel(protocol, timeoutMs)
+
+        /**
+         * Stage 2F-F.28 Fix C + H: is a VPN **owned by this application**
+         * established right now?
+         *
+         * Used when an attempt's wait has expired: `awaitTunnel` can time out
+         * after `Builder.establish()` already succeeded if the CONNECTED
+         * notification is late or lost, and classifying that as "Protocol
+         * failed" is what left a live tunnel behind while Auto Connect walked on
+         * to the next server.
+         *
+         * The answer must be scoped to this application's own VPN so an
+         * unrelated third-party VPN is never adopted as this app's success.
+         * Default `false` preserves pre-existing adapter behaviour.
+         */
+        suspend fun isOwnTunnelEstablished(): Boolean = false
+
+        /**
+         * Stage 2F-F.28 Fix E: request teardown *synchronously*.
+         *
+         * `disconnect()` is a suspending function, so a caller that must not
+         * publish a terminal state before teardown has actually been requested
+         * cannot guarantee the ordering — the launched coroutine may not run
+         * until after the state is already published. This non-suspending
+         * request is the primitive: it enqueues the teardown intents before
+         * returning, so the caller can then publish safely.
+         *
+         * [disconnect] remains the awaiting form for callers that want
+         * confirmation that teardown completed.
+         *
+         * Default is a no-op so existing test doubles keep compiling.
+         */
+        fun requestDisconnect() {}
+
+        /**
+         * Stage 2F-F.28AA: [awaitArmedTunnel] plus the reason it ended.
+         *
+         * Defaults to the boolean projection so an adapter that does not model the native
+         * refusal — every existing test double — behaves exactly as before: `true` becomes
+         * [AttemptOutcome.TUNNEL_UP] and `false` becomes [AttemptOutcome.TIMED_OUT], which
+         * preserves the pre-existing retry policy for genuine failures.
+         */
+        suspend fun awaitArmedOutcome(
+            protocol: AutoModeProtocol,
+            timeoutMs: Long,
+        ): AttemptOutcome =
+            if (awaitArmedTunnel(protocol, timeoutMs)) AttemptOutcome.TUNNEL_UP
+            else AttemptOutcome.TIMED_OUT
     }
+
+/**
+ * Stage 2F-F.28AA: why an armed attempt ended.
+ *
+ * F.28Z traced the defect this exists to fix: a start request refused because the
+ * process-wide native slot is still owned by an unresolved operation was
+ * indistinguishable from a server that never came up. Auto Mode therefore burned
+ * the full per-attempt timeout, recorded the *selected server* as unreachable, and
+ * rotated — through healthy servers — until it reported `ERROR_NO_SERVER`, when the
+ * only thing wrong was this application's own previous native operation.
+ *
+ * Declared as a nested enum of the controller rather than of [ConnectionAdapter], so it is
+ * named `AutoModeController.AttemptOutcome`: the outcome is a property of the *controller's*
+ * attempt, not of one adapter method, and `AndroidConnectionAdapter` already has to return it
+ * without being nested inside this class.
+ */
+enum class AttemptOutcome {
+    /** A tunnel was verified up. The only outcome that may count as success. */
+    TUNNEL_UP,
+
+    /**
+     * The start was refused because the native slot is still held. The selected server was
+     * not contacted and its health is unknown, so this must never advance a server cursor.
+     */
+    NATIVE_BUSY,
+
+    /** The wait expired with no tunnel and no refusal. A genuine attempt failure. */
+    TIMED_OUT,
+}
 
     companion object {
         const val DEFAULT_ATTEMPT_TIMEOUT_MS = 25_000L
+
+        /**
+         * Protocol order used when no provider is supplied at all (library
+         * callers / tests that do not model a user profile).
+         *
+         * This is NOT a runtime fallback: production always injects the user's
+         * profile, and an empty *user* profile is a refusal, never this list.
+         * It stays for callers that genuinely have no profile to offer.
+         */
+        val FALLBACK_PRIORITY: List<AutoModeProtocol> = listOf(
+            AutoModeProtocol.SOFTETHER_UDP,
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.OPENVPN_UDP,
+            AutoModeProtocol.OPENVPN_TCP,
+            AutoModeProtocol.MS_SSTP,
+            AutoModeProtocol.L2TP_IPSEC,
+        )
+
         const val ERROR_NO_SERVER = "no_compatible_server"
         const val ERROR_VPN_PERMISSION = "vpn_permission_missing"
+
+        /**
+         * Stage 2F-F.28AA: Auto Connect stopped because this application's own previous
+         * native operation is still unresolved, so no new native attempt could be admitted.
+         *
+         * Distinct from [ERROR_NO_SERVER] on purpose: no server was found to be
+         * unreachable. Reporting that instead is what F.28Z identified as the misleading
+         * outcome.
+         */
+        const val ERROR_NATIVE_UNRESOLVED = "native_operation_unresolved"
+
+        /**
+         * R8 (§11.13.3/§11.13.5, OQ-1/OQ-8): Auto Mode stopped reconnecting
+         * because its bounded reconnect budget was exhausted.
+         *
+         * Distinct from [ERROR_NO_SERVER] and [ERROR_NATIVE_UNRESOLVED]: the
+         * server list was not proven exhausted, and no native slot was stuck.
+         * The run was simply re-fired too many times in too short a window
+         * ([RECONNECT_MAX_ATTEMPTS] within [RECONNECT_WINDOW_MS]), which is the
+         * only guard preventing an unbounded reconnect loop when a server keeps
+         * accepting a connection and then dropping it (§13 failure mode F5).
+         */
+        const val ERROR_RECONNECT_LIMIT = "ERROR_RECONNECT_LIMIT"
+
+        /**
+         * Stage 2F-F.28AL-Y: fixed delay between NATIVE_BUSY retries, in milliseconds.
+         *
+         * 2 seconds is enough for the typical native teardown to complete (~1.1s
+         * observed in F.28AL-Y-FULL logs) without harming AutoConnect UX. Fixed, not
+         * exponential: the fail-closed policy is not a backoff problem, and a longer
+         * wait would not help a genuinely stuck cleanup.
+         */
+        const val NATIVE_BUSY_RETRY_DELAY_MS = 2_000L
+
+        /**
+         * Stage 2F-F.28AL-Y: maximum NATIVE_BUSY retries per server+protocol.
+         *
+         * Two retries after the initial attempt: 3 total connection attempts.
+         * Beyond this the previous native operation is presumed genuinely stuck and
+         * the terminal [ERROR_NATIVE_UNRESOLVED] is the correct outcome.
+         */
+        const val NATIVE_BUSY_MAX_RETRIES = 2
+
+        /**
+         * Stage 2F-F.28AL-Y-IMPL: cumulative NATIVE_BUSY retry-delay budget for one
+         * server, in milliseconds (F.28AL-Y-AUTOCONNECT-DESIGN-REVIEW §8.4/D6/D7).
+         *
+         * The retry count (2) bounds the delays within ONE protocol attempt (~4s);
+         * this budget additionally bounds the combined retry effort across every
+         * protocol attempt on the SAME server, so a server that keeps attracting
+         * refusals cannot pin the run in retry loops indefinitely. 10s ≈ two full
+         * NATIVE_BUSY sequences (4s + 4s) plus slack, matched to the ~1.1s observed
+         * cleanup time (F.28AL-Y-FULL logs); beyond it the previous native operation
+         * is presumed genuinely stuck and the terminal [ERROR_NATIVE_UNRESOLVED] is
+         * the correct outcome — same terminal as count exhaustion (§8.5).
+         *
+         * The budget is accounted in NOMINAL production milliseconds (one
+         * [NATIVE_BUSY_RETRY_DELAY_MS] per scheduled delay), which equals the real
+         * waited time in production, where the injected delay is this constant.
+         * The JVM tests inject a tiny delay and a tiny budget instead of relying on
+         * virtual time (there is no kotlinx-coroutines-test on the classpath).
+         */
+        const val PER_SERVER_RETRY_DELAY_BUDGET_MS = 10_000L
+
+        /**
+         * R8 (§11.13.3, OQ-3): delay before the FIRST reconnect attempt, in
+         * milliseconds.
+         *
+         * A tunnel that just died may still be unwinding at the native layer, so
+         * an immediate redial would likely be refused as NATIVE_BUSY and waste a
+         * retry cycle. 2 s is the observed typical native teardown time and is
+         * the same figure [NATIVE_BUSY_RETRY_DELAY_MS] already uses.
+         *
+         * Injected into the controller on the same pattern as
+         * [nativeBusyRetryDelayMs] so the JVM suite can drive the reconnect path
+         * without a real 2 s wait (there is no kotlinx-coroutines-test on the
+         * classpath).
+         */
+        const val RECONNECT_INITIAL_DELAY_MS = 2_000L
+
+        /**
+         * R8 (§11.13.3, OQ-1): maximum reconnect attempts within
+         * [RECONNECT_WINDOW_MS] before the run stops with
+         * [ERROR_RECONNECT_LIMIT].
+         *
+         * R7 alone has no frequency bound, so a server that accepts and then
+         * immediately drops would reconnect forever. This guard is the only
+         * thing preventing that unbounded churn.
+         */
+        const val RECONNECT_MAX_ATTEMPTS = 5
+
+        /**
+         * R8 (§11.13.3, OQ-1): rolling window for [RECONNECT_MAX_ATTEMPTS], in
+         * milliseconds (10 minutes). Attempts older than this are forgotten, so
+         * the bound is on *recent* churn, not lifetime count.
+         */
+        const val RECONNECT_WINDOW_MS = 10L * 60L * 1000L
+
+        /**
+         * The user enabled no protocol in Auto Connect Protocol Priority.
+         * Distinct from [ERROR_NO_SERVER]: servers may well be available, there
+         * is simply nothing the user allowed us to dial.
+         */
+        const val ERROR_NO_ENABLED_PROTOCOL = "no_enabled_protocol"
     }
 
     /**
@@ -163,14 +483,19 @@ class AutoModeController(
             adapter.log("[AUTO] Connected server skipped by user; trying next")
             connectedWatcher?.cancel()
             connectedWatcher = null
+            // R8: disarm BEFORE tearing down — this is a deliberate user move,
+            // never an unexpected drop (path F).
             TunnelStateWatcher.onTunnelLost = null
             stopLivenessProbe()
+            connectedCandidate = null
             job?.cancel()
             job = null
             scope.launch {
                 adapter.disconnect()
                 val remaining = remainingCandidates.ifEmpty {
-                    val all = (overrideServers ?: serverProvider()).sortedWith(byQuality)
+                    val all = (overrideServers ?: serverProvider())
+                        .withActiveRtt(protocolPriorityProvider())
+                        .sortedForAutoConnect()
                     if (currentIp != null) all.filterNot { it.ip == currentIp } else all
                 }
                 if (remaining.isEmpty()) {
@@ -230,12 +555,14 @@ class AutoModeController(
         stopLivenessProbe()
         TunnelStateWatcher.onTunnelLost = {
             if (_state.value is AutoModeState.Connected) {
+                val dropped = connectedCandidate
                 adapter.log("[AUTO] Tunnel disconnected externally / revoked by system")
                 connectedWatcher?.cancel()
                 connectedWatcher = null
                 stopLivenessProbe()
                 TunnelStateWatcher.onTunnelLost = null
-                setState(AutoModeState.Disconnected)
+                // R8 (path A): the tunnel was lost while armed -> unexpected.
+                scope.launch { onUnexpectedDisconnect(dropped) }
             }
         }
         val probe = livenessProbeFactory?.let { factory ->
@@ -251,11 +578,13 @@ class AutoModeController(
                 if (_state.value !is AutoModeState.Connected) break
                 if (!GlobalVpnTracker.isConnected) {
                     adapter.log("[AUTO] GlobalVpnTracker confirmed disconnected")
+                    val dropped = connectedCandidate
                     connectedWatcher?.cancel()
                     connectedWatcher = null
                     TunnelStateWatcher.onTunnelLost = null
                     stopLivenessProbe()
-                    setState(AutoModeState.Disconnected)
+                    // R8 (path B): loss confirmed while armed -> unexpected.
+                    onUnexpectedDisconnect(dropped)
                     break
                 }
                 // Active liveness: only consulted after the passive checks pass,
@@ -272,11 +601,13 @@ class AutoModeController(
                                 "${TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS}ms; " +
                                 "tunnel considered lost",
                         )
+                        val dropped = connectedCandidate
                         connectedWatcher?.cancel()
                         connectedWatcher = null
                         stopLivenessProbe()
                         TunnelStateWatcher.onTunnelLost = null
-                        setState(AutoModeState.Disconnected)
+                        // R8 (path C): watchdog declared the tunnel dead -> unexpected.
+                        onUnexpectedDisconnect(dropped)
                         break
                     }
                 }
@@ -284,9 +615,167 @@ class AutoModeController(
         }
     }
 
+    /**
+     * R8 (§11.13.3, D1): the single funnel for an **unexpected** disconnect of a
+     * tunnel Auto Mode itself established. Called only from the three armed
+     * paths in [startConnectedWatcher] — never from [stop], [disconnectNow] or
+     * [skipToNextServer], which disarm the watcher before tearing down precisely
+     * so their deliberate teardown is not mistaken for a loss.
+     *
+     * Steps, in order:
+     *  1. publish [AutoModeState.Disconnected] (the tunnel is really gone);
+     *  2. OQ-7 manual precedence — if someone else is connecting, stand down;
+     *  3. OQ-6 setting — if DISABLED, stay disconnected;
+     *  4. OQ-1 loop guard — bound recent reconnects;
+     *  5. OQ-3 settle delay, then seed [pendingReconnectServer] and re-run.
+     *
+     * @param droppedServer the candidate Auto Mode was connected to (may be null
+     *   if the success record was somehow unavailable — then the reconnect simply
+     *   runs over [remainingCandidates]).
+     */
+    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {        // The tunnel is genuinely gone, whatever we decide next. This matches the
+        // pre-existing behaviour of all three armed paths.
+        setState(AutoModeState.Disconnected)
+
+        // OQ-7: a manual connect that is still coming up owns the tunnel. Do not
+        // race it with a reconnect.
+        if (isTunnelBusy()) {
+            adapter.log("[AUTO] Manual connect in progress; skipping Auto-Reconnect")
+            return
+        }
+
+        // OQ-6 (§11.13.4): the setting governs behaviour AFTER a drop.
+        if (!autoReconnectEnabled()) {
+            adapter.log("[AUTO] Auto-Reconnect is disabled; staying disconnected")
+            return
+        }
+
+        // OQ-1: rolling-window loop guard.
+        val now = System.currentTimeMillis()
+        val attempts: Int
+        synchronized(reconnectLock) {
+            reconnectTimestamps.removeAll { it < now - RECONNECT_WINDOW_MS }
+            if (reconnectTimestamps.size >= RECONNECT_MAX_ATTEMPTS) {
+                attempts = -1
+            } else {
+                reconnectTimestamps.add(now)
+                attempts = reconnectTimestamps.size
+            }
+        }
+        if (attempts < 0) {
+            adapter.log(
+                "[AUTO] Auto-Reconnect limit reached " +
+                    "($RECONNECT_MAX_ATTEMPTS in ${RECONNECT_WINDOW_MS / 60_000} min); stopping",
+            )
+            setState(AutoModeState.Error(ERROR_RECONNECT_LIMIT))
+            return
+        }
+
+        adapter.log(
+            "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
+                "reconnecting (attempt $attempts/$RECONNECT_MAX_ATTEMPTS)",
+        )
+
+        // OQ-3: let the native slot unwind before redialling. Cancellable, so a
+        // user stop during the wait ends the coroutine cleanly.
+        kotlinx.coroutines.delay(reconnectInitialDelayMs)
+
+        // Someone may have started connecting / stopping during the delay.
+        if (isTunnelBusy()) {
+            adapter.log("[AUTO] Tunnel owned elsewhere after delay; aborting Auto-Reconnect")
+            return
+        }
+
+        // OQ-7 second chance: if a fresh run is somehow already active, do not
+        // stack a second one — start() would refuse it anyway, but logging the
+        // reason is clearer than a silent no-op.
+        if (isRunning) {
+            adapter.log("[AUTO] A run is already active; not stacking a reconnect")
+            return
+        }
+
+        // Seed the reconnect: the dropped server first (§11.13.3 step 1), then
+        // the un-attempted tail of the original sorted list, exactly as the
+        // "Try next server on a Connected server" path does.
+        pendingReconnectServer = droppedServer
+        val remaining = remainingCandidates
+        overrideServers = when {
+            droppedServer == null && remaining.isEmpty() -> null
+            droppedServer == null -> remaining
+            remaining.isEmpty() -> listOf(droppedServer)
+            else -> listOf(droppedServer) + remaining.filterNot {
+                it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
+            }
+        }
+        start()
+    }
+
+    /**
+     * R8 — test seam only.
+     *
+     * The production trigger for an unexpected disconnect is the lambda the
+     * controller assigns to `TunnelStateWatcher.onTunnelLost` inside
+     * [startConnectedWatcher]. `TunnelStateWatcher` is an `object` whose
+     * initialiser builds an Android `Handler(Looper.getMainLooper())`, so it
+     * cannot be class-loaded in a plain JVM unit test — the same constraint that
+     * made [TunnelStateWatcher.stateProvider] injectable.
+     *
+     * This method therefore invokes the SAME decision the armed path invokes
+     * ([onUnexpectedDisconnect]) with the same argument the armed path passes
+     * ([connectedCandidate]), so a JVM test can assert R8's decision without an
+     * Android runtime. It changes no production behaviour: nothing in main source
+     * calls it.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun onUnexpectedDisconnectForTests() {
+        val dropped = connectedCandidate
+        scope.launch { onUnexpectedDisconnect(dropped) }
+    }
+
     /** When set, the next runAutoMode uses this candidate list instead of the provider. */
     @Volatile
     private var overrideServers: List<AutoModeCandidate>? = null
+
+    /**
+     * R8 (§11.13.3, OQ-1): timestamps (ms) of recent reconnect launches, used to
+     * enforce [RECONNECT_MAX_ATTEMPTS] within [RECONNECT_WINDOW_MS].
+     *
+     * Bounded by construction: timestamps older than the window are dropped on
+     * every read, and at most [RECONNECT_MAX_ATTEMPTS] survive, so this list can
+     * never grow past the cap. Cleared by [resetReconnectBudget] (a user-initiated
+     * start), never by a reconnect's own internal [start] — otherwise the guard
+     * could never accumulate.
+     *
+     * Guarded by [reconnectLock]; the helper runs on the controller's
+     * single-threaded scope today, but the guard is explicit so a future caller
+     * cannot corrupt the window.
+     */
+    private val reconnectTimestamps = mutableListOf<Long>()
+    private val reconnectLock = Any()
+
+    /**
+     * R8 (§11.13.3): the server Auto Mode was connected to when the unexpected
+     * disconnect happened.
+     *
+     * Seeded as the FIRST candidate of the reconnect run, so the flow matches
+     * §11.13.3 step 1 ("first to the same server"), then the rest of the sorted
+     * list follows. Set by [onUnexpectedDisconnect] and consumed (and nulled) at
+     * the top of [runAutoMode].
+     */
+    @Volatile
+    private var pendingReconnectServer: AutoModeCandidate? = null
+
+    /**
+     * R8 (§11.13.3): the candidate the CURRENT connected tunnel was established
+     * with, captured at the success transition.
+     *
+     * Held so an unexpected disconnect can name the exact server (its full
+     * capability record, not just the hostname/ip the `Connected` state carries)
+     * and re-seed it as the first reconnect candidate. Nulled by every path that
+     * leaves the Connected state.
+     */
+    @Volatile
+    private var connectedCandidate: AutoModeCandidate? = null
 
     private var connectedWatcher: kotlinx.coroutines.Job? = null
 
@@ -323,10 +812,31 @@ class AutoModeController(
         stopLivenessProbe()
         skipRequested.set(false)
         overrideServers = null
-        if (!isRunning) return
+        // R8: a user stop ends the ownership record; no reconnect may name it.
+        connectedCandidate = null
+        pendingReconnectServer = null
+        if (!isRunning) {
+            setState(AutoModeState.Disconnected)
+            return
+        }
         adapter.log("[AUTO] User requested stop")
         job?.cancel()
         job = null
+        // Stage 2F-F.28 Fix E: request REAL teardown before publishing the
+        // terminal state.
+        //
+        // stop() previously only cancelled the run coroutine and set
+        // Disconnected. It never told any VPN service to tear down, so stopping
+        // while Connecting could leave a half-established or fully established
+        // tunnel running while the UI claimed Disconnected — exactly the
+        // divergence reproduced on device in Stage 2F-F.26-ALT (F.27 RC-2).
+        //
+        // requestDisconnect() is non-suspending, so the teardown intents are
+        // genuinely enqueued before setState runs. The ordering this stage
+        // requires (request teardown, then publish Disconnected) therefore
+        // holds, while the synchronous-state contract of onButtonPressed() is
+        // preserved.
+        adapter.requestDisconnect()
         setState(AutoModeState.Disconnected)
     }
 
@@ -340,9 +850,17 @@ class AutoModeController(
     }
 
     /**
-     * Starts a run. The VpnM Phase 1.5 empty-list guard lives inside
-     * [runAutoMode], where the candidate list is actually resolved, so there is
-     * no separate pre-check here.
+     * Starts a run, unless the global tunnel state says a connection is already
+     * in progress.
+     *
+     * The guard reads [GlobalVpnTracker], the same single source of truth the
+     * services and the UI read, so a manual connection that is still coming up
+     * cannot be duplicated by Auto Connect — and vice versa. Without it the
+     * two subsystems could each believe they own the tunnel.
+     *
+     * The VpnM Phase 1.5 empty-list guard lives inside [runAutoMode], where
+     * the candidate list is actually resolved, so there is no separate
+     * pre-check here.
      *
      * @return true when a run was actually started.
      */
@@ -352,7 +870,14 @@ class AutoModeController(
             onButtonPressedWithoutGuard()
             return false
         }
+        // Someone else is mid-connection (a manual connect, a service restart).
+        // Refuse rather than race it; the tunnel state is not ours to change.
+        if (isTunnelBusy()) {
+            adapter.log("[AUTO] start refused: a connection is already in progress")
+            return false
+        }
         overrideServers = null
+        resetReconnectBudget()
         start()
         return true
     }
@@ -361,11 +886,26 @@ class AutoModeController(
         when (_state.value) {
             is AutoModeState.Disconnected, is AutoModeState.Error -> {
                 overrideServers = null
+                resetReconnectBudget()
                 start()
             }
             is AutoModeState.Connecting -> stop()
             is AutoModeState.Connected -> disconnectNow()
         }
+    }
+
+    /**
+     * R8 (OQ-1): clear the reconnect loop guard.
+     *
+     * Called ONLY by the two user-initiated start branches, never by
+     * [onUnexpectedDisconnect]'s own internal [start]. A reconnect must keep
+     * accumulating against the window or the guard would never trip; a fresh
+     * user press ("Reset the counter when the user manually starts Auto Mode
+     * again", OQ-1) hands R8 a clean budget.
+     */
+    private fun resetReconnectBudget() {
+        synchronized(reconnectLock) { reconnectTimestamps.clear() }
+        pendingReconnectServer = null
     }
 
     /** Â§3/Â§29-Test10: pressing while Connected disconnects via the normal flow. */
@@ -376,12 +916,21 @@ class AutoModeController(
         stopLivenessProbe()
         skipRequested.set(false)
         overrideServers = null
+        // R8: explicit user disconnect ends ownership; a later loss must not
+        // reconnect a tunnel the user deliberately closed.
+        connectedCandidate = null
+        pendingReconnectServer = null
         if (isRunning) {
             // Cancel the active run, then clean up the tunnel.
             job?.cancel()
             job = null
+            // Stage 2F-F.28 Fix E: request teardown synchronously so the request
+            // is genuinely issued before the terminal state is published, then
+            // await confirmation on a background coroutine.
+            adapter.requestDisconnect()
             scope.launch { adapter.disconnect() }
         } else {
+            adapter.requestDisconnect()
             scope.launch { adapter.disconnect() }
         }
         setState(AutoModeState.Disconnected)
@@ -393,19 +942,249 @@ class AutoModeController(
         protocol: AutoModeProtocol,
     ): List<AutoModeCandidate> = all
         .filter { protocol.supports(it) }
-        .sortedWith(byQuality)
+        .sortedForAutoConnect()
 
+    /**
+     * Stage 2F-F.13 (D2 + D8 + Y4): the protocols Auto Connect may actually
+     * attempt for [candidate], in exactly the user's Protocol Priority order.
+     *
+     * This is the single place that answers "may Auto Connect use this protocol
+     * for this server?". Three things must agree:
+     *
+     * 1. the data model supports it ([supports] — which already encodes the
+     *    protocol-specific port validity, so a server that publishes no SoftEther
+     *    TCP port, no OpenVPN port, or no resolvable SSTP port is not usable
+     *    through that transport, and no port is ever fabricated for it);
+     * 2. the app can drive it unattended ([isAutomatable]);
+     * 3. it is in the user's priority list at all — that list is an attempt
+     *    ORDER, so it contributes ordering, not a global eligibility filter.
+     *
+     * **D2 in one sentence:** a server is never rejected because its
+     * highest-priority protocol is unusable. The highest-priority *usable* one is
+     * tried first and the rest follow.
+     */
+    fun usableProtocols(
+        candidate: AutoModeCandidate,
+        priorities: List<AutoModeProtocol>,
+    ): List<AutoModeProtocol> = priorities.filter { it.isUsableFor(candidate) }
+
+    /** Supported by the model, automatable by the app, and carrying real connection info. */
+    private fun AutoModeProtocol.isUsableFor(candidate: AutoModeCandidate): Boolean =
+        supports(candidate) && isAutomatable()
+
+    /**
+     * Stage 2F-F.13 (D8): L2TP/IPsec is manual-only, so Auto Connect must not
+     * select it.
+     *
+     * The rule is stated here, in the layer that owns Auto Connect eligibility,
+     * instead of resting on the Android adapter alone. The adapter's
+     * `canAutoConnect` is still consulted — it is where a future protocol's
+     * automatability will be known — it is simply no longer the only thing
+     * standing between an L2TP entry in the user's priority list and a background
+     * attempt that could never succeed. Manual L2TP connections, the L2TP UI and
+     * the published capability data are untouched.
+     */
+    private fun AutoModeProtocol.isAutomatable(): Boolean = when (this) {
+        AutoModeProtocol.L2TP_IPSEC -> false
+        else -> adapter.canAutoConnect(this)
+    }
+
+    /**
+     * The endpoint to probe for [candidate] over [protocol], or **0** when this
+     * protocol published nothing to probe.
+     *
+     * A missing endpoint is NOT a capability verdict: the protocol stays usable,
+     * it simply cannot be pre-probed. This is why SoftEther UDP stays connectable
+     * with `seUdpSupported` set and no published UDP port — the native stack
+     * accelerates over the TCP control channel and learns the UDP endpoint at
+     * runtime.
+     *
+     * Stage 2F-F.16 (Y2): such a server is still handed to the probe, which
+     * reports UNKNOWN for it. "We had no endpoint to test" must be recorded as *no
+     * conclusion* — not as an absent result that reads like success, and not as
+     * UNREACHABLE, which would be a claim we cannot support. No port is ever
+     * borrowed from another protocol to manufacture a probe.
+     */
+    private fun probeEndpoint(
+        candidate: AutoModeCandidate,
+        protocol: AutoModeProtocol,
+    ): Int = protocol.endpointPort(candidate).coerceAtLeast(0)
+
+    /**
+     * Stage 2F-F.15 (D4 + Y1-b): the candidate's representative active RTT —
+     * the **minimum valid** value among the RTTs of the protocols this
+     * controller already deemed usable.
+     *
+     * Every rule the aggregation has to honour falls out of reusing
+     * [usableProtocols] rather than inventing a second capability system:
+     *
+     * - a protocol the model does not support, or whose protocol-specific port is
+     *   invalid (MS-SSTP with no resolvable port, a SoftEther server with no TCP
+     *   port), is not usable and therefore contributes nothing;
+     * - L2TP/IPsec is not automatable, so it never contributes even if a probe
+     *   once recorded something for it;
+     * - a protocol with no measured RTT contributes nothing — the TCP answer is
+     *   never borrowed for UDP, and the Server List's protocol-less answer is
+     *   never borrowed for Auto Connect.
+     *
+     * Only strictly positive values count (`0` and the `-1` that an unreachable
+     * probe reports are "no measurement", not a measurement). No average, no
+     * maximum, no priority weighting, and null when nothing is valid — never a
+     * stand-in number.
+     *
+     * `internal` rather than `private` so the aggregation can be asserted
+     * directly: a missing RTT deliberately does not move a candidate (Y1-a), so
+     * the dial order cannot reveal whether an RTT was aggregated, ignored or
+     * rejected. The value has to be checked at the source.
+     */
+    internal fun representativeRtt(
+        candidate: AutoModeCandidate,
+        priorities: List<AutoModeProtocol>,
+    ): Long? = usableProtocols(candidate, priorities)
+        .mapNotNull { protocol -> activeRttProvider(candidate.ip ?: return@mapNotNull null, protocol) }
+        .filter { it > 0L }
+        .minOrNull()
+
+    /** [candidates] carrying their aggregated active RTT, ready for ranking. */
+    private fun List<AutoModeCandidate>.withActiveRtt(
+        priorities: List<AutoModeProtocol>,
+    ): List<AutoModeCandidate> = map { it.copy(activeRttMs = representativeRtt(it, priorities)) }
+
+    /**
+     * Stage 2F-F.15 (D4): Auto Connect's ranking — the Phase 1 primary keys
+     * first, then active RTT as the final tie-break.
+     *
+     * RTT is applied as a *pass* over the already-primary-sorted list rather
+     * than as one more `thenBy` key, because "missing RTT is neutral" (Y1-a) is
+     * not expressible as a comparable key:
+     *
+     * - `thenBy { it.activeRttMs ?: Long.MAX_VALUE }` is banned by Y1-a and for a
+     *   good reason: it would rank every unmeasured server below every measured
+     *   one, which is exactly the implicit "missing is worse" penalty the stage
+     *   forbids — and a server that simply has not been probed yet would be
+     *   demoted for it.
+     * - returning `0` from the comparator whenever either side is missing is
+     *   neutral in the pairwise sense but is NOT a valid ordering: with
+     *   `A(100ms) == B(unknown) == C(50ms)` and `C < A`, the relation is not
+     *   transitive. `sortedWith` delegates to TimSort, which detects exactly this
+     *   and throws `IllegalArgumentException: Comparison method violates its
+     *   general contract!` on lists large enough to merge — i.e. on real server
+     *   lists. Shipping that would turn a ranking nicety into a crash.
+     *
+     * So the tie-break is a stable insertion pass inside each run of
+     * equal-primary candidates: candidates with a valid RTT are ordered ascending
+     * among themselves, a candidate with no RTT never moves, and it never pushes
+     * another candidate either. RTT therefore only ever orders two candidates
+     * that both have a measurement — the semantics Y1-a asks for — with input
+     * order preserved everywhere else, which keeps the result deterministic
+     * without reaching for identity or hash codes.
+     */
+    internal fun List<AutoModeCandidate>.sortedForAutoConnect(): List<AutoModeCandidate> {
+        val ordered = sortedWith(byQuality).toMutableList()
+        var runStart = 0
+        while (runStart < ordered.size) {
+            var runEnd = runStart + 1
+            while (runEnd < ordered.size && byQuality.compare(ordered[runStart], ordered[runEnd]) == 0) {
+                runEnd++
+            }
+            applyRttTieBreak(ordered, runStart, runEnd)
+            runStart = runEnd
+        }
+        return ordered
+    }
+
+    /**
+     * Insertion sort over [from, to) comparing only pairs where BOTH sides have a
+     * valid RTT. A candidate without a measured RTT acts as a barrier: it is
+     * neither moved nor moved past.
+     */
+    private fun applyRttTieBreak(
+        ordered: MutableList<AutoModeCandidate>,
+        from: Int,
+        to: Int,
+    ) {
+        for (i in from + 1 until to) {
+            val current = ordered[i]
+            val rtt = current.activeRttMs
+            if (rtt == null) continue
+            var j = i - 1
+            while (j >= 0) {
+                val previous = ordered[j].activeRttMs ?: break
+                if (previous <= rtt) break
+                ordered[j + 1] = ordered[j]
+                j--
+            }
+            ordered[j + 1] = current
+        }
+    }
+
+    /**
+     * Stage 2F-F.17 (D1): one probe target per **usable** protocol, per server.
+     *
+     * Phase 5 emitted only `usableProtocols(...).firstOrNull()` — one endpoint per
+     * server. That was enough to keep a server whose first protocol was silent,
+     * but it made D1's actual rule unrepresentable: "every usable protocol is
+     * definitively UNREACHABLE" cannot be evaluated over one endpoint, and a server
+     * whose highest-priority endpoint refused was removed on that evidence alone
+     * while a healthy second protocol went untested.
+     *
+     * So every usable protocol is represented, and Protocol Priority stops being a
+     * filter here. It remains what it has always been — the order protocols are
+     * *attempted* in, decided by [usableProtocols] at dial time. Measuring a
+     * protocol in order to decide whether the server is worth keeping is a
+     * different question from choosing which protocol to try first, and
+     * collapsing them is how a working UDP server once got deleted because its TCP
+     * port was closed.
+     */
+    private fun probeTargets(
+        servers: List<AutoModeCandidate>,
+        priorities: List<AutoModeProtocol>,
+    ): List<ReachabilityTarget> = servers.flatMap { server ->
+        usableProtocols(server, priorities).map { protocol ->
+            ReachabilityTarget(server, protocol, probeEndpoint(server, protocol))
+        }
+    }
 
     private suspend fun runAutoMode() {
-        // Protocol priority profile: ordered list of enabled protocols.
-        // Empty profile falls back to the single default protocol.
-        val priorities = protocolPriorityProvider().ifEmpty { listOf(protocolProvider()) }
+        // Protocol priority profile: the user's ordered list of ENABLED
+        // protocols, and the ONLY source of protocol order. There is no
+        // default protocol and no implicit fallback — an empty profile means
+        // the user switched every protocol off, so there is nothing we are
+        // allowed to dial. Refuse before touching a single server.
+        val priorities = protocolPriorityProvider()
         adapter.log("[AUTO] Started")
+        if (priorities.isEmpty()) {
+            adapter.log("[AUTO] No protocol enabled by the user; refusing to start")
+            setState(AutoModeState.Error(ERROR_NO_ENABLED_PROTOCOL))
+            job = null // terminal state: nothing is running
+            return
+        }
         adapter.log("[AUTO] Protocols (priority) = ${priorities.joinToString(" > ") { it.id }}")
+        // Stage 2F-F.13 (D8): say once, up front, which enabled protocols Auto
+        // Connect will not dial — a priority entry that silently does nothing is
+        // the hardest kind of protocol bug for a user to diagnose.
+        val notAutomatable = priorities.filterNot { it.isAutomatable() }
+        if (notAutomatable.isNotEmpty()) {
+            adapter.log(
+                "[AUTO] Protocol(s) ${notAutomatable.joinToString { it.id }} cannot be automated; " +
+                    "skipping them instead of waiting for a timeout",
+            )
+        }
         adapter.log("[AUTO] Connection timeout = ${attemptTimeoutMs / 1000} seconds")
 
         val all = overrideServers ?: serverProvider()
         overrideServers = null
+        // R8 (OQ-7 second chance): a reconnect run must never race a manual
+        // connect that began during the settle delay or the list resolution.
+        // The seed is consumed here regardless of outcome so it cannot leak into
+        // the next run.
+        val wasReconnect = pendingReconnectServer != null
+        pendingReconnectServer = null
+        if (wasReconnect && isTunnelBusy()) {
+            adapter.log("[AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run")
+            setState(AutoModeState.Disconnected)
+            return
+        }
         // VpnM Phase 1.5: refuse an empty list up-front. Without this the run
         // would fall through to the generic ERROR_NO_SERVER, telling the user
         // to retry a connection that can never start.
@@ -415,27 +1194,83 @@ class AutoModeController(
             return
         }
         // Server ordering is independent of protocol ordering (quality DESC).
-        val qualitySorted = all.sortedWith(byQuality)
+        // Stage 2F-F.15 (D4): each candidate first collects its representative
+        // active RTT (minimum valid RTT over its usable protocols), then the
+        // whole list is ranked by the primary keys with RTT as the final
+        // tie-break.
+        //
+        // NOTE — this happens BEFORE this run's own probe below, exactly where
+        // quality ranking has always happened. So the RTT used here is whatever
+        // earlier probes in this process already recorded, never an RTT this run
+        // has not measured. A first-ever run therefore ranks without the
+        // tie-break (every candidate null) and subsequent runs benefit. Nothing
+        // is fabricated and no ordering was deferred to make this work.
+        val qualitySorted = all
+            .withActiveRtt(priorities)
+            .sortedForAutoConnect()
         adapter.log("[AUTO] Servers available = ${all.size}")
         adapter.log("[AUTO] Sorted by quality")
 
-        val servers = if (reachabilityFilter != null && qualitySorted.isNotEmpty() && priorities.isNotEmpty()) {
-            adapter.log("[AUTO] Pre-filtering reachable servers via probe...")
-            val primaryProtocol = priorities.first()
-            val filtered = try {
-                reachabilityFilter.invoke(qualitySorted, primaryProtocol)
+        // Stage 2F-F.17 (D1): the probe is handed one protocol/endpoint pair per
+        // **usable protocol**, per server. A server with no usable protocol produces
+        // no target at all, so it is never probed and never gated on by D1 — it is
+        // still skipped later by the same capability rule that decides the attempt
+        // order.
+        //
+        // The previous code applied `priorities.first()` to the whole list, which
+        // turned Protocol Priority into a global eligibility gate: a server that
+        // could not speak that one protocol was discarded even when it could
+        // perfectly well speak the second one.
+        val targets = probeTargets(qualitySorted, priorities)
+        val gate = if (reachabilityFilter != null && targets.isNotEmpty()) {
+            adapter.log(
+                "[AUTO] Pre-filtering reachable servers via probe " +
+                    "(${targets.size} endpoint(s) across ${targets.map { it.protocol.id }.distinct().joinToString(" > ")})...",
+            )
+            try {
+                reachabilityFilter.invoke(targets)
             } catch (e: Exception) {
+                // A probe that failed to run has measured nothing, which is not a
+                // verdict. Null means "no evidence", never "all down".
                 adapter.log("[AUTO] Reachability probe failed: ${e.message}; using original list")
-                qualitySorted
-            }
-            if (filtered.isNotEmpty()) {
-                adapter.log("[AUTO] Reachable servers selected: ${filtered.size}")
-                filtered
-            } else {
-                qualitySorted
+                null
             }
         } else {
-            qualitySorted
+            null
+        }
+
+        // Stage 2F-F.17 (D1 = FILTER_ONLY): three outcomes, deliberately distinct.
+        //
+        // - the gate kept something -> use it. It is a subsequence of
+        //   `qualitySorted`, so the comparator stays the only ranking authority;
+        // - the gate removed everything *and says so* -> that is a real
+        //   measurement (every usable protocol of every server definitively
+        //   UNREACHABLE), so honour it and let the existing empty-list path report
+        //   ERROR_NO_SERVER;
+        // - nothing measured at all (no filter, no targets, a throwing probe, or a
+        //   gate that could not conclude) -> keep the full list.
+        //
+        // The third case is the pre-existing "a probe must never empty the queue"
+        // rule, and it is why an empty `kept` cannot be read on its own: before
+        // D1 that read as "keep everything", which silently undid the removal of a
+        // genuinely dead network.
+        val servers = when {
+            gate == null -> qualitySorted
+            gate.kept.isNotEmpty() -> {
+                adapter.log("[AUTO] Reachable servers selected: ${gate.kept.size}")
+                // The result is rebuilt by walking `qualitySorted` and keeping the
+                // entries the gate named, never by walking the gate's own list.
+                // That is what makes the comparator the sole authority on order: a
+                // gate that returned its survivors in any other order still yields
+                // a subsequence of the ranked input. Identity, not equality, is the
+                // match — two different servers may compare equal by value.
+                qualitySorted.filter { candidate -> gate.kept.any { it === candidate } }
+            }
+            gate.allUnreachable -> {
+                adapter.log("[AUTO] Every server's usable protocols are unreachable; none left to try")
+                emptyList()
+            }
+            else -> qualitySorted
         }
 
         if (servers.isEmpty()) {
@@ -459,9 +1294,14 @@ class AutoModeController(
             currentServerIndex = servers.indexOf(server).coerceAtLeast(0)
             totalServerCount = servers.size
 
-            // Capability check: only protocols this server actually supports,
-            // in profile priority order. Unsupported protocols are never attempted.
-            val supported = priorities.filter { it.supports(server) }
+            // Stage 2F-F.13 (D2 + D8 + Y4): the protocols to try for THIS server,
+            // in the user's Protocol Priority order, via the one capability decision
+            // the controller owns. A server stays eligible as long as one protocol is
+            // usable — the highest-priority protocol being unusable never disqualifies
+            // it. Protocols the app cannot drive unattended (L2TP/IPsec) and protocols
+            // with no valid protocol-specific connection information are dropped here,
+            // before the attempt, instead of being entered and then waited out.
+            val supported = usableProtocols(server, priorities)
             if (supported.isEmpty()) {
                 adapter.log("[AUTO] Skipping ${server.hostname ?: server.ip}: no supported protocol")
                 continue
@@ -470,6 +1310,12 @@ class AutoModeController(
             adapter.log("[AUTO] Trying #$attempt ${server.hostname ?: server.ip}")
             rememberRemaining(servers, server)
             skipRequested.set(false)
+
+            // Stage 2F-F.28AL-Y-IMPL (§8.4): cumulative NATIVE_BUSY retry-delay
+            // budget for THIS server, reset per server (next to rememberRemaining)
+            // so every candidate starts with a fresh 10s budget. See
+            // PER_SERVER_RETRY_DELAY_BUDGET_MS for the accounting semantics.
+            var accumulatedRetryDelayMs = 0L
 
             var connectedProtocol: AutoModeProtocol? = null
             for (protocol in supported) {
@@ -487,6 +1333,12 @@ class AutoModeController(
                     )
                 )
 
+                // Stage 2F-F.28 Fix D: arm the tunnel watcher BEFORE the connect
+                // request. Previously the watcher was armed inside awaitTunnel(),
+                // i.e. after connect() had already been issued, so a fast
+                // CONNECTED could arrive with nobody listening and be lost.
+                adapter.armTunnelWatch(protocol)
+
                 try {
                     adapter.connect(server, protocol)
                 } catch (e: VpnPermissionMissingException) {
@@ -500,7 +1352,7 @@ class AutoModeController(
                     adapter.disconnect()
                     break // transport-level failure: move to the next server
                 }
-                val connected = adapter.awaitTunnel(protocol, attemptTimeoutMs)
+                val outcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
 
                 if (!currentCoroutineContext().isActive) return
 
@@ -512,9 +1364,151 @@ class AutoModeController(
                     break // user skip: next SERVER (not next protocol)
                 }
 
-                if (connected) {
+                if (outcome == AttemptOutcome.TUNNEL_UP) {
                     connectedProtocol = protocol
                     break
+                }
+
+                // Stage 2F-F.28AA: the start was refused because this application's own
+                // previous native operation is still unresolved.
+                //
+                // The selected server was never contacted, so there is nothing to conclude
+                // about it. Advancing the protocol or server cursor here is what made Auto
+                // Mode walk a healthy server list and finish with ERROR_NO_SERVER while the
+                // only fault was our own stuck native operation.
+                //
+                // Fail-closed: the registry still holds the slot and nothing here may
+                // circumvent that. Stopping the run with its own diagnosable state is the
+                // specified behaviour — it does not retry, does not blame a server, and
+                // leaves the ownership question visible to the user.
+                //
+                // Stage 2F-F.28AL-Y: bounded retry-after-refusal.
+                //
+                // The F.28Z fail-closed policy is CORRECT — it prevents double-free by
+                // refusing a new native start while a previous operation is unresolved. The
+                // defect it fixed was that AutoConnect aborted the entire AutoMode cycle on
+                // the first refusal, even though the previous cleanup typically completes
+                // within ~1.1s (F.28AL-Y-FULL logs).
+                //
+                // This retry only helps for TRANSIENT NATIVE_BUSY states, where the previous
+                // native cleanup is expected to complete within a few seconds. A genuinely
+                // stuck cleanup (native operation never returning) is NOT recoverable by
+                // retry — the fail-closed policy intentionally prevents new work in that
+                // case, and the terminal error is the correct outcome.
+                //
+                // Safety: no new native attempt is started during the wait. The refusal is
+                // detected BEFORE NativeLifetimeRegistry.tryAcquire() allocates an attempt
+                // ID (NativeLifetimeRegistry.kt:148-157), so the retry path consumes no new
+                // ID. The same server + same protocol are retried; the server cursor is not
+                // advanced. The wait is a cancellable delay() so a user cancel during the
+                // wait terminates the coroutine cleanly.
+                if (outcome == AttemptOutcome.NATIVE_BUSY) {
+                    val retryCount = NATIVE_BUSY_MAX_RETRIES
+                    for (retry in 1..retryCount) {
+                        if (!currentCoroutineContext().isActive) return
+                        // Stage 2F-F.28AL-Y-IMPL (§8.4): per-server cumulative retry
+                        // budget, checked BEFORE scheduling each delay. Accounting is
+                        // nominal — one NATIVE_BUSY_RETRY_DELAY_MS per scheduled delay —
+                        // so the 10s cap bounds retry effort identically in production
+                        // (2s real waits) and in tests (0s real waits).
+                        //
+                        // Budget exhaustion is terminal with the SAME error as count
+                        // exhaustion (§8.5): the previous native operation is presumed
+                        // genuinely stuck. The budget message is logged instead of the
+                        // count message so the two terminal causes stay distinguishable.
+                        //
+                        // INVARIANT (§8.7): this check and the wait below consume NO
+                        // native attempt ID. Nothing here calls tryAcquire(); the retry
+                        // re-enters the same admission path, which refuses again (and
+                        // re-pays this loop) while the slot is still held.
+                        if (accumulatedRetryDelayMs + NATIVE_BUSY_RETRY_DELAY_MS >
+                            perServerRetryDelayBudgetMs
+                        ) {
+                            adapter.log(
+                                "[AUTO] Per-server retry budget exceeded " +
+                                        "(${perServerRetryDelayBudgetMs / 1000}s); " +
+                                        "stopping without blaming this server",
+                            )
+                            setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
+                            job = null
+                            return
+                        }
+                        accumulatedRetryDelayMs += NATIVE_BUSY_RETRY_DELAY_MS
+                        adapter.log(
+                            "[AUTO] Native slot busy; retrying same server in " +
+                                    "${nativeBusyRetryDelayMs / 1000}s (attempt $retry/$retryCount)",
+                        )
+                        kotlinx.coroutines.delay(nativeBusyRetryDelayMs)
+                        if (!currentCoroutineContext().isActive) return
+                        adapter.armTunnelWatch(protocol)
+                        try {
+                            adapter.connect(server, protocol)
+                        } catch (e: VpnPermissionMissingException) {
+                            adapter.log("[AUTO] VPN permission missing; stopping Auto Mode")
+                            adapter.disconnect()
+                            setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
+                            job = null
+                            return
+                        } catch (e: Exception) {
+                            adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
+                            adapter.disconnect()
+                            break // transport-level failure: move to the next server
+                        }
+                        val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
+                        if (!currentCoroutineContext().isActive) return
+                        if (retryOutcome == AttemptOutcome.TUNNEL_UP) {
+                            connectedProtocol = protocol
+                            break
+                        }
+                        if (retryOutcome != AttemptOutcome.NATIVE_BUSY) {
+                            // A genuine failure (TIMED_OUT) or a transport error: stop
+                            // retrying and fall through to the normal failure path.
+                            break
+                        }
+                        // Still NATIVE_BUSY: continue the retry loop.
+                    }
+                    if (connectedProtocol != null) {
+                        // A retry succeeded — fall through to the success path below.
+                    } else {
+                        adapter.log(
+                            "[AUTO] Native slot still owned by an unresolved operation; " +
+                                    "stopping without blaming this server",
+                        )
+                        setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
+                        job = null
+                        return
+                    }
+                }
+
+                // Stage 2F-F.28 Fix C + H: before declaring failure, check
+                // whether this application's OWN VPN is in fact established.
+                //
+                // awaitTunnel is a notification wait, not proof the tunnel is
+                // down: it can expire after Builder.establish() already
+                // succeeded if the CONNECTED notification was late or lost.
+                // Treating that as "Protocol failed" is what previously caused
+                // Auto Connect to report failure and move on while a real,
+                // traffic-carrying VPN was live.
+                //
+                // Ownership is verified by the adapter, so a third-party VPN is
+                // never adopted as this app's success.
+                if (adapter.isOwnTunnelEstablished()) {
+                    adapter.log("[AUTO] Tunnel is established (notification missed); treating attempt as connected")
+                    connectedProtocol = protocol
+                    break
+                }
+
+                // Stage 2F-F.28AL-Y-IMPL (§8.1/§8.8): TIMED_OUT is terminal for THIS
+                // attempt only — there is deliberately no same-server retry. The
+                // rotation below (next protocol, then next server) is its recovery,
+                // and its residual stuck-slot mode surfaces as NATIVE_BUSY on a later
+                // attempt, where the per-server budget already bounds the wait.
+                if (outcome == AttemptOutcome.TIMED_OUT) {
+                    adapter.log(
+                        "[AUTO] TIMED_OUT after ${attemptTimeoutMs}ms on " +
+                                "${server.hostname ?: server.ip}/${protocol.id}; " +
+                                "cleanup then next protocol (no same-server retry)",
+                    )
                 }
 
                 adapter.log("[AUTO] Protocol failed: ${protocol.id}")
@@ -526,6 +1520,9 @@ class AutoModeController(
                 adapter.log("[AUTO] Connected successfully")
                 onSuccess(server, connectedProtocol)
                 rememberRemaining(servers, server)
+                // R8: remember the exact candidate so an unexpected disconnect can
+                // name it and re-seed it as the first reconnect candidate.
+                connectedCandidate = server
                 setState(
                     AutoModeState.Connected(
                         hostname = server.hostname,
@@ -556,23 +1553,62 @@ class AutoModeController(
             emptyList()
         }
     }
-    /** Â§8: Speed DESC first, ping/sessions/score/sources as tie-breakers; Â§23 zero-speed demoted. */
+    /**
+     * Â§8: Speed DESC first, ping/sessions/score as tie-breakers; Â§23 zero-speed demoted.
+     *
+     * Stage 2F-F.11 (D3): `ping == 0` is UNKNOWN, not "the fastest". Sorting it by raw
+     * value first would let every unknown-ping candidate outrank every candidate that
+     * actually reported a measurement, purely because absence is cheaper than a
+     * positive number. The known/unknown split is therefore its own key, evaluated
+     * before the raw ping value, so a measured ping always wins and unknown ping
+     * sorts last. Among unknowns the raw `ping` key still applies (all zero in
+     * practice), so the tie-breakers below decide deterministically.
+     *
+     * Stage 2F-F.11 (D5): `sources` is excluded from production ranking. It is not a
+     * quality signal (the controller hardcodes it to 1 from an adapter payload that
+     * carries no real value), so ranking on it only added noise that could not change
+     * any decision. It remains a field on the candidate for diagnostics.
+     */
     private val byQuality =
         compareByDescending<AutoModeCandidate> { it.speed > 0 }
             .thenByDescending { it.speed }
+            .thenByDescending<AutoModeCandidate> { it.ping > 0 }
             .thenBy { it.ping }
             .thenBy { it.sessions }
             .thenByDescending { it.score }
-            .thenByDescending { it.sources }
 
     /** Â§7 capability rules. */
     private fun AutoModeProtocol.supports(c: AutoModeCandidate): Boolean = when (this) {
         AutoModeProtocol.SOFTETHER_TCP -> c.seTcpPort > 0
-        AutoModeProtocol.SOFTETHER_UDP -> c.seUdpSupported || c.seUdpPort > 0
+        // Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 1): a server with
+        // SETcpPort = 0 ("UDP-only") must NOT be selected for SOFTETHER_UDP.
+        //
+        // The R-UDP/NAT-T transport is broken for SETcpPort = 0 servers: the
+        // UDP path still needs a TCP control channel, so registration fails and
+        // the server is unreachable (RUDP_IMPLEMENTATION_PLAN.md — 0% success
+        // across 30+ UDP-only servers; SERVER_SOURCE_ARCHITECTURE.md §3.5
+        // mandates "do not surface SoftEther-UDP as a viable protocol" when
+        // seTcpPort = 0). Trusting seUdpSupported alone therefore dialled a
+        // transport that could never succeed.
+        //
+        // This does not make the server unusable: it remains selectable via
+        // OPENVPN_UDP when it carries a valid OpenVPN config, and its UDP
+        // capability data is untouched. See PROJECT_SPECIFICATION.md §6.7
+        // R4/R6.
+        AutoModeProtocol.SOFTETHER_UDP ->
+            (c.seUdpSupported || c.seUdpPort > 0) && c.seTcpPort > 0
         AutoModeProtocol.OPENVPN_TCP -> c.openVpnTcpPort > 0
         AutoModeProtocol.OPENVPN_UDP -> c.openVpnUdpPort > 0
         AutoModeProtocol.L2TP_IPSEC -> c.l2tpSupported
-        AutoModeProtocol.MS_SSTP -> c.sstpSupported
+        // Stage 2F-F.2 (Q-6): capability alone is not enough. A server that
+        // confirms SSTP but publishes no port, and carries no DEFAULT
+        // provenance to fall back on, has nothing to dial — sstpConnectPort is
+        // 0 exactly in that state, because it is resolved from the connection's
+        // existing provenance rule rather than re-derived here.
+        //
+        // A DEFAULT-port server is still supported: 443 is a real, dialable
+        // port and is not the same claim as "the port is unknown".
+        AutoModeProtocol.MS_SSTP -> c.sstpSupported && c.sstpConnectPort > 0
     }
 }
 

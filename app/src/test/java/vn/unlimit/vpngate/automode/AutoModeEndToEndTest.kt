@@ -84,8 +84,8 @@ class AutoModeEndToEndTest {
         val controller = AutoModeController(
             scope = scope,
             adapter = adapter,
-            protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
-            // User priority: UDP first, then TCP.
+            // User priority: UDP first, then TCP. This profile is the only
+            // source of protocol order — there is no separate default protocol.
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
             emptyServerListMessage = { "Server list is empty. Please update the server list first." },
@@ -119,7 +119,7 @@ class AutoModeEndToEndTest {
         val controller = AutoModeController(
             scope = scope,
             adapter = adapter,
-            protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
+            protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
             attemptTimeoutMs = 200,
         )
@@ -149,7 +149,7 @@ class AutoModeEndToEndTest {
         val controller = AutoModeController(
             scope = scope,
             adapter = adapter,
-            protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
+            protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { emptyList() },
             emptyServerListMessage = { "Server list is empty. Please update the server list first." },
         )
@@ -181,7 +181,7 @@ class AutoModeEndToEndTest {
         val controller = AutoModeController(
             scope = scope,
             adapter = adapter,
-            protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
+            protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
             attemptTimeoutMs = 200,
         )
@@ -194,5 +194,44 @@ class AutoModeEndToEndTest {
         // The cursor points at the real index, not a collapsed 0.
         assertEquals(1, controller.currentServerIndex)
         scope.cancel()
+    }
+
+    // ------------------------------------- Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 3)
+
+    /**
+     * BUG 3: the user's per-attempt timeout was logged but never reached the
+     * native connect — `ConnectionConfig.connectTimeoutMs` kept its 30000 ms
+     * default so the parallel race ignored the setting entirely.
+     *
+     * `AndroidConnectionAdapter.connectSoftEther()` needs a real `Context`, so —
+     * exactly as `AutoModeLifecycleF28Test` pins service wiring — this is a
+     * source-shape assertion: the adapter must set `connectTimeoutMs` from the
+     * user-configured Auto Mode timeout setting.
+     */
+    @Test
+    fun connectSoftEtherPlumbsAttemptTimeoutMs() {
+        val adapterSource = java.io.File(
+            "src/main/java/vn/unlimit/vpngate/automode/AndroidConnectionAdapter.kt",
+        )
+        assertTrue(
+            "AndroidConnectionAdapter.kt must be readable from the app module test CWD",
+            adapterSource.exists(),
+        )
+        val text = adapterSource.readText()
+
+        assertTrue(
+            "connectSoftEther must set connectTimeoutMs on the ConnectionConfig",
+            text.contains("connectTimeoutMs = attemptTimeoutMs.toInt()"),
+        )
+        assertTrue(
+            "connectSoftEther must read the user's Auto Mode timeout setting",
+            text.contains("getAutoModeTimeoutSeconds()"),
+        )
+        // The two-layer fix: the Kotlin side is bounded in awaitArmedTunnel().
+        assertTrue(
+            "the armed select must be bounded by withTimeoutOrNull(timeoutMs)",
+            text.contains("withTimeoutOrNull(timeoutMs)") &&
+                text.contains("select<Boolean>"),
+        )
     }
 }

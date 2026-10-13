@@ -7,9 +7,30 @@ import android.os.Parcelable
 import android.util.Base64
 import vn.unlimit.vpngate.App.Companion.instance
 import vn.unlimit.vpngate.R
+import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.utils.DataUtil
 import java.text.DecimalFormat
 import kotlin.math.roundToInt
+
+/**
+ * Stage 2F-A (J-4/L-3): the three states an MS-SSTP port can be in, as the
+ * UI must describe them.
+ *
+ * Each maps to an existing localized string, so this adds no new resources:
+ * [EXPLICIT] and [DEFAULT] both show a port number but only [DEFAULT] says it
+ * is the protocol default, and [UNKNOWN] shows the "port unknown" wording.
+ */
+enum class SstpPortKind {
+    /** The source printed this port. */
+    EXPLICIT,
+
+    /** The source confirmed SSTP but published no port; 443 is the default. */
+    DEFAULT,
+
+    /** No known port: nothing may be inferred. */
+    UNKNOWN,
+}
 
 /**
  * Created by dongh on 14/01/2018.
@@ -35,6 +56,17 @@ class VPNGateConnection : Parcelable {
     var udpPort = 0
     var isL2TPSupport = 0
     var isSSTPSupport = 0
+    // MS-SSTP's OWN port, collected independently (never borrowed from
+    // OpenVPN or SoftEther). 0 means the source published no SSTP port.
+    var sstpPort = 0
+    // Provenance of [sstpPort]: EXPLICIT (printed by the source), DEFAULT
+    // (the protocol default applies) or UNKNOWN (nothing published and no
+    // confirmed capability). Copied verbatim from the record layer.
+    //
+    // Stage 2F-A (L-1): UNKNOWN is a real literal again, so every boundary
+    // that used to fold "" into UNKNOWN now normalizes instead, which also
+    // catches rows written before this constant changed.
+    var sstpPortSource: String = VpnPortSource.UNKNOWN
     var seTcpPort = 0
     var seUdpPort = 0
     // SoftEther UDP offered without a published port (§6/§9): the UI
@@ -42,19 +74,55 @@ class VPNGateConnection : Parcelable {
     var seUdpSupported = false
 
     val isUdpOnly: Boolean
-        get() = seTcpPort <= 0 && seUdpPort > 0
+        get() = seTcpPort <= 0 && seUdpSupported
 
     /** SoftEther UDP is offered but no port was published (§6/§9). */
     val isSeUdpPortUnknown: Boolean
         get() = seUdpSupported && seUdpPort <= 0
 
     /**
-     * Port to use for an MS-SSTP connection. The collected SSTP fact
-     * may carry an unknown port; the protocol-standard TCP listener
-     * 443 is the documented default (locked product decision).
+     * Port to use for an MS-SSTP connection, derived ONLY from SSTP
+     * state. [tcpPort] is OpenVPN TCP and is never used here.
+     *
+     *  - SSTP unsupported -> 0 (no connection is possible)
+     *  - a published SSTP port -> that port
+     *  - supported with DEFAULT provenance -> the protocol-standard 443
+     *  - anything else -> 0, rather than a guessed port
      */
     val sstpConnectPort: Int
-        get() = if (tcpPort > 0) tcpPort else SSTP_DEFAULT_PORT
+        get() = when {
+            !isSSTPSupport() -> 0
+            sstpPort > 0 -> sstpPort
+            // Stage 2F-A (L-1): compare against the canonical DEFAULT, and
+            // normalize first so a legacy empty/garbage value can never be
+            // mistaken for a known provenance and used to invent a port.
+            VpnPortSource.normalized(sstpPortSource) == VpnPortSource.DEFAULT -> SSTP_DEFAULT_PORT
+            else -> 0
+        }
+
+    /**
+     * Stage 2F-A (J-4/L-3): how the SSTP port must be DESCRIBED in the UI.
+     *
+     * The detail screen used to pick between "published port" and "default
+     * port" by looking at [tcpPort] — the OpenVPN TCP port. A server that
+     * offered OpenVPN over TCP therefore had its SSTP default 443 presented
+     * as an explicitly published port, and a server without OpenVPN had a
+     * genuinely published SSTP port presented as a default. The decision
+     * belongs to SSTP's own provenance, which is what this reports.
+     *
+     * It is deliberately provenance-first rather than port-first: a value
+     * whose provenance is UNKNOWN is described as unknown even if a number
+     * happens to be stored, because "we do not know where this came from" is
+     * the truth the user needs. Pure, so it is unit-testable.
+     */
+    val sstpPortKind: SstpPortKind
+        get() = when {
+            !isSSTPSupport() -> SstpPortKind.UNKNOWN
+            VpnPortSource.normalized(sstpPortSource) == VpnPortSource.EXPLICIT && sstpPort > 0 ->
+                SstpPortKind.EXPLICIT
+            VpnPortSource.normalized(sstpPortSource) == VpnPortSource.DEFAULT -> SstpPortKind.DEFAULT
+            else -> SstpPortKind.UNKNOWN
+        }
 
     private constructor(`in`: Parcel) {
         hostName = `in`.readString()
@@ -76,6 +144,8 @@ class VPNGateConnection : Parcelable {
         udpPort = `in`.readInt()
         isL2TPSupport = `in`.readInt()
         isSSTPSupport = `in`.readInt()
+        sstpPort = `in`.readInt()
+        sstpPortSource = VpnPortSource.normalized(`in`.readString())
         seTcpPort = `in`.readInt()
         seUdpPort = `in`.readInt()
         seUdpSupported = `in`.readInt() == 1
@@ -104,6 +174,8 @@ class VPNGateConnection : Parcelable {
         out.writeInt(udpPort)
         out.writeInt(isL2TPSupport)
         out.writeInt(isSSTPSupport)
+        out.writeInt(sstpPort)
+        out.writeString(sstpPortSource)
         out.writeInt(seTcpPort)
         out.writeInt(seUdpPort)
         out.writeInt(if (seUdpSupported) 1 else 0)
@@ -140,14 +212,24 @@ class VPNGateConnection : Parcelable {
         this.operator = loperator
     }
 
-    fun getOpenVpnConfigDataString(): String? {
-        var openVpnConfigDataTmp = openVpnConfigData
-        if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
-            val dDomain = "$hostName.opengw.net"
-            openVpnConfigDataTmp = openVpnConfigDataTmp!!.replace(ip!!, dDomain)
-        }
-        return openVpnConfigDataTmp
-    }
+    /**
+     * The profile to hand to the OpenVPN core, or null when this server has
+     * no profile stored.
+     *
+     * Every step is null-safe: a server can legitimately carry an OpenVPN
+     * port with no profile (a collection that only saw the HTML feed), and
+     * that must be reported as "no profile", never as a crash.
+     */
+    fun getOpenVpnConfigDataString(): String? =
+        OpenVpnConfigTransform.forDomain(
+            config = openVpnConfigData,
+            ip = ip,
+            hostName = hostName,
+            useDomain = useDomainToConnect(),
+        )
+
+    private fun useDomainToConnect(): Boolean =
+        instance?.dataUtil?.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false) ?: false
 
     fun setOpenVpnConfigDataString(openVpnConfigData: String) {
         this.openVpnConfigData = decodeBase64(openVpnConfigData)?.takeIf { it.isNotBlank() }
@@ -194,22 +276,24 @@ class VPNGateConnection : Parcelable {
         }
     }
 
+    /**
+     * The UDP variant of the stored profile, or null when this server has no
+     * profile. VPN Gate publishes TCP profiles only, so this is a
+     * transformation — and a transformation must never throw just because the
+     * server has a TCP port but no profile.
+     */
     val openVpnConfigDataUdp: String?
-        get() {
-            var openVpnConfigDataUdp = openVpnConfigData
-            if (this.tcpPort > 0) {
-                // Current config is config for tcp need for udp
-                openVpnConfigDataUdp = openVpnConfigDataUdp!!
-                    .replace("proto tcp", "proto udp")
-                    .replace("remote $ip $tcpPort", "remote $ip $udpPort")
-            }
-            if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
-                val dDomain = "$hostName.opengw.net"
-                openVpnConfigDataUdp = openVpnConfigDataUdp!!.replace(ip!!, dDomain)
-            }
-            // Current config is udp only
-            return openVpnConfigDataUdp
-        }
+        get() = OpenVpnConfigTransform.forDomain(
+            config = OpenVpnConfigTransform.forUdp(
+                config = openVpnConfigData,
+                tcpPort = tcpPort,
+                udpPort = udpPort,
+                ip = ip,
+            ),
+            ip = ip,
+            hostName = hostName,
+            useDomain = useDomainToConnect(),
+        )
 
     val calculateSpeed: String
         get() = round(speed.toDouble() / (1000 * 1000))
@@ -274,6 +358,8 @@ class VPNGateConnection : Parcelable {
             udpPort = this.udpPort,
             isL2TPSupport = this.isL2TPSupport(),
             isSSTPSupport = this.isSSTPSupport(),
+            sstpPort = this.sstpPort,
+            sstpPortSource = this.sstpPortSource,
             seTcpPort = this.seTcpPort,
             seUdpPort = this.seUdpPort,
             seUdpSupported = this.seUdpSupported
@@ -300,6 +386,13 @@ class VPNGateConnection : Parcelable {
         udpPort = vpnGateItem.udpPort
         isL2TPSupport = if (vpnGateItem.isL2TPSupport) 1 else 0
         isSSTPSupport = if (vpnGateItem.isSSTPSupport) 1 else 0
+        // Restored verbatim: an SSTP port is only ever the stored SSTP port
+        // with the stored provenance. Nothing is inferred or substituted.
+        // Stage 2F-A (L-1): the provenance is normalized, so a row written
+        // before UNKNOWN became a literal (an empty column) still reads as
+        // UNKNOWN instead of as an unknown third value.
+        sstpPort = vpnGateItem.sstpPort
+        sstpPortSource = VpnPortSource.normalized(vpnGateItem.sstpPortSource)
         seTcpPort = vpnGateItem.seTcpPort
         seUdpPort = vpnGateItem.seUdpPort
         seUdpSupported = vpnGateItem.seUdpSupported
@@ -339,8 +432,8 @@ class VPNGateConnection : Parcelable {
     }
 
     companion object {
-        /** MS-SSTP protocol-standard listener (locked product decision). */
-        const val SSTP_DEFAULT_PORT = 443
+        /** MS-SSTP protocol-standard listener (VpnProtocolDefaults). */
+        const val SSTP_DEFAULT_PORT = VpnProtocolDefaults.SSTP_PORT
 
         @JvmField
         val CREATOR
@@ -404,6 +497,12 @@ class VPNGateConnection : Parcelable {
                     vpnGateConnection.seUdpPort = 0
                 }
                 vpnGateConnection.derivePortsFromOpenVpnConfig()
+                // The legacy CSV has no SSTP port column, so a
+                // supported SSTP row can only rely on the protocol
+                // default — never on the OpenVPN tcp/udp columns.
+                if (vpnGateConnection.isSSTPSupport == 1 && vpnGateConnection.sstpPort <= 0) {
+                    vpnGateConnection.sstpPortSource = VpnPortSource.DEFAULT
+                }
                 return vpnGateConnection
             } catch (_: Exception) {
                 return null

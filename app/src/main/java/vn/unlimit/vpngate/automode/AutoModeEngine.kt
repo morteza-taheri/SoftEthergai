@@ -6,14 +6,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.utils.DataUtil
 
 /**
  * App-scoped Auto Mode engine: a single [AutoModeController] instance
- * whose state survives fragment navigation. Candidate list comes from
- * the in-app collector's cache (§22) — no new collector.
+ * whose state survives fragment navigation. Candidate list comes from the
+ * server dataset the app already stores — Auto Connect consumes it and never
+ * stores it (see [defaultServers]).
  */
 object AutoModeEngine {
 
@@ -58,15 +60,12 @@ object AutoModeEngine {
                         val created = AutoModeController(
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
                 adapter = adapter,
-                protocolProvider = {
-                    AutoModeProtocol.fromId(
-                        du.getStringSetting(DataUtil.SETTING_DEFAULT_VPN_PROTOCOL, AutoModeProtocol.DEFAULT_ID)
-                    )
-                },
-                // §6 Protocol Priority Profile read from Settings at start;
-                // empty profile falls back to the single default above.
+                // §6 Protocol Priority Profile read from Settings at start. This
+                // is the single source of truth for which protocol Auto Connect
+                // tries and in what order — there is no separate "default
+                // protocol" setting anymore.
                 protocolPriorityProvider = { du.getAutoModeProtocolPriority() },
-                serverProvider = { serversProvider?.invoke() ?: defaultServers(du) },
+                serverProvider = { serversProvider?.invoke() ?: defaultServers() },
                 onSuccess = { candidate, protocol ->
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_HOST, candidate.hostname ?: candidate.ip ?: "")
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_PROTOCOL, protocol.id)
@@ -74,14 +73,27 @@ object AutoModeEngine {
                 },
                 // §3 §4 §5 §14 Read timeout from Settings per attempt (per-server, not total)
                 attemptTimeoutMs = du.getAutoModeTimeoutSeconds().toLong() * 1000,
-                reachabilityFilter = { candidates, protocol ->
-                    vn.unlimit.vpngate.network.ServerReachabilityTester.filterReachableCandidates(
-                        candidates,
-                        protocol,
-                        timeoutMs = 1200,
-                    )
-                },
-                // VpnM Phase 1.5: an empty list must not run the attempt loop.
+// Stage 2F-F.13 (Y4): the controller selects the protocol/endpoint
+                // pairs and hands them over; the probe only measures them.
+                reachabilityFilter = { targets ->
+                      vn.unlimit.vpngate.network.ServerReachabilityTester.filterReachableCandidates(
+                          targets,
+                          timeoutMs = 1200,
+                      )
+                  },
+                // Stage 2F-F.15 (D4 + Y1-b) / Stage 2F-F.16 (Y3): the representative
+                  // active RTT for the final ranking tie-break. Reads the
+                  // AUTO_CONNECT namespace by IP **and** protocol, and takes the
+                  // RTT only from a definitive REACHABLE verdict — UNKNOWN and
+                  // UNREACHABLE contribute nothing, so a silent UDP endpoint can
+                  // never donate a number (or a guess) to the comparator.
+                  // The Server List's protocol-less answer is never read here.
+                  activeRttProvider = { ip, protocol ->
+                      vn.unlimit.vpngate.network.ServerReachabilityTester
+                          .autoConnectResult(ip, protocol)
+                          ?.rttIfReachable()
+                  },
+                  // VpnM Phase 1.5: an empty list must not run the attempt loop.
                 emptyServerListMessage = {
                     vn.unlimit.vpngate.App.instance!!
                         .getString(vn.unlimit.vpngate.R.string.update_server_list_first)
@@ -90,6 +102,13 @@ object AutoModeEngine {
                 // tunnel proves it still carries traffic, which the passive
                 // stack/OS signals cannot do for a quietly dead tunnel.
                 livenessProbeFactory = { probeScope -> TunnelLivenessProbe(probeScope) },
+                // Global Tunnel State is the app's single source of truth, so a
+                // manual connection that is still coming up must block Auto
+                // Connect from dialling a second, competing tunnel.
+                isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isBusy },
+                // R8 (§11.13.2): the Auto-Reconnect setting, read live so a
+                // toggle takes effect at the next unexpected disconnect.
+                autoReconnectEnabled = { du.getAutoReconnectInAutoMode() },
             )
             controller = created
             _state.value = created.state.value
@@ -114,44 +133,58 @@ object AutoModeEngine {
         }
     }
 
-    /** §22: the collector cache is the primary source of servers, with DB/repo fallback. */
-    suspend fun defaultServers(dataUtil: DataUtil): List<AutoModeCandidate> {
-        var list: VPNGateConnectionList? = dataUtil.connectionsCache
-        if (list == null || list.size() == 0) {
-            val app = vn.unlimit.vpngate.App.instance
-            if (app != null) {
-                val dbItems = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    try {
-                        app.vpnGateItemDao.getAll()
-                    } catch (_: Throwable) {
-                        emptyList()
-                    }
-                }
-                if (!dbItems.isNullOrEmpty()) {
-                    val connList = VPNGateConnectionList()
-                    dbItems.forEach { connList.add(VPNGateConnection().fromVPNGateItem(it)) }
-                    dataUtil.connectionsCache = connList
-                    list = connList
-                }
-                if (list == null || list.size() == 0) {
-                    try {
-                        val repo = vn.unlimit.vpngate.repository.VpnServerRepository(cacheDir = app.filesDir)
-                        val res = repo.refresh()
-                        if (res?.connectionList != null && res.connectionList.size() > 0) {
-                            val items = res.connectionList.toVPNGateItems()
-                            kotlinx.coroutines.withContext(Dispatchers.IO) {
-                                app.vpnGateItemDao.replaceAll(items)
-                            }
-                            dataUtil.connectionsCache = res.connectionList
-                            list = res.connectionList
-                        }
-                    } catch (_: Throwable) {
-                        // ignore and proceed
-                    }
-                }
-            }
-        }
-        val currentList = list ?: return emptyList()
+    /**
+     * Where Auto Connect reads its server list from.
+     *
+     * Injected so the acquisition path can be exercised without Room or a
+     * network. A source returns whatever is safe to use *now*; it is never
+     * allowed to decide what is stored — persistence belongs to
+     * [vn.unlimit.vpngate.repository.ServerListUpdater] alone.
+     */
+    fun interface ServerDatasetSource {
+        /** The dataset to use, or null/empty when there is none. */
+        suspend fun dataset(): VPNGateConnectionList?
+    }
+
+    /**
+     * The production source: the stored dataset, or — only when the store is
+     * empty — one acquired through the ordinary acceptance boundary.
+     *
+     * The updater is handed in as a factory so this file stays free of Room:
+     * Auto Connect never touches the database itself, it only asks for a
+     * dataset. [ServerListUpdater.acquire] returns the stored rows without any
+     * write when there are any, and otherwise runs the same mutex-guarded
+     * update the Update button runs, so a candidate that would have been
+     * rejected can neither be persisted nor be handed to a run. It also
+     * re-reads the store after waiting for an update that was already running,
+     * which is what makes Auto Connect unable to overwrite a dataset accepted
+     * while it waited.
+     */
+    fun gatedSource(
+        updaterFactory: () -> vn.unlimit.vpngate.repository.ServerListUpdater,
+    ): ServerDatasetSource = ServerDatasetSource {
+        val stored = updaterFactory().acquire()
+        if (stored.isEmpty()) null else VPNGateConnectionList().fromVPNGateItems(stored)
+    }
+
+    private fun productionSource(): ServerDatasetSource {
+        val app = vn.unlimit.vpngate.App.instance ?: return ServerDatasetSource { null }
+        return gatedSource { vn.unlimit.vpngate.repository.ServerListUpdates.forAcquisition(app) }
+    }
+
+    /**
+     * Auto Connect's candidate list.
+     *
+     * The stored dataset is the answer whenever there is one: no refresh, no
+     * write, no judgment. An empty store is the only case that acquires
+     * anything, and it does so through the acceptance boundary. This function
+     * therefore never persists a dataset — it only reads what is already
+     * accepted, plus whatever that same boundary accepted during acquisition.
+     */
+    suspend fun defaultServers(
+        source: ServerDatasetSource = productionSource(),
+    ): List<AutoModeCandidate> {
+        val currentList = source.dataset() ?: return emptyList()
         return (0 until currentList.size()).mapNotNull { currentList.get(it)?.toCandidate() }
     }
 
@@ -170,6 +203,14 @@ object AutoModeEngine {
         openVpnUdpPort = udpPort,
         l2tpSupported = isL2TPSupport == 1,
         sstpSupported = isSSTPSupport == 1,
+        // Stage 2F-F.2 (Q-6): carry SSTP's own port and provenance so Auto
+        // Connect can tell a dialable SSTP server from one whose port is
+        // simply unknown. sstpConnectPort is the connection's existing derived
+        // value, so the EXPLICIT/DEFAULT/UNKNOWN rule is applied here once and
+        // nowhere else.
+        sstpPort = sstpPort,
+        sstpPortSource = VpnPortSource.normalized(sstpPortSource),
+        sstpConnectPort = sstpConnectPort,
         payload = this,
     )
 }

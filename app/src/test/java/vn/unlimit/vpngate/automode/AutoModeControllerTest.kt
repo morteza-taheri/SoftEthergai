@@ -9,9 +9,12 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import vn.unlimit.vpngate.data.model.VpnPortSource
 
 /**
  * JVM tests for the Auto Mode orchestration core, covering the ten
@@ -26,10 +29,31 @@ class AutoModeControllerTest {
         val slow = mutableSetOf<String>()
         var delayMs: Long = 0
         var permissionMissing = false
+        /**
+         * Stage 2F-F.2 (Q-7): protocols this fake declares non-automatable, the
+         * way AndroidConnectionAdapter declares L2TP/IPsec. Left empty by
+         * default so every pre-existing test keeps the permissive default and
+         * only the fail-fast tests opt in.
+         */
+        val nonAutomatable = mutableSetOf<AutoModeProtocol>()
+        /** Every connect() the controller actually invoked, with its protocol. */
+        val connects = mutableListOf<Pair<String?, AutoModeProtocol>>()
         private var activeWait: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+        /**
+         * Stage 2F-F.28AL-Y: scripted NATIVE_BUSY outcomes, keyed by hostname.
+         *
+         * Each entry is a queue of booleans consumed in order by awaitArmedOutcome():
+         * `true` => TUNNEL_UP, `false` => NATIVE_BUSY (unless the queue is empty, in
+         * which case the default boolean projection applies and `false` becomes
+         * TIMED_OUT). This lets a test script "busy, busy, up" without touching the
+         * real NativeLifetimeRegistry.
+         */
+        val nativeBusyQueues = mutableMapOf<String, ArrayDeque<Boolean>>()
 
         override suspend fun connect(candidate: AutoModeCandidate, protocol: AutoModeProtocol) {
             logs += "connect:${candidate.hostname}"
+            connects += candidate.hostname to protocol
             if (permissionMissing) throw AutoModeController.VpnPermissionMissingException()
             if (candidate.hostname in connectThrowing) {
                 throw RuntimeException("simulated connect crash")
@@ -65,6 +89,67 @@ class AutoModeControllerTest {
             activeWait?.complete(false)
         }
 
+        /**
+         * Stage 2F-F.28AL-Y: script the outcome of an armed attempt, including the
+         * NATIVE_BUSY refusal. Defaults to the boolean projection of awaitTunnel()
+         * so every pre-existing test keeps its old behaviour: `true` becomes
+         * TUNNEL_UP and `false` becomes TIMED_OUT.
+         */
+        override suspend fun awaitArmedOutcome(
+            protocol: AutoModeProtocol,
+            timeoutMs: Long,
+        ): AutoModeController.AttemptOutcome {
+            val hostname = logs.lastOrNull { it.startsWith("connect:") }
+                ?.removePrefix("connect:") ?: return AutoModeController.AttemptOutcome.TIMED_OUT
+            // Stage 2F-F.28AL-Y-IMPL: per-protocol scripts take precedence so a
+            // multi-protocol test can drive each protocol's outcome independently.
+            val perProtocol = protocolOutcomeQueues[hostname to protocol]
+            if (perProtocol != null && perProtocol.isNotEmpty()) {
+                return perProtocol.removeFirst()
+            }
+            val queue = nativeBusyQueues[hostname]
+            if (queue != null && queue.isNotEmpty()) {
+                return if (queue.removeFirst()) {
+                    AutoModeController.AttemptOutcome.TUNNEL_UP
+                } else {
+                    AutoModeController.AttemptOutcome.NATIVE_BUSY
+                }
+            }
+            val up = awaitTunnel(protocol, timeoutMs)
+            return if (up) AutoModeController.AttemptOutcome.TUNNEL_UP
+            else AutoModeController.AttemptOutcome.TIMED_OUT
+        }
+
+        /** Stage 2F-F.28AL-Y: enqueue a scripted outcome sequence for a hostname. */
+        fun scriptBusy(hostname: String, vararg outcomes: Boolean) {
+            nativeBusyQueues[hostname] = ArrayDeque(outcomes.toList())
+        }
+
+        /**
+         * Stage 2F-F.28AL-Y-IMPL: per-(hostname, protocol) outcome scripts.
+         *
+         * The hostname-keyed [scriptBusy] cannot express "protocol A times out, then
+         * protocol B is busy" on a multi-protocol server, because both protocols share one
+         * queue. This map keys the same scripted outcomes by the exact (host, protocol) pair
+         * so a test can drive each protocol independently. Populated only by tests that need
+         * per-protocol control; when empty, [awaitArmedOutcome] falls through to the existing
+         * hostname queue and then the boolean default projection, so every pre-existing test
+         * keeps its exact behaviour.
+         */
+        val protocolOutcomeQueues =
+            mutableMapOf<Pair<String, AutoModeProtocol>, ArrayDeque<AutoModeController.AttemptOutcome>>()
+
+        /** Stage 2F-F.28AL-Y-IMPL: script explicit AttemptOutcomes for one protocol. */
+        fun scriptOutcomes(
+            host: String,
+            protocol: AutoModeProtocol,
+            vararg outcomes: AutoModeController.AttemptOutcome,
+        ) {
+            protocolOutcomeQueues[host to protocol] = ArrayDeque(outcomes.toList())
+        }
+
+        override fun canAutoConnect(protocol: AutoModeProtocol): Boolean = protocol !in nonAutomatable
+
         override fun log(message: String) {
             logs += message
         }
@@ -89,13 +174,35 @@ class AutoModeControllerTest {
         servers: List<AutoModeCandidate>,
         onSuccess: (AutoModeCandidate, AutoModeProtocol) -> Unit = { _, _ -> },
         timeout: Long = 500,
+        /** Stage 2F-F.13: a multi-protocol priority profile, in user order. */
+        priorities: List<AutoModeProtocol>? = null,
+        /** Stage 2F-F.15 (D4/Y1-b): the measured RTT per server/protocol. */
+        activeRttProvider: ((ip: String, protocol: AutoModeProtocol) -> Long?)? = null,
+        /** Stage 2F-F.17 (D1): receives the controller-selected probe endpoints. */
+        reachabilityFilter: (suspend (List<ReachabilityTarget>) -> ReachabilityGate)? = null,
+        /** Stage 2F-F.28AL-Y: NATIVE_BUSY retry delay; tests pass 0 to avoid real waits. */
+        nativeBusyRetryDelayMs: Long = AutoModeController.NATIVE_BUSY_RETRY_DELAY_MS,
+        /**
+         * Stage 2F-F.28AL-Y-IMPL: per-server cumulative retry-delay budget. Injected so the
+         * budget-exhaustion test can trip the cap without waiting for five real 2s delays
+         * (budget accounting is nominal — one NATIVE_BUSY_RETRY_DELAY_MS per scheduled
+         * delay — so a small budget exercises the same gate as the production 10s cap).
+         */
+        perServerRetryDelayBudgetMs: Long = AutoModeController.PER_SERVER_RETRY_DELAY_BUDGET_MS,
+        /** R8 (§11.13.2): whether Auto-Reconnect is enabled; default matches production. */
+        autoReconnectEnabled: () -> Boolean = { true },
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
-        protocolProvider = { protocol },
+        protocolPriorityProvider = { priorities ?: listOf(protocol) },
         serverProvider = { servers },
         onSuccess = onSuccess,
         attemptTimeoutMs = timeout,
+        reachabilityFilter = reachabilityFilter,
+        activeRttProvider = activeRttProvider ?: { _, _ -> null },
+        nativeBusyRetryDelayMs = nativeBusyRetryDelayMs,
+        perServerRetryDelayBudgetMs = perServerRetryDelayBudgetMs,
+        autoReconnectEnabled = autoReconnectEnabled,
     )
 
     private fun server(
@@ -113,6 +220,42 @@ class AutoModeControllerTest {
         seTcpPort = seTcp, seUdpPort = 0, seUdpSupported = seUdp,
         openVpnTcpPort = 0, openVpnUdpPort = 0,
         l2tpSupported = false, sstpSupported = false,
+    )
+
+    private val serverFactoryIp = java.util.concurrent.atomic.AtomicInteger(1)
+
+    /**
+     * Stage 2F-F.13 (D2/D8/Y4): a candidate whose per-protocol connection data is
+     * spelled out in full, so a test can state exactly which transports Auto
+     * Connect may consider usable. Every field defaults to "this transport is not
+     * available", which keeps each test's intent to the values it actually sets.
+     */
+    private fun candidateWith(
+        host: String,
+        ip: String = "10.1.0.${serverFactoryIp.getAndIncrement()}",
+        speed: Long = 10_000_000,
+        ping: Int = 50,
+        sessions: Int = 100,
+        score: Int = 1000,
+        sources: Int = 1,
+        seTcp: Int = 0,
+        seUdpPort: Int = 0,
+        seUdpSupported: Boolean = false,
+        ovpnTcp: Int = 0,
+        ovpnUdp: Int = 0,
+        l2tp: Boolean = false,
+        sstp: Boolean = false,
+        sstpConnectPort: Int = 0,
+        /** Stage 2F-F.15: pre-aggregated RTT, for ranking tests. */
+        rtt: Long? = null,
+    ) = AutoModeCandidate(
+        hostname = host, ip = ip, speed = speed, ping = ping,
+        sessions = sessions, score = score, sources = sources,
+        seTcpPort = seTcp, seUdpPort = seUdpPort, seUdpSupported = seUdpSupported,
+        openVpnTcpPort = ovpnTcp, openVpnUdpPort = ovpnUdp,
+        l2tpSupported = l2tp, sstpSupported = sstp,
+        sstpConnectPort = sstpConnectPort,
+        activeRttMs = rtt,
     )
 
     private suspend fun AutoModeController.awaitTerminal(): AutoModeState {
@@ -257,17 +400,257 @@ class AutoModeControllerTest {
             seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
             openVpnTcpPort = 0, openVpnUdpPort = 0, l2tpSupported = true, sstpSupported = false,
         )
-        val sstp = AutoModeCandidate(
-            "d", "ip", 1_000, 10, 5, 500, 1,
-            seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
-            openVpnTcpPort = 0, openVpnUdpPort = 0, l2tpSupported = false, sstpSupported = true,
+val sstp = AutoModeCandidate(
+                "d", "ip", 1_000, 10, 5, 500, 1,
+                seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+                openVpnTcpPort = 0, openVpnUdpPort = 0, l2tpSupported = false, sstpSupported = true,
+                sstpPort = 443, sstpPortSource = VpnPortSource.EXPLICIT, sstpConnectPort = 443,
+            )
+            // Stage 2F-F.2 (Q-6): SSTP confirmed, but no port was published and
+            // there is no DEFAULT provenance to fall back on, so there is
+            // nothing to dial. This must NOT be offered to Auto Connect.
+            val sstpWithoutPort = AutoModeCandidate(
+                "e", "ip", 1_000, 10, 5, 500, 1,
+                seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+                openVpnTcpPort = 0, openVpnUdpPort = 0, l2tpSupported = false, sstpSupported = true,
+            )
+            val all = listOf(seTcpOnly, seUdpOnly, l2tp, sstp, sstpWithoutPort)
+            assertEquals(listOf("a"), c.compatibleServers(all, AutoModeProtocol.SOFTETHER_TCP).map { it.hostname })
+            // Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 1): a UDP-only server
+            // (seTcpPort = 0, seUdpSupported = true) must NOT be offered for
+            // SOFTETHER_UDP — R-UDP is broken for SETcpPort = 0 servers
+            // (RUDP_IMPLEMENTATION_PLAN.md; SERVER_SOURCE_ARCHITECTURE.md §3.5).
+            assertEquals(
+                "a UDP-only (SETcpPort=0) server must not be dialled via SoftEther UDP",
+                emptyList<String>(),
+                c.compatibleServers(listOf(seUdpOnly), AutoModeProtocol.SOFTETHER_UDP).map { it.hostname },
+            )
+            assertEquals(listOf("c"), c.compatibleServers(all, AutoModeProtocol.L2TP_IPSEC).map { it.hostname })
+            assertEquals(
+                "a confirmed SSTP server with no usable port must not be offered",
+                listOf("d"),
+                c.compatibleServers(all, AutoModeProtocol.MS_SSTP).map { it.hostname },
+            )
+        }
+
+    /**
+     * Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 1): the SoftEther-UDP capability
+     * gate must require a usable TCP control channel.
+     *
+     * `supports(SOFTETHER_UDP)` is exercised through the public
+     * [AutoModeController.compatibleServers] and [AutoModeController.usableProtocols]
+     * entry points, exactly as production calls them.
+     */
+    @Test
+    fun softEtherUdpRequiresTcpControlChannel() {
+        val c = controller(servers = emptyList())
+
+        // UDP-only: seTcpPort = 0, seUdpSupported = true.
+        val udpOnly = candidateWith("udp-only", seTcp = 0, seUdpSupported = true)
+        assertTrue(
+            "SOFTETHER_UDP must reject a server with no TCP control channel",
+            c.compatibleServers(listOf(udpOnly), AutoModeProtocol.SOFTETHER_UDP).isEmpty(),
         )
-        val all = listOf(seTcpOnly, seUdpOnly, l2tp, sstp)
-        assertEquals(listOf("a"), c.compatibleServers(all, AutoModeProtocol.SOFTETHER_TCP).map { it.hostname })
-        assertEquals(listOf("b"), c.compatibleServers(all, AutoModeProtocol.SOFTETHER_UDP).map { it.hostname })
-        assertEquals(listOf("c"), c.compatibleServers(all, AutoModeProtocol.L2TP_IPSEC).map { it.hostname })
-        assertEquals(listOf("d"), c.compatibleServers(all, AutoModeProtocol.MS_SSTP).map { it.hostname })
+        assertTrue(
+            "SOFTETHER_TCP must reject the same server (no TCP port)",
+            c.compatibleServers(listOf(udpOnly), AutoModeProtocol.SOFTETHER_TCP).isEmpty(),
+        )
+
+        // Both transports available: TCP port published, UDP supported.
+        val both = candidateWith("both", seTcp = 443, seUdpSupported = true)
+        assertEquals(
+            "a server with a TCP port and UDP support is offered for SOFTETHER_UDP",
+            listOf("both"),
+            c.compatibleServers(listOf(both), AutoModeProtocol.SOFTETHER_UDP).map { it.hostname },
+        )
+        assertEquals(
+            "a server with a TCP port and UDP support is offered for SOFTETHER_TCP",
+            listOf("both"),
+            c.compatibleServers(listOf(both), AutoModeProtocol.SOFTETHER_TCP).map { it.hostname },
+        )
+
+        // UDP-only, but carrying a valid OpenVPN UDP config: still selectable via OpenVPN.
+        val udpOnlyWithOvpn = candidateWith(
+            "udp-only-ovpn", seTcp = 0, seUdpSupported = true, ovpnUdp = 1194,
+        )
+        assertTrue(
+            "a UDP-only server must remain selectable via OPENVPN_UDP",
+            c.compatibleServers(listOf(udpOnlyWithOvpn), AutoModeProtocol.OPENVPN_UDP)
+                .map { it.hostname } == listOf("udp-only-ovpn"),
+        )
+        assertTrue(
+            "the same UDP-only server must still be rejected for SOFTETHER_UDP",
+            c.usableProtocols(udpOnlyWithOvpn, listOf(AutoModeProtocol.SOFTETHER_UDP)).isEmpty(),
+        )
     }
+
+        /**
+         * Stage 2F-F.2 (Q-6): MS-SSTP support is decided by the port's
+         * PROVENANCE, not by its number. EXPLICIT 443 and DEFAULT 443 are both
+         * dialable and both accepted; UNKNOWN with no port is not, and 443 is
+         * never manufactured to rescue it.
+         */
+        @Test
+        fun sstpSupportFollowsPortProvenanceNotThePortNumber() {
+            val c = controller(servers = emptyList())
+
+            fun candidate(
+                host: String,
+                port: Int,
+                source: String,
+                connectPort: Int,
+                supported: Boolean = true,
+            ) = AutoModeCandidate(
+                host, "ip", 1_000, 10, 5, 500, 1,
+                seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+                openVpnTcpPort = 0, openVpnUdpPort = 0,
+                l2tpSupported = false, sstpSupported = supported,
+                sstpPort = port, sstpPortSource = source, sstpConnectPort = connectPort,
+            )
+
+            // The source printed the port.
+            val explicit = candidate("explicit", 8443, VpnPortSource.EXPLICIT, 8443)
+            // The source confirmed SSTP but published no port; 443 is the
+            // protocol default and is a real, dialable port.
+            val default = candidate("default", 0, VpnPortSource.DEFAULT, 443)
+            // No port, no provenance: nothing may be inferred.
+            val unknown = candidate("unknown", 0, VpnPortSource.UNKNOWN, 0)
+            // Unsupported entirely, even with a perfectly good port.
+            val notSstp = candidate("not-sstp", 443, VpnPortSource.EXPLICIT, 443, supported = false)
+
+            val all = listOf(explicit, default, unknown, notSstp)
+            assertEquals(
+                "EXPLICIT and DEFAULT are dialable; UNKNOWN and unsupported are not",
+                listOf("explicit", "default"),
+                c.compatibleServers(all, AutoModeProtocol.MS_SSTP).map { it.hostname },
+            )
+
+            // The distinction is provenance, not number: a DEFAULT-derived 443
+            // must not be treated differently from an EXPLICIT 443.
+            val explicit443 = candidate("explicit443", 443, VpnPortSource.EXPLICIT, 443)
+            val default443 = candidate("default443", 443, VpnPortSource.DEFAULT, 443)
+            assertEquals(
+                listOf("explicit443", "default443"),
+                c.compatibleServers(listOf(explicit443, default443), AutoModeProtocol.MS_SSTP)
+                    .map { it.hostname },
+            )
+        }
+
+        /**
+         * Stage 2F-F.2 (Q-7): when the adapter declares a protocol
+         * non-automatable, Auto Connect must reject it BEFORE the attempt.
+         * The old path entered connect(), logged "not automatable", returned
+         * normally and then burned the whole per-attempt timeout.
+         */
+        @Test
+        fun nonAutomatableProtocolIsNeverAttemptedAndDoesNotConsumeTheTimeout() = runBlocking {
+            adapter.nonAutomatable += AutoModeProtocol.L2TP_IPSEC
+            val l2tpOnly = AutoModeCandidate(
+                "l2tp-only", "ip", 1_000, 10, 5, 500, 1,
+                seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+                openVpnTcpPort = 0, openVpnUdpPort = 0,
+                l2tpSupported = true, sstpSupported = false,
+            )
+
+            // A long timeout: if L2TP were still entered, this test would hang
+            // for the full duration instead of failing fast.
+            val c = controller(
+                protocol = AutoModeProtocol.L2TP_IPSEC,
+                servers = listOf(l2tpOnly),
+                timeout = 30_000,
+            )
+            c.start()
+            val terminal = c.awaitTerminal()
+
+            assertTrue(terminal is AutoModeState.Error)
+            assertEquals(
+                AutoModeController.ERROR_NO_SERVER,
+                (terminal as AutoModeState.Error).message,
+            )
+            assertEquals(
+                "L2TP must never reach connect() on a non-automatable adapter",
+                emptyList<Pair<String?, AutoModeProtocol>>(),
+                adapter.connects,
+            )
+            assertTrue(
+                "the skip must be explained rather than silent",
+                adapter.logs.any { it.contains("cannot be automated") },
+            )
+        }
+
+        /**
+         * Stage 2F-F.2 (Q-7): rejecting L2TP must not end the run. The next
+         * server — and the next protocol on it — still gets its chance through
+         * the existing retry logic.
+         */
+        @Test
+        fun aNonAutomatableProtocolDoesNotStopLaterServersFromBeingTried() = runBlocking {
+            adapter.nonAutomatable += AutoModeProtocol.L2TP_IPSEC
+            val l2tpOnly = AutoModeCandidate(
+                "l2tp-only", "ip", 1_000, 10, 5, 500, 1,
+                seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+                openVpnTcpPort = 0, openVpnUdpPort = 0,
+                l2tpSupported = true, sstpSupported = false,
+            )
+            // Slower is irrelevant: byQuality puts the fast server first.
+            val seServer = server("se")
+
+            val c = controller(
+                protocol = AutoModeProtocol.L2TP_IPSEC,
+                servers = listOf(l2tpOnly, seServer),
+                timeout = 2_000,
+            )
+            // The profile is L2TP alone, so the SoftEther server has no
+            // supported protocol either and the run must end in ERROR_NO_SERVER
+            // WITHOUT any connect() call.
+            c.start()
+            val terminal = c.awaitTerminal()
+
+            assertTrue(terminal is AutoModeState.Error)
+            assertEquals(emptyList<Pair<String?, AutoModeProtocol>>(), adapter.connects)
+        }
+
+        /**
+         * Stage 2F-F.2 (Q-7): the rejection is scoped to the protocol, not to
+         * the server. With L2TP disabled and another protocol enabled, a
+         * server that also offers SoftEther must still connect normally — this
+         * is the "no regression to existing behaviour" guarantee.
+         */
+        @Test
+        fun otherProtocolsStillConnectWhenL2tpIsNonAutomatable() = runBlocking {
+            adapter.nonAutomatable += AutoModeProtocol.L2TP_IPSEC
+            val both = AutoModeCandidate(
+                "both", "ip", 10_000_000, 20, 5, 500, 1,
+                seTcpPort = 443, seUdpPort = 0, seUdpSupported = true,
+                openVpnTcpPort = 0, openVpnUdpPort = 0,
+                l2tpSupported = true, sstpSupported = false,
+            )
+            val c = controller(
+                protocol = AutoModeProtocol.L2TP_IPSEC,
+                servers = listOf(both),
+                timeout = 2_000,
+            )
+            c.start()
+            c.awaitTerminal()
+
+            // L2TP is filtered out, so nothing is dialled at all.
+            assertEquals(emptyList<Pair<String?, AutoModeProtocol>>(), adapter.connects)
+
+            // Now with SoftEther TCP enabled: it connects, and L2TP is still
+            // never touched.
+            val c2 = controller(
+                protocol = AutoModeProtocol.SOFTETHER_TCP,
+                servers = listOf(both),
+                timeout = 2_000,
+            )
+            c2.start()
+            c2.awaitTerminal()
+
+            assertEquals(
+                listOf("both" to AutoModeProtocol.SOFTETHER_TCP),
+                adapter.connects,
+            )
+        }
 
     // §8 ordering: speed desc, tie-breakers, zero-speed demoted (§23)
     @Test
@@ -279,6 +662,112 @@ class AutoModeControllerTest {
         val zero = server("zero", speed = 0)
         val sorted = c.compatibleServers(listOf(zero, slow, fast, fastLowPing), AutoModeProtocol.SOFTETHER_UDP)
         assertEquals(listOf("fastLowPing", "fast", "slow", "zero"), sorted.map { it.hostname })
+    }
+
+    // Stage 2F-F.11 (D3): ping == 0 means UNKNOWN, not "instant". A candidate with a
+    // measured ping must outrank one with no measurement, regardless of how slow the
+    // measurement is. Before D3, ping = 0 sorted above every positive value and these
+    // candidates were tried in exactly the wrong order.
+    @Test
+    fun validPingOutranksUnknownPing() {
+        val c = controller(servers = emptyList())
+        val slowButKnown = server("known", speed = 50_000_000, ping = 300)
+        val fastButUnknown = server("unknown", speed = 50_000_000, ping = 0)
+        val sorted = c.compatibleServers(
+            listOf(fastButUnknown, slowButKnown),
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+        assertEquals(listOf("known", "unknown"), sorted.map { it.hostname })
+    }
+
+    // Every unknown-ping candidate must land after every known-ping candidate, not
+    // merely after one of them: the known/unknown key is evaluated before the raw
+    // value, so no unknown can be interleaved into the measured group.
+    @Test
+    fun unknownPingAlwaysSortsAfterKnownPing() {
+        val c = controller(servers = emptyList())
+        val knownFast = server("knownFast", speed = 10_000_000, ping = 10)
+        val knownSlow = server("knownSlow", speed = 10_000_000, ping = 400)
+        val unknownA = server("unknownA", speed = 10_000_000, ping = 0, sessions = 1, score = 9999)
+        val unknownB = server("unknownB", speed = 10_000_000, ping = 0, sessions = 999, score = 1)
+        val sorted = c.compatibleServers(
+            listOf(unknownA, unknownB, knownSlow, knownFast),
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+        assertEquals(
+            listOf("knownFast", "knownSlow", "unknownA", "unknownB"),
+            sorted.map { it.hostname },
+        )
+    }
+
+    // Unknown ping must not become a tie-breaker shortcut: with speed, ping-group,
+    // sessions and score all equal, an unknown-ping candidate still has to yield to a
+    // known-ping candidate, and the remaining keys must decide deterministically.
+    @Test
+    fun unknownPingDoesNotDisplaceLaterTieBreakers() {
+        val c = controller(servers = emptyList())
+        val known = server("known", speed = 10_000_000, ping = 900)
+        val unknown = server("unknown", speed = 10_000_000, ping = 0, sessions = 1, score = 9999)
+        val sorted = c.compatibleServers(listOf(unknown, known), AutoModeProtocol.SOFTETHER_UDP)
+        assertEquals(listOf("known", "unknown"), sorted.map { it.hostname })
+    }
+
+    // Zero-speed demotion (§23) still outranks the ping split: a server with no usable
+    // throughput stays at the bottom even when it is the only one with a measurement.
+    @Test
+    fun zeroSpeedStaysDemotedDespiteKnownPing() {
+        val c = controller(servers = emptyList())
+        val zeroKnown = server("zeroKnown", speed = 0, ping = 5)
+        val usableUnknown = server("usableUnknown", speed = 1_000_000, ping = 0)
+        val sorted = c.compatibleServers(listOf(zeroKnown, usableUnknown), AutoModeProtocol.SOFTETHER_UDP)
+        assertEquals(listOf("usableUnknown", "zeroKnown"), sorted.map { it.hostname })
+    }
+
+    // Stage 2F-F.11 (D5): the source count must not influence ranking. These two
+    // candidates differ only in `sources`, so the order must come from the quality
+    // keys instead — the higher source count must not win.
+    @Test
+    fun sourcesDoNotAffectOrdering() {
+        val c = controller(servers = emptyList())
+        val lowSources = server("lowSources", speed = 10_000_000, ping = 40, sources = 1)
+        val highSources = server("highSources", speed = 10_000_000, ping = 40, sources = 9_999)
+        val sorted = c.compatibleServers(
+            listOf(highSources, lowSources),
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+        assertEquals(2, sorted.size)
+        // Equal on every ranking key, so the order is unspecified-but-stable; what
+        // matters is that neither one is promoted over the other by `sources`.
+        assertEquals(
+            setOf("lowSources", "highSources"),
+            sorted.map { it.hostname }.toSet(),
+        )
+    }
+
+    // Source count must not rescue a worse candidate either. The candidate with the
+    // best source count here also has the worst ping, so it must still lose.
+    @Test
+    fun sourcesCannotOutrankBetterQuality() {
+        val c = controller(servers = emptyList())
+        val bestQualityLowSources = server("best", speed = 10_000_000, ping = 20, sources = 1)
+        val worseQualityHighSources = server("worse", speed = 10_000_000, ping = 500, sources = 9_999)
+        val sorted = c.compatibleServers(
+            listOf(worseQualityHighSources, bestQualityLowSources),
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+        assertEquals(listOf("best", "worse"), sorted.map { it.hostname })
+    }
+
+    // The known/unknown ping split must not disturb the documented §8 order among
+    // candidates that all report a measurement.
+    @Test
+    fun measuredCandidatesKeepOriginalOrdering() {
+        val c = controller(servers = emptyList())
+        val a = server("a", speed = 90_000_000, ping = 100)
+        val b = server("b", speed = 90_000_000, ping = 20)
+        val d = server("d", speed = 1_000_000, ping = 1)
+        val sorted = c.compatibleServers(listOf(d, a, b), AutoModeProtocol.SOFTETHER_UDP)
+        assertEquals(listOf("b", "a", "d"), sorted.map { it.hostname })
     }
 
     // VPN permission missing on the first attempt must stop the whole run
@@ -372,5 +861,1304 @@ class AutoModeControllerTest {
             }
             kotlinx.coroutines.delay(25)
         }
+    }
+
+    // ==================================================================
+    // Stage 2F-F.13 (Phase 2) — D2 + D8 + Y4.
+    //
+    // Protocol Priority is an ATTEMPT ORDER, capability decides usability, and
+    // the controller owns that decision. Everything below is about a server
+    // surviving when its highest-priority protocol cannot be used.
+    // ==================================================================
+
+    /** TEST 1 — the top priority is unsupported; the next one carries the server. */
+    @Test
+    fun firstPriorityUnsupportedFallsThroughToSecondProtocol() = runBlocking {
+        val priorities = listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)
+        val srv = candidateWith("fallthrough", seTcp = 9922)
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(
+            listOf(AutoModeProtocol.SOFTETHER_TCP),
+            c.usableProtocols(srv, priorities),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        assertEquals(
+            listOf("fallthrough" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+    }
+
+    /** TEST 2 — supported is not enough: MS-SSTP with no resolvable port is unusable. */
+    @Test
+    fun supportedSstpWithoutAPortIsExcluded() = runBlocking {
+        val priorities = listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)
+        val srv = candidateWith("sstp-no-port", seTcp = 9922, sstp = true, sstpConnectPort = 0)
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(
+            "an unknown SSTP port must not make SSTP usable",
+            listOf(AutoModeProtocol.SOFTETHER_TCP),
+            c.usableProtocols(srv, priorities),
+        )
+
+        c.start()
+        c.awaitTerminal()
+        assertEquals(
+            listOf("sstp-no-port" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+    }
+
+    /** TEST 3 — a valid SSTP port makes SSTP the first attempt, ahead of SoftEther. */
+    @Test
+    fun validSstpTakesPrecedenceOverLowerPriorityProtocols() = runBlocking {
+        val priorities = listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)
+        val srv = candidateWith(
+            "sstp-valid",
+            seTcp = 9922,
+            sstp = true,
+            sstpConnectPort = 443,
+        )
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(priorities, c.usableProtocols(srv, priorities))
+
+        c.start()
+        c.awaitTerminal()
+        assertEquals(
+            listOf("sstp-valid" to AutoModeProtocol.MS_SSTP),
+            adapter.connects,
+        )
+    }
+
+    /** TEST 4 — a third-priority protocol is still a legitimate way in. */
+    @Test
+    fun lowerPriorityOpenVpnRemainsEligible() = runBlocking {
+        val priorities = listOf(
+            AutoModeProtocol.MS_SSTP,
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.OPENVPN_TCP,
+        )
+        // SSTP declared but unresolvable, no SoftEther TCP port at all.
+        val srv = candidateWith("ovpn-only", ovpnTcp = 443, sstp = true, sstpConnectPort = 0)
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(
+            listOf(AutoModeProtocol.OPENVPN_TCP),
+            c.usableProtocols(srv, priorities),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        assertEquals(
+            listOf("ovpn-only" to AutoModeProtocol.OPENVPN_TCP),
+            adapter.connects,
+        )
+    }
+
+    /**
+     * TEST 5 — L2TP is manual-only, so Auto Connect must never select it.
+     *
+     * The fake adapter deliberately claims EVERY protocol is automatable here, so
+     * this passes only because the controller owns the rule rather than delegating
+     * it to the adapter.
+     */
+    @Test
+    fun l2tpIsNeverSelectedByAutoConnect() = runBlocking {
+        val priorities = listOf(AutoModeProtocol.L2TP_IPSEC, AutoModeProtocol.SOFTETHER_TCP)
+        val srv = candidateWith("l2tp-and-se", l2tp = true, seTcp = 9922)
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(
+            listOf(AutoModeProtocol.SOFTETHER_TCP),
+            c.usableProtocols(srv, priorities),
+        )
+
+        c.start()
+        c.awaitTerminal()
+        assertEquals(
+            listOf("l2tp-and-se" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+        assertTrue(
+            "L2TP must never be attempted by Auto Connect",
+            adapter.connects.none { it.second == AutoModeProtocol.L2TP_IPSEC },
+        )
+    }
+
+    /** TEST 6 — nothing usable means nothing attempted, and the run ends cleanly. */
+    @Test
+    fun serverWithNoUsableProtocolHasZeroUsableProtocols() = runBlocking {
+        val priorities = listOf(
+            AutoModeProtocol.MS_SSTP,
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.OPENVPN_TCP,
+        )
+        // Every declared capability is unusable: SSTP with no port, no SoftEther
+        // and no OpenVPN port, L2TP-only otherwise.
+        val srv = candidateWith("nothing-usable", l2tp = true, sstp = true, sstpConnectPort = 0)
+
+        val c = controller(servers = listOf(srv), priorities = priorities)
+        assertEquals(emptyList<AutoModeProtocol>(), c.usableProtocols(srv, priorities))
+
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
+        assertEquals(
+            "an unusable server must never reach connect()",
+            emptyList<Pair<String?, AutoModeProtocol>>(),
+            adapter.connects,
+        )
+    }
+
+    /** TEST 7 — with several usable protocols, the user's order is the order. */
+    @Test
+    fun protocolPriorityDeterminesAttemptOrder() {
+        val priorities = listOf(
+            AutoModeProtocol.OPENVPN_TCP,
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.MS_SSTP,
+        )
+        val srv = candidateWith("all-three", seTcp = 9922, ovpnTcp = 443, sstp = true, sstpConnectPort = 443)
+
+        val c = controller(servers = emptyList(), priorities = priorities)
+        assertEquals(priorities, c.usableProtocols(srv, priorities))
+    }
+
+    /**
+     * TEST 8 — Protocol Priority must NOT act as a global eligibility gate.
+     *
+     * This is the regression test for the old behaviour, where the whole server
+     * list was filtered through `priorities.first()`: server A, which cannot speak
+     * the top-priority protocol at all, would have been dropped even though it
+     * speaks the second one perfectly well.
+     */
+    @Test
+    fun protocolPriorityDoesNotGloballyFilterServers() = runBlocking {
+        val priorities = listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)
+        // B speaks the top priority; A only speaks the second one.
+        val b = candidateWith("b-top-priority", seTcp = 9922, sstp = true, sstpConnectPort = 443)
+        val a = candidateWith("a-second-priority", seTcp = 9922)
+        // B fails, so A must still be reached — through the second protocol.
+        adapter.failing += "b-top-priority"
+
+        val c = controller(servers = listOf(b, a), priorities = priorities)
+        c.start()
+        val terminal = c.awaitTerminal()
+
+        assertEquals(
+            listOf(
+                "b-top-priority" to AutoModeProtocol.MS_SSTP,
+                // B speaks both, so B's own protocols are exhausted before the
+                // run moves on (§10: one attempt per server).
+                "b-top-priority" to AutoModeProtocol.SOFTETHER_TCP,
+                "a-second-priority" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects,
+        )
+        assertTrue(terminal is AutoModeState.Connected)
+        assertEquals("a-second-priority", (terminal as AutoModeState.Connected).hostname)
+    }
+
+    /**
+     * TEST 9 — the probe is handed protocol/endpoint pairs the controller already
+     * selected, one per server, each from that server's OWN usable protocols.
+     */
+    @Test
+    fun reachabilityProbeReceivesControllerSelectedProtocolAndEndpoint() = runBlocking {
+        val targets = mutableListOf<ReachabilityTarget>()
+        val priorities = listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)
+        val seOnly = candidateWith("probe-se", seTcp = 9922)
+        val sstpOnly = candidateWith("probe-sstp", sstp = true, sstpConnectPort = 443)
+        adapter.failing += "probe-se"
+
+        val c = controller(
+            servers = listOf(seOnly, sstpOnly),
+            priorities = priorities,
+            reachabilityFilter = { handed ->
+                targets += handed
+                // "nothing was measured": not a verdict, so the queue must survive.
+                ReachabilityGate(emptyList(), allUnreachable = false)
+            },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "one selected endpoint per server, each on that server's own protocol",
+            listOf(
+                ReachabilityTarget(seOnly, AutoModeProtocol.SOFTETHER_TCP, 9922),
+                ReachabilityTarget(sstpOnly, AutoModeProtocol.MS_SSTP, 443),
+            ),
+            targets,
+        )
+        // And the "nothing answered" case must not empty the queue.
+        assertEquals(2, adapter.connects.size)
+    }
+
+    /**
+     * Stage 2F-F.16 (Y2): a server that publishes no endpoint at all for a usable
+     * protocol is still handed to the probe — with port 0, meaning "nothing to
+     * test" — and is still attempted.
+     *
+     * Phase 2 had it skipped by the probe. That skipped record was the problem: a
+     * protocol with no published endpoint and a protocol that was probed and found
+     * closed produced the same absence, so nothing downstream could tell "we could
+     * not test it" from "it is down" — and the first reading is the one an absent
+     * value silently takes. The tri-state store now records UNKNOWN for it, which
+     * is a real answer: it keeps the server without claiming it is reachable, and
+     * it does not read as a verdict of failure.
+     */
+    @Test
+    fun unprobeableServerIsProbedAsUnknownAndStillAttempted() = runBlocking {
+        val targets = mutableListOf<ReachabilityTarget>()
+        val priorities = listOf(AutoModeProtocol.SOFTETHER_UDP)
+        // SoftEther UDP with no published UDP port: connectable (the native stack
+        // learns the endpoint at runtime), not probeable. The TCP control channel
+        // must be published for the protocol to be selectable at all (F.28AL
+        // BUG 1: R-UDP/NAT-T is broken for SETcpPort=0 servers), so seTcp is set
+        // here — it does not affect the UDP endpoint probe this test asserts on.
+        val srv = candidateWith("udp-no-port", seTcp = 9922, seUdpSupported = true, seUdpPort = 0)
+
+        val c = controller(
+            servers = listOf(srv),
+            priorities = priorities,
+            reachabilityFilter = { handed ->
+                targets += handed
+                ReachabilityGate(emptyList(), allUnreachable = false)
+            },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "handed over for an UNKNOWN verdict, with no fabricated port",
+            listOf(ReachabilityTarget(srv, AutoModeProtocol.SOFTETHER_UDP, 0)),
+            targets,
+        )
+        assertEquals(
+            listOf("udp-no-port" to AutoModeProtocol.SOFTETHER_UDP),
+            adapter.connects,
+        )
+    }
+
+    /** TEST 10 — no protocol may borrow another protocol's port, and none is invented. */
+    @Test
+    fun noProtocolBorrowsOrFabricatesAPort() {
+        val srv = candidateWith(
+            "ports",
+            seTcp = 9922,
+            sstp = true,
+            sstpConnectPort = 0,
+        )
+
+        assertEquals(
+            "an UNKNOWN SSTP port must not become the SoftEther port or 443",
+            0,
+            AutoModeProtocol.MS_SSTP.endpointPort(srv),
+        )
+        assertEquals(9922, AutoModeProtocol.SOFTETHER_TCP.endpointPort(srv))
+        assertEquals(0, AutoModeProtocol.SOFTETHER_UDP.endpointPort(srv))
+        assertEquals(0, AutoModeProtocol.OPENVPN_TCP.endpointPort(srv))
+        assertEquals(0, AutoModeProtocol.OPENVPN_UDP.endpointPort(srv))
+
+        val c = controller(servers = emptyList())
+        assertEquals(
+            emptyList<AutoModeProtocol>(),
+            c.usableProtocols(srv, listOf(AutoModeProtocol.MS_SSTP)),
+        )
+    }
+
+    /**
+     * SoftEther UDP stays usable with no published UDP port.
+     *
+     * This is the project's existing model, not a convenience: the native stack
+     * uses the SoftEther TCP port as the control channel for EVERY transport and
+     * learns the UDP endpoint from the server's Welcome PACK or the NAT-T
+     * rendezvous, so `seUdpSupported` alone is a genuinely connectable state.
+     * Requiring a published UDP port here would make Auto Connect refuse servers
+     * it can actually connect to, and `seUdpPort` is used for reachability
+     * probing only. Locking this down so it cannot regress silently.
+     */
+    @Test
+    fun softEtherUdpStaysUsableWithoutAPublishedUdpPort() {
+        val srv = candidateWith("udp-capable", seTcp = 9922, seUdpSupported = true, seUdpPort = 0)
+        val c = controller(servers = emptyList())
+        assertEquals(
+            listOf(AutoModeProtocol.SOFTETHER_UDP),
+            c.usableProtocols(srv, listOf(AutoModeProtocol.SOFTETHER_UDP)),
+        )
+        // …and it still never borrows the TCP port in order to be probed.
+        assertEquals(0, AutoModeProtocol.SOFTETHER_UDP.endpointPort(srv))
+    }
+
+    // ==================================================================
+    // Stage 2F-F.15 (Phase 4) — D4 + Y1-a + Y1-b.
+    //
+    // Feed quality decides; active RTT is the final tie-break among otherwise
+    // equal candidates. A missing RTT is neutral, and a candidate's RTT is the
+    // MINIMUM valid one over the protocols Auto Connect may actually use.
+    // ==================================================================
+
+    private val seOnly = listOf(AutoModeProtocol.SOFTETHER_TCP)
+
+    /** Rank through the real production ordering used by Auto Connect. */
+    private fun rank(
+        protocol: AutoModeProtocol = AutoModeProtocol.SOFTETHER_TCP,
+        vararg candidates: AutoModeCandidate,
+    ): List<String> = controller(servers = emptyList())
+        .compatibleServers(candidates.toList(), protocol)
+        .mapNotNull { it.hostname }
+
+    /** TEST 1 — with every primary key equal, the lower RTT wins. */
+    @Test
+    fun rttBreaksTiesWhenPrimaryKeysAreEqual() {
+        val slow = candidateWith("slow", seTcp = 443, rtt = 100)
+        val fast = candidateWith("fast", seTcp = 443, rtt = 50)
+        assertEquals(listOf("fast", "slow"), rank(AutoModeProtocol.SOFTETHER_TCP, slow, fast))
+    }
+
+    /** TEST 2 — RTT must not override speed. */
+    @Test
+    fun rttCannotOverrideSpeed() {
+        val fastServer = candidateWith("fastServer", speed = 500_000_000, seTcp = 443, rtt = 500)
+        val slowServer = candidateWith("slowServer", speed = 100_000_000, seTcp = 443, rtt = 10)
+        assertEquals(listOf("fastServer", "slowServer"), rank(AutoModeProtocol.SOFTETHER_TCP, slowServer, fastServer))
+    }
+
+    /** TEST 3 — RTT must not override the feed ping. */
+    @Test
+    fun rttCannotOverrideFeedPing() {
+        val lowPing = candidateWith("lowPing", ping = 20, seTcp = 443, rtt = 500)
+        val highPing = candidateWith("highPing", ping = 50, seTcp = 443, rtt = 10)
+        assertEquals(listOf("lowPing", "highPing"), rank(AutoModeProtocol.SOFTETHER_TCP, highPing, lowPing))
+    }
+
+    /** TEST 4 — RTT must not override the session count. */
+    @Test
+    fun rttCannotOverrideSessions() {
+        val fewer = candidateWith("fewer", sessions = 5, seTcp = 443, rtt = 500)
+        val more = candidateWith("more", sessions = 10, seTcp = 443, rtt = 10)
+        assertEquals(listOf("fewer", "more"), rank(AutoModeProtocol.SOFTETHER_TCP, more, fewer))
+    }
+
+    /** TEST 5 — RTT must not override the feed score. */
+    @Test
+    fun rttCannotOverrideFeedScore() {
+        val highScore = candidateWith("highScore", score = 90, seTcp = 443, rtt = 500)
+        val lowScore = candidateWith("lowScore", score = 80, seTcp = 443, rtt = 10)
+        assertEquals(listOf("highScore", "lowScore"), rank(AutoModeProtocol.SOFTETHER_TCP, lowScore, highScore))
+    }
+
+    /**
+     * TEST 6 — a missing RTT is NEUTRAL, not worse.
+     *
+     * The banned implementation `thenBy { activeRttMs ?: Long.MAX_VALUE }` would
+     * produce `[slowRtt, unmeasured]` here — an unmeasured server demoted for
+     * having no measurement. What must happen instead is that presence of RTT is
+     * not a ranking key at all, so the input order is preserved in BOTH
+     * directions. This is what makes the assertion meaningful: it pins down
+     * "neither better nor worse" instead of picking one.
+     */
+    @Test
+    fun missingRttIsNeutralAndNotDemoted() {
+        val unmeasured = candidateWith("unmeasured", seTcp = 443, rtt = null)
+        val measured = candidateWith("measured", seTcp = 443, rtt = 50)
+
+        assertEquals(
+            listOf("unmeasured", "measured"),
+            rank(AutoModeProtocol.SOFTETHER_TCP, unmeasured, measured),
+        )
+        assertEquals(
+            listOf("measured", "unmeasured"),
+            rank(AutoModeProtocol.SOFTETHER_TCP, measured, unmeasured),
+        )
+    }
+
+    /**
+     * TEST 6b — an unmeasured candidate is not pushed behind every measured one,
+     * while the measured ones among themselves ARE ordered by RTT.
+     *
+     * Input `[unmeasured, 100ms, 50ms]` must come back as
+     * `[unmeasured, 50ms, 100ms]`: the RTT comparison happened between the two
+     * candidates that both had a measurement, and the unmeasured one neither
+     * moved nor moved anything.
+     */
+    @Test
+    fun unmeasuredCandidateNeitherMovesNorIsMoved() {
+        val unmeasured = candidateWith("unmeasured", seTcp = 443, rtt = null)
+        val slower = candidateWith("slower", seTcp = 443, rtt = 100)
+        val faster = candidateWith("faster", seTcp = 443, rtt = 50)
+
+        assertEquals(
+            listOf("unmeasured", "faster", "slower"),
+            rank(AutoModeProtocol.SOFTETHER_TCP, unmeasured, slower, faster),
+        )
+    }
+
+    /**
+     * The pairwise "return 0 when either side is missing" comparator is not a
+     * valid ordering: with `A(100) == B(unknown) == C(50)` and `C < A` it is not
+     * transitive, and TimSort throws on it once a list is long enough to merge.
+     * This test is the regression guard that Auto Connect's ranking keeps working
+     * on a realistically sized server list instead of crashing.
+     */
+    @Test
+    fun neutralRttOrderingSurvivesAListLargeEnoughToTripTimSort() {
+        val many = (0 until 400).map { i ->
+            candidateWith(
+                "srv$i",
+                seTcp = 443,
+                // Every third candidate has no measurement at all.
+                rtt = if (i % 3 == 0) null else (i * 7L % 500) + 1L,
+            )
+        }
+        // Must not throw, and must keep every candidate exactly once.
+        val ranked = controller(servers = emptyList())
+            .compatibleServers(many, AutoModeProtocol.SOFTETHER_TCP)
+        assertEquals(many.size, ranked.size)
+        assertEquals(many.map { it.hostname }.toSet(), ranked.map { it.hostname }.toSet())
+        // Quality is still the dominant key: descending speed groups stay intact.
+        assertTrue(ranked.first().speed >= ranked.last().speed)
+    }
+
+    /**
+     * With no probe wired at all — a first-ever run, where nothing has been
+     * measured — ranking must be exactly the Phase 1 primary ordering.
+     */
+    @Test
+    fun withoutAnyMeasurementRankingIsPurelyPrimary() {
+        val candidates = listOf(
+            candidateWith("zeroSpeed", speed = 0, seTcp = 443),
+            candidateWith("slowPing", ping = 300, seTcp = 443),
+            candidateWith("best", seTcp = 443),
+        )
+        assertEquals(
+            listOf("best", "slowPing", "zeroSpeed"),
+            rank(AutoModeProtocol.SOFTETHER_TCP, *candidates.toTypedArray()),
+        )
+    }
+
+    // ---- Y1-b: aggregation over usable protocols, through a real run ----
+
+    /** Rank by running Auto Connect for real and reporting the first dial. */
+    private suspend fun firstDialed(
+        servers: List<AutoModeCandidate>,
+        priorities: List<AutoModeProtocol>,
+        rttProvider: (String, AutoModeProtocol) -> Long?,
+    ): String? {
+        adapter.failing += servers.map { it.hostname!! }
+        val c = controller(servers = servers, priorities = priorities, activeRttProvider = rttProvider)
+        c.start()
+        c.awaitTerminal()
+        return adapter.connects.firstOrNull()?.first
+    }
+
+    /** The aggregation result for [candidate], for direct assertion. */
+    private fun rttOf(
+        candidate: AutoModeCandidate,
+        priorities: List<AutoModeProtocol>,
+        provider: (String, AutoModeProtocol) -> Long?,
+    ): Long? = controller(servers = emptyList(), activeRttProvider = provider)
+        .representativeRtt(candidate, priorities)
+
+    /** TEST 7 — the candidate's RTT is the MINIMUM over its usable protocols. */
+    @Test
+    fun candidateRttIsTheMinimumOverUsableProtocols() = runBlocking {
+        val both = candidateWith("both", seTcp = 443, ovpnTcp = 1194)
+        val rival = candidateWith("rival", seTcp = 443)
+        val rtt: (String, AutoModeProtocol) -> Long? = { ip, protocol ->
+            when {
+                ip == both.ip && protocol == AutoModeProtocol.SOFTETHER_TCP -> 200L
+                ip == both.ip && protocol == AutoModeProtocol.OPENVPN_TCP -> 80L
+                ip == rival.ip -> 100L
+                else -> null
+            }
+        }
+        val priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.OPENVPN_TCP)
+
+        assertEquals(
+            "the fastest usable route is the honest description of the server",
+            80L,
+            rttOf(both, priorities, rtt),
+        )
+        assertEquals(100L, rttOf(rival, priorities, rtt))
+
+        // …and the aggregated value really reaches the dial order.
+        assertEquals("both", firstDialed(listOf(both, rival), priorities, rtt))
+    }
+
+    /**
+     * TEST 8 — null, 0 and negative values are not measurements.
+     *
+     * `0` and the `-1` an unreachable probe reports both mean "no measurement".
+     * Only the one real value survives; nothing is averaged and nothing is
+     * substituted for the missing ones.
+     */
+    @Test
+    fun invalidRttValuesAreIgnored() {
+        val candidate = candidateWith(
+            "mixed",
+            seTcp = 443,
+            ovpnTcp = 1194,
+            ovpnUdp = 1195,
+            seUdpSupported = true,
+            seUdpPort = 40000,
+        )
+        val priorities = listOf(
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.OPENVPN_TCP,
+            AutoModeProtocol.OPENVPN_UDP,
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+        assertEquals(
+            120L,
+            rttOf(
+                candidate,
+                priorities,
+            ) { _, protocol ->
+                when (protocol) {
+                    AutoModeProtocol.SOFTETHER_TCP -> null
+                    AutoModeProtocol.OPENVPN_TCP -> 0L
+                    AutoModeProtocol.OPENVPN_UDP -> -1L
+                    AutoModeProtocol.SOFTETHER_UDP -> 120L
+                    else -> 5L
+                }
+            },
+        )
+    }
+
+    /** TEST 9 — when every RTT is invalid the candidate simply has none. */
+    @Test
+    fun allInvalidRttsYieldNoMeasurement() {
+        val candidate = candidateWith("none", seTcp = 443)
+        assertNull(
+            "an unmeasured candidate reports no RTT; it never gets a stand-in value",
+            rttOf(candidate, seOnly) { _, _ -> -1L },
+        )
+        assertNull(rttOf(candidate, seOnly) { _, _ -> 0L })
+        assertNull(rttOf(candidate, seOnly) { _, _ -> null })
+    }
+
+    /** TEST 10 — an unsupported protocol's RTT must not lower the candidate's. */
+    @Test
+    fun unsupportedProtocolRttDoesNotContribute() {
+        // No OpenVPN port at all, so OpenVPN is not usable however good it looks.
+        val candidate = candidateWith("seOnly", seTcp = 443)
+        assertEquals(
+            200L,
+            rttOf(candidate, listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.OPENVPN_TCP)) { _, p ->
+                when (p) {
+                    AutoModeProtocol.SOFTETHER_TCP -> 200L
+                    AutoModeProtocol.OPENVPN_TCP -> 10L
+                    else -> null
+                }
+            },
+        )
+    }
+
+    /** TEST 11 — L2TP is not automatable, so its RTT never reaches Auto Connect. */
+    @Test
+    fun l2tpRttDoesNotContribute() {
+        val candidate = candidateWith("withL2tp", seTcp = 443, l2tp = true)
+        assertEquals(
+            200L,
+            rttOf(candidate, listOf(AutoModeProtocol.L2TP_IPSEC, AutoModeProtocol.SOFTETHER_TCP)) { _, p ->
+                when (p) {
+                    AutoModeProtocol.SOFTETHER_TCP -> 200L
+                    AutoModeProtocol.L2TP_IPSEC -> 5L
+                    else -> null
+                }
+            },
+        )
+    }
+
+    /** TEST 12 — MS-SSTP with no resolvable port is unusable, so its RTT is ignored. */
+    @Test
+    fun invalidSstpRttDoesNotContribute() {
+        val candidate = candidateWith(
+            "sstpUnknown",
+            seTcp = 443,
+            sstp = true,
+            sstpConnectPort = 0,
+        )
+        assertEquals(
+            150L,
+            rttOf(candidate, listOf(AutoModeProtocol.MS_SSTP, AutoModeProtocol.SOFTETHER_TCP)) { _, p ->
+                when (p) {
+                    AutoModeProtocol.MS_SSTP -> 1L
+                    AutoModeProtocol.SOFTETHER_TCP -> 150L
+                    else -> null
+                }
+            },
+        )
+    }
+
+    /**
+     * TEST 13 — RTT is read per protocol; one protocol's answer never stands for
+     * another's, and no lookup is ever IP-only.
+     */
+    @Test
+    fun rttIsReadPerProtocolNotPerServer() {
+        val multi = candidateWith("multi", seTcp = 443, ovpnTcp = 1194)
+        val asked = mutableListOf<Pair<String, AutoModeProtocol>>()
+        val priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.OPENVPN_TCP)
+
+        assertEquals(
+            50L,
+            rttOf(multi, priorities) { ip, protocol ->
+                asked += ip to protocol
+                when (protocol) {
+                    AutoModeProtocol.SOFTETHER_TCP -> 200L
+                    AutoModeProtocol.OPENVPN_TCP -> 50L
+                    else -> null
+                }
+            },
+        )
+        assertEquals(
+            setOf(
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.OPENVPN_TCP,
+            ),
+            asked.map { it.second }.toSet(),
+        )
+    }
+
+    /**
+     * TEST 14 — the Server List's protocol-less answer cannot become an Auto
+     * Connect RTT.
+     *
+     * The controller only ever asks its provider for (IP, protocol) pairs drawn
+     * from the usable protocols — never for a bare IP — so there is no shape in
+     * which a SERVER_LIST result could be returned. That the two namespaces
+     * cannot alias each other in the first place is proven separately in
+     * `ReachabilityNamespaceTest` (Stage 2F-F.14).
+     */
+    @Test
+    fun serverListAnswerCannotBecomeAutoConnectRtt() {
+        val server = candidateWith("server", seTcp = 443)
+        val asked = mutableListOf<String>()
+
+        assertNull(
+            "a provider that answers only for other servers yields no RTT",
+            rttOf(server, seOnly) { ip, _ ->
+                asked += ip
+                null
+            },
+        )
+        assertEquals(
+            "the only lookup shape the controller has is IP + protocol",
+            listOf(server.ip),
+            asked,
+        )
+    }
+
+    /** TEST 15 — a protocol with no measurement contributes nothing; no borrowing. */
+    @Test
+    fun noRttIsBorrowedFromAnotherProtocol() {
+        // SoftEther UDP is usable but unmeasured: no UDP RTT exists yet (that
+        // arrives with the later probing phases), and the TCP answer must not be
+        // reused for it.
+        val candidate = candidateWith("udpAndTcp", seTcp = 443, seUdpSupported = true, seUdpPort = 0)
+        assertEquals(
+            200L,
+            rttOf(candidate, listOf(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.SOFTETHER_TCP)) { _, p ->
+                when (p) {
+                    AutoModeProtocol.SOFTETHER_TCP -> 200L
+                    AutoModeProtocol.SOFTETHER_UDP -> null
+                    else -> null
+                }
+            },
+        )
+    }
+
+    /** TEST 16 — Phase 1 (D3) preserved: a measured ping outranks an unknown one. */
+    @Test
+    fun phase1PingValidityStillDominates() {
+        val measured = candidateWith("measured", ping = 50, seTcp = 443, rtt = 500)
+        val unknown = candidateWith("unknown", ping = 0, seTcp = 443, rtt = 10)
+        assertEquals(listOf("measured", "unknown"), rank(AutoModeProtocol.SOFTETHER_TCP, unknown, measured))
+    }
+
+    /** TEST 17 — Phase 1 (D5) preserved: `sources` still cannot change ordering. */
+    @Test
+    fun phase1SourcesStillIrrelevant() {
+        val oneSource = candidateWith("oneSource", seTcp = 443, sources = 1)
+        val manySources = candidateWith("manySources", seTcp = 443, sources = 9_999)
+        // Equal on every ranking key, so nothing may promote the high-count one.
+        assertEquals(
+            setOf("oneSource", "manySources"),
+            rank(AutoModeProtocol.SOFTETHER_TCP, oneSource, manySources).toSet(),
+        )
+    }
+
+    // ================================================================
+    // Stage 2F-F.17 (D1 = FILTER_ONLY)
+    // ================================================================
+
+    /**
+     * CRITICAL FIX #1 — every **usable** protocol gets a probe target.
+     *
+     * Phase 5 handed over `usableProtocols(...).firstOrNull()`, which made D1's
+     * rule unrepresentable: "every usable protocol is unreachable" cannot be
+     * evaluated over one endpoint, and a server whose top-priority port refused
+     * was gated out while a healthy second protocol went untested. Protocol
+     * Priority stays the *attempt* order and nothing else.
+     */
+    @Test
+    fun everyUsableProtocolGetsAProbeTargetInPriorityOrder() = runBlocking {
+        val targets = mutableListOf<ReachabilityTarget>()
+        val srv = candidateWith("all", seTcp = 9922, seUdpPort = 5555, ovpnTcp = 443, ovpnUdp = 1194)
+        adapter.failing += "all"
+
+        val c = controller(
+            servers = listOf(srv),
+            priorities = listOf(
+                AutoModeProtocol.OPENVPN_UDP,
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_UDP,
+                AutoModeProtocol.OPENVPN_TCP,
+            ),
+            reachabilityFilter = { handed ->
+                targets += handed
+                ReachabilityGate(emptyList(), allUnreachable = false)
+            },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "one target per usable protocol, each at its own published endpoint, " +
+                "still in the user's Protocol Priority order",
+            listOf(
+                ReachabilityTarget(srv, AutoModeProtocol.OPENVPN_UDP, 1194),
+                ReachabilityTarget(srv, AutoModeProtocol.SOFTETHER_TCP, 9922),
+                ReachabilityTarget(srv, AutoModeProtocol.SOFTETHER_UDP, 5555),
+                ReachabilityTarget(srv, AutoModeProtocol.OPENVPN_TCP, 443),
+            ),
+            targets,
+        )
+    }
+
+    /** TEST 9 — L2TP is never a D1 target, and "no usable protocol" is not "down". */
+    @Test
+    fun l2TpIsNeverProbedAndZeroUsableProtocolsIsNotAllUnreachable() = runBlocking {
+        val filterCalls = mutableListOf<List<ReachabilityTarget>>()
+        // L2TP confirmed by the data model, and enabled by the user. It is still
+        // not automatable, so the server has no usable protocol at all.
+        val l2tpOnly = candidateWith("l2tpOnly", l2tp = true)
+
+        val c = controller(
+            servers = listOf(l2tpOnly),
+            priorities = listOf(AutoModeProtocol.L2TP_IPSEC, AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = { handed ->
+                filterCalls += handed
+                ReachabilityGate(emptyList(), allUnreachable = true)
+            },
+        )
+        c.start()
+        val end = c.awaitTerminal()
+
+        assertTrue(
+            "with no usable protocol there is nothing to probe, so D1 must not run at all",
+            filterCalls.isEmpty(),
+        )
+        assertTrue(
+            "and the pre-existing capability skip, not the D1 gate, is what ends the run",
+            end is AutoModeState.Error && end.message == AutoModeController.Companion.ERROR_NO_SERVER,
+        )
+        assertTrue("no L2TP connection may be attempted", adapter.connects.isEmpty())
+    }
+
+    /** TEST 17 — the same distinction from the controller's side: no targets, no gate. */
+    @Test
+    fun aServerWithNoUsableProtocolIsSkippedNotGatedOut() = runBlocking {
+        val filterCalls = mutableListOf<List<ReachabilityTarget>>()
+        val dead = candidateWith("dead", l2tp = true)
+
+        val c = controller(
+            servers = listOf(dead),
+            priorities = listOf(AutoModeProtocol.L2TP_IPSEC),
+            reachabilityFilter = { handed ->
+                filterCalls += handed
+                ReachabilityGate(emptyList(), allUnreachable = false)
+            },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertTrue(filterCalls.isEmpty())
+        assertTrue(
+            adapter.logs.any { it.contains("no supported protocol") },
+        )
+    }
+
+    /**
+     * TEST 15 / the end-to-end order regression the Phase 5 audit asked for.
+     *
+     * The gate returns its survivors in a deliberately wrong order — the reverse
+     * of the ranked input — and the controller must dial them in **quality
+     * order**, not in the order the gate happened to produce. Reachability is a
+     * filter; [AutoModeController.byQuality] is the only ranking authority.
+     *
+     * Speeds descend A > B > C > D, so the ranked input is A, B, C, D. C is
+     * removed by the gate. The survivors come back as D, B, A and must still be
+     * attempted A, B, D.
+     */
+    @Test
+    fun theGateNeverChangesTheDialledOrder() = runBlocking {
+        val a = candidateWith("A", speed = 40_000_000, seTcp = 443)
+        val b = candidateWith("B", speed = 30_000_000, seTcp = 443)
+        val c = candidateWith("C", speed = 20_000_000, seTcp = 443)
+        val d = candidateWith("D", speed = 10_000_000, seTcp = 443)
+        // Every attempt fails, so all four would be dialled if the gate let them.
+        adapter.failing += setOf("A", "B", "C", "D")
+
+        val c1 = controller(
+            servers = listOf(a, b, c, d),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = { handed ->
+                val byHost = handed.map { it.candidate }
+                // Reverse of the ranked order, with C (index 2) dropped.
+                ReachabilityGate(
+                    kept = listOf(byHost[3], byHost[1], byHost[0]),
+                    allUnreachable = false,
+                )
+            },
+        )
+        c1.start()
+        c1.awaitTerminal()
+
+        assertEquals(
+            "the gate filters; the comparator decides the order",
+            listOf("A" to AutoModeProtocol.SOFTETHER_TCP, "B" to AutoModeProtocol.SOFTETHER_TCP, "D" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+    }
+
+    /**
+     * TEST 16 — a definitive all-unreachable result is honoured, not undone.
+     *
+     * The pre-D1 fallback was `if (probed.isNotEmpty()) probed else qualitySorted`,
+     * which read an empty result as "no evidence" and restored every server. That
+     * is exactly right when nothing was measured and exactly wrong when every
+     * usable protocol of every server came back definitively down: the removal
+     * D1 promises was silently reverted. This pins the corrected behaviour.
+     */
+    @Test
+    fun aDefinitiveAllUnreachableResultEmptiesTheQueue() = runBlocking {
+        val a = candidateWith("A", seTcp = 443)
+        val b = candidateWith("B", seTcp = 443)
+
+        val c = controller(
+            servers = listOf(a, b),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = {
+                ReachabilityGate(emptyList(), allUnreachable = true)
+            },
+        )
+        c.start()
+        val end = c.awaitTerminal()
+
+        assertTrue(
+            "every usable protocol of every server was definitively down",
+            adapter.connects.isEmpty(),
+        )
+        assertTrue(
+            end is AutoModeState.Error && end.message == AutoModeController.Companion.ERROR_NO_SERVER,
+        )
+    }
+
+    /** And the mirror case, so the two can never be confused again. */
+    @Test
+    fun anEmptyResultWithNoVerdictKeepsTheQueue() = runBlocking {
+        val a = candidateWith("A", seTcp = 443)
+        adapter.failing += "A"
+
+        val c = controller(
+            servers = listOf(a),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = { ReachabilityGate(emptyList(), allUnreachable = false) },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "an inconclusive empty result must not empty Auto Connect",
+            listOf("A" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+    }
+
+    /** A probe that throws is a failure to measure, never a verdict. */
+    @Test
+    fun aThrowingProbeKeepsTheQueue() = runBlocking {
+        val a = candidateWith("A", seTcp = 443)
+        adapter.failing += "A"
+
+        val c = controller(
+            servers = listOf(a),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = { throw RuntimeException("probe exploded") },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(listOf("A" to AutoModeProtocol.SOFTETHER_TCP), adapter.connects)
+    }
+
+    /**
+     * Stage 2F-F.19 (F1): a server the probe cannot even address stays in the queue.
+     *
+     * This drives the **real** D1 gate rather than a stand-in for it, with only the
+     * socket layer replaced, because the defect being pinned lives in the gate's
+     * aggregation and not in the controller. "No address" and "address refused"
+     * look identical from outside — no verdict — and only one of them may remove a
+     * server.
+     *
+     * `dead` is genuinely refused and is removed. `addressless` cannot be probed at
+     * all and survives. Both go through [ServerReachabilityTester] unmodified.
+     */
+    @Test
+    fun aServerWithNoAddressSurvivesTheRealGateWhileARefusedOneIsRemoved() = runBlocking {
+        val refused = candidateWith("refused", ip = "10.7.0.1", seTcp = 443)
+        val addressless = candidateWith("addressless", ip = "10.7.0.2", seTcp = 443)
+            .copy(ip = null)
+        adapter.failing += "refused"
+
+        val c = controller(
+            servers = listOf(refused, addressless),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP),
+            reachabilityFilter = { handed ->
+                vn.unlimit.vpngate.network.ServerReachabilityTester
+                    .filterReachableCandidates(
+                        targets = handed,
+                        probe = object : vn.unlimit.vpngate.network.AutoConnectReachabilityProbe {
+                            override fun probe(
+                                target: ReachabilityTarget,
+                                tcpTimeoutMs: Int,
+                            ) = vn.unlimit.vpngate.network.ProbeReport(
+                                vn.unlimit.vpngate.network.WireOutcome.REFUSED,
+                                0L,
+                            )
+                        },
+                    )
+            },
+        )
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "the refused server is gated out; the unaddressable one is still attempted",
+            listOf("addressless" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+        assertTrue(
+            "and the unaddressable server produced no verdict to justify removing it",
+            vn.unlimit.vpngate.network.ServerReachabilityTester
+                .autoConnectState(null, AutoModeProtocol.SOFTETHER_TCP) == null,
+        )
+    }
+
+    // --- F.28AL-Y: bounded NATIVE_BUSY retry tests ---
+
+    /**
+     * T1. NATIVE_BUSY on attempt 1 → retry after W → success on attempt 2.
+     *
+     * Verifies the retry path: the same server+protocol is re-dialled after the
+     * delay, and the run ends in Connected rather than Error.
+     */
+    @Test
+    fun nativeBusyRetrySucceedsOnSecondAttempt() = runBlocking {
+        adapter.scriptBusy("busy-then-up", false, true)
+        val c = controller(
+            servers = listOf(server("busy-then-up")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        // Two connect() calls: the initial attempt plus one retry.
+        assertEquals(
+            "expected one retry of the same server",
+            2, adapter.connects.size,
+        )
+        assertEquals("busy-then-up", adapter.connects[0].first)
+        assertEquals("busy-then-up", adapter.connects[1].first)
+        assertTrue(
+            "expected a retry log line",
+            adapter.logs.any { it.contains("Native slot busy; retrying") },
+        )
+    }
+
+    /**
+     * T2. NATIVE_BUSY on attempts 1 and 2 → retry → success on attempt 3.
+     *
+     * Verifies the retry budget is honoured: three dial attempts for one server.
+     */
+    @Test
+    fun nativeBusyRetrySucceedsOnThirdAttempt() = runBlocking {
+        adapter.scriptBusy("busy-busy-up", false, false, true)
+        val c = controller(
+            servers = listOf(server("busy-busy-up")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        assertEquals(
+            "expected two retries of the same server",
+            3, adapter.connects.size,
+        )
+    }
+
+    /**
+     * T3. NATIVE_BUSY on all 3 attempts → terminal ERROR_NATIVE_UNRESOLVED
+     * after exactly 2 delays.
+     *
+     * Verifies the terminal state is byte-identical to the pre-fix behaviour:
+     * same error code, same log line, same job=null, same return.
+     */
+    @Test
+    fun nativeBusyAllRetriesFailTerminal() = runBlocking {
+        adapter.scriptBusy("always-busy", false, false, false)
+        val c = controller(
+            servers = listOf(server("always-busy")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Error, got $s", s is AutoModeState.Error)
+        assertEquals(
+            "terminal error code must be unchanged",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (s as AutoModeState.Error).message,
+        )
+        assertEquals(
+            "terminal log line must be unchanged",
+            "[AUTO] Native slot still owned by an unresolved operation; " +
+                    "stopping without blaming this server",
+            adapter.logs.lastOrNull { it.contains("Native slot still owned") },
+        )
+        assertEquals(
+            "expected exactly 3 dial attempts (1 initial + 2 retries)",
+            3, adapter.connects.size,
+        )
+        val retryLogs = adapter.logs.filter { it.contains("Native slot busy; retrying") }
+        assertEquals(
+            "expected exactly 2 retry log lines (one per retry)",
+            2, retryLogs.size,
+        )
+    }
+
+    /**
+     * T4. Cancellation during the retry delay terminates cleanly and leaves
+     * no dangling job or leaked coroutine.
+     *
+     * The delay() inside the retry loop is cancellable: cancelling the scope
+     * mid-wait must stop the run without publishing a terminal state from
+     * the retry path and without leaving job active.
+     */
+    @Test
+    fun nativeBusyCancellationDuringRetryIsClean() = runBlocking {
+        adapter.scriptBusy("cancel-me", false, false, false)
+        val c = controller(
+            servers = listOf(server("cancel-me")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 1_000,
+        )
+        c.start()
+        // Let the first attempt + first retry delay begin.
+        kotlinx.coroutines.delay(200)
+        c.stop()
+        kotlinx.coroutines.delay(1_500)
+        assertFalse("job must not remain active after stop", c.isRunning)
+        // No terminal state should have been published by the retry path.
+        assertTrue(
+            "state should be Disconnected after clean stop, got ${c.state.value}",
+            c.state.value is AutoModeState.Disconnected,
+        )
+    }
+
+    /**
+     * T5. Normal flow (no NATIVE_BUSY) is unchanged: one attempt, no delay,
+     * no extra log lines.
+     *
+     * Guards the retry path against firing when the outcome is TUNNEL_UP or
+     * TIMED_OUT — the common case must not pay a retry delay.
+     */
+    @Test
+    fun nativeBusyDoesNotFireOnSuccess() = runBlocking {
+        val c = controller(
+            servers = listOf(server("plain-success")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        assertEquals(
+            "normal flow makes exactly one dial attempt",
+            1, adapter.connects.size,
+        )
+        assertFalse(
+            "no retry log line on the success path",
+            adapter.logs.any { it.contains("Native slot busy; retrying") },
+        )
+    }
+
+    /**
+     * T6. Per-server retry budget exhausts BEFORE the count limit → terminal
+     * ERROR_NATIVE_UNRESOLVED via the BUDGET message, not the count message.
+     *
+     * Budget accounting is nominal (one NATIVE_BUSY_RETRY_DELAY_MS per scheduled
+     * delay), so injecting a 3000ms budget makes the SECOND retry's gate
+     * (2000 + 2000 = 4000 > 3000) trip before the third attempt is ever dialled.
+     * This pins §8.4: the budget is a distinct terminal cause from count
+     * exhaustion (§8.5), with its own log line.
+     */
+    @Test
+    fun nativeBusyPerServerBudgetExhaustsBeforeCountLimit() = runBlocking {
+        adapter.scriptBusy("budget-cap", false, false, false)
+        val c = controller(
+            servers = listOf(server("budget-cap")),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+            // 3000ms: retry 1 (0+2000) passes, retry 2 (2000+2000=4000) trips.
+            perServerRetryDelayBudgetMs = 3_000,
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Error, got $s", s is AutoModeState.Error)
+        assertEquals(
+            "budget exhaustion uses the same terminal code as count exhaustion",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (s as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the budget-exhaustion message must be logged",
+            adapter.logs.any { it.contains("Per-server retry budget exceeded") },
+        )
+        assertFalse(
+            "the count-exhaustion message must NOT be logged when the budget tripped first",
+            adapter.logs.any { it.contains("Native slot still owned") },
+        )
+        assertEquals(
+            "budget tripped before the 3rd attempt: exactly 2 dials (1 initial + 1 retry)",
+            2,
+            adapter.connects.size,
+        )
+    }
+
+    /**
+     * T7. TIMED_OUT is terminal for the attempt and rotates the cursor — it does
+     * NOT enter the same-server retry loop (§8.1).
+     *
+     * A two-protocol server times out on every protocol. Each protocol is dialled
+     * exactly once (no NATIVE_BUSY-style retry), the protocol cursor advances, and
+     * with no server left the run ends ERROR_NO_SERVER — the ordinary, pre-existing
+     * rotation outcome, now explicitly specified as TIMED_OUT's recovery (§8.1/§8.8).
+     */
+    @Test
+    fun timedOutRotatesCursorWithoutSameServerRetry() = runBlocking {
+        val s = server("timeout-server")
+        adapter.scriptOutcomes(
+            "timeout-server", AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
+        adapter.scriptOutcomes(
+            "timeout-server", AutoModeProtocol.SOFTETHER_UDP,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
+        val c = controller(
+            servers = listOf(s),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertTrue("expected Error, got $terminal", terminal is AutoModeState.Error)
+        assertEquals(
+            "a run where every protocol times out ends 'no compatible server'",
+            AutoModeController.ERROR_NO_SERVER,
+            (terminal as AutoModeState.Error).message,
+        )
+        assertEquals(
+            "each protocol is dialled exactly once — TIMED_OUT never retries the same server",
+            listOf(
+                "timeout-server" to AutoModeProtocol.SOFTETHER_TCP,
+                "timeout-server" to AutoModeProtocol.SOFTETHER_UDP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue(
+            "the TIMED_OUT rotation log line must be emitted",
+            adapter.logs.any { it.contains("TIMED_OUT after") && it.contains("no same-server retry") },
+        )
+        assertFalse(
+            "TIMED_OUT must never log a NATIVE_BUSY retry line",
+            adapter.logs.any { it.contains("Native slot busy; retrying") },
+        )
+    }
+
+    /**
+     * T8. TIMED_OUT then NATIVE_BUSY on the NEXT protocol → the NATIVE_BUSY loop
+     * runs with a FRESH budget for that protocol attempt (D5 scenario 1).
+     *
+     * The first protocol times out (terminal, no retry, budget untouched); the second
+     * protocol then hits NATIVE_BUSY twice and succeeds on its third attempt. Four
+     * dials total prove the retry loop started with a full budget and the timed-out
+     * protocol was dialled exactly once — had the TIMED_OUT wrongly consumed budget or
+     * entered the loop, these counts would differ.
+     */
+    @Test
+    fun timedOutThenNativeBusyRunsFreshRetryBudget() = runBlocking {
+        val s = server("mixed")
+        adapter.scriptOutcomes(
+            "mixed", AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
+        adapter.scriptOutcomes(
+            "mixed", AutoModeProtocol.SOFTETHER_UDP,
+            AutoModeController.AttemptOutcome.NATIVE_BUSY,
+            AutoModeController.AttemptOutcome.NATIVE_BUSY,
+            AutoModeController.AttemptOutcome.TUNNEL_UP,
+        )
+        val c = controller(
+            servers = listOf(s),
+            timeout = 500,
+            nativeBusyRetryDelayMs = 0,
+            // 4000ms = exactly one full 2-retry NATIVE_BUSY sequence. This makes the
+            // test discriminating: the timed-out TCP protocol must consume ZERO budget
+            // (it never enters the retry loop), leaving UDP a full 4000ms to spend on
+            // its own two retries. Had TIMED_OUT wrongly charged the budget, UDP's
+            // first retry gate (4000 + 2000 > 4000) would trip and terminate the run.
+            perServerRetryDelayBudgetMs = 4_000,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertTrue("expected Connected, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals(
+            "TCP timed out once; UDP was dialled three times (initial + 2 fresh retries)",
+            4,
+            adapter.connects.size,
+        )
+        assertEquals(
+            "the timed-out protocol was dialled exactly once",
+            1,
+            adapter.connects.count { it.second == AutoModeProtocol.SOFTETHER_TCP },
+        )
+        assertEquals(
+            "the busy protocol received a full 3-attempt retry loop (fresh budget)",
+            3,
+            adapter.connects.count { it.second == AutoModeProtocol.SOFTETHER_UDP },
+        )
     }
 }

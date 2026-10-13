@@ -237,12 +237,14 @@
     <string name="l2tp_tap_to_connect">۲. روی اتصال VPN ساخته‌شده ضربه بزنید تا وصل شود</string>
     <!-- Auto Mode -->
     <string name="auto_mode">حالت خودکار</string>
-    <string name="setting_auto_protocol_label">پروتکل پیش‌فرض VPN</string>
     <string name="setting_auto_protocol_priority_label">اولویت پروتکل‌های اتصال خودکار</string>
     <string name="setting_auto_protocol_priority_hint">پروتکل‌ها را فعال و مرتب کنید؛ اتصال خودکار روی هر سرور به‌ترتیب از بالا آن‌ها را امتحان می‌کند.</string>
-    <string name="setting_auto_protocol_priority_default">پیش‌فرض (تک پروتکل)</string>
+    <string name="setting_auto_protocol_priority_default">هیچ‌کدام فعال نیست</string>
     <string name="setting_auto_protocol_priority_rank">اولویت #%1$d</string>
     <string name="setting_auto_timeout_label">مدت انتظار اتصال حالت خودکار</string>
+    <string name="setting_auto_reconnect_label">اتصال همیشکی اتوکانکت</string>
+    <string name="setting_auto_reconnect_hint">در صورت قطع غیرمنتظره اتصال در حالت خودکار، به‌طور خودکار تلاش به reconnect می‌شود.</string>
+    <string name="error_reconnect_limit">محدودیت تلاش برای اتصال مجدد به پایان رسید</string>
     <string name="setting_softether_max_connections_label">حداکثر اتصالات همزمان SoftEther</string>
     <string name="setting_softether_max_connections_value">%1$d اتصال</string>
     <string name="auto_mode_state_disconnected">قطع</string>
@@ -256,6 +258,7 @@
     <string name="auto_mode_server_protocol">پروتکل: %1$s</string>
     <string name="auto_mode_server_speed">سرعت: %1$d مگابیت</string>
     <string name="auto_mode_server_ping">پینگ: %1$d میلی‌ثانیه</string>
+    <string name="auto_mode_error_no_enabled_protocol">هیچ پروتکلی فعال نیست. لطفاً حداقل یک پروتکل را در اولویت پروتکل اتصال خودکار فعال کنید.</string>
     <string name="auto_mode_error_no_server">اتصال به هیچ سرور قابل‌دستیابی ممکن نشد.</string>
     <string name="auto_mode_error_generic">حالت خودکار ناموفق بود. برای تلاش مجدد ضربه بزنید.</string>
     <string name="auto_mode_error_vpn_permission">حالت خودکار به مجوز VPN نیاز دارد. لطفاً اجازه دهید و دوباره تلاش کنید.</string>
@@ -309,6 +312,8 @@
     <string name="app_icon">آیکون برنامه</string>
     <string name="add_apps_to_exclude">افزودن برنامه‌های مستثنا</string>
     <string name="exclude_app_description">برنامه‌های انتخاب‌شده از تونل VPN عبور نمی‌کنند و از اتصال اینترنت معمولی استفاده می‌کنند</string>
+    <string name="excluded_apps_section_user">برنامه‌های کاربر</string>
+    <string name="excluded_apps_section_system">برنامه‌های سیستمی</string>
     <string name="search_apps_hint">جستجوی برنامه‌ها…</string>
     <string name="exclude_apps_text">مستثنا کردن %d برنامه از VPN</string>
     <string name="apps_updated_successfully">برنامه‌ها با موفقیت به‌روزرسانی شدند</string>
@@ -346,4 +351,10 @@
     <string name="softether_session_setup">برقراری نشست SoftEther…</string>
     <string name="softether_disconnecting">در حال قطع اتصال SoftEther…</string>
     <string name="error_unknown">خطای نامشخصی رخ داد. لطفاً دوباره تلاش کنید.</string>
+    <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_interval_label">فاصله بروزرسانی لیست سرورها</string>
+    <string name="setting_server_update_interval_subtitle">لیست سرورها چند وقت یک‌بار به‌صورت خودکار بروزرسانی شود. شما همیشه می‌توانید دستی بروزرسانی کنید.</string>
+    <string name="setting_server_update_interval_hours">هر %1$d ساعت</string>
+    <string name="setting_server_update_interval_1h">هر ساعت</string>
+    <string name="setting_server_update_interval_24h">هر روز</string>
 </resources>

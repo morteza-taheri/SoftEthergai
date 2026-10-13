@@ -24,28 +24,35 @@ android {
             useLegacyPackaging = true
         }
     }
+    // ── Release signing resolution ──────────────────────────────────────
+    // Resolve credentials once at the android-block scope so both the
+    // signingConfigs block and the fail-closed guard below can read them.
+    // Password resolution order: SIGN_KEY_PASSWORD env var (CI) →
+    // signKeyPassword in local.properties (developer machines, never
+    // committed).
+    def releaseKeystoreFile = file("../keyStore/release.jks")
+    def localProps = new Properties()
+    def localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        localPropsFile.withInputStream { localProps.load(it) }
+    }
+    def releaseSignPassword = System.getenv("SIGN_KEY_PASSWORD") ?: localProps.getProperty("signKeyPassword")
+    // When the release keystore or password is unavailable, the debug
+    // keystore fallback is used for DEBUG variants only. Release variants
+    // are blocked by the fail-closed guard after the buildTypes block.
+    def hasReleaseSigningConfig = releaseKeystoreFile.exists() && releaseSignPassword != null
+
     signingConfigs {
-        // When the release keystore is not present locally (it is blackbox-
-        // encrypted and only deployed on CI), fall back to the default debug
-        // keystore so every variant can build without secrets.
-        // Password resolution order: SIGN_KEY_PASSWORD env var (CI) →
-        // signKeyPassword in local.properties (developer machines, never
-        // committed) → debug keystore.
-        def keystoreFile = file("../keyStore/release.jks")
-        def localProps = new Properties()
-        def localPropsFile = rootProject.file("local.properties")
-        if (localPropsFile.exists()) {
-            localPropsFile.withInputStream { localProps.load(it) }
-        }
-        def signPassword = System.getenv("SIGN_KEY_PASSWORD") ?: localProps.getProperty("signKeyPassword")
-        if (keystoreFile.exists() && signPassword != null) {
+        if (hasReleaseSigningConfig) {
             pro {
-                storeFile keystoreFile
-                storePassword String.valueOf(signPassword)
+                storeFile releaseKeystoreFile
+                storePassword String.valueOf(releaseSignPassword)
                 keyAlias "key_pro"
-                keyPassword String.valueOf(signPassword)
+                keyPassword String.valueOf(releaseSignPassword)
             }
         } else {
+            // Debug-keystore fallback — DEBUG variants only.
+            // Release variants will fail-closed via the task-graph guard.
             def debugKeystore = file("${System.getProperty('user.home')}/.android/debug.keystore")
             pro {
                 storeFile debugKeystore
@@ -75,6 +82,36 @@ android {
 
         debug {
             versionNameSuffix "-dev"
+        }
+    }
+
+    // ── Fail-closed guard for release variants ──────────────────────────
+    // If the release keystore or password was not available at configuration
+    // time, prevent any release assembly/bundle/package task from executing.
+    // This avoids silently producing a debug-signed "release" APK.
+    // Debug variants are unaffected — they use the debug-keystore fallback.
+    if (!hasReleaseSigningConfig) {
+        gradle.taskGraph.whenReady { graph ->
+            def releaseBuildRequested = graph.allTasks.any { task ->
+                task.project == project &&
+                task.name.matches(/(assemble|bundle|package).*Release/)
+            }
+            if (releaseBuildRequested) {
+                def missing = []
+                if (!releaseKeystoreFile.exists()) {
+                    missing.add("release keystore file (keyStore/release.jks)")
+                }
+                if (releaseSignPassword == null) {
+                    missing.add("SIGN_KEY_PASSWORD (env var or signKeyPassword in local.properties)")
+                }
+                throw new GradleException(
+                    "Release build blocked: release signing configuration is incomplete.\n" +
+                    "Missing: ${missing.join(', ')}.\n" +
+                    "Hint: Set SIGN_KEY_PASSWORD env var or signKeyPassword in local.properties, " +
+                    "and ensure the release keystore is present (via blackbox_postdeploy on CI) " +
+                    "before building a release variant."
+                )
+            }
         }
     }
     androidComponents {

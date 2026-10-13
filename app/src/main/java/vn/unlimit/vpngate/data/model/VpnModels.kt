@@ -24,6 +24,57 @@ object VpnProtocolNames {
 }
 
 /**
+ * Where a port value came from.
+ *
+ * A port the source published is EXPLICIT evidence. A port the protocol
+ * defines for itself is a DEFAULT, used only when the source confirms the
+ * capability but publishes no port. UNKNOWN means the source supplied
+ * nothing — and must never be turned into a value.
+ *
+ * Stage 2F-A (L-1): UNKNOWN is ONE canonical literal. It used to be the
+ * empty string while the database default and several comments spelled it
+ * "UNKNOWN", so the same state had two representations and any code that
+ * asked "is this provenance known?" was reading one of them by accident.
+ * [UNKNOWN] is now the only spelling, [normalized] folds every defensive
+ * variant onto it, and nothing may infer a port from it.
+ */
+object VpnPortSource {
+    const val EXPLICIT = "EXPLICIT"
+    const val DEFAULT = "DEFAULT"
+    const val UNKNOWN = "UNKNOWN"
+
+    /**
+     * Canonicalize any provenance value that reaches the model.
+     *
+     * Reads a stored column, a parceled field or a record-layer entry, all of
+     * which may predate [UNKNOWN] becoming a literal and may therefore be
+     * null, empty or unrecognised. Only the two values that actually carry
+     * meaning survive; everything else is [UNKNOWN], which is the safe
+     * direction: an unknown provenance can never become a port.
+     */
+    fun normalized(value: Any?): String = when (value?.toString()?.trim()?.uppercase()) {
+        EXPLICIT -> EXPLICIT
+        DEFAULT -> DEFAULT
+        else -> UNKNOWN
+    }
+}
+
+/**
+ * Protocol-level connection defaults.
+ *
+ * These are NOT source data. They may only be used for a capability the
+ * source has already confirmed, and they are always recorded as DEFAULT so
+ * they can never be mistaken for a published port.
+ */
+object VpnProtocolDefaults {
+    /** MS-SSTP's protocol-standard TCP listener (RFC 8245 / VPN Gate). */
+    const val SSTP_PORT = 443
+
+    /** L2TP's IANA-assigned UDP listener (RFC 3931). */
+    const val L2TP_PORT = 1701
+}
+
+/**
  * Pluggable sink so unit tests (JVM) and the app (Logcat) both work.
  *
  * Developer Mode gate (Settings): when disabled, every collector log call
@@ -116,6 +167,32 @@ object VpnUtil {
 object VpnRecords {
     const val SCHEMA_VERSION = "4.0"
 
+    /**
+     * Stage 2F-A (L-1): is this value "nothing is set here yet" for [path]?
+     *
+     * The oracle's rule is that a falsy value never overwrites a meaningful
+     * one. That rule used to cover port provenance for free, because UNKNOWN
+     * was the empty string. UNKNOWN is now a real literal, so a freshly
+     * constructed record holds a non-empty sentinel in every `portSource`
+     * leaf — and a plain falsy check would read that sentinel as a meaningful
+     * value and refuse every later EXPLICIT/DEFAULT write from a parser.
+     *
+     * The rule is therefore applied to provenance leaves only, so a data string
+     * that happens to read "UNKNOWN" (an operator name, a message) is still
+     * treated as real data.
+     */
+    private fun isUnset(path: String, value: Any?): Boolean = when (value) {
+        null -> true
+        is String -> value.isEmpty() ||
+            (path.endsWith(PORT_SOURCE_FIELD) && value == VpnPortSource.UNKNOWN)
+        is Boolean -> !value
+        is Number -> value.toDouble() == 0.0
+        is List<*> -> value.isEmpty()
+        else -> false
+    }
+
+    private const val PORT_SOURCE_FIELD = ".portSource"
+
     fun newServer(): VpnServerRecord {
         val rec = LinkedHashMap<String, Any?>()
         rec["schemaVersion"] = SCHEMA_VERSION
@@ -143,24 +220,43 @@ object VpnRecords {
         rec["protocols"] = linkedMapOf<String, Any?>(
             VpnProtocolNames.SOFTETHER to linkedMapOf<String, Any?>(
                 "supported" to false,
-                "tcp" to linkedMapOf<String, Any?>("supported" to false, "port" to null),
-                "udp" to linkedMapOf<String, Any?>("supported" to false, "port" to null, "dynamicPort" to false),
+                "tcp" to linkedMapOf<String, Any?>(
+                    "supported" to false,
+                    "port" to null,
+                    "portSource" to VpnPortSource.UNKNOWN,
+                ),
+                "udp" to linkedMapOf<String, Any?>(
+                    "supported" to false,
+                    "port" to null,
+                    "portSource" to VpnPortSource.UNKNOWN,
+                    "dynamicPort" to false,
+                ),
             ),
             VpnProtocolNames.OPENVPN to linkedMapOf<String, Any?>(
                 "supported" to false,
-                "tcp" to linkedMapOf<String, Any?>("supported" to false, "port" to null),
-                "udp" to linkedMapOf<String, Any?>("supported" to false, "port" to null),
+                "tcp" to linkedMapOf<String, Any?>(
+                    "supported" to false,
+                    "port" to null,
+                    "portSource" to VpnPortSource.UNKNOWN,
+                ),
+                "udp" to linkedMapOf<String, Any?>(
+                    "supported" to false,
+                    "port" to null,
+                    "portSource" to VpnPortSource.UNKNOWN,
+                ),
                 "configAvailable" to false,
                 "configs" to mutableListOf<OpenVpnRemote>(),
             ),
             VpnProtocolNames.L2TP_IPSEC to linkedMapOf<String, Any?>(
                 "supported" to false,
                 "port" to null,
+                "portSource" to VpnPortSource.UNKNOWN,
             ),
             VpnProtocolNames.SSTP to linkedMapOf<String, Any?>(
                 "supported" to false,
                 "hostname" to "",
                 "port" to null,
+                "portSource" to VpnPortSource.UNKNOWN,
             ),
         )
         rec["sources"] = mutableListOf<String>()
@@ -180,6 +276,12 @@ object VpnRecords {
     /**
      * Set a nested field and remember which source supplied it.
      * Empty values do not overwrite meaningful values.
+     *
+     * Stage 2F-A (L-1): "empty" is [isUnset], which also treats the canonical
+     * UNKNOWN provenance as unset. UNKNOWN used to be the empty string, so
+     * every freshly constructed record already carried a non-empty sentinel in
+     * each `portSource` leaf and this check would have read it as a meaningful
+     * value, refusing every later EXPLICIT/DEFAULT write from a parser.
      */
     fun setField(
         record: VpnServerRecord,
@@ -188,12 +290,7 @@ object VpnRecords {
         source: String,
         overwrite: Boolean = false,
     ) {
-        val empty = value == null ||
-            (value is String && value.isEmpty()) ||
-            (value is Boolean && !value) ||
-            (value is Number && value.toDouble() == 0.0) ||
-            (value is List<*> && value.isEmpty())
-        if (empty) return
+        if (isUnset(path, value)) return
 
         val parts = path.split(".")
         var obj: MutableMap<String, Any?> = record
@@ -208,13 +305,8 @@ object VpnRecords {
         }
         val leaf = parts.last()
         val old = obj[leaf]
-        val oldEmpty = old == null ||
-            (old is String && old.isEmpty()) ||
-            (old is Boolean && !old) ||
-            (old is Number && old.toDouble() == 0.0) ||
-            (old is List<*> && old.isEmpty())
 
-        if (overwrite || oldEmpty) {
+        if (overwrite || isUnset(path, old)) {
             obj[leaf] = value
         }
 

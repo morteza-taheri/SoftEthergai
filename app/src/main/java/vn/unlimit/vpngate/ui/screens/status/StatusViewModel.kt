@@ -244,11 +244,11 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
         try {
             val intent = Intent(appContext, OpenVPNService::class.java)
             OpenVPNService.mDisplaySpeed =
-                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
             SoftEtherVpnService.mDisplaySpeed =
-                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
             SstpVpnService.mDisplaySpeed =
-                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
             intent.action = OpenVPNService.START_SERVICE
             appContext.bindService(intent, mConnection, Context.BIND_AUTO_CREATE)
         } catch (ex: Exception) {
@@ -923,11 +923,13 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             mVpnGateConnection!!.ip!!
         }
         val isUdpOnly = mVpnGateConnection!!.isUdpOnly
-        val serverPort = when {
-            isUdpOnly -> mVpnGateConnection!!.seUdpPort
-            useTcp -> mVpnGateConnection!!.seTcpPort
-            else -> mVpnGateConnection!!.seUdpPort
-        }
+        // serverPort is the server's TCP listener port for EVERY transport
+        // (the native stack uses it only for the TCP connect and the login
+        // PACK). SoftEther UDP accelerates over that same TCP control channel
+        // and learns the UDP endpoint from the server's Welcome PACK or the
+        // NAT-T rendezvous, so a UDP port must never be passed here.
+        // 0 = no TCP listener published (UDP-only server).
+        val serverPort = mVpnGateConnection!!.seTcpPort
         val config = vn.unlimit.softether.model.ConnectionConfig(
             serverHost = serverHost,
             serverPort = serverPort,
@@ -1023,7 +1025,7 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             )
             putString(OscPrefKey.HOME_USERNAME.toString(), "vpn")
             putString(OscPrefKey.HOME_PASSWORD.toString(), "vpn")
-            putString(OscPrefKey.SSL_PORT.toString(), mVpnGateConnection!!.tcpPort.toString())
+            putString(OscPrefKey.SSL_PORT.toString(), mVpnGateConnection!!.sstpConnectPort.toString())
             putStringSet(OscPrefKey.ROUTE_EXCLUDED_APPS.toString(), excludedPackageNames)
         }
         update {
@@ -1067,7 +1069,7 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             }
             SstpVpnService.notificationTargetActivity = targetClass
             SstpVpnService.mDisplaySpeed =
-                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)
+                dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED)
         }
         val intent = Intent(appContext, SstpVpnService::class.java).setAction(action)
         if (action == ACTION_VPN_CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1106,16 +1108,26 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
         try {
             val useUdp = dataUtil.getBooleanSetting(DataUtil.LAST_CONNECT_USE_UDP, false)
             dataUtil.setBooleanSetting(DataUtil.LAST_CONNECT_USE_UDP, useUdp)
+            val connection = mVpnGateConnection ?: run {
+                Log.w(TAG, "loadVpnProfile: no server selected")
+                return false
+            }
             val data = if (useUdp) {
-                mVpnGateConnection!!.openVpnConfigDataUdp!!.toByteArray()
+                connection.openVpnConfigDataUdp
             } else {
-                mVpnGateConnection!!.openVpnConfigData!!.toByteArray()
+                connection.openVpnConfigData
+            }
+            if (data.isNullOrEmpty()) {
+                // A stored server may carry an OpenVPN port but no profile.
+                // Report an unloadable profile instead of throwing.
+                Log.w(TAG, "loadVpnProfile: no OpenVPN config stored for ${connection.hostName}")
+                return false
             }
             val cp = ConfigParser()
-            val isr = InputStreamReader(ByteArrayInputStream(data))
+            val isr = InputStreamReader(ByteArrayInputStream(data.toByteArray()))
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
-            vpnProfile!!.mName = mVpnGateConnection!!.getName(useUdp)
+            vpnProfile!!.mName = connection.getName(useUdp)
             vpnProfile?.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             excludeAppsManager.configureSplitTunneling(vpnProfile)
             vpnProfile!!.mOverrideDNS = true

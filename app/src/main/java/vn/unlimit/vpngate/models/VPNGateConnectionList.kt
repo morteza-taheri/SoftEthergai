@@ -48,6 +48,18 @@ class VPNGateConnectionList : Parcelable {
         return this
     }
 
+    /**
+     * Drops the keyword applied by [filter].
+     *
+     * [advancedFilter] and [sort] rebuild their query from the current
+     * [mKeyword], so a keyword left over from an earlier search would silently
+     * re-apply itself to every later query on this shared instance. Callers
+     * that no longer search must clear it explicitly.
+     */
+    fun clearKeyword() {
+        mKeyword = null
+    }
+
     private fun getFilterQuery(): String {
         if (mKeyword != null) {
             val keyword = mKeyword!!.lowercase(Locale.getDefault()).replace("'", "''")

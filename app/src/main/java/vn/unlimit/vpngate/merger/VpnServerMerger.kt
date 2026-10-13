@@ -1,5 +1,7 @@
 package vn.unlimit.vpngate.merger
 
+import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
@@ -269,23 +271,27 @@ object VpnServerMerger {
             VpnRecords.bool(VpnRecords.transport(ov, "udp")["supported"]) ||
             VpnRecords.bool(ov["configAvailable"])
 
-        // Validate ports.
+        // Validate ports. A port that fails validation loses its
+        // provenance too: a null port is never "explicit".
         for (protocolName in listOf("softether", "openvpn")) {
             val proto = VpnRecords.map(p[protocolName])
             for (transportName in listOf("tcp", "udp")) {
                 val transport = VpnRecords.transport(proto, transportName)
                 if (!VpnUtil.validPort(transport["port"])) {
                     transport["port"] = null
+                    transport["portSource"] = VpnPortSource.UNKNOWN
                 }
             }
         }
 
         if (!VpnUtil.validPort(l2["port"])) {
             l2["port"] = null
+            l2["portSource"] = VpnPortSource.UNKNOWN
         }
 
         if (!VpnUtil.validPort(sstp["port"])) {
             sstp["port"] = null
+            sstp["portSource"] = VpnPortSource.UNKNOWN
         }
 
         // SSTP may still be supported when hostname is present.
@@ -294,7 +300,22 @@ object VpnServerMerger {
 
         // If L2TP supported and port absent, 1701 is the protocol port.
         if (VpnRecords.bool(l2["supported"])) {
-            l2["port"] = 1701
+            l2["port"] = VpnProtocolDefaults.L2TP_PORT
+            l2["portSource"] = VpnPortSource.DEFAULT
+        }
+
+        // Confirmed capability with no published SSTP port means the
+        // protocol default applies — never an invented cross-protocol
+        // port such as the OpenVPN TCP port.
+        //
+        // Stage 2F-A (L-1): this test used to be "portSource is empty",
+        // which was the old UNKNOWN representation. Now that UNKNOWN is a
+        // real literal, an empty/absent provenance still has to mean the
+        // same thing, so the check is made against the canonical value.
+        if (VpnRecords.bool(sstp["supported"]) &&
+            VpnPortSource.normalized(sstp["portSource"]) == VpnPortSource.UNKNOWN
+        ) {
+            sstp["portSource"] = VpnPortSource.DEFAULT
         }
 
         // Convert uptime to reasonable float.

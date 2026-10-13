@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.outlined.Launch
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Reorder
 import androidx.compose.material.icons.outlined.Router
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Timer
@@ -89,11 +91,18 @@ import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.data.model.CollectorLog
 import vn.unlimit.vpngate.provider.BaseProvider
+import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.utils.DnsPresets
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
 import java.text.DateFormat
+
+/**
+ * Index of the 12-hour entry in `DataUtil.serverListUpdateIntervalOptions`.
+ * Used only as a UI fallback if the stored value somehow matches no option.
+ */
+private const val DEFAULT_SERVER_UPDATE_INTERVAL_INDEX = 3
 
 /**
  * Redesigned Settings screen: sleek, well-ordered Material 3 layout with compact
@@ -115,7 +124,9 @@ fun SettingsScreen(
     val excludeAppsManager = remember { ExcludeAppsManager(context) }
 
     // ---- Setting states
-    var notifySpeed by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, true)) }
+    var notifySpeed by remember {
+        mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED))
+    }
     var blockAds by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false)) }
     var includeUdp by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)) }
     var useCustomDns by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)) }
@@ -152,26 +163,34 @@ fun SettingsScreen(
     var developerMode by remember { mutableStateOf(dataUtil.getDeveloperMode()) }
     var excludedAppsCount by remember { mutableStateOf(excludeAppsManager.getExcludedAppsCount()) }
     var showExcludedApps by remember { mutableStateOf(false) }
-    var autoProtocol by remember {
-        mutableStateOf(
-            AutoModeProtocol.fromId(
-                dataUtil.getStringSetting(DataUtil.SETTING_DEFAULT_VPN_PROTOCOL, null),
-            ),
-        )
-    }
     var autoTimeout by remember { mutableStateOf(dataUtil.getAutoModeTimeoutSeconds()) }
+    // R8 (§11.13): Auto-Reconnect in Auto Mode toggle state.
+    var autoReconnect by remember { mutableStateOf(dataUtil.getAutoReconnectInAutoMode()) }
     var softetherMaxConnections by remember { mutableStateOf(dataUtil.getSoftEtherMaxConnections()) }
     var cacheExpires by remember { mutableStateOf(dataUtil.connectionCacheExpires) }
+    // Scheduled server list refresh interval, in hours (1..24, default 12).
+    var serverUpdateInterval by remember {
+        mutableStateOf(dataUtil.getServerListUpdateIntervalHours())
+    }
 
     // Dialog picker visibility
     var showThemePicker by remember { mutableStateOf(false) }
     var showLanguagePicker by remember { mutableStateOf(false) }
     var showStartupPicker by remember { mutableStateOf(false) }
     var showCacheTimePicker by remember { mutableStateOf(false) }
-    var showAutoProtocolPicker by remember { mutableStateOf(false) }
     var showProtocolPriorityDialog by remember { mutableStateOf(false) }
     var showAutoTimeoutPicker by remember { mutableStateOf(false) }
     var showSoftetherConnectionsPicker by remember { mutableStateOf(false) }
+    var showServerUpdateIntervalPicker by remember { mutableStateOf(false) }
+
+    val serverUpdateIntervalOptions = remember { dataUtil.serverListUpdateIntervalOptions }
+    val serverUpdateIntervalLabels = serverUpdateIntervalOptions.map { hours ->
+        when (hours) {
+            1 -> stringResource(R.string.setting_server_update_interval_1h)
+            24 -> stringResource(R.string.setting_server_update_interval_24h)
+            else -> stringResource(R.string.setting_server_update_interval_hours, hours)
+        }
+    }
 
     val applyNextConnectionNote = stringResource(R.string.setting_apply_on_next_connection_time)
     val showImportOptions = remember { App.isImportToOpenVPN }
@@ -469,13 +488,8 @@ fun SettingsScreen(
             // ---------------- Auto Mode section
             item {
                 SettingsSection(title = stringResource(R.string.auto_mode)) {
-                    SettingValueRow(
-                        title = stringResource(R.string.setting_auto_protocol_label),
-                        value = autoProtocol.id.lowercase().replace('_', ' '),
-                        icon = Icons.Outlined.VpnLock,
-                        onClick = { showAutoProtocolPicker = true },
-                    )
-                    SettingDivider()
+                    // No "Default VPN Protocol" row: Auto Connect Protocol
+                    // Priority below is the only source of protocol order.
                     SettingValueRow(
                         title = stringResource(R.string.setting_auto_protocol_priority_label),
                         value = dataUtil.getAutoModeProtocolPriority()
@@ -490,6 +504,18 @@ fun SettingsScreen(
                         value = "$autoTimeout s",
                         icon = Icons.Outlined.Timer,
                         onClick = { showAutoTimeoutPicker = true },
+                    )
+                    SettingDivider()
+                    // R8 (§11.13): Auto-Reconnect in Auto Mode.
+                    SettingSwitchRow(
+                        title = stringResource(R.string.setting_auto_reconnect_label),
+                        subtitle = stringResource(R.string.setting_auto_reconnect_hint),
+                        icon = Icons.Outlined.Autorenew,
+                        checked = autoReconnect,
+                        onChecked = {
+                            autoReconnect = it
+                            dataUtil.setAutoReconnectInAutoMode(it)
+                        },
                     )
                     SettingDivider()
                     SettingValueRow(
@@ -531,6 +557,17 @@ fun SettingsScreen(
                             onClick = { clearListServerCache(true) },
                         )
                     }
+                    SettingDivider()
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_server_update_interval_label),
+                        value = serverUpdateIntervalLabels[
+                            serverUpdateIntervalOptions.indexOf(serverUpdateInterval)
+                                .takeIf { it >= 0 } ?: DEFAULT_SERVER_UPDATE_INTERVAL_INDEX
+                        ],
+                        subtitle = stringResource(R.string.setting_server_update_interval_subtitle),
+                        icon = Icons.Outlined.Schedule,
+                        onClick = { showServerUpdateIntervalPicker = true },
+                    )
                 }
             }
 
@@ -647,22 +684,6 @@ fun SettingsScreen(
         )
     }
 
-    if (showAutoProtocolPicker) {
-        SingleChoiceDialog(
-            title = stringResource(R.string.setting_auto_protocol_label),
-            options = AutoModeProtocol.entries.map { it.id.lowercase().replace('_', ' ') },
-            selectedIndex = AutoModeProtocol.entries.indexOf(autoProtocol),
-            onSelect = { index ->
-                autoProtocol = AutoModeProtocol.entries[index]
-                dataUtil.setStringSetting(
-                    DataUtil.SETTING_DEFAULT_VPN_PROTOCOL,
-                    autoProtocol.id,
-                )
-            },
-            onDismiss = { showAutoProtocolPicker = false },
-        )
-    }
-
     if (showProtocolPriorityDialog) {
         ProtocolPriorityDialog(
             dataUtil = dataUtil,
@@ -695,6 +716,25 @@ fun SettingsScreen(
                 dataUtil.setSoftEtherMaxConnections(values[index])
             },
             onDismiss = { showSoftetherConnectionsPicker = false },
+        )
+    }
+
+    if (showServerUpdateIntervalPicker) {
+        SingleChoiceDialog(
+            title = stringResource(R.string.setting_server_update_interval_label),
+            options = serverUpdateIntervalLabels,
+            selectedIndex = serverUpdateIntervalOptions.indexOf(serverUpdateInterval)
+                .let { if (it < 0) DEFAULT_SERVER_UPDATE_INTERVAL_INDEX else it },
+            onSelect = { index ->
+                val hours = serverUpdateIntervalOptions[index]
+                serverUpdateInterval = hours
+                dataUtil.setServerListUpdateIntervalHours(hours)
+                // Apply immediately: the user just told the app how often the
+                // list may refresh, so a due update should not wait for the
+                // next cold start.
+                ServerListUpdateScheduler.runIfDue()
+            },
+            onDismiss = { showServerUpdateIntervalPicker = false },
         )
     }
 

@@ -13,8 +13,15 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Do NOT minify the library itself. minifyEnabled here caused a
+            // *second* R8 pass (library R8 -> app R8): the library pass rewrote
+            // VpnStatus.LogListener.newLog(LogItem) -> a with a residual
+            // "()V" signature, while AutoModeModuleLogTap was compiled against
+            // the original interface. The app-level R8 pass then shipped a
+            // mismatched interface/implementation -> AbstractMethodError
+            // ("void e24.a()"). Minification stays enabled in app/build.gradle,
+            // so the final artifact is still shrunk/obfuscated exactly once.
+            minifyEnabled false
         }
     }
     compileOptions {

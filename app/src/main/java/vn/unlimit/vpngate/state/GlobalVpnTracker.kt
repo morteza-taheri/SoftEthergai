@@ -22,12 +22,28 @@ import vn.unlimit.vpngate.automode.TunnelStateWatcher
 
 /**
  * High-level connection states across all VPN protocols.
+ *
+ * This is the app-wide single source of truth for "is there a tunnel right
+ * now". Every producer (VPN services, Auto Connect, the UI) reports into
+ * [GlobalVpnTracker] and every consumer reads from it, so the service, Auto
+ * Mode and the UI can never disagree about the connection.
  */
 enum class VpnConnectionStatus {
     DISCONNECTED,
     CONNECTING,
+
+    /** A tunnel was verified as up. Never set merely because Connect was pressed. */
     CONNECTED,
-    ERROR
+
+    /** A teardown is in progress; the tunnel is not usable yet but not gone either. */
+    DISCONNECTING,
+    ERROR;
+
+    /**
+     * True while a connection attempt is in flight. Auto Connect uses this to
+     * refuse a duplicate connection instead of dialling a second server.
+     */
+    val isBusy: Boolean get() = this == CONNECTING || this == DISCONNECTING
 }
 
 /**
@@ -154,6 +170,38 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
             errorMessage = errorMessage
         )
     }
+
+    /**
+     * Publishes a connection *attempt*.
+     *
+     * Pressing Connect is not the same as being connected: this sets CONNECTING
+     * and leaves the state there until a stack actually reports an established
+     * tunnel, at which point the normal listeners move it to CONNECTED. That is
+     * what stops the UI from claiming a working VPN the moment the button is
+     * tapped.
+     */
+    fun reportConnecting(protocol: String, serverHost: String? = null, serverIp: String? = null) {
+        // A tunnel that is already up is not "connecting" — a second attempt
+        // must not overwrite the truth with a stale intermediate state.
+        if (currentStatus == VpnConnectionStatus.CONNECTED) return
+        updateState(
+            status = VpnConnectionStatus.CONNECTING,
+            protocol = protocol,
+            serverHost = serverHost,
+            serverIp = serverIp,
+        )
+    }
+
+    /**
+     * Publishes a teardown, so a consumer that asks "can I start connecting?"
+     * during the gap gets "no, wait" instead of racing a half-closed tunnel.
+     */
+    fun reportDisconnecting() {
+        updateState(VpnConnectionStatus.DISCONNECTING)
+    }
+
+    /** Convenience for callers that only need the boolean. */
+    val isBusy: Boolean get() = currentStatus.isBusy
 
     override fun onSoftEtherStateChanged(state: String, assignedIp: String) {
         when (state) {

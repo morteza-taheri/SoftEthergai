@@ -70,6 +70,7 @@ import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.network.ServerReachabilityTester
 import vn.unlimit.vpngate.provider.BaseProvider
+import vn.unlimit.vpngate.repository.ServerListScreenPolicy
 import vn.unlimit.vpngate.state.GlobalVpnState
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 import vn.unlimit.vpngate.state.VpnConnectionStatus
@@ -79,7 +80,6 @@ import vn.unlimit.vpngate.ui.components.FullScreenLoading
 import vn.unlimit.vpngate.ui.components.FullScreenNoNetwork
 import vn.unlimit.vpngate.ui.components.ServerCard
 import vn.unlimit.vpngate.ui.components.ServerCardHighlight
-import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.viewmodels.ConnectionListViewModel
 
 /**
@@ -99,11 +99,11 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
 
     // ----- State (formerly MainActivity menu state + HomeFragment fields)
-    var list by remember { mutableStateOf<VPNGateConnectionList?>(null) }
+    // Search state and the displayed rows live together in one owner: the rows
+    // are an immutable snapshot, so a re-filtered result is a real state change.
+    val searchState = remember { ServerListSearchState() }
     var isLoading by remember { mutableStateOf(false) }
     var isError by remember { mutableStateOf(false) }
-    var isSearching by remember { mutableStateOf(false) }
-    var keyword by remember { mutableStateOf("") }
     var sortProperty by remember { mutableStateOf(dataUtil.getStringSetting(SORT_PROPERTY_KEY, "") ?: "") }
     var sortType by remember { mutableStateOf(dataUtil.getIntSetting(SORT_TYPE_KEY, VPNGateConnectionList.ORDER.ASC)) }
     var activeFilter by remember { mutableStateOf<VPNGateConnectionList.Filter?>(null) }
@@ -130,43 +130,55 @@ fun HomeScreen(
 
     // ----- Data helpers (same threading model as HomeFragment)
     fun applyView(listModel: VPNGateConnectionList?, emptyRes: Int?) {
-        list = listModel
+        searchState.publish(listModel)
         emptyMessageRes = emptyRes
     }
 
     fun refreshView() {
-        scope.launch(Dispatchers.IO) {
+        // Read every query input here, on the main thread, so the background
+        // pass never reads Compose state from another thread and so a slow
+        // query cannot pick up a newer keyword half way through.
+        val query = searchState.effectiveKeyword()
+        val currentFilter = activeFilter
+        val currentSort = sortProperty
+        val currentSortType = sortType
+        val searching = searchState.isSearching
+        searchState.startRefresh(scope) {
+            val (result, emptyRes) = withContext(Dispatchers.IO) {
             val base = connectionListViewModel.vpnGateConnectionList.value
-            var result = base?.advancedFilter(activeFilter)
-            if (isSearching && keyword.isNotEmpty()) {
-                result = result?.filter(keyword)
+            // The shared model remembers the last keyword, and advancedFilter()
+            // rebuilds its SQL from it, so drop it before the base query:
+            // otherwise a cleared or abandoned search keeps constraining the list.
+            base?.clearKeyword()
+            var result = base?.advancedFilter(currentFilter)
+            if (query.isNotEmpty()) {
+                result = result?.filter(query)
             }
-            if (result != null && sortProperty.isNotEmpty()) {
-                if (sortProperty == VPNGateConnectionList.SortProperty.REACHABILITY) {
+            if (result != null && currentSort.isNotEmpty()) {
+                if (currentSort == VPNGateConnectionList.SortProperty.REACHABILITY) {
                     // Not a database column: clear the SQL ordering and let
                     // the in-memory quick-test ordering (serverItems) do it.
-                    result.sort(null, sortType, skipProcessSort = true)
+                    result.sort(null, currentSortType, skipProcessSort = true)
                 } else {
-                    result.sort(sortProperty, sortType)
+                    result.sort(currentSort, currentSortType)
                 }
             }
             val size = result?.size() ?: 0
             val emptyRes = when {
-                size == 0 && (isSearching && keyword.isNotEmpty()) -> R.string.empty_search_result
-                size == 0 && activeFilter?.isReachableOnly == true -> R.string.empty_reachable_filter_result
-                size == 0 && activeFilter != null -> R.string.empty_filter_result
+                size == 0 && searching && query.isNotEmpty() -> R.string.empty_search_result
+                size == 0 && currentFilter?.isReachableOnly == true -> R.string.empty_reachable_filter_result
+                size == 0 && currentFilter != null -> R.string.empty_filter_result
                 size == 0 -> R.string.no_server_available
                 else -> null
             }
-            withContext(Dispatchers.Main) {
-                applyView(result, emptyRes)
+            result to emptyRes
             }
+            applyView(result, emptyRes)
         }
     }
 
     fun search(query: String) {
-        keyword = query
-        isSearching = query.isNotEmpty()
+        searchState.onQueryChanged(query)
         refreshView()
     }
 
@@ -188,7 +200,7 @@ fun HomeScreen(
     }
     LaunchedEffect(isErrorVm) {
         if (isErrorVm) {
-            val hasData = (list != null && list!!.size() > 0) || (dataUtil.connectionsCache?.size() ?: 0) > 0
+            val hasData = (searchState.rowCount > 0) || (dataUtil.connectionsCache?.size() ?: 0) > 0
             if (!hasData) {
                 isError = true
                 contentVisible = false
@@ -198,21 +210,20 @@ fun HomeScreen(
             }
         }
     }
-    // Initial load: database cache → display; network state → refresh or offline display
+    // Initial load: show what is stored. Opening the screen is not a request
+    // to refresh it — a populated list is displayed as-is, and freshness stays
+    // with the Update button and ServerListUpdateScheduler, which downloads
+    // only when an update is actually due. A list with nothing stored has
+    // nothing to show, so it loads.
     LaunchedEffect(Unit) {
         val cached = withContext(Dispatchers.IO) { dataUtil.connectionsCache }
-        val online = withContext(Dispatchers.IO) { DataUtil.isOnline(context.applicationContext) }
-        when {
-            cached != null && cached.size() > 0 -> {
-                contentVisible = true
-                refreshView()
-                if (online) {
-                    connectionListViewModel.getAPIData()
-                }
-            }
-            else -> {
-                connectionListViewModel.getAPIData()
-            }
+        val cachedCount = cached?.size() ?: 0
+        if (cachedCount > 0) {
+            contentVisible = true
+            refreshView()
+        }
+        if (ServerListScreenPolicy.shouldLoadOnOpen(cachedCount)) {
+            connectionListViewModel.getAPIData()
         }
     }
     // A successful API load also flips content visible via the isLoading observer.
@@ -225,7 +236,7 @@ fun HomeScreen(
                 connectionListViewModel.getAPIData(isUserInitiated = true)
             })
             noNetwork -> FullScreenNoNetwork()
-            !contentVisible || (isLoading && (list == null || list!!.size() == 0)) -> FullScreenLoading()
+            !contentVisible || (isLoading && searchState.rowCount == 0) -> FullScreenLoading()
             else -> {
                 val listState = rememberLazyListState()
                 var showToTop by remember { mutableStateOf(false) }
@@ -236,16 +247,15 @@ fun HomeScreen(
                         lastVisible > 0 && listState.firstVisibleItemIndex > 4
                     }.distinctUntilChanged().collect { showToTop = it }
                 }
-                BackHandler(enabled = isSearching) {
-                    isSearching = false
-                    keyword = ""
+                BackHandler(enabled = searchState.isSearching) {
+                    searchState.closeSearch()
                     refreshView()
                 }
                 Scaffold(
                     topBar = {
-                        if (isSearching) {
+                        if (searchState.isSearching) {
                             OutlinedTextField(
-                                value = keyword,
+                                value = searchState.keyword,
                                 onValueChange = { search(it) },
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -254,8 +264,7 @@ fun HomeScreen(
                                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                                 trailingIcon = {
                                     IconButton(onClick = {
-                                        isSearching = false
-                                        keyword = ""
+                                        searchState.closeSearch()
                                         refreshView()
                                     }) {
                                         Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close))
@@ -286,14 +295,14 @@ fun HomeScreen(
                                 actions = {
                                     IconButton(
                                         onClick = {
-                                            val targets = list?.toList() ?: emptyList()
+                                            val targets = searchState.rows ?: emptyList()
                                             if (targets.isNotEmpty()) {
                                                 scope.launch {
                                                     ServerReachabilityTester.testConnections(targets)
                                                 }
                                             }
                                         },
-                                        enabled = !testing && (list?.size() ?: 0) > 0,
+                                        enabled = !testing && searchState.rowCount > 0,
                                     ) {
                                         if (testing) {
                                             CircularProgressIndicator(
@@ -325,7 +334,7 @@ fun HomeScreen(
                                             )
                                         }
                                     }
-                                    IconButton(onClick = { isSearching = true }) {
+                                    IconButton(onClick = { searchState.openSearch() }) {
                                         Icon(
                                             Icons.Filled.Search,
                                             contentDescription = stringResource(R.string.search),
@@ -372,11 +381,15 @@ fun HomeScreen(
                         }
                     },
                 ) { padding ->
-                    val baseItems = remember(list) { list?.toList() ?: emptyList() }
+                    val baseItems = remember(searchState.rows) { searchState.rows ?: emptyList() }
                     // Snapshot of the quick-test results, keyed on
                     // resultsVersion so a finished probe refreshes the rows.
+                    // Stage 2F-F.14 (D10/D11): built from the SERVER_LIST
+                    // namespace only. The list is protocol-less, so it reads by
+                    // IP — but it must never pick up an Auto Connect
+                    // server/protocol verdict and render it as a quick test.
                     val reachabilitySnapshot = remember(resultsVersion) {
-                        ServerReachabilityTester.resultsMap.toMap()
+                        ServerReachabilityTester.serverListResultsMap()
                     }
                     // Quick-test view: optional healthy-only filter plus the
                     // health ordering (both in memory, never in SQL).
@@ -388,12 +401,19 @@ fun HomeScreen(
                         activeFilter?.isReachableOnly,
                     ) {
                         var items = baseItems
+                        // Stage 2F-F.28S: both the filter and the ordering read
+                        // this one snapshot, never the live result store. The
+                        // quick test mutates that store from up to 60 IO
+                        // coroutines while this list is being composed, which
+                        // is what let a comparator key change mid-sort and
+                        // crash TimSort.
                         if (activeFilter?.isReachableOnly == true) {
-                            items = ServerReachabilityTester.onlyReachable(items)
+                            items = ServerReachabilityTester.onlyReachable(items, reachabilitySnapshot)
                         }
                         if (sortProperty == VPNGateConnectionList.SortProperty.REACHABILITY) {
                             items = ServerReachabilityTester.orderByReachability(
                                 items,
+                                reachabilitySnapshot,
                                 descending = sortType == VPNGateConnectionList.ORDER.DESC,
                             )
                         }
@@ -423,7 +443,7 @@ fun HomeScreen(
                                 emptyResForView?.let {
                                     Text(
                                         if (it == R.string.empty_search_result) {
-                                            stringResource(it, keyword)
+                                            stringResource(it, searchState.keyword)
                                         } else {
                                             stringResource(it)
                                         },

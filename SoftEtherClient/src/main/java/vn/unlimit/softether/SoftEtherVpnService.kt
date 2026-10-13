@@ -48,6 +48,46 @@ class SoftEtherVpnService : VpnService() {
         fun onSoftEtherTrafficUpdated(snapshot: SoftEtherTrafficSnapshot)
     }
 
+    /**
+     * Stage 2F-F.28A-REVIEW: resource-destruction completion.
+     *
+     * Deliberately NOT expressed as a [STATE_DISCONNECTED]/[STATE_ERROR] value.
+     * Those are published the moment teardown *starts*, so the UI can react
+     * immediately, and `stopVpn` even publishes them on the re-entrant no-op
+     * path before anything is touched. Treating them as "teardown finished" is
+     * what made `AndroidConnectionAdapter.disconnect()` return while
+     * `destroyResources()` was still running.
+     *
+     * Stage 2F-F.28AA: the callback now carries a [TeardownCompletion] instead of
+     * carrying nothing. F.28Z found the argument-less form was emitted
+     * unconditionally, so a consumer could not distinguish "native cleanup
+     * confirmed" from "the wait elapsed while a connect was still running" — and
+     * therefore could not tell whether it was safe to start another native
+     * operation. The result type makes that distinction explicit and carries the
+     * teardown identity a consumer needs in order to reject a stale completion.
+     */
+    fun interface TeardownListener {
+        fun onSoftEtherTeardownComplete(result: TeardownCompletion)
+    }
+
+    /**
+     * Stage 2F-F.28AA: a start request was refused because the process-wide native
+     * slot is still owned by an unresolved native operation.
+     *
+     * This is deliberately a *separate* channel from [TeardownListener]. It is not a
+     * failure of the server that was selected — it is this application's own previous
+     * operation still finishing — and F.28Z found that Auto Mode, receiving only a
+     * silent refusal, classified it as an unreachable server and rotated through
+     * healthy servers until it reported `ERROR_NO_SERVER`.
+     *
+     * @param sessionId the session whose start was refused.
+     * @param owner a human-readable description of the still-unresolved operation, for
+     *   diagnostics. Never interpreted by callers.
+     */
+    fun interface NativeBusyListener {
+        fun onSoftEtherNativeBusy(sessionId: Int, owner: String)
+    }
+
     companion object {
         private const val TAG = "SoftEtherVpnService"
         private const val NOTIFICATION_CHANNEL_ID = "SoftEtherVPN"
@@ -58,9 +98,45 @@ class SoftEtherVpnService : VpnService() {
         private const val UPLOADED_DATA_KEY = "uploaded_data"
         private const val KEY_ULA_V6 = "ula_v6"
 
+        /**
+         * Stage 2F-F.28Y: how long teardown waits for native cleanup to be *confirmed*
+         * before it reports teardown complete anyway.
+         *
+         * Longer than the controller's own 500 ms teardown deadline, because the normal
+         * slow path is "the connect flow takes a moment longer than the deadline to come
+         * back and then frees its own handle". A wait that outlives that window keeps
+         * Auto Mode from rotating servers against a slot that is about to free up. It is
+         * still a bound: this runs on `Dispatchers.IO`, never on the main thread, and a
+         * timeout is reported rather than treated as success.
+         */
+        private const val NATIVE_CLEANUP_CONFIRM_TIMEOUT_MS = 2_000L
+
         // Actions (kept for service start/stop intents)
         const val ACTION_CONNECT = "vn.unlimit.softether.CONNECT"
         const val ACTION_DISCONNECT = "vn.unlimit.softether.DISCONNECT"
+
+        /**
+         * Stage 2F-F.28AD-B: the teardown-attempt identity a caller has already allocated
+         * for its own `ACTION_DISCONNECT`.
+         *
+         * ## Why a caller supplies it at all
+         *
+         * The attempt id is what makes a teardown completion *identifiable*, and Auto Mode
+         * needs that identity **before** it dispatches the disconnect — because it must arm a
+         * waiter for a specific teardown, and a waiter armed blind could previously be
+         * satisfied by any newer completion. The id used to be allocated only here, inside
+         * `stopVpn`, which is strictly after the waiter was armed. A caller may therefore
+         * hand its own id in so that the completion it eventually receives is the one it is
+         * actually waiting for.
+         *
+         * ## Optional by design
+         *
+         * Many callers of `ACTION_DISCONNECT` have no waiter at all (a UI disconnect button,
+         * the tracker, the notification action). They omit this extra and the service
+         * allocates an id itself, exactly as before. A supplied id is used verbatim; the
+         * service never reuses or re-interprets one.
+         */
+        const val EXTRA_TEARDOWN_ATTEMPT_ID = "vn.unlimit.softether.EXTRA_TEARDOWN_ATTEMPT_ID"
 
         // State string constants
         const val STATE_CONNECTED = "CONNECTED"
@@ -89,7 +165,80 @@ class SoftEtherVpnService : VpnService() {
 
         private val stateListeners = mutableListOf<StateListener>()
         private val trafficListeners = mutableListOf<TrafficListener>()
+        private val teardownListeners = mutableListOf<TeardownListener>()
+        private val nativeBusyListeners = mutableListOf<NativeBusyListener>()
+
+        /**
+         * Stage 2F-F.28AA: strictly increasing per `stopVpn` call.
+         *
+         * Deliberately in the companion, not an instance field: the listener registry is
+         * also static, and a service instance recreated mid-process restarts instance
+         * state. A per-instance counter would hand the new instance id `1`, which every
+         * consumer would correctly reject as older than the stale id `N` it already saw.
+         */
+        private val teardownAttemptSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /**
+         * Stage 2F-F.28AD-B: allocate the next teardown-attempt identity.
+         *
+         * Public so a caller that wants to wait for one *specific* teardown can obtain that
+         * teardown's identity up front and pass it back through
+         * [EXTRA_TEARDOWN_ATTEMPT_ID]. Without this, a waiter would have to be armed before
+         * the identity exists, and could then only be matched by recency — which is what let
+         * an unrelated newer completion satisfy it.
+         *
+         * Every id comes from this one counter, so a supplied id and a self-allocated id are
+         * directly comparable and strictly ordered.
+         */
+        fun nextTeardownAttemptId(): Int = teardownAttemptSeq.incrementAndGet()
+
         private val mainHandler = Handler(Looper.getMainLooper())
+
+        fun addTeardownListener(listener: TeardownListener) {
+            if (!teardownListeners.contains(listener)) {
+                teardownListeners.add(listener)
+            }
+        }
+
+        fun removeTeardownListener(listener: TeardownListener) {
+            teardownListeners.remove(listener)
+        }
+
+        fun addNativeBusyListener(listener: NativeBusyListener) {
+            if (!nativeBusyListeners.contains(listener)) {
+                nativeBusyListeners.add(listener)
+            }
+        }
+
+        fun removeNativeBusyListener(listener: NativeBusyListener) {
+            nativeBusyListeners.remove(listener)
+        }
+
+        /**
+         * Stage 2F-F.28AA: publish what the teardown actually achieved.
+         *
+         * The [result] is the single source of truth for a consumer. In particular this
+         * method no longer decides, by itself, that teardown "completed": it forwards the
+         * outcome decided by the coordinator (native cleanup confirmed or not) and by the
+         * stop path (real teardown, or a re-entrant no-op).
+         */
+        private fun notifyTeardownComplete(result: TeardownCompletion) {
+            mainHandler.post {
+                teardownListeners.toList().forEach { it.onSoftEtherTeardownComplete(result) }
+            }
+        }
+
+        /**
+         * Stage 2F-F.28AA: publish that a start was refused because the native slot is
+         * busy. Separate from [notifyTeardownComplete] so a refusal can never be read as
+         * a completed teardown, and so a consumer can act on it without cancelling anyone
+         * else's teardown waiter.
+         */
+        private fun notifyNativeBusy(sessionId: Int, owner: String) {
+            mainHandler.post {
+                nativeBusyListeners.toList().forEach { it.onSoftEtherNativeBusy(sessionId, owner) }
+            }
+        }
 
         fun addStateListener(listener: StateListener) {
             if (!stateListeners.contains(listener)) {
@@ -158,9 +307,31 @@ class SoftEtherVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var controller: ConnectionController? = null
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private var mWasConnected = false
+
+    /**
+     * Stage 2F-F.28J: TUN establishment is owned by a session, not by the service.
+     *
+     * This replaces a plain service-wide `vpnInterface` field. A plain field could not
+     * express *whose* descriptor it held, so a per-session ConnectionController wrote
+     * into it and a stale controller could replace a live session's descriptor — or
+     * leave the service registering a descriptor it had already closed, which the start
+     * gate would then read as a live resource and refuse every later connect.
+     *
+     * The descriptor itself is closed through [TunOwnershipCoordinator]; see that class
+     * for the ownership protocol and the locking argument.
+     */
+    private val tunOwnership =
+        TunOwnershipCoordinator<ParcelFileDescriptor> { descriptor ->
+            runCatching { descriptor.close() }
+        }
+/**
+     * Stage 2F-F.28: the session lifecycle decisions live in a testable seam.
+     * These read-only accessors keep the original names usable at call sites;
+     * every transition goes through [sessionPolicy] so the policy stays the one
+     * place that owns the flags.
+     */
+    private val sessionPolicy = SoftEtherSessionPolicy()
+    private val mWasConnected: Boolean get() = sessionPolicy.wasConnected
     private var mIsUserDisconnect = false
     private var lastStateUpdateTime = 0L
     private var pendingStateUpdate: (() -> Unit)? = null
@@ -288,7 +459,12 @@ class SoftEtherVpnService : VpnService() {
             }
             ACTION_DISCONNECT -> {
                 mIsUserDisconnect = true
-                stopVpn()
+                // Stage 2F-F.28AD-B: honour an identity the caller allocated for this very
+                // disconnect, so the completion it is waiting for is the one that arrives.
+                // Absent or malformed (non-positive) means the caller has no waiter and the
+                // service allocates an id itself, exactly as before.
+                val supplied = intent?.getIntExtra(EXTRA_TEARDOWN_ATTEMPT_ID, 0) ?: 0
+                stopVpn(suppliedAttemptId = supplied)
             }
             else -> {
                 Log.w(TAG, "Unknown action: ${intent?.action}")
@@ -318,12 +494,11 @@ class SoftEtherVpnService : VpnService() {
         val currentController = controller
         controller = null
         
-        try {
-            vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing VPN interface on destroy", e)
-        }
+        // Stage 2F-F.28J: unconditional release. Service destruction outlives every
+        // session, so a session-conditional release would be wrong here — there is no
+        // session left whose ownership could legitimately survive. Closing is also
+        // unconditional, so nothing can remain registered as a live resource.
+        tunOwnership.releaseAll()
         
         unregisterNetworkReceiver()
         notifyTrafficListeners(SoftEtherTrafficSnapshot.EMPTY)
@@ -341,14 +516,127 @@ class SoftEtherVpnService : VpnService() {
 
     @Volatile
     private var connectionJob: kotlinx.coroutines.Job? = null
-    @Volatile
-    private var isStopping = false
 
-    private fun startVpn(config: ConnectionConfig) {
-        if (isRunning) {
-            Log.w(TAG, "VPN already running")
+private fun startVpn(config: ConnectionConfig) {
+        // Stage 2F-F.28 Fix A + Stage 2F-F.28C (A-2): the start guard is
+        // RESOURCE-AWARE and total.
+        //
+        // F.28 Fix A removed the stale-state trap: `if (isRunning) return` could
+        // refuse every later connect because ConnectionController can emit
+        // DISCONNECTED on its own (keepalive/reconnect and destroyResources),
+        // which clears only wasConnected and never runs stopVpn().
+        //
+        // F.28C closed the opposite hole. `isRunning` is only set once connect()
+        // RETURNS, so during the whole initial connect window the service looked
+        // idle while controller / connectionJob / TUN were live. A second
+        // ACTION_CONNECT then replaced those fields and orphaned the in-flight
+        // session: its job was never cancelled, its controller never destroyed,
+        // and its keepalive / TunTerminal / native handle / established interface
+        // stayed alive while all of its callbacks were rejected as obsolete — a
+        // live, unowned tunnel.
+        //
+        // The decision now distinguishes idle / connected / connecting /
+        // teardown-in-progress, and is owned by the policy so it is testable.
+        // See SoftEtherSessionPolicy.decideStart for the state matrix.
+        val sessionResourcesLive =
+            controller != null || tunOwnership.isHeld() || connectionJob != null
+        val decision = sessionPolicy.decideStart(resourcesLive = sessionResourcesLive)
+        when (decision) {
+            SoftEtherSessionPolicy.StartDecision.ACCEPT -> Unit
+            SoftEtherSessionPolicy.StartDecision.REFUSE_CONNECTED ->
+                Log.w(TAG, "Start refused: a connected session already owns the service")
+            SoftEtherSessionPolicy.StartDecision.REFUSE_CONNECTING ->
+                Log.w(TAG, "Start refused: an initial connection is still in flight")
+            SoftEtherSessionPolicy.StartDecision.REFUSE_TEARDOWN ->
+                Log.w(TAG, "Start refused: teardown is in progress and still owns resources")
+        }
+        if (decision != SoftEtherSessionPolicy.StartDecision.ACCEPT) {
             return
         }
+
+        // Stage 2F-F.28W: claim the process-wide native-operation slot.
+        //
+        // The decision above is still not sufficient, and the gap it leaves is the
+        // reason this claim exists. Every resource the gate reads is Kotlin state that
+        // teardown clears *synchronously* (stopVpn: connectionJob = null,
+        // controller = null, tunOwnership.release) while dispatching the native
+        // cleanup *asynchronously* (stopVpn: serviceScope.launch(NonCancellable) {
+        // destroyResources() }). So a replacement attempt can pass the gate and reach
+        // nativeCreate() while the previous session's `nativeConnectWithHub` is still
+        // blocked in JNI — two live `softether_connection_t` structs, which is what
+        // F.28U traced.
+        //
+        // Claiming here makes admission depend on physical native lifetime instead of
+        // logical session state, and it is claimed *before* the controller exists so
+        // there is no window in which native work is running while the registry
+        // believes the process is idle.
+        //
+        // Placed after the refusal block above so a refused start cannot claim the
+        // slot, and before `onSessionStart()` so a slot cannot be claimed by a session
+        // that then fails to start.
+        val nativeLease = NativeLifetimeRegistry.process.tryAcquire()
+        if (nativeLease == null) {
+            // Fail closed. A refusal here is not an error: it is the correct answer
+            // while a previous attempt's native operation is unresolved. Nothing is
+            // queued and nothing is retried — the next start attempt will be judged
+            // again against the same registry, and will succeed once the blocking
+            // call returns and its controller releases the slot.
+            Log.w(
+                TAG,
+                "Start refused: native slot still held by an unresolved attempt " +
+                        "(${NativeLifetimeRegistry.process.describe()})",
+            )
+            // Stage 2F-F.28AA: make the refusal observable.
+            //
+            // F.28Z: this was a silent `return`, so `AndroidConnectionAdapter.connect()`
+            // looked like it had dispatched a connection that simply never came up, and
+            // Auto Mode burned the full per-attempt timeout, declared the *server*
+            // unreachable and rotated — potentially through the entire server list, ending
+            // in ERROR_NO_SERVER — while the only thing wrong was our own previous native
+            // operation still finishing.
+            //
+            // A refusal is not a server failure and must never be reported as one. Scoped
+            // to the session being started, so a refusal for an obsolete session cannot
+            // disturb a newer attempt that is already under way.
+            notifyNativeBusy(sessionPolicy.sessionGeneration, NativeLifetimeRegistry.process.describe())
+            return
+        }
+
+if (sessionPolicy.isRunning) {
+            Log.w(TAG, "Clearing stale running flag: no controller, TUN or job is live")
+        }
+
+        // Stage 2F-F.28 Fix A: a NEW connection session must not inherit the
+        // previous session's teardown latch.
+        //
+        // Before this reset, `isStopping` was written exactly once (in
+        // stopVpn) and never cleared, so the first Auto Connect attempt that
+        // failed permanently poisoned the service: handleConnectionState()
+        // discarded every later state, including CONNECTED, so
+        // TunnelStateWatcher never fired and Auto Connect reported
+        // "Protocol failed" while a real, traffic-carrying VPN existed.
+        //
+        // Reset only the per-session lifecycle state here; see the policy class
+        // for why this must happen at the start of every session.
+        //
+        // Stage 2F-F.28A-REVIEW: the returned generation is this session's
+        // identity. It is captured by the onStateChange closure below so a
+        // callback from an obsolete controller can be recognised and dropped
+        // instead of being published into the session that replaced it.
+        val session = sessionPolicy.onSessionStart()
+        // Stage 2F-F.28J: this session now owns TUN establishment.
+        //
+        // Claiming here — before the connect coroutine is launched — is what closes
+        // the remaining window in the start gate. The gate read the descriptor a few
+        // lines earlier on this same thread, but an obsolete installer publishes on a
+        // background thread, so a descriptor can appear in between. Because both this
+        // claim and that publication are serialised by the coordinator, the inherited
+        // descriptor is either discarded here or completed after this point, at which
+        // time the installer no longer owns establishment and is refused.
+        tunOwnership.claim(session)
+        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingStateRunnable = null
+        lastStateUpdateTime = 0
 
         Log.d(TAG, "Starting VPN with config: ${config.serverHost}:${config.serverPort}")
         lastTrafficSnapshot = SoftEtherTrafficSnapshot.EMPTY
@@ -358,66 +646,363 @@ class SoftEtherVpnService : VpnService() {
         currentSessionName = config.sessionName
 
         connectionJob = serviceScope.launch {
+            // Stage 2F-F.28W: ownership of the native slot is handed to the
+            // controller at construction. Until that succeeds this coroutine still
+            // owns it, and it must release it itself — otherwise a session that
+            // fails during controller construction would claim the process-wide slot
+            // forever and every later connection would be refused.
+            //
+            // Deliberately NOT a `finally` block: on the success path connect()
+            // returns while the connection is live and the controller still owns the
+            // slot, so an unconditional release there would admit a replacement
+            // attempt while a live native handle exists.
+            var controllerCreated = false
+            val releaseLeaseIfUnclaimed = {
+                if (!controllerCreated && NativeLifetimeRegistry.process.confirmTeardown(nativeLease)) {
+                    Log.w(
+                        TAG,
+                        "Released native slot for session $session: no controller was created, " +
+                                "so no native work could be outstanding",
+                    )
+                }
+                Unit
+            }
             try {
                 // Initialize connection controller
                 controller = ConnectionController(
                     service = this@SoftEtherVpnService,
                     config = config,
+                    // Stage 2F-F.28W: hand over the claim reserved above. The
+                    // controller holds it for its whole life — including across
+                    // attemptReconnect() replacing its handle — and releases it only
+                    // from destroyResources(), after its last native call returned.
+                    nativeLease = nativeLease,
+                    // Stage 2F-F.28J: hand the controller the identity it must present
+                    // at TUN installation. It keeps this value for its whole life, so a
+                    // controller that outlives its session stays identifiable as
+                    // obsolete instead of reading the current generation at install
+                    // time and appearing current.
+                    sessionId = session,
                     onStateChange = { state ->
+                        // Stage 2F-F.28A-REVIEW: reject callbacks from an obsolete
+                        // session. The closure captures the generation of the
+                        // session that created this controller, so a controller
+                        // that outlives its session — destroyResources() assigns
+                        // DISCONNECTED from a deferred coroutine, and a native
+                        // connect flow can still assign CONNECTED after
+                        // cancellation — can no longer publish into the session
+                        // that replaced it. This is a session-identity check, not
+                        // a teardown flag: the current session's CONNECTED is
+                        // always delivered, so F.27 RC-1 stays fixed.
+                        if (!sessionPolicy.isCurrentSession(session)) {
+                            Log.w(TAG, "Dropping $state from obsolete session $session (current ${sessionPolicy.sessionGeneration})")
+                            return@ConnectionController
+                        }
                         handleConnectionState(state, config.serverHost)
                     },
                     onError = { error ->
+                        // Stage 2F-F.28C (A-1): session-scope the error callback
+                        // exactly like onStateChange above.
+                        //
+                        // onError is the MORE destructive of the two: it calls
+                        // stopVpn(disconnectByError = true), which broadcasts
+                        // ERROR, cancels the current connectionJob, snapshots and
+                        // nulls the current controller, closes the current
+                        // vpnInterface and can stopSelf(). Before this guard, a
+                        // late error from an obsolete session — reachable from
+                        // ConnectionController.attemptReconnect(), which runs on
+                        // the controller's own scope where isCancelled is
+                        // deliberately reset — tore down the live session that had
+                        // replaced it.
+                        if (!sessionPolicy.shouldTearDownOnError(session)) {
+                            Log.w(TAG, "Ignoring error from obsolete session $session (current ${sessionPolicy.sessionGeneration}): $error")
+                            return@ConnectionController
+                        }
                         Log.e(TAG, "VPN Error: $error")
                         // updateNotification(getString(R.string.softether_disconnected_by_error))
                         mIsUserDisconnect = false
                         stopVpn(disconnectByError = true)
                     },
                     onTrafficUpdate = { snapshot ->
+                        // Stage 2F-F.28C audit: deliberately NOT session-scoped.
+                        // handleTrafficUpdate only accumulates persisted counters,
+                        // notifies traffic listeners and rewrites notification
+                        // text; it cannot cancel a job, destroy a controller or
+                        // touch session lifecycle state, so widening it here would
+                        // be scope creep for a cosmetic-only misattribution.
+                        // Recorded as a lower-severity residual risk instead.
                         handleTrafficUpdate(snapshot)
                     }
                 )
+                controllerCreated = true
 
                 // Establish connection (fires onStateChange -> STATE_CONNECTED with IP after DHCP)
                 controller?.connect()
-                isRunning = true
-                Log.d(TAG, "VPN connection established")
+                // Stage 2F-F.28E: `isRunning` is current-session state, so only the
+                // session that owns it may set it.
+                //
+                // This is reachable for an obsolete session: connect() swallows a
+                // CancellationException in its own `catch (e: Exception)` and
+                // returns normally when the controller's `isCancelled` is already
+                // set (ConnectionController's "cancelled, not retrying" path).
+                // Cancellation is cooperative, so this non-suspending line then
+                // executes for a session that a later startVpn has replaced,
+                // marking the new session running before it has connected.
+                if (sessionPolicy.isCurrentSession(session)) {
+                    sessionPolicy.onRunning()
+                    // Stage 2F-F.28N: the success log belongs INSIDE the
+                    // current-session branch, and additionally requires that
+                    // teardown has not begun.
+                    //
+                    // Identity alone is NOT sufficient. `isCurrentSession` is a
+                    // pure generation comparison and `beginTeardown()` never
+                    // advances the generation, so a session that FAILED and was
+                    // torn down by onError -> stopVpn() is still the current
+                    // session by the time connect() returns normally. F.28M
+                    // observed exactly that on a physical device: "Stopping
+                    // VPN" / ERROR, then "VPN connection established" with no
+                    // obsolete-session warning, because the identity check
+                    // still passed.
+                    //
+                    // `isStopping` is the missing discriminator: it is set by
+                    // beginTeardown() and cleared only by onSessionStart(), so
+                    // it is false precisely for a session whose result is still
+                    // being accepted.
+                    //
+                    // onRunning() above is deliberately left in place and
+                    // unguarded by this condition: changing it would alter
+                    // lifecycle state transitions, which is outside F.28N.
+                    if (!sessionPolicy.isStopping) {
+                        Log.d(TAG, "VPN connection established")
+                    }
+                } else {
+                    Log.w(TAG, "Connect returned for obsolete session $session (current ${sessionPolicy.sessionGeneration}); not marking running")
+                }
 
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // Connection was canceled (user pressed cancel)
                 Log.d(TAG, "Connection cancelled by user")
                 mIsUserDisconnect = true
+                // Stage 2F-F.28A-REVIEW: only tear down the controller that
+                // belongs to THIS session. `controller` is a single shared
+                // field, so by the time this cancellation is processed a newer
+                // session may already have installed its own controller here;
+                // destroying that would kill the replacement session's tunnel.
+                // If this session is no longer current, stopVpn() already
+                // captured and is destroying this session's controller itself.
+                val sessionIsCurrent = sessionPolicy.isCurrentSession(session)
+                val owned = if (sessionIsCurrent) controller else null
+                if (owned == null) {
+                    // Stage 2F-F.28H (F-4): `owned == null` has two distinct causes
+                    // and the old single message reported only one of them, which
+                    // actively misdirected debugging of this race. Distinguish:
+                    //  - obsolete session identity: a newer session owns the
+                    //    service and this coroutine's resources were already
+                    //    released by the teardown that replaced it; versus
+                    //  - current session identity with no controller: stopVpn() or
+                    //    onDestroy() already took it, so this is the expected
+                    //    post-teardown resumption of a cancelled coroutine.
+                    //
+                    // The second case is the common one. It is reached whenever a
+                    // user disconnect cancels this job: stopVpn() nulls both
+                    // connectionJob and controller synchronously on the caller's
+                    // thread before this coroutine can observe the cancellation.
+                    Log.w(
+                        TAG,
+                        if (sessionIsCurrent) {
+                            "Cancel path skipping destroy: session $session is current but owns no " +
+                                    "controller (already released by teardown); " +
+                                    "current generation ${sessionPolicy.sessionGeneration}"
+                        } else {
+                            "Cancel path skipping destroy: session $session is obsolete; " +
+                                    "current generation ${sessionPolicy.sessionGeneration}"
+                        },
+                    )
+                }
                 // Clean up whatever the connect flow created (TUN interface,
                 // terminal, deferred native handle). Idempotent — safe even if
                 // the controller already tore itself down.
                 try {
-                    controller?.destroyResources()
+                    owned?.destroyResources()
                 } catch (ce: Exception) {
                     Log.e(TAG, "Error destroying resources on cancel", ce)
                 }
-                controller = null
-                sendConnectionStateBroadcast(STATE_DISCONNECTED)
+                // Stage 2F-F.28W: `owned` is null when no controller was ever created
+                // for this session, which leaves the native slot claimed by this
+                // coroutine. Releasing it here is what keeps a session cancelled
+                // before controller construction from refusing every future start.
+                releaseLeaseIfUnclaimed()
+                if (owned != null) {
+                    controller = null
+                }
+                // Stage 2F-F.28E: this terminal broadcast is LIFECYCLE STATE, and
+                // lifecycle state belongs to the session that owns it.
+                //
+                // The two operations above and below already refuse to act for an
+                // obsolete session, but the broadcast was unconditional. So an
+                // obsolete session could publish STATE_DISCONNECTED into the
+                // session that replaced it: GlobalVpnTracker downgrades to
+                // DISCONNECTED with no notion of session identity,
+                // TunnelStateWatcher raises onTunnelLost, and AutoModeController's
+                // connected watcher treats a live tunnel as lost.
+                //
+                // Cancellation is cooperative, so this branch can run long after
+                // the stop that cancelled it — the controller's connect() can be
+                // blocked in a native call for the whole connect timeout before
+                // the CancellationException surfaces. The obsolete session still
+                // performs its own cleanup above; it simply must not speak for
+                // the current session.
+                if (sessionPolicy.isCurrentSession(session)) {
+                    sendConnectionStateBroadcast(STATE_DISCONNECTED)
+                } else {
+                    Log.w(TAG, "Cancel path: not broadcasting DISCONNECTED for obsolete session $session (current ${sessionPolicy.sessionGeneration})")
+                }
                 // stopForeground was already done by stopVpn(); make sure the
                 // service itself also stops, or the process lingers with the
                 // VPN route alive.
-                stopSelf()
+                if (sessionPolicy.mayStopServiceFor(session)) {
+                    stopSelf()
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start VPN", e)
-                // updateNotification("Connection failed: ${e.message}")
-                mIsUserDisconnect = false
-                stopVpn(disconnectByError = true)
+                // Stage 2F-F.28H (F-2): session-scope the generic catch.
+                //
+                // This was the only lifecycle branch in the connect coroutine
+                // with no identity check: onStateChange, onError, onRunning and
+                // the cancellation path are all guarded, but this branch called
+                // stopVpn(disconnectByError = true) unconditionally. stopVpn
+                // cancels the *current* connectionJob, snapshots and nulls the
+                // *current* controller, closes the *current* vpnInterface,
+                // broadcasts ERROR and can stopSelf() — so a failure reported for
+                // a session that has already been replaced would tear down the
+                // live session that replaced it and announce a false ERROR for
+                // it. That is the same defect shape as F.28C (A-1), which was
+                // fixed for onError but left open here.
+                //
+                // Reachability today is narrow rather than proven-absent, and it
+                // is worth being precise about why. ConnectionController.connect()
+                // wraps performConnect() in its own `catch (e: Exception)` and
+                // swallows the failure (`if (isCancelled) return`, otherwise it
+                // retries and then reports through onError), so an ordinary
+                // connect failure usually completes connect() normally instead of
+                // propagating here. The branch is still reached when the service's
+                // own onError lambda throws back out of stopVpn() — onError is
+                // invoked from inside connect(), so anything stopVpn() throws
+                // unwinds into this catch. The guard is the same identity check
+                // the sibling callbacks already use, so it costs nothing and
+                // closes the last unguarded caller of stopVpn() from a session
+                // callback.
+                if (!sessionPolicy.shouldTearDownOnError(session)) {
+                    Log.w(
+                        TAG,
+                        "Ignoring failure from obsolete session $session " +
+                                "(current generation ${sessionPolicy.sessionGeneration}): ${e.message}",
+                        e,
+                    )
+                } else {
+                    Log.e(TAG, "Failed to start VPN", e)
+                    // updateNotification("Connection failed: ${e.message}")
+                    mIsUserDisconnect = false
+                    stopVpn(disconnectByError = true)
+                }
+                // Stage 2F-F.28W: the counterpart to the release in the cancellation
+                // path above, for a failure thrown before the controller existed.
+                //
+                // It must come AFTER stopVpn() rather than before: stopVpn dispatches
+                // destroyResources() onto its own NonCancellable coroutine, so
+                // releasing the slot first could admit a replacement attempt while
+                // that teardown had not yet returned. With the flag guard this call is
+                // a no-op whenever a controller does exist and has taken ownership,
+                // so ordering only affects the controller-absent case — but that
+                // ordering is the one that matters, and placing it last is what makes
+                // it correct.
+                releaseLeaseIfUnclaimed()
             }
         }
     }
 
-    private fun stopVpn(disconnectByError: Boolean = false) {
-        if (isStopping) {
-            Log.d(TAG, "Already stopping, skipping re-entrant call")
+    private fun stopVpn(disconnectByError: Boolean = false, suppliedAttemptId: Int = 0) {
+        // Stage 2F-F.28A-REVIEW: the session being torn down. Teardown finishes
+        // asynchronously, so this identity is what stops a late completion from
+        // acting on a session that has since been replaced.
+        val tearingDown = sessionPolicy.sessionGeneration
+
+        // Stage 2F-F.28AA: identify *this teardown attempt*. The session generation above
+        // cannot do this job, because one session can be stopped several times — the first
+        // call performs the teardown, later ones take the re-entrant branch — so two
+        // waiters exist inside a single session. Without a per-attempt id a completion
+        // from the first attempt could satisfy a waiter armed for the second.
+        val teardownAttemptId = if (suppliedAttemptId > 0) {
+            Log.d(TAG, "Using caller-supplied teardown attempt id $suppliedAttemptId")
+            suppliedAttemptId
+        } else {
+            nextTeardownAttemptId()
+        }
+
+        // Stage 2F-F.28L: linearize installation invalidation FIRST — before
+        // beginTeardown(), and before the broadcast, notification and
+        // foreground-service work that used to sit between logical invalidation and
+        // release().
+        //
+        // F.28K measured that gap: beginTeardown() ran here, but the coordinator's
+        // permission survived through sendConnectionStateBroadcast(),
+        // showDisconnectedNotification() (a NotificationManager Binder call) and
+        // ServiceCompat.stopForeground(), and was only dropped at release() far below.
+        // A reconnect unblocked from native connect or DHCP inside that interval could
+        // therefore still reach Builder.establish() after its session had been torn
+        // down — transiently resurrecting the system VPN, and transiently making
+        // isHeld() true so the start gate could refuse a legitimate new connect.
+        //
+        // `tearingDown` is the session being torn down, captured before teardown starts.
+        // It is never re-read afterwards, so an obsolete caller cannot present itself as
+        // current. invalidate() is additionally a no-op unless the coordinator still
+        // records that exact session, so a repeated teardown can never revoke a newer
+        // session's installation permission.
+        //
+        // This deliberately does not close anything: the descriptor this session may
+        // already own must stay releasable, and close-plus-unregister must remain one
+        // coordinated operation. That is release()'s job, below.
+        tunOwnership.invalidate(tearingDown)
+
+        // Stage 2F-F.28 Fix F: teardown is idempotent AND resource-aware.
+        //
+        // The previous guard was `if (isStopping) return`, where `isStopping`
+        // was written once and never cleared. Every teardown after the first
+        // was therefore a silent no-op, the TUN descriptor was never closed,
+        // and an orphan tunnel outlived the app.
+        //
+        // The decision now belongs to the policy and is driven by whether
+        // resources are actually still present, not by a possibly stale latch.
+        val teardownComplete =
+            controller == null && !tunOwnership.isHeld() && connectionJob == null
+        if (!sessionPolicy.beginTeardown(resourcesLive = !teardownComplete)) {
+            Log.d(TAG, "Already torn down, skipping re-entrant call")
+            // Still publish the terminal state so a teardown waiter armed by
+            // disconnect() always completes instead of hanging on its timeout.
+            sendConnectionStateBroadcast(if (disconnectByError) STATE_ERROR else STATE_DISCONNECTED)
+            // Stage 2F-F.28AA: publish NOOP_REENTRANT, not a success.
+            //
+            // F.28Z: this path used to emit the same argument-less completion the real
+            // teardown emitted, so a waiter could read "teardown complete" from a call
+            // that released nothing and awaited nothing. Worse, it was the path taken by
+            // *every* stopVpn after a refused start, because a refused start never reaches
+            // `onSessionStart()` and so never clears the policy's stopping flag — which
+            // made the fabricated signal fire repeatedly during exactly the window where
+            // native ownership was still held.
+            //
+            // NOOP_REENTRANT still completes the waiter (a waiter must not hang) but
+            // asserts nothing about native cleanup, so a consumer can tell it apart from
+            // a confirmed teardown.
+            notifyTeardownComplete(
+                TeardownCompletion.of(
+                    attemptId = teardownAttemptId,
+                    sessionId = tearingDown,
+                    outcome = TeardownCompletion.Outcome.NOOP_REENTRANT,
+                ),
+            )
             return
         }
-        isStopping = true
 
         Log.d(TAG, "Stopping VPN")
-        isRunning = false
 
         // Send disconnect/error broadcast immediately so the UI reacts right away
         sendConnectionStateBroadcast(if (disconnectByError) STATE_ERROR else STATE_DISCONNECTED)
@@ -436,23 +1021,82 @@ class SoftEtherVpnService : VpnService() {
         // Snapshot references and clear them immediately so onDestroy()
         // won't try to free the same resources concurrently.
         val currentController = controller
-        val currentInterface = vpnInterface
         controller = null
-        vpnInterface = null
+
+        // Stage 2F-F.28J: release only if THIS session still owns the descriptor.
+        //
+        // Releasing conditionally is what keeps a teardown belonging to an obsolete
+        // session from destroying a newer session's TUN: if ownership has already moved
+        // on, this call is a no-op and the newer session keeps its descriptor. The
+        // coordinator also clears its ownership record in the same critical section in
+        // which it closes the descriptor, so the service can never be left registering a
+        // descriptor that has already been closed — which the start gate would
+        // otherwise read as a live resource and refuse every later connection.
+        tunOwnership.release(tearingDown)
 
         // Clean up resources on a background thread WITHOUT calling the
         // blocking graceful disconnect (nativeDisconnect waits for server
         // ACK which can hang).  destroyResources() just frees native memory
         // and closes fds — fast and non-blocking.
         serviceScope.launch(NonCancellable) {
+            var nativeConfirmed = false
             withContext(Dispatchers.IO) {
                 try {
-                    currentController?.destroyResources()
+                    // `currentController` is an immutable local captured before this
+                    // coroutine was launched, so reading it twice here cannot observe a
+                    // newer session's controller.
+                    //
+                    // Stage 2F-F.28AA: `destroyResources()` now REPORTS what it achieved.
+                    // It no longer guarantees the native structure is gone when it returns:
+                    // if a connect flow was still executing, it is forbidden from
+                    // destroying anything, so the structure survives until that flow
+                    // actually leaves native code and completes cleanup itself.
+                    val outcome = currentController?.destroyResources()
+                    nativeConfirmed =
+                        outcome == TeardownCompletion.Outcome.NATIVE_CONFIRMED
+
+                    // Give that flow a bounded moment to finish, so the common "just
+                    // over the deadline" case still reports the truth. Bounded, and on
+                    // this same background dispatcher, so the main thread is never
+                    // blocked — not even for the length of a stuck JNI call beyond this
+                    // bound.
+                    if (currentController != null && !nativeConfirmed) {
+                        nativeConfirmed =
+                            currentController.awaitNativeCleanup(NATIVE_CLEANUP_CONFIRM_TIMEOUT_MS)
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error destroying controller resources", e)
                 }
             }
-            stopSelf()
+            // Stage 2F-F.28AA: emit the outcome, not a bare "complete".
+            //
+            // F.28Z: this fired unconditionally, so `AndroidConnectionAdapter.disconnect()`
+            // logged "Teardown confirmed complete" and treated itself as free to start the
+            // next server while the previous native connect was still running and the lease
+            // was still held. Reporting NATIVE_UNRESOLVED instead is what lets a consumer
+            // refuse to start another native operation instead of blaming the server.
+            val completionOutcome = if (nativeConfirmed) {
+                TeardownCompletion.Outcome.NATIVE_CONFIRMED
+            } else {
+                TeardownCompletion.Outcome.NATIVE_UNRESOLVED
+            }
+            notifyTeardownComplete(
+                TeardownCompletion.of(
+                    attemptId = teardownAttemptId,
+                    sessionId = tearingDown,
+                    outcome = completionOutcome,
+                ),
+            )
+            // Stage 2F-F.28A-REVIEW: never stop the service on behalf of a
+            // session that has already been replaced. onDestroy() destroys
+            // whatever `controller` currently holds and closes the current TUN,
+            // so an unconditional stopSelf() here would tear down the NEXT
+            // session's resources.
+            if (sessionPolicy.mayStopServiceFor(tearingDown)) {
+                stopSelf()
+            } else {
+                Log.w(TAG, "Not stopping service: session $tearingDown was replaced by ${sessionPolicy.sessionGeneration}")
+            }
         }
     }
 
@@ -510,9 +1154,63 @@ class SoftEtherVpnService : VpnService() {
     }
 
     /**
-     * Establish the VPN tunnel interface
+     * Establish the VPN tunnel interface on behalf of [session].
+     *
+     * Stage 2F-F.28J. [session] is the identity captured by the caller when its
+     * connection session was created — never a generation read here — so a controller
+     * that outlived its session cannot present itself as current.
+     *
+     * The ownership test and [Builder.establish] happen inside one critical section in
+     * [TunOwnershipCoordinator], so an obsolete or cancelled session cannot establish a
+     * descriptor, replace the live one, or publish a descriptor the service would
+     * later hold after the controller closed it.
+     *
+     * @return the established descriptor, or null when the session no longer owns TUN
+     *   establishment or the platform declined to establish one. Nothing is registered
+     *   as a live resource in either case.
      */
-    fun establishVpnInterface(config: ConnectionConfig): ParcelFileDescriptor? {
+    fun establishVpnInterface(config: ConnectionConfig, session: Int): ParcelFileDescriptor? {
+        return when (val result = tunOwnership.install(session) { buildTun(config) }) {
+            is TunInstallResult.Installed -> result.handle
+            // An obsolete session never reached Builder.establish(), so there is no
+            // descriptor to close and nothing to unregister.
+            TunInstallResult.RefusedOwnership -> {
+                Log.w(TAG, "TUN establishment refused: session $session no longer owns it (current owner ${tunOwnership.ownerSession()})")
+                null
+            }
+            TunInstallResult.EstablishFailed -> {
+                Log.e(TAG, "Failed to establish VPN interface for session $session")
+                null
+            }
+        }
+    }
+
+    /**
+     * Release the TUN descriptor if [session] still owns it.
+     *
+     * Stage 2F-F.28J. A session that installed a descriptor and then discovered it was
+     * cancelled must release it *through the service*, so the service's ownership record
+     * is cleared in the same critical section. Closing the controller's own reference
+     * alone would leave the service still registering a closed descriptor.
+     *
+     * @return true if this call released the descriptor.
+     */
+    fun releaseVpnInterface(session: Int): Boolean {
+        val released = tunOwnership.release(session)
+        if (!released) {
+            Log.w(TAG, "TUN release skipped: session $session does not own the descriptor (current owner ${tunOwnership.ownerSession()})")
+        }
+        return released
+    }
+
+    /**
+     * Build and establish the platform TUN descriptor for [config].
+     *
+     * Stage 2F-F.28J: extracted so [establishVpnInterface] can hand a single
+     * establishment operation to [TunOwnershipCoordinator], which invokes it inside its
+     * critical section.
+     */
+    private fun buildTun(config: ConnectionConfig): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession(config.sessionName)
             .setMtu(config.mtu)
@@ -575,8 +1273,12 @@ class SoftEtherVpnService : VpnService() {
             builder.setUnderlyingNetworks(null)
         }
 
-        vpnInterface = builder.establish()
-        return vpnInterface
+        // Stage 2F-F.28J: the coordinator — not this function — decides whether this
+        // session may establish at all, and it holds the lock across this call, so the
+        // descriptor is registered only if [session] still owns TUN establishment when
+        // establish() returns. The result is returned to the coordinator, which stores
+        // it; this method must not publish it anywhere on its own.
+        return builder.establish()
     }
 
     /**
@@ -744,12 +1446,19 @@ class SoftEtherVpnService : VpnService() {
     private var pendingStateRunnable: Runnable? = null
 
     private fun handleConnectionState(state: ConnectionState, hostname: String) {
-        // During user-initiated stopVpn() we already sent STATE_DISCONNECTED to listeners,
-        // removed the foreground notification, and launched IO cleanup.
-        // Do NOT touch the notification here — the controller's disconnect() fires
-        // onStateChange from the IO thread and would re-show a notification with a
-        // disconnect action button.
-        if (isStopping) {
+        // Stage 2F-F.28 Fix B: suppression is now state-specific and owned by the
+        // policy.
+        //
+        // The original guard was an unconditional `if (isStopping) return`. Any
+        // prior teardown therefore suppressed *every* later state of *every*
+        // later session — including CONNECTED. Losing CONNECTED means
+        // TunnelStateWatcher never fires, awaitTunnel() times out, and Auto
+        // Connect reports "Protocol failed" for a tunnel that is actually up and
+        // carrying traffic. That is the chain reproduced on device in Stage
+        // 2F-F.26-ALT and diagnosed in Stage 2F-F.27 as RC-1.
+        //
+        // See SoftEtherSessionPolicy.shouldDeliver for the full rationale.
+        if (!sessionPolicy.shouldDeliver(state)) {
             return
         }
 
@@ -763,7 +1472,7 @@ class SoftEtherVpnService : VpnService() {
         if ((state == ConnectionState.ERROR || state == ConnectionState.DISCONNECTED) && !mIsUserDisconnect) {
             if (mWasConnected) {
                 triggerDisconnectNotification()
-                mWasConnected = false
+                sessionPolicy.onConnectionLost()
             }
             // Still broadcast so the activity learns the connection is gone
             val stateValue = when (state) {
@@ -793,7 +1502,7 @@ class SoftEtherVpnService : VpnService() {
         val showDisconnectAction = state != ConnectionState.DISCONNECTING
 
         if (state == ConnectionState.CONNECTED) {
-            mWasConnected = true
+            sessionPolicy.onConnectedDelivered()
             mIsUserDisconnect = false
         }
 

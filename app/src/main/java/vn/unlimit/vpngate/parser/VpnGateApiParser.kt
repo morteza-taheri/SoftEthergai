@@ -1,6 +1,7 @@
 package vn.unlimit.vpngate.parser
 
 import vn.unlimit.vpngate.data.model.CollectorLog
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
@@ -249,11 +250,23 @@ object VpnGateApiParser {
                         VpnRecords.setField(server, "protocols.openvpn.tcp.supported", true, source)
                         if (VpnUtil.validPort(port)) {
                             VpnRecords.setField(server, "protocols.openvpn.tcp.port", port, source)
+                            VpnRecords.setField(
+                                server,
+                                "protocols.openvpn.tcp.portSource",
+                                VpnPortSource.EXPLICIT,
+                                source,
+                            )
                         }
                     } else if (OpenVpnConfigParser.isUdpFamily(proto)) {
                         VpnRecords.setField(server, "protocols.openvpn.udp.supported", true, source)
                         if (VpnUtil.validPort(port)) {
                             VpnRecords.setField(server, "protocols.openvpn.udp.port", port, source)
+                            VpnRecords.setField(
+                                server,
+                                "protocols.openvpn.udp.portSource",
+                                VpnPortSource.EXPLICIT,
+                                source,
+                            )
                         }
                     }
                 }

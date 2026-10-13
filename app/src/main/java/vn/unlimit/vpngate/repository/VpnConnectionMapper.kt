@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.repository
 
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnProtocolNames
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
@@ -14,8 +15,10 @@ import kotlin.math.roundToLong
  * keeps working. Conventions preserved:
  *  - speed in bits/s (UI divides by 1e6), uptime in ms (UI formats)
  *  - hostName stored WITHOUT the .opengw.net suffix (UI re-appends)
- *  - SoftEther UDP falls back to the TCP listener port (same-port
- *    serving), documented in the former enrichFromHtmlServer.
+ *  - every port is protocol-specific: SoftEther UDP, OpenVPN TCP/UDP and
+ *    MS-SSTP carry their own port plus the record's provenance, and a
+ *    port the source never published stays 0 (unknown), never borrowed
+ *    from another protocol or guessed.
  */
 object VpnConnectionMapper {
     private const val OPGW_SUFFIX = ".opengw.net"
@@ -49,12 +52,10 @@ object VpnConnectionMapper {
         val sstp = VpnRecords.map(protocols[VpnProtocolNames.SSTP])
 
         val seTcpPort = VpnRecords.int(VpnRecords.transport(se, "tcp")["port"])
-        var seUdpPort = VpnRecords.int(VpnRecords.transport(se, "udp")["port"])
+        // SoftEther UDP port stays exactly what the source published.
+        // An unknown UDP port is NEVER filled from the TCP listener.
+        val seUdpPort = VpnRecords.int(VpnRecords.transport(se, "udp")["port"])
         val seUdpSupported = VpnRecords.bool(VpnRecords.transport(se, "udp")["supported"])
-        // §decision: SoftEther serves UDP on the same listener as TCP.
-        if (seUdpSupported && seUdpPort <= 0 && seTcpPort > 0) {
-            seUdpPort = seTcpPort
-        }
         val uptimeDays = VpnRecords.num(perf["uptimeDays"])
         val uptimeMs = min(uptimeDays * 86_400_000.0, Int.MAX_VALUE.toDouble()).toLong()
 
@@ -87,6 +88,10 @@ object VpnConnectionMapper {
         // Supported whenever an SSTP hostname exists, even with unknown
         // port (locked decision: connect on TCP 443 by default).
         conn.isSSTPSupport = if (VpnRecords.bool(sstp["supported"])) 1 else 0
+        // SSTP's own port + provenance, copied verbatim. The mapper never
+        // infers provenance and never substitutes another protocol's port.
+        conn.sstpPort = VpnRecords.int(sstp["port"])
+        conn.sstpPortSource = VpnPortSource.normalized(sstp["portSource"])
         conn.seTcpPort = seTcpPort
         conn.seUdpPort = seUdpPort
         // UI state (§plan T3.8): UDP offered with no published port.

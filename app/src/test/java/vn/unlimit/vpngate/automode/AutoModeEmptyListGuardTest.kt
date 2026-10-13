@@ -4,10 +4,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -20,6 +23,14 @@ import org.junit.Test
 class AutoModeEmptyListGuardTest {
 
     private val EMPTY_MESSAGE = "Server list is empty. Please update the server list first."
+
+    /**
+     * Upper bound for "the run must leave Disconnected". This is NOT a sleep:
+     * the test waits on the state flow and returns the moment the transition
+     * happens. The value only exists so a regression that leaves the
+     * controller stuck in Disconnected fails instead of hanging forever.
+     */
+    private val RUN_ACTIVATION_TIMEOUT_MS = 5_000L
 
     private class RecordingAdapter : AutoModeController.ConnectionAdapter {
         val connectCalls = mutableListOf<String>()
@@ -38,7 +49,7 @@ class AutoModeEmptyListGuardTest {
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
-        protocolProvider = { AutoModeProtocol.SOFTETHER_TCP },
+        protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
         serverProvider = { servers },
         emptyServerListMessage = { EMPTY_MESSAGE },
     )
@@ -132,7 +143,39 @@ class AutoModeEmptyListGuardTest {
         val started = controller.startOrRefuseIfNoServers()
 
         assertTrue("a populated list must start normally", started)
-        assertTrue("the run must be active", controller.isRunning)
+
+        // `isRunning` must NOT be sampled immediately after start().
+        //
+        // start() does `job = scope.launch { runAutoMode() }` on
+        // Dispatchers.Default, so the coroutine body is free to run before
+        // `launch` even returns. With this fake adapter the run reaches a
+        // terminal state almost immediately, and the terminal paths reset
+        // `job = null`. isRunning is defined as `job?.isActive == true`, so a
+        // fast terminal run legitimately reports false — the production
+        // behaviour is correct and the *sample* was the racy part.
+        //
+        // Deterministic fix: wait for the run to actually leave
+        // Disconnected, which is exactly the transition that proves the
+        // controller acted on the populated list. This uses the existing
+        // state flow (no sleep, no fixed timeout) and cannot pass by accident:
+        // a guard that wrongly refused the list would stay Disconnected and
+        // hit the deadline below.
+        withTimeoutOrNull(RUN_ACTIVATION_TIMEOUT_MS) {
+            controller.state.first { it !is AutoModeState.Disconnected }
+        }.let { observed ->
+            assertNotNull(
+                "the run must leave Disconnected for a populated list, stayed at $observed",
+                observed,
+            )
+        }
+        // Whatever happened next, the controller must have engaged: either the
+        // run is still active, or it already finished a real attempt.
+        val engaged = controller.isRunning || adapter.connectCalls.isNotEmpty()
+        assertTrue(
+            "the run must have engaged (active job or a completed attempt), " +
+                "isRunning=${controller.isRunning}, connectCalls=${adapter.connectCalls.size}",
+            engaged,
+        )
         scope.cancel()
     }
 

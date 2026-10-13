@@ -1,7 +1,5 @@
 package vn.unlimit.vpngate.repository
 
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
@@ -12,6 +10,7 @@ import vn.unlimit.vpngate.data.model.CollectorLog
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
+import vn.unlimit.vpngate.data.persistence.CollectorSnapshotStore
 import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
@@ -20,6 +19,7 @@ import vn.unlimit.vpngate.data.remote.VpnGateMirrorSource
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
+import vn.unlimit.vpngate.models.VPNGateItem
 import vn.unlimit.vpngate.parser.VpnGateApiParser
 import vn.unlimit.vpngate.parser.VpnGateHtmlParser
 import vn.unlimit.vpngate.ranking.ServerQualityCalculator
@@ -41,17 +41,23 @@ class VpnServerRepository(
     private val cacheDir: File? = null,
 ) {
     companion object {
-        private const val CACHE_FILE = "collector_vpn_servers.json"
         private const val MAIN_TIMEOUT_MS = 45_000L
         private const val MIRROR_TIMEOUT_MS = 30_000L
         private const val RAW_CAPTURE_LIMIT = 512 * 1024
     }
 
+    /**
+     * @param capability what the sources of this run were actually able to
+     *   provide. A run where only the API answered carries no SoftEther/SSTP/
+     *   L2TP facts, which is a source limitation and not a dataset defect;
+     *   the updater needs this to avoid rejecting such a run as degraded.
+     */
     data class CollectResult(
         val connectionList: VPNGateConnectionList,
         val serverCount: Int,
         val fromCache: Boolean,
-        val savedAt: Long = 0L,
+        val savedAt: Long,
+        val capability: SourceCapability = SourceCapability.UNKNOWN,
     )
 
     /** §33 debug panel payload for one server. */
@@ -61,7 +67,6 @@ class VpnServerRepository(
         val rawApi: String?,
     )
 
-    private val gson = Gson()
     private val htmlSource = VpnGateHtmlSource(fetcher)
     private val apiSource = VpnGateApiSource(fetcher)
     private val mirrorSource = VpnGateMirrorSource(fetcher)
@@ -81,8 +86,16 @@ class VpnServerRepository(
      * Network-first collection: main HTML + API in parallel, mirrors
      * concurrently, then merge -> validate -> score -> map. On total
      * failure falls back to the last-known-good snapshot or bundled seed.
+     *
+     * Every body is parsed under its OWN source tag: the canonical feeds
+     * as `"html"`/`"api"`, and a mirror as its own `mirror_<n>` tag, so a
+     * mirror body can never be attributed to the canonical source.
      */
     suspend fun refresh(): CollectResult? = withContext(Dispatchers.IO) {
+        // Set once the parallel fetches have resolved; it describes what this
+        // run's sources could provide, and is reported with the dataset.
+        var collectedCapability = SourceCapability.UNKNOWN
+
         val records = coroutineScope {
             val cachedMirrors = runCatching {
                 vn.unlimit.vpngate.App.instance?.dataUtil?.getCachedMirrors().orEmpty()
@@ -95,48 +108,54 @@ class VpnServerRepository(
 
             if (mirrors.isNotEmpty()) {
                 runCatching {
-                    vn.unlimit.vpngate.App.instance?.dataUtil?.setCachedMirrors(mirrors)
+                    vn.unlimit.vpngate.App.instance?.dataUtil
+                        ?.setCachedMirrors(mirrors.map { it.baseUrl })
                 }
             }
 
-            val mirrorApiUrls = mirrors.map { m ->
-                val base = m.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                "$base/api/iphone/"
-            }
-            val mirrorHtmlUrls = mirrors.map { m ->
-                val base = m.removeSuffix("/en").removeSuffix("/en/").trimEnd('/')
-                "$base/en/"
-            }
-
             val apiDeferred = async {
-                apiSource.fetch(mirrorApiUrls)
+                // Canonical CSV only: a mirror's CSV schema is undefined
+                // for this project, so it is never fed to the API parser.
+                apiSource.fetch()
             }
             val htmlDeferred = async {
-                htmlSource.fetch(mirrorHtmlUrls)
+                htmlSource.fetch(mirrors)
             }
 
-            val apiText = apiDeferred.await()
-            val html = htmlDeferred.await()
+            val apiFetched = apiDeferred.await()
+            val htmlFetched = htmlDeferred.await()
 
             CollectorLog.d(
-                "Sources: html=${html != null} api=${apiText != null} mirrors=${mirrors.size}"
+                "Sources: html=${htmlFetched?.identity?.sourceTag} " +
+                    "api=${apiFetched?.identity?.sourceTag} mirrors=${mirrors.size}",
+            )
+
+            collectedCapability = SourceCapability(
+                providesProtocolColumns = htmlFetched != null,
+                providesOpenVpnProfiles = apiFetched != null,
             )
 
             val collected = mutableListOf<VpnServerRecord>()
 
-            apiText?.let {
-                runCatching { collected.addAll(VpnGateApiParser.parseApi(it, "api")) }
-                    .onFailure { e -> CollectorLog.d("API parse failed: ${e.message}") }
+            apiFetched?.let { fetched ->
+                runCatching {
+                    collected.addAll(
+                        VpnGateApiParser.parseApi(fetched.body, fetched.identity.sourceTag),
+                    )
+                }.onFailure { e -> CollectorLog.d("API parse failed: ${e.message}") }
             }
 
-            html?.let {
-                runCatching { collected.addAll(VpnGateHtmlParser.parseHtml(it, "html")) }
-                    .onFailure { e -> CollectorLog.d("HTML parse failed: ${e.message}") }
+            htmlFetched?.let { fetched ->
+                runCatching {
+                    collected.addAll(
+                        VpnGateHtmlParser.parseHtml(fetched.body, fetched.identity.sourceTag),
+                    )
+                }.onFailure { e -> CollectorLog.d("HTML parse failed: ${e.message}") }
             }
 
             // §33: keep bounded raw captures for the debug panel.
-            lastRawHtml = html?.take(RAW_CAPTURE_LIMIT)
-            lastRawApi = apiText?.take(RAW_CAPTURE_LIMIT)
+            lastRawHtml = htmlFetched?.body?.take(RAW_CAPTURE_LIMIT)
+            lastRawApi = apiFetched?.body?.take(RAW_CAPTURE_LIMIT)
 
             collected
         }
@@ -165,8 +184,19 @@ class VpnServerRepository(
         }
 
         val now = System.currentTimeMillis()
-        saveSnapshot(connectionList)
-        CollectResult(connectionList, valid.size, fromCache = false, savedAt = now)
+        // Stage 2C-B: the snapshot is NOT written here. Collection does not
+        // decide that a dataset is worth keeping — storage acceptance does,
+        // after dataset integrity has been evaluated against the stored list.
+        // Writing it here is what allowed a degraded dataset to overwrite the
+        // last-known-good fallback before anything had judged it.
+        CollectorLog.d("Collected ${connectionList.size()} servers (capability=$collectedCapability)")
+        CollectResult(
+            connectionList,
+            valid.size,
+            fromCache = false,
+            savedAt = now,
+            capability = collectedCapability,
+        )
     }
 
     /**
@@ -196,56 +226,104 @@ class VpnServerRepository(
         }
     }
 
-    private fun cacheFile(): File? = cacheDir?.let { File(it, CACHE_FILE) }
+    private fun cacheFile(): File? = CollectorSnapshotStore.file(cacheDir)
 
-    private fun saveSnapshot(list: VPNGateConnectionList) {
-        val file = cacheFile() ?: return
-        try {
-            val servers = (0 until list.size()).map { list.get(it) }
-            val payload = linkedMapOf(
-                "savedAt" to System.currentTimeMillis(),
-                "count" to servers.size,
-                "servers" to servers,
-            )
-            file.writeText(gson.toJson(payload), Charsets.UTF_8)
-            CollectorLog.d("Snapshot saved: ${servers.size} servers")
+    /**
+     * Stage 2C-B: promote an ACCEPTED dataset to last-known-good.
+     *
+     * This is deliberately not part of collection: only a dataset that has
+     * already passed source validation, parsing, merging, normalization and
+     * [DatasetIntegrity] evaluation may be written here, and only after the
+     * database already holds it.
+     *
+     * The write is temp-file + atomic rename, so a failure (or a crash) can
+     * never leave a half-written file behind and can never destroy the
+     * previous, still-valid snapshot: the old file is only replaced once the
+     * new bytes are safely on disk.
+     *
+     * @return true when the snapshot now holds [items]; false when the
+     *   write failed and the previous snapshot was left in place.
+     */
+    fun saveLastKnownGood(items: List<VPNGateItem>): Boolean {
+        val file = cacheFile() ?: return false
+        if (items.isEmpty()) return false
+        return try {
+            val list = VPNGateConnectionList()
+            items.forEach { list.add(VPNGateConnection().fromVPNGateItem(it)) }
+            // get() is platform-typed; the store requires a non-null list so
+            // that `count` and `servers` can never disagree.
+            val servers = (0 until list.size()).mapNotNull { list.get(it) }
+
+            when (val result = CollectorSnapshotStore.write(file, System.currentTimeMillis(), servers)) {
+                is CollectorSnapshotStore.WriteResult.Written -> {
+                    CollectorLog.d("Last-known-good snapshot saved: ${result.serverCount} servers")
+                    true
+                }
+                is CollectorSnapshotStore.WriteResult.Failed -> {
+                    CollectorLog.d("Snapshot save failed (${result.reason}): ${result.detail}")
+                    false
+                }
+            }
         } catch (e: Exception) {
             CollectorLog.d("Snapshot save failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * The snapshot file only, without the Room/seed fallbacks. Diagnostics and tests.
+     *
+     * Deliberately pure: it decodes but never rewrites, so a diagnostic run
+     * cannot silently migrate a user's file. [loadSnapshot] is the only
+     * production path that upgrades a legacy payload.
+     */
+    fun readLastKnownGoodSnapshot(): VPNGateConnectionList? {
+        val file = cacheFile() ?: return null
+        return when (val result = CollectorSnapshotStore.read(file)) {
+            is CollectorSnapshotStore.ReadResult.Loaded -> {
+                if (result.servers.isEmpty()) {
+                    null
+                } else {
+                    VPNGateConnectionList().apply { result.servers.forEach { add(it) } }
+                }
+            }
+            is CollectorSnapshotStore.ReadResult.Invalid -> {
+                CollectorLog.d("Snapshot read rejected (${result.reason}): ${result.detail}")
+                null
+            }
+            CollectorSnapshotStore.ReadResult.Absent -> null
         }
     }
 
     private fun loadSnapshot(): CollectResult? {
         val file = cacheFile()
         if (file != null && file.isFile) {
-            val result = try {
-                val json = file.readText(Charsets.UTF_8)
-                val savedAt = runCatching {
-                    gson.fromJson<Map<String, Any?>>(
-                        json,
-                        object : TypeToken<Map<String, Any?>>() {}.type,
-                    )["savedAt"] as? Number
-                }.getOrNull()?.toLong() ?: 0L
-
-                val servers: List<VPNGateConnection> = run {
-                    val element = com.google.gson.JsonParser.parseString(json).asJsonObject
-                    val array = element.getAsJsonArray("servers") ?: return@run emptyList()
-                    gson.fromJson(
-                        array,
-                        object : TypeToken<List<VPNGateConnection>>() {}.type,
-                    )
-                }
-
-                if (servers.isNotEmpty()) {
+            when (val read = CollectorSnapshotStore.read(file)) {
+                is CollectorSnapshotStore.ReadResult.Loaded -> {
                     val list = VPNGateConnectionList()
-                    servers.forEach { list.add(it) }
-                    CollectorLog.d("Loaded last-known-good snapshot (savedAt=$savedAt): ${servers.size}")
-                    CollectResult(list, servers.size, fromCache = true, savedAt = savedAt)
-                } else null
-            } catch (e: Exception) {
-                CollectorLog.d("Snapshot load failed: ${e.message}")
-                null
+                    read.servers.forEach { list.add(it) }
+
+                    // Stage 2F-E.2: a legacy payload is upgraded in place so the
+                    // next start reads a canonical file. A failed rewrite is
+                    // logged and the decoded data is still used — losing a
+                    // readable snapshot because the upgrade could not be
+                    // persisted would be strictly worse than reading it again.
+                    if (read.format != CollectorSnapshotStore.Format.CANONICAL) {
+                        when (val migrated = CollectorSnapshotStore.migrate(file, read)) {
+                            is CollectorSnapshotStore.WriteResult.Written ->
+                                CollectorLog.d("Migrated ${read.format} snapshot to canonical v${CollectorSnapshotStore.SCHEMA_VERSION}: ${migrated.serverCount} servers")
+                            is CollectorSnapshotStore.WriteResult.Failed ->
+                                CollectorLog.d("Snapshot migration write failed (${migrated.reason}): ${migrated.detail}; using decoded data")
+                        }
+                    }
+
+                    CollectorLog.d("Loaded last-known-good snapshot (savedAt=${read.savedAt}, ${read.format}): ${read.servers.size}")
+                    return CollectResult(list, read.servers.size, fromCache = true, savedAt = read.savedAt)
+                }
+                is CollectorSnapshotStore.ReadResult.Invalid ->
+                    CollectorLog.d("Snapshot load rejected (${read.reason}): ${read.detail}")
+                CollectorSnapshotStore.ReadResult.Absent -> Unit
             }
-            if (result != null) return result
         }
 
         // Room database fallback

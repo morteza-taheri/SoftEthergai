@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -139,6 +140,19 @@ fun SettingSwitchRow(
 
 /**
  * Setting row displaying a value with a trailing chevron, opening a dialog on click.
+ *
+ * Layout notes (the value used to squeeze the title into one-character-per-line
+ * wrapping, e.g. "Conne / ct" and "Priori / ty"):
+ *
+ *  - The value is wrapped in a Box that carries `weight(1f, fill = false)` and a
+ *    `widthIn(max = ...)`, so it can no longer claim the full intrinsic width of
+ *    the row. Compose measures the unweighted value first; without a cap it took
+ *    everything and left the title column with almost nothing.
+ *  - The title keeps `weight(1f)` and wraps at word boundaries, which is what
+ *    gives "Auto Connect Protocol / Priority" on a narrow screen instead of a
+ *    mid-word break.
+ *  - The value stays on one line and ellipsizes, so a long protocol chain such as
+ *    "softether udp -> ... -> sstp" degrades gracefully instead of wrapping.
  */
 @Composable
 fun SettingValueRow(
@@ -194,6 +208,11 @@ fun SettingValueRow(
         }
         Spacer(modifier = Modifier.width(12.dp))
         Row(
+            // Cap the value so it cannot starve the title column, and let it
+            // shrink further on very narrow screens instead of overflowing.
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .widthIn(max = 160.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.End,
         ) {

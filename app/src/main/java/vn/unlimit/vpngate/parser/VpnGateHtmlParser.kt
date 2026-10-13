@@ -4,6 +4,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import vn.unlimit.vpngate.data.model.CollectorLog
+import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
@@ -21,6 +23,12 @@ import java.math.RoundingMode
  */
 object VpnGateHtmlParser {
     const val HOSTS_TABLE_ID = "vg_hosts_table_id"
+
+    /**
+     * Columns a hosts table must expose to be parsed at all. A table
+     * missing any of them is an unknown schema, not a partial table.
+     */
+    val REQUIRED_COLUMNS = listOf("country", "host", "softether", "openvpn")
 
     private val COLUMN_HEADER_KEYWORDS = linkedMapOf(
         "country" to listOf("country", "physical location"),
@@ -92,19 +100,25 @@ object VpnGateHtmlParser {
         return colmap
     }
 
-    /** Pick the genuine hosts list out of duplicate-id candidates:
-     * prefer the one whose header exposes every expected column. */
+    /**
+     * Pick the genuine hosts list out of duplicate-id candidates:
+     * prefer the one whose header exposes every expected column.
+     *
+     * Stage 2C-A: there is NO fallback to "first candidate" any more. A
+     * page whose table is missing a required column is an unknown schema
+     * and is refused by the caller, rather than being parsed with a
+     * guessed or partial column map.
+     */
     fun selectHostsTable(candidates: List<Element>): Element? {
-        val required = setOf("country", "host", "softether", "openvpn")
         for (table in candidates) {
             val colmap = try {
                 buildColumnMap(table)
             } catch (e: Exception) {
                 continue
             }
-            if (colmap.keys.containsAll(required)) return table
+            if (colmap.keys.containsAll(REQUIRED_COLUMNS)) return table
         }
-        return candidates.firstOrNull()
+        return null
     }
 
     /** Parse uptime snippets such as "93 days", "11 hours",
@@ -144,28 +158,24 @@ object VpnGateHtmlParser {
         val candidates = findHostsTables(doc)
         val table = selectHostsTable(candidates)
 
-        val colmap: Map<String, Int>
-        val rows: List<Element>
-
-        if (table != null) {
-            colmap = buildColumnMap(table)
-            rows = table.getElementsByTag("tr")
-            CollectorLog.d("Hosts table columns: $colmap")
-        } else {
-            colmap = mapOf(
-                "country" to 0,
-                "host" to 1,
-                "sessions" to 2,
-                "perf" to 3,
-                "softether" to 4,
-                "l2tp" to 5,
-                "openvpn" to 6,
-                "sstp" to 7,
-                "operator" to 8,
-                "score" to 9,
+        // Stage 2C-A: no hosts table, or a table whose required columns are
+        // incomplete, is an UNKNOWN SCHEMA. There is deliberately no
+        // positional column guess and no "first table wins" fallback: a
+        // keyword-only page, an error page or a restructured mirror must
+        // produce nothing rather than plausible-looking wrong records.
+        if (table == null) {
+            CollectorLog.d(
+                "HTML source $source rejected: no hosts table with required columns " +
+                    "${REQUIRED_COLUMNS.joinToString(",")} " +
+                    "(${candidates.size} candidate table(s))",
             )
-            rows = doc.getElementsByTag("tr")
+            return emptyList()
         }
+
+        val colmap = buildColumnMap(table)
+        val rows: List<Element> = table.getElementsByTag("tr")
+
+        CollectorLog.d("Hosts table columns: $colmap")
 
         CollectorLog.d("HTML rows: ${rows.size}")
 
@@ -359,6 +369,12 @@ object VpnGateHtmlParser {
                         VpnUtil.toInt(tcpM!!.groupValues[1]),
                         source,
                     )
+                    VpnRecords.setField(
+                        server,
+                        "protocols.softether.tcp.portSource",
+                        VpnPortSource.EXPLICIT,
+                        source,
+                    )
                 }
 
                 val udpPortOk = udpPortM != null &&
@@ -375,6 +391,12 @@ object VpnGateHtmlParser {
                             VpnUtil.toInt(udpPortM!!.groupValues[1]),
                             source,
                         )
+                        VpnRecords.setField(
+                            server,
+                            "protocols.softether.udp.portSource",
+                            VpnPortSource.EXPLICIT,
+                            source,
+                        )
                     }
                 }
 
@@ -389,7 +411,20 @@ object VpnGateHtmlParser {
                 val l2tpTxt = VpnUtil.clean(l2tpCell.text())
                 if (Regex("L2TP", RegexOption.IGNORE_CASE).containsMatchIn(l2tpTxt)) {
                     VpnRecords.markSupported(server, "l2tpIpsec", source)
-                    VpnRecords.setField(server, "protocols.l2tpIpsec.port", 1701, source)
+                    // The page publishes no L2TP port; 1701 is the IANA
+                    // default, not source evidence.
+                    VpnRecords.setField(
+                        server,
+                        "protocols.l2tpIpsec.port",
+                        VpnProtocolDefaults.L2TP_PORT,
+                        source,
+                    )
+                    VpnRecords.setField(
+                        server,
+                        "protocols.l2tpIpsec.portSource",
+                        VpnPortSource.DEFAULT,
+                        source,
+                    )
                 }
             }
 
@@ -423,11 +458,23 @@ object VpnGateHtmlParser {
                     if (VpnUtil.validPort(tcpQ)) {
                         VpnRecords.setField(server, "protocols.openvpn.tcp.supported", true, source)
                         VpnRecords.setField(server, "protocols.openvpn.tcp.port", tcpQ, source)
+                        VpnRecords.setField(
+                            server,
+                            "protocols.openvpn.tcp.portSource",
+                            VpnPortSource.EXPLICIT,
+                            source,
+                        )
                     }
 
                     if (VpnUtil.validPort(udpQ)) {
                         VpnRecords.setField(server, "protocols.openvpn.udp.supported", true, source)
                         VpnRecords.setField(server, "protocols.openvpn.udp.port", udpQ, source)
+                        VpnRecords.setField(
+                            server,
+                            "protocols.openvpn.udp.portSource",
+                            VpnPortSource.EXPLICIT,
+                            source,
+                        )
                     }
                 } else {
                     val ovpnTxt = VpnUtil.clean(ovpnCell.text())
@@ -444,6 +491,12 @@ object VpnGateHtmlParser {
                             VpnUtil.toInt(tcpM.groupValues[1]),
                             source,
                         )
+                        VpnRecords.setField(
+                            server,
+                            "protocols.openvpn.tcp.portSource",
+                            VpnPortSource.EXPLICIT,
+                            source,
+                        )
                     }
 
                     if (udpM != null && VpnUtil.validPort(VpnUtil.toInt(udpM.groupValues[1]))) {
@@ -453,6 +506,12 @@ object VpnGateHtmlParser {
                             server,
                             "protocols.openvpn.udp.port",
                             VpnUtil.toInt(udpM.groupValues[1]),
+                            source,
+                        )
+                        VpnRecords.setField(
+                            server,
+                            "protocols.openvpn.udp.portSource",
+                            VpnPortSource.EXPLICIT,
                             source,
                         )
                     }
@@ -479,6 +538,21 @@ object VpnGateHtmlParser {
 
                     if (VpnUtil.validPort(sstpPort)) {
                         VpnRecords.setField(server, "protocols.sstp.port", sstpPort, source)
+                        VpnRecords.setField(
+                            server,
+                            "protocols.sstp.portSource",
+                            VpnPortSource.EXPLICIT,
+                            source,
+                        )
+                    } else {
+                        // Supported but unpublished: the port is the
+                        // protocol default, and only a default.
+                        VpnRecords.setField(
+                            server,
+                            "protocols.sstp.portSource",
+                            VpnPortSource.DEFAULT,
+                            source,
+                        )
                     }
                 }
             }

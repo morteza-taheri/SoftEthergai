@@ -40,6 +40,7 @@ class App : Application() {
             })
             .addMigrations(AppDatabase.MIGRATION_2_3)
             .addMigrations(AppDatabase.MIGRATION_3_4)
+            .addMigrations(AppDatabase.MIGRATION_4_5)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()
@@ -70,6 +71,12 @@ class App : Application() {
         // Initialize global VPN connection state tracker
         vn.unlimit.vpngate.state.GlobalVpnTracker.init(this)
         vn.unlimit.vpngate.automode.TunnelStateWatcher.attach(this)
+
+        // Scheduled server list refresh. isDue() is a cheap persisted check, so
+        // calling it on every app start can never produce more than one download
+        // per configured interval, and a manual Update press racing this is
+        // rejected by the updater's own concurrency guard.
+        vn.unlimit.vpngate.repository.ServerListUpdateScheduler.runIfDue()
 
         // Make notification open DetailActivity
         OpenVPNService.setNotificationActivityClass(
