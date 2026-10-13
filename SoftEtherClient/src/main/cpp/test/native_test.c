@@ -3925,8 +3925,12 @@ native_test_result_t test_softether_connect_with_hub_takes_lock(void) {
 
   int completed_after_release = 0;
   if (spawned) {
-    for (int i = 0; i < 500 && !s.done; i++) {
-      usleep(10 * 1000);  // up to 5000 ms for the (failing) connect
+    // A real softether_connect_with_hub to 127.0.0.1:1 spends ~30 s in
+    // DNS/ICMP/NAT-T rendezvous before reaching connect(); the previous 5 s
+    // budget was below that and produced a false failure. 90 s gives a safe
+    // margin.
+    for (int i = 0; i < 9000 && !s.done; i++) {
+      usleep(10 * 1000);  // up to 90 s for the (failing) connect
     }
     completed_after_release = s.done ? 1 : 0;
     pthread_join(th, NULL);
