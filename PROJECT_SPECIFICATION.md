@@ -3,8 +3,8 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `5e51e37f83bba3db8e3f859886bf045bb5ea6255`
-**Document version:** 1.0.8
+**HEAD:** `d61d3f8a1913bf7c7a22c2bd8013828c5111804f`
+**Document version:** 1.0.9
 **Last updated:** 2026-10-13
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -1471,13 +1471,14 @@ The following items are planned for the source-and-path architecture described i
 
 | # | Item | Scope | Priority | Status |
 |---|------|-------|----------|--------|
-| 1 | **FIX-NATIVE-LIFETIME-SYNC (N-15 + N-16)** | N-15: `rudp_destroy` (`rudp_destroy:181`) destroys `ctx->lock` and frees `ctx` with no guarantee a concurrent `rudp_poll` (`rudp_poll:693`) has returned — a poll in flight during destroy is a use-after-free. N-16: `nativeConnect` (`softether_jni.c:54`) is **not** serialised by `conn->connect_mutex` while `nativeConnectWithHub` (`softether_jni.c:139–145`) is — two concurrent native connects on the same `conn` can interleave. | **P1_HIGH** | OPEN — no device required. Driven additionally by **FINDING T5-SLOT** (§12.4). See `DEEP_REVIEW_VERIFY_REPORT.md` rows N-15/N-16 |
+| 1 | **FIX-NATIVE-LIFETIME-SYNC (N-15 + N-16)** | N-15: `rudp_destroy` (`rudp_destroy:181`) destroys `ctx->lock` and frees `ctx` with no guarantee a concurrent `rudp_poll` (`rudp_poll:693`) has returned — a poll in flight during destroy is a use-after-free. N-16: `nativeConnect` (`softether_jni.c:54`) is **not** serialised by `conn->connect_mutex` while `nativeConnectWithHub` (`softether_jni.c:139–145`) is — two concurrent native connects on the same `conn` can interleave. | **P1_HIGH** | **CLOSED for N-15 + N-16 — device-verified** (tests 37–41 PASS; commits `3a2f442`, `b0418cc`). See §1.6.1 for the commits. The **FINDING T5-SLOT** driver (§12.4) remains OPEN as a separate item (row 8) |
 | 2 | **DEEP-REVIEW P0 set** | JNI bounds (N-01…N-05, N-08), RUDP lock release, reconnect terminal routing (G-1), teardown log identity (G-2) | — | **CLOSED — device-verified.** RESUME-BATCH-DEVICE-VERIFY: 6/6 native tests PASS, T2–T8 clean. Evidence: PHYSICAL DEVICE EVIDENCE |
 | 3 | `proRelease` build/test path | The release variant has never been built or tested locally (only `proDebug`). Blocked by the RISK-A signing fallback (§12.4) and the absence of local release signing material. | Priority to be assessed | OPEN — see RISK-A |
 | 4 | **N-06** TLS certificate verification | `aes_wrapper.c:110` `ssl_configure_client_ctx` sets `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)`. Deliberate for self-signed VPNGate certs, but a genuine MITM exposure. | P2_MEDIUM | OPEN — design decision required |
 | 5 | **N-09** non-cryptographic `rand()` | `softether_rudp.c:154–173` derives keys/cookies from `rand()`; `rudp_transport.c:316,370,402,1146` derive IVs/padding/ICMP id/seq from `rand()`. The generator is not cryptographically secure. | P2_MEDIUM | OPEN — migrate to `RAND_bytes` |
 | 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
 | 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | Priority to be assessed | OPEN — `PARTIALLY CONFIRMED — REQUIRES DEEPER ANALYSIS` |
+| 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -1809,6 +1810,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.6 | 2026-10-12 | F.28AL-AUTOCONNECT-SPEC-R8: finalized R8 setting name (`Auto-Reconnect in Auto Mode` / «اتصال همیشکی اتوکانکت») and default (ENABLED); removed pending markers in §11.13.1/§11.13.2; updated §6.7 R8 cross-reference. No source/test/build/device change; documentation only. |
 | 1.0.7 | 2026-10-13 | DOCS-UPDATE: consolidated session completion summary (§1.6), methodology lessons (§22), T5-slot finding, F.28AL session rows, roadmap update. No source/test/build/device change; documentation only. |
 | 1.0.8 | 2026-10-13 | DOCS-UPDATE: recorded the post-v1.0.7 additions (§1.6.3) — C3 test-rule fix (`4c013e8`), C5 formal gating (deferred to `C5-TRIAGE-DEVICE`), T5-SLOT instrumentation (`5e51e37`, logging-only), T5 not reproduced (holder UNKNOWN), `test40` budget widening, and the 17-commit chain pushed to `origin/main` (`5c13603..5e51e37`, fast-forward, no force/tag). Corrected the `0714628` off-by-one (it is the first unpushed commit, not the chain base) and refreshed the header HEAD field. No new methodology lessons. No source/test/build/device change; documentation only. |
+| 1.0.9 | 2026-10-13 | DOCS-UPDATE: corrected §12.5.1 row 1 (FIX-NATIVE-LIFETIME-SYNC — N-15/N-16 both CLOSED, device-verified; commits `3a2f442`, `b0418cc`) and added a separate row (8) for the still-open T5-SLOT driver finding. Refreshed the header HEAD field to `d61d3f8`. No new methodology lessons in v1.0.9. No source/test/build/device change; documentation only. |
 
 ### Verification Status
 
@@ -1831,6 +1833,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Persistence/Merge/Retention (§11.11) | DESIGN — principles stated; database schema not designed |
 | Future Extensibility (§11.12) | DESIGN — goal stated; no interfaces mandated |
 | Remaining Work (§12) | PARTIAL — F.28AD-A scope pending definition; test gaps identified; roadmap and acceptance criteria added |
+| Active Fix Queue (§12.5.1) | HISTORICAL — row 1 (FIX-NATIVE-LIFETIME-SYNC) corrected to CLOSED for N-15/N-16 (device-verified; commits `3a2f442`, `b0418cc`); new row 8 tracks the still-open T5-SLOT driver. Attributed to the v1.0.9 docs phase, not independently re-verified here |
 | Physical Device Verification (§13) | PARTIAL — F.28AL-U physically exercised on a debug build at F.28AL-Y-FULL (§3.3: Tests A/B PASS, C observed organically, D NOT REPRODUCED, zero crashes); release-signed (CI) physical verification still outstanding |
 | Test Baseline (§14) | HISTORICAL — test file inventory verified; exact counts to be re-verified by running `./gradlew :SoftEtherClient:test` and `./gradlew :app:test` |
 | Release/Git Discipline (§15) | VERIFIED — `AGENTS.md`, `build.gradle` |
