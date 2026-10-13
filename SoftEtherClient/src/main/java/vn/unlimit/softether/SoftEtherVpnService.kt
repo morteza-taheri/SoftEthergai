@@ -517,6 +517,92 @@ class SoftEtherVpnService : VpnService() {
     @Volatile
     private var connectionJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * FIX-C: wall-clock ms at which the current attempt began CONNECTING, or 0 when no
+     * attempt is connecting.
+     *
+     * Stamped when the connect coroutine is launched and cleared the moment the attempt
+     * stops being a CONNECTING attempt — on a successful connect (`onRunning()`), on
+     * [stopVpn], and on the FIX-C abandon path itself. That is what makes the value mean
+     * "this attempt has been *connecting* for this long", so a healthy connected session
+     * (which keeps `connectionJob` non-null for its whole life) is never mistaken for a
+     * wedged one.
+     *
+     * It is the service-side sibling of the registry's `connectingEnteredAtMs`: the
+     * registry bounds the *native* slot, this bounds the *Kotlin* start gate. Both are
+     * cleared together when the attempt is abandoned.
+     */
+    @Volatile
+    private var attemptConnectingEnteredAtMs = 0L
+
+    /**
+     * FIX-C — Kotlin-side cleanup of a wedged CONNECTING attempt.
+     *
+     * ## The problem this closes
+     *
+     * The start gate in [startVpn] refuses with "an initial connection is still in flight"
+     * whenever `connectionJob` is non-null (see [SoftEtherSessionPolicy.decideStart], the
+     * REFUSE_CONNECTING branch). When an attempt is genuinely wedged inside the native
+     * connect — the blocking JNI call never returning — that `connectionJob` stays non-null
+     * forever, so the gate refuses EVERY subsequent start. This refusal is INDEPENDENT of
+     * the native slot gate: releasing the native slot (the registry's CONNECTING soft-bound,
+     * FIX-B) does not clear a Kotlin-side reference, so FIX-B alone would still leave the
+     * user locked out. Device evidence (2026-10-13, 14:58:42 / 14:59:05) shows exactly this
+     * refusal in practice, before the native registry is ever consulted.
+     *
+     * ## What it does
+     *
+     * When the current attempt has been CONNECTING for at least
+     * [NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS] — the SAME
+     * constant the registry's CONNECTING soft-bound uses — and a `connectionJob` still
+     * exists, it treats the attempt as abandoned and clears the three Kotlin-side resources
+     * the gate reads, using the same primitives [stopVpn] uses: invalidate + release
+     * `tunOwnership`, cancel and null `connectionJob`, null `controller`.
+     *
+     * It deliberately does NOT dispatch a native destroy request: the native operation is
+     * already wedged, so calling `destroyResources()` would only add a second blocking JNI
+     * call. The native side is handled by the registry soft-bound on the `tryAcquire()`
+     * that follows the gate.
+     *
+     * ## Why "on startVpn" and not a timer
+     *
+     * Symmetric with FIX-B being evaluated on the `tryAcquire()` path: the check runs only
+     * when a new attempt actually asks to start, which is the only moment the wedged
+     * attempt harms the user. There is no background timer or scheduled task, and this is a
+     * no-op for every attempt that is not wedged past the bound — the normal flow is
+     * unchanged.
+     */
+    private fun abandonWedgedConnectingAttemptIfAny() {
+        val enteredAt = attemptConnectingEnteredAtMs
+        if (enteredAt == 0L) return
+        if (connectionJob == null) return
+        // Belt-and-braces: never abandon a session that is already RUNNING (connected). The
+        // stamp is cleared on onRunning(), so this is redundant for the normal path — but if
+        // a connect ever returned without clearing it, abandoning a live, traffic-carrying
+        // session (cancel job + drop controller + release TUN, with no native destroy) would
+        // be far worse than waiting, so the guard is explicit. It also makes "still
+        // CONNECTING" true by construction rather than by inference.
+        if (sessionPolicy.isRunning) return
+        val heldMs = System.currentTimeMillis() - enteredAt
+        if (heldMs < NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS) return
+
+        Log.w(
+            TAG,
+            "[SERVICE] Kotlin attempt abandoned after $heldMs ms in CONNECTING; " +
+                    "clearing connectionJob/controller/tunOwnership so a new attempt can be admitted.",
+        )
+        // Same Kotlin-side cleanup primitives stopVpn uses, and nothing else. The session
+        // generation is captured once so the invalidate/release pair cannot straddle a
+        // session change (both are already no-ops unless they still own that exact session).
+        val abandonedSession = sessionPolicy.sessionGeneration
+        tunOwnership.invalidate(abandonedSession)
+        connectionJob?.cancel()
+        connectionJob = null
+        controller = null
+        tunOwnership.release(abandonedSession)
+        attemptConnectingEnteredAtMs = 0L
+    }
+
 private fun startVpn(config: ConnectionConfig) {
         // Stage 2F-F.28 Fix A + Stage 2F-F.28C (A-2): the start guard is
         // RESOURCE-AWARE and total.
@@ -538,6 +624,14 @@ private fun startVpn(config: ConnectionConfig) {
         // The decision now distinguishes idle / connected / connecting /
         // teardown-in-progress, and is owned by the policy so it is testable.
         // See SoftEtherSessionPolicy.decideStart for the state matrix.
+        //
+        // FIX-C: clear a Kotlin-side attempt that has been CONNECTING past any healthy
+        // window BEFORE the gate reads it. Without this, the gate below refuses every start
+        // with "an initial connection is still in flight" for as long as the wedged
+        // attempt's connectionJob is non-null — a refusal that is independent of the native
+        // slot gate, so releasing the native slot alone (FIX-B) cannot clear it.
+        abandonWedgedConnectingAttemptIfAny()
+
         val sessionResourcesLive =
             controller != null || tunOwnership.isHeld() || connectionJob != null
         val decision = sessionPolicy.decideStart(resourcesLive = sessionResourcesLive)
@@ -645,6 +739,10 @@ if (sessionPolicy.isRunning) {
         // Store session name for use in notifications
         currentSessionName = config.sessionName
 
+        // FIX-C: this attempt begins CONNECTING now. The stamp is cleared on a successful
+        // connect (onRunning, below) or on any teardown, so it only ever describes an
+        // attempt that is still trying to connect — never a live, connected session.
+        attemptConnectingEnteredAtMs = System.currentTimeMillis()
         connectionJob = serviceScope.launch {
             // Stage 2F-F.28W: ownership of the native slot is handed to the
             // controller at construction. Until that succeeds this coroutine still
@@ -750,6 +848,11 @@ if (sessionPolicy.isRunning) {
                 // marking the new session running before it has connected.
                 if (sessionPolicy.isCurrentSession(session)) {
                     sessionPolicy.onRunning()
+                    // FIX-C: this attempt is no longer CONNECTING — it is connected. Clear
+                    // the CONNECTING stamp so this live session (whose connectionJob stays
+                    // non-null for its whole life) can never be mistaken for a wedged
+                    // CONNECTING attempt by a later startVpn().
+                    attemptConnectingEnteredAtMs = 0L
                     // Stage 2F-F.28N: the success log belongs INSIDE the
                     // current-session branch, and additionally requires that
                     // teardown has not begun.
@@ -1011,6 +1114,9 @@ if (sessionPolicy.isRunning) {
         // Cancel the connection coroutine so it won't interfere
         connectionJob?.cancel()
         connectionJob = null
+        // FIX-C: this attempt is no longer CONNECTING — clear the stamp alongside the job so
+        // a torn-down attempt can never be read as wedged by a later startVpn().
+        attemptConnectingEnteredAtMs = 0L
 
         // Move UI-facing cleanup (notification, foreground) to happen
         // immediately on the main thread so the user sees "disconnected"

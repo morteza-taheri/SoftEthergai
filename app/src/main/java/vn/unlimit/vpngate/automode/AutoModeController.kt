@@ -141,6 +141,15 @@ class AutoModeController(
      * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
      */
     private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
+    /**
+     * FIX-3: the per-server wedge ledger Auto Mode consults before dialling.
+     *
+     * Defaults to the process-wide instance ([WedgeTracker.process]) because
+     * "excluded for this session" must survive across runs — a per-run ledger would
+     * forget exactly the fact it exists to remember. Injected so a JVM test can supply
+     * its own instance and stay isolated from every other test in the suite.
+     */
+    private val wedgeTracker: WedgeTracker = WedgeTracker.process,
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -227,6 +236,28 @@ class AutoModeController(
          * Default is a no-op so existing test doubles keep compiling.
          */
         fun requestDisconnect() {}
+
+        /**
+         * FIX-2: request a teardown whose ONLY purpose is to release this application's
+         * own wedged native operation, so the process-wide TEARDOWN soft-bound
+         * (`NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS`) can reclaim the
+         * native slot on a later admission attempt.
+         *
+         * Distinct from [disconnect] and [requestDisconnect] in three ways that matter:
+         *
+         *  - it is **fire-and-forget** — nothing waits for the completion, because the
+         *    whole premise is that the native operation may never complete;
+         *  - it is issued only on Auto Mode's **terminal give-up**, after the run has
+         *    already decided to stop, so it can never rotate a cursor or adopt a server;
+         *  - it must not be silently dropped. The give-up path is the user's last chance
+         *    to get unstuck, so an implementation must not gate this behind a
+         *    once-per-request idempotency flag that a preceding normal disconnect may
+         *    already have consumed.
+         *
+         * Default is a no-op so existing test doubles keep compiling; the real adapter
+         * overrides it.
+         */
+        fun requestRecoveryTeardown() {}
 
         /**
          * Stage 2F-F.28AA: [awaitArmedTunnel] plus the reason it ended.
@@ -1286,8 +1317,20 @@ enum class AttemptOutcome {
         for (server in servers) {
             if (!currentCoroutineContext().isActive) return
 
-            val key = "${server.ip}|${server.hostname ?: ""}"
+            val key = wedgeKey(server)
             if (!attempted.add(key)) continue
+
+            // FIX-3: a server that has already wedged this process twice is skipped for the
+            // rest of the session. Checked here — after de-duplication and before any dial —
+            // so an excluded server consumes no retry budget, no attempt counter and, above
+            // all, no native admission.
+            if (wedgeTracker.isExcluded(key)) {
+                adapter.log(
+                    "[AUTO] Skipping ${server.hostname ?: server.ip}: excluded for this " +
+                            "session after ${wedgeTracker.countFor(key)} wedges",
+                )
+                continue
+            }
 
             // VpnM Phase 3 "Cursor": the absolute position of the server being
             // tried, counted over the whole (post-filter) list, so the UI can say
@@ -1430,6 +1473,9 @@ enum class AttemptOutcome {
                                         "(${perServerRetryDelayBudgetMs / 1000}s); " +
                                         "stopping without blaming this server",
                             )
+                            // FIX-2 + FIX-3: terminal give-up caused by our own unresolved
+                            // native operation — the run has nothing left to try.
+                            giveUpWithUnresolvedNativeOperation(server, key)
                             setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
                             job = null
                             return
@@ -1477,6 +1523,9 @@ enum class AttemptOutcome {
                                     "(${NativeLifetimeRegistry.process.describe()}); " +
                                     "stopping without blaming this server",
                         )
+                        // FIX-2 + FIX-3: terminal give-up caused by our own unresolved
+                        // native operation — the retry count is exhausted.
+                        giveUpWithUnresolvedNativeOperation(server, key)
                         setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
                         job = null
                         return
@@ -1519,6 +1568,11 @@ enum class AttemptOutcome {
             }
 
             if (connectedProtocol != null) {
+                // FIX-3: a verified tunnel proves this server does not wedge, so its record
+                // is cleared. Without this, a server that wedged twice early in a session
+                // could never be rehabilitated and the ledger would drift from "known bad"
+                // to "once bad".
+                wedgeTracker.clear(key)
                 adapter.log("[AUTO] Tunnel established")
                 adapter.log("[AUTO] Connected successfully")
                 onSuccess(server, connectedProtocol)
@@ -1554,6 +1608,73 @@ enum class AttemptOutcome {
             servers.subList(idx + 1, servers.size)
         } else {
             emptyList()
+        }
+    }
+
+    /**
+     * FIX-3: the ledger key for a candidate.
+     *
+     * Same shape as the run's de-duplication key (`ip|hostname`), defined once so the ledger
+     * and the attempt loop can never disagree about what "this server" means.
+     */
+    private fun wedgeKey(server: AutoModeCandidate): String = "${server.ip}|${server.hostname ?: ""}"
+
+    /**
+     * FIX-3 test seam: the wedge count this controller's ledger holds for [candidate].
+     * Nothing in main source calls it.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun wedgeCountFor(candidate: AutoModeCandidate): Int =
+        wedgeTracker.countFor(wedgeKey(candidate))
+
+    /**
+     * FIX-2 + FIX-3: the single funnel for Auto Mode's **terminal give-up** caused by this
+     * application's own unresolved native operation.
+     *
+     * Both give-up sites — retry-count exhaustion and per-server budget exhaustion — route
+     * through here, so the two halves of the recovery can never drift apart.
+     *
+     * ## FIX-2 — release our own wedged native operation
+     *
+     * Device evidence (V3): Auto Mode gave up while the wedged attempt was still holding the
+     * process-wide native slot, and left the service's `connectionJob` set. Nothing was ever
+     * asked to tear down, so the TEARDOWN soft-bound — verified working on device
+     * (`[REGISTRY] FORCED_RELEASE_AFTER_TIMEOUT: attempt=2 held for 106041 ms`) — had no
+     * TEARDOWN holder to reclaim. Issuing the teardown here is what moves the slot into
+     * [NativeLifetimeRegistry.Phase.TEARDOWN] with an expired deadline, which is exactly the
+     * state that bound exists to recover.
+     *
+     * Ordering mirrors the Stage 2F-F.28 Fix E contract already used by [stop] and
+     * [disconnectNow]: request the teardown first, publish the terminal state second. The
+     * request is fire-and-forget, so it cannot delay the terminal state.
+     *
+     * ## FIX-3 — remember which server did this
+     *
+     * This is the only moment at which "this server's attempt did not resolve" is known, so
+     * the wedge is recorded here. A server that reaches [WedgeTracker.EXCLUSION_THRESHOLD] is
+     * excluded for the rest of the process; see [WedgeTracker] for the scope, the reset rule
+     * and the stated limitation.
+     *
+     * @param server the candidate whose attempt did not resolve. Never null: the give-up is
+     *   always reached from inside a concrete server's attempt.
+     * @param key [server]'s ledger key, passed in so the recorded key is exactly the one the
+     *   attempt loop de-duplicated on.
+     */
+    private fun giveUpWithUnresolvedNativeOperation(
+        server: AutoModeCandidate,
+        key: String,
+    ) {
+        adapter.log(
+            "[AUTO] Requesting recovery teardown so the unresolved native operation can be " +
+                    "released and a later attempt admitted",
+        )
+        adapter.requestRecoveryTeardown()
+        val wedges = wedgeTracker.record(key)
+        if (wedges >= WedgeTracker.EXCLUSION_THRESHOLD) {
+            adapter.log(
+                "[AUTO] Excluding ${server.hostname ?: server.ip} from this session " +
+                        "after $wedges wedges.",
+            )
         }
     }
     /**
@@ -1612,6 +1733,99 @@ enum class AttemptOutcome {
         // A DEFAULT-port server is still supported: 443 is a real, dialable
         // port and is not the same claim as "the port is unknown".
         AutoModeProtocol.MS_SSTP -> c.sstpSupported && c.sstpConnectPort > 0
+    }
+}
+
+/**
+ * FIX-3: a process-scoped ledger of servers whose attempt left this application's own
+ * native operation unresolved — a "wedge".
+ *
+ * ## The defect this exists to close
+ *
+ * Device evidence (V4) showed Auto Mode re-dialling the same server
+ * (`vpn333205800`) on every run and wedging the native slot on every run. The existing
+ * guards bound one *run*: the per-server retry budget and the NATIVE_BUSY retry count both
+ * stop the run. Nothing carried that knowledge into the *next* run, so a fresh press
+ * re-entered the same trap. With FIX-2 in place the slot is reclaimed, but the *server* is
+ * still re-selected — Auto Mode ranks by quality, and the wedging server is often the
+ * best-ranked one — so the user simply wedges again on the next press.
+ *
+ * ## Scope and lifetime
+ *
+ * Process-scoped by design: [process] is the instance production uses, so an exclusion
+ * survives every run within the session. It is deliberately **not** persisted — a restart
+ * is a clean slate, and a server that wedged before a network change deserves a fresh
+ * chance.
+ *
+ * ## What a wedge is, and what it is not
+ *
+ * A wedge is recorded only on Auto Mode's **terminal give-up** for a server: the run
+ * stopped with [AutoModeController.ERROR_NATIVE_UNRESOLVED] because this application's own
+ * native operation never resolved. It is **not** recorded for a TIMED_OUT rotation — the
+ * ordinary "the server did not come up" outcome, which already has its own recovery
+ * (rotate to the next candidate) and whose health genuinely is in question. It is cleared
+ * by a **verified tunnel**, because a tunnel proves the server does not wedge.
+ *
+ * ## Known limitation (stated, not hidden)
+ *
+ * The first NATIVE_BUSY of a run can be caused by a leftover operation belonging to an
+ * *earlier* server, so the first wedge can in principle be attributed to the wrong
+ * candidate. The ledger is therefore deliberately conservative — two strikes,
+ * session-scoped, cleared on success — rather than a permanent ban.
+ *
+ * Declared at file scope rather than nested in [AutoModeController] because it is a
+ * *collaborator* the controller is handed, not part of the controller's own contract: the
+ * controller takes it as a constructor parameter, production passes [process], and a test
+ * passes its own instance.
+ *
+ * Public, not `internal`, on purpose: it appears in [AutoModeController]'s constructor
+ * signature, and every other type in that signature (`AutoModeState`, `TunnelLivenessProbe`,
+ * `ReachabilityGate`, …) is public. This is an application module, so there is no ABI to
+ * protect.
+ */
+class WedgeTracker {
+    private val wedges =
+        java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
+    /** Record one wedge for [key]; returns the new total. */
+    fun record(key: String): Int = wedges
+        .computeIfAbsent(key) { java.util.concurrent.atomic.AtomicInteger(0) }
+        .incrementAndGet()
+
+    /** How many wedges [key] has accumulated (0 when it has never wedged). */
+    fun countFor(key: String): Int = wedges[key]?.get() ?: 0
+
+    /** True once [key] has reached [EXCLUSION_THRESHOLD] wedges. */
+    fun isExcluded(key: String): Boolean = countFor(key) >= EXCLUSION_THRESHOLD
+
+    /** Forget [key]'s record — a verified tunnel proves it does not wedge. */
+    fun clear(key: String) {
+        wedges.remove(key)
+    }
+
+    /** Drop every record. Test seam only; production never calls this. */
+    @androidx.annotation.VisibleForTesting
+    fun reset() {
+        wedges.clear()
+    }
+
+    companion object {
+        /**
+         * FIX-3: wedges before a server is excluded for the rest of the process.
+         *
+         * Two, not one: a single wedge can be caused by a leftover operation from a
+         * previous server (see the class note above), so one strike is not evidence about
+         * *this* server. Two wedges on the same server is.
+         */
+        const val EXCLUSION_THRESHOLD = 2
+
+        /**
+         * The process-wide ledger production uses.
+         *
+         * "Excluded for this session" has to outlive one run — that is the whole point —
+         * so the default is shared, and a test injects its own instance to stay isolated.
+         */
+        val process: WedgeTracker = WedgeTracker()
     }
 }
 

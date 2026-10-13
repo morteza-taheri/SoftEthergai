@@ -78,7 +78,25 @@ package vn.unlimit.softether
  *   not replace: `connectInFlight`, `nativeTeardownGate`, the read-then-zero handle
  *   idiom, and the native `connect_mutex` ordering.
  */
-class NativeLifetimeRegistry {
+class NativeLifetimeRegistry(
+    /**
+     * Sink for the registry's own audit lines.
+     *
+     * Defaults to `android.util.Log` in production. It is a constructor parameter so the
+     * JVM unit tests — which run against the mockable `android.jar`, where
+     * `android.util.Log` throws "not mocked" — can capture the forced-release line without
+     * touching the framework. Only the soft-bound (T5-SLOT) path ever writes to it, so
+     * every existing call site keeps its exact prior behaviour.
+     */
+    private val logSink: (String) -> Unit = { message ->
+        android.util.Log.w("NativeLifetimeRegistry", message)
+    },
+    /**
+     * Wall-clock source, injectable so the soft-bound can be exercised deterministically
+     * in a unit test without sleeping for [NATIVE_SLOT_FORCE_RELEASE_AFTER_MS].
+     */
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+) {
 
     /**
      * Physical phase of the single native operation the registry admits at a time.
@@ -103,6 +121,36 @@ class NativeLifetimeRegistry {
          * never complete. Ownership is held until [confirmTeardown] succeeds.
          */
         TEARDOWN,
+    }
+
+    /**
+     * How a slot reservation ended — the label a release carries.
+     *
+     * Declared beside [Phase] because it is the *reason a phase ended*, not a phase itself.
+     * The distinction exists so a soft-bound release is never read as a genuine
+     * [confirmTeardown]: a forced release does **not** assert that the native operation
+     * returned.
+     */
+    enum class ReleaseOutcome {
+        /** Released by [confirmTeardown] (or [confirmTeardownWithoutLease]). */
+        NORMAL,
+
+        /**
+         * Force-released by [tryAcquire] because the holder stayed in [Phase.TEARDOWN] for
+         * at least [NATIVE_SLOT_FORCE_RELEASE_AFTER_MS] past its reporting deadline. The
+         * native operation may still be running.
+         */
+        FORCED_RELEASE_AFTER_TIMEOUT,
+
+        /**
+         * Force-released by [tryAcquire] because the holder stayed in [Phase.CONNECTING]
+         * for at least [NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS] without ever
+         * reaching [Phase.CONNECTED] or [Phase.TEARDOWN]. A distinct label from
+         * [FORCED_RELEASE_AFTER_TIMEOUT] so a CONNECTING-phase leak is never confused with
+         * the TEARDOWN-phase leak: the two bounds are independent and only one can fire for
+         * a given release. The native operation may still be running.
+         */
+        FORCED_RELEASE_CONNECTING_STUCK,
     }
 
     /**
@@ -135,6 +183,37 @@ class NativeLifetimeRegistry {
     private var deadlineExpired = false
 
     /**
+     * Wall-clock ms at which teardown was requested for [activeAttemptId], or 0 when no
+     * teardown has been requested. Recorded by [markTeardownRequested]; the soft-bound in
+     * [tryAcquire] measures "held past deadline" from here.
+     */
+    private var teardownRequestedAtMs = 0L
+
+    /**
+     * Wall-clock ms at which [activeAttemptId] entered [Phase.CONNECTING], or 0 when it
+     * never did. Recorded by [markNativeEntered]; the CONNECTING soft-bound in
+     * [tryAcquire] measures "stuck in CONNECTING" from here.
+     *
+     * This is the sibling of [teardownRequestedAtMs] for the CONNECTING-phase leak: a
+     * holder that entered the native connect and never returned is stuck in CONNECTING
+     * forever, with no teardown request to measure from. It is cleared on every release
+     * (grant, both force-releases) so a stale stamp can never be read against a newer
+     * attempt.
+     */
+    private var connectingEnteredAtMs = 0L
+
+    /**
+     * Outcome of the most recent soft-bound release.
+     *
+     * [ReleaseOutcome.NORMAL] until the soft-bound fires; then
+     * [ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT]. Deliberately **not** cleared by a
+     * later [confirmTeardown] — this change leaves that method untouched — so it reads as
+     * a durable "a forced release has occurred" marker for this registry instance (the
+     * process-wide instance is long-lived).
+     */
+    private var lastReleaseOutcome = ReleaseOutcome.NORMAL
+
+    /**
      * Try to claim the exclusive native-operation slot.
      *
      * Fails while any earlier attempt's native operation is unresolved, which is the
@@ -145,25 +224,70 @@ class NativeLifetimeRegistry {
      * @return a [Lease] on success, or `null` when a previous attempt has not been
      *   confirmed torn down. Never blocks and never queues.
      */
-    fun tryAcquire(): Lease? = synchronized(lock) {
-        if (activeAttemptId != NO_ATTEMPT) {
-            return@synchronized null
+    fun tryAcquire(): Lease? {
+        var forcedReleaseMessage: String? = null
+        var granted: Lease? = null
+        synchronized(lock) {
+            if (activeAttemptId != NO_ATTEMPT) {
+                // Fail-closed by default. The soft-bounds are the only exceptions, and they
+                // are siblings — exactly one can fire for a given release because they key
+                // off mutually exclusive phases:
+                //
+                //  - a holder stuck in TEARDOWN past NATIVE_SLOT_FORCE_RELEASE_AFTER_MS is
+                //    a leaked slot (observed on device — attempt held in TEARDOWN with no
+                //    exit log);
+                //  - a holder stuck in CONNECTING past
+                //    NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS without ever reaching
+                //    CONNECTED/TEARDOWN is the sibling leak (observed on device — attempt
+                //    held in CONNECTING/TLS-handshake with no exit log).
+                //
+                // Without a bound the user cannot connect at all until the app is
+                // force-stopped. Each function returns null — keeping the slot — for every
+                // case other than its own genuine timeout, and the first (TEARDOWN) is
+                // evaluated first and left completely unchanged.
+                forcedReleaseMessage = forceReleaseIfTimedOutLocked()
+                    ?: forceReleaseIfConnectingStuckLocked()
+                if (activeAttemptId != NO_ATTEMPT) return@synchronized
+            }
+            lastAttemptId += 1
+            activeAttemptId = lastAttemptId
+            activePhase = Phase.RESERVED
+            deadlineExpired = false
+            teardownRequestedAtMs = 0L
+            connectingEnteredAtMs = 0L
+            granted = Lease(activeAttemptId)
         }
-        lastAttemptId += 1
-        activeAttemptId = lastAttemptId
-        activePhase = Phase.RESERVED
-        deadlineExpired = false
-        Lease(activeAttemptId)
+        // Emitted outside [lock]: the soft-bound path performs no logging and no blocking
+        // call while holding the registry lock.
+        forcedReleaseMessage?.let(logSink)
+        return granted
     }
 
-    /** Record that [lease] is about to enter its first native call. */
-    fun markNativeEntered(lease: Lease?) = mutate(lease) { it.activePhase = Phase.CONNECTING }
+    /**
+     * Record that [lease] is about to enter its first native call.
+     *
+     * Also stamps the CONNECTING entry time, which the CONNECTING soft-bound in
+     * [tryAcquire] measures from. Additive state only: the method's return contract (Unit)
+     * and its effect on [Phase] are unchanged.
+     */
+    fun markNativeEntered(lease: Lease?) = mutate(lease) {
+        it.activePhase = Phase.CONNECTING
+        it.connectingEnteredAtMs = nowMs()
+    }
 
     /** Record that [lease]'s connection is established and owns a live handle. */
     fun markConnected(lease: Lease?) = mutate(lease) { it.activePhase = Phase.CONNECTED }
 
-    /** Record that teardown was requested for [lease]. Ownership is retained. */
-    fun markTeardownRequested(lease: Lease?) = mutate(lease) { it.activePhase = Phase.TEARDOWN }
+    /**
+     * Record that teardown was requested for [lease]. Ownership is retained.
+     *
+     * Also stamps the request time, which the soft-bound in [tryAcquire] measures from.
+     * This is additive state only: the method's ownership contract is unchanged.
+     */
+    fun markTeardownRequested(lease: Lease?) = mutate(lease) {
+        it.activePhase = Phase.TEARDOWN
+        it.teardownRequestedAtMs = nowMs()
+    }
 
     /**
      * Record that a reporting deadline expired for [lease].
@@ -236,6 +360,16 @@ class NativeLifetimeRegistry {
         lease != null && lease.attemptId == activeAttemptId
     }
 
+    /**
+     * Outcome of the most recent soft-bound release.
+     *
+     * [ReleaseOutcome.NORMAL] until the soft-bound fires, then
+     * [ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT]. Exposed so an operator, UI, or test
+     * can tell a forced release from a genuine confirmed teardown. See [lastReleaseOutcome]
+     * for the stickiness note.
+     */
+    fun lastReleaseOutcome(): ReleaseOutcome = synchronized(lock) { lastReleaseOutcome }
+
     /** Human-readable summary for logs and refusal messages. */
     fun describe(): String = synchronized(lock) {
         if (activeAttemptId == NO_ATTEMPT) {
@@ -244,6 +378,76 @@ class NativeLifetimeRegistry {
             val suffix = if (deadlineExpired) ", reporting deadline expired (still blocked)" else ""
             "attempt=$activeAttemptId phase=$activePhase$suffix"
         }
+    }
+
+    /**
+     * Soft-bound (T5-SLOT). Force-release the active slot **iff** its holder has been stuck
+     * in [Phase.TEARDOWN] with an expired reporting deadline for at least
+     * [NATIVE_SLOT_FORCE_RELEASE_AFTER_MS].
+     *
+     * Called only from [tryAcquire], so it can never fire spontaneously — it runs exactly
+     * when a new attempt is asking for admission, which is the moment the leak actually
+     * harms the user. Every other condition (no deadline expiry, not in TEARDOWN, no
+     * recorded teardown request, or elapsed < bound) leaves the slot held, preserving the
+     * fail-closed contract. It performs no logging and no blocking call under [lock].
+     *
+     * @return the audit line to emit, or `null` when the slot was left held.
+     */
+    private fun forceReleaseIfTimedOutLocked(): String? {
+        if (!deadlineExpired) return null
+        if (activePhase != Phase.TEARDOWN) return null
+        if (teardownRequestedAtMs == 0L) return null
+        val heldMs = nowMs() - teardownRequestedAtMs
+        if (heldMs < NATIVE_SLOT_FORCE_RELEASE_AFTER_MS) return null
+
+        val oldAttemptId = activeAttemptId
+        activeAttemptId = NO_ATTEMPT
+        activePhase = Phase.RESERVED
+        deadlineExpired = false
+        teardownRequestedAtMs = 0L
+        connectingEnteredAtMs = 0L
+        lastReleaseOutcome = ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT
+        return "[REGISTRY] FORCED_RELEASE_AFTER_TIMEOUT: attempt=$oldAttemptId held for " +
+                "$heldMs ms past deadline; native operation may still be running. " +
+                "Releasing slot to unblock new attempt."
+    }
+
+    /**
+     * Sibling soft-bound (FIX-B). Force-release the active slot **iff** its holder has been
+     * stuck in [Phase.CONNECTING] for at least
+     * [NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS] without ever reaching
+     * [Phase.CONNECTED] or [Phase.TEARDOWN].
+     *
+     * This is the CONNECTING-phase counterpart of [forceReleaseIfTimedOutLocked] and is
+     * deliberately **independent** of it: it does **not** consult [deadlineExpired] (a
+     * CONNECTING holder has no teardown deadline to expire — it simply never returned) and
+     * it only ever fires while `activePhase == Phase.CONNECTING`, so a TEARDOWN holder can
+     * never be picked up here. Conversely [forceReleaseIfTimedOutLocked] only fires while
+     * `activePhase == Phase.TEARDOWN`, so a CONNECTING holder can never be picked up there.
+     * Exactly one of the two can therefore match a given holder.
+     *
+     * Called only from [tryAcquire], so it can never fire spontaneously — it runs exactly
+     * when a new attempt is asking for admission. It performs no logging and no blocking
+     * call under [lock].
+     *
+     * @return the audit line to emit, or `null` when the slot was left held.
+     */
+    private fun forceReleaseIfConnectingStuckLocked(): String? {
+        if (activePhase != Phase.CONNECTING) return null
+        if (connectingEnteredAtMs == 0L) return null
+        val heldMs = nowMs() - connectingEnteredAtMs
+        if (heldMs < NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS) return null
+
+        val oldAttemptId = activeAttemptId
+        activeAttemptId = NO_ATTEMPT
+        activePhase = Phase.RESERVED
+        deadlineExpired = false
+        teardownRequestedAtMs = 0L
+        connectingEnteredAtMs = 0L
+        lastReleaseOutcome = ReleaseOutcome.FORCED_RELEASE_CONNECTING_STUCK
+        return "[REGISTRY] FORCED_RELEASE_CONNECTING_STUCK: attempt=$oldAttemptId held in " +
+                "CONNECTING for $heldMs ms; native operation may still be running. " +
+                "Releasing slot to unblock new attempt."
     }
 
     /**
@@ -263,6 +467,56 @@ class NativeLifetimeRegistry {
     companion object {
         /** Sentinel for "no attempt owns the native slot". */
         const val NO_ATTEMPT = 0L
+
+        /**
+         * T5-SLOT soft-bound: force-release a slot held in [Phase.TEARDOWN] this long past
+         * its reporting deadline.
+         *
+         * 90 s gives 3× headroom over the native UDP race timeout (30 s) — the path that
+         * produced the observed ~15 s stall — while still recovering the user within
+         * ~1.5 minutes instead of requiring an app force-stop.
+         */
+        const val NATIVE_SLOT_FORCE_RELEASE_AFTER_MS = 90_000L
+
+        /**
+         * FIX-B/FIX-1 soft-bound: force-release a slot held in [Phase.CONNECTING] this long
+         * without ever reaching CONNECTED or TEARDOWN.
+         *
+         * ## Why 30 s (lowered from 120 s by FIX-1)
+         *
+         * 30 s is the native UDP parallel-race timeout itself (`conn->timeout_ms = 30000`,
+         * `softether_protocol.c`), and 6× the observed healthy connect window (<5 s). A
+         * genuinely wedged CONNECTING holder (observed on device — attempt=3 stuck in the
+         * TLS handshake for >8 min, never reaching `SSL handshake successful`) has, by the
+         * time this bound is reached, already blown its own hard budget six times over.
+         *
+         * The bound is only ever evaluated inside [tryAcquire], i.e. at the moment a NEW
+         * attempt asks for admission. Lowering it therefore does not change what happens
+         * while the stuck attempt is running; it changes how long the *user* has to wait
+         * before a replacement attempt can be admitted. The device evidence that motivated
+         * the reduction: Auto Mode gives up on a wedged server roughly 19 s after the wedge
+         * (see [AutoModeController]'s NATIVE_BUSY budget), so a 120 s bound could never be
+         * reached inside one run — the user was left waiting two minutes with no way back
+         * except an app force-stop.
+         *
+         * ## Relationship to [NATIVE_SLOT_FORCE_RELEASE_AFTER_MS] (FIX-1 changed it)
+         *
+         * The CONNECTING bound is now deliberately **smaller** than the TEARDOWN bound
+         * (30 s < 90 s), the reverse of the pre-FIX-1 arrangement (120 s > 90 s):
+         *
+         *  - a CONNECTING holder has a native call that owns its own hard budget and is
+         *    expected to return within it, so it is reclaimed as soon as that budget is
+         *    demonstrably blown;
+         *  - a TEARDOWN holder has *already* been asked to clean up, and its native
+         *    `nativeDestroy` blocks on the same `connect_mutex` as the (possibly still
+         *    running) connect. It is given the longer bound precisely because asking it to
+         *    tear down again would not help — the native side is still serialised.
+         *
+         * The two bounds still key off **mutually exclusive phases**, so exactly one can
+         * match a given holder regardless of which numeric bound is larger; see
+         * [tryAcquire] for the evaluation order.
+         */
+        const val NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS = 30_000L
 
         /**
          * The process-wide instance used by production code.

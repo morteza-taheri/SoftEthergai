@@ -136,6 +136,38 @@ class AndroidConnectionAdapter(
             startService(ACTION_VPN_DISCONNECT, SstpVpnService::class.java)
         }
 
+        /**
+         * FIX-2: the fire-and-forget teardown Auto Mode issues on its terminal give-up.
+         *
+         * The give-up happens because *this application's own* native operation never
+         * resolved, so the process-wide native slot is still held and no new attempt can be
+         * admitted. Requesting a teardown is what puts the slot into the TEARDOWN phase with
+         * an expired reporting deadline, which is the state the registry's TEARDOWN
+         * soft-bound is designed to reclaim. Without this, nothing ever asked the wedged
+         * operation to stop, so there was nothing for that bound to recover.
+         *
+         * Deliberately NOT routed through [requestDisconnect]:
+         *
+         *  - [requestDisconnect] is gated by [teardownDispatched], a once-per-request
+         *    idempotency flag. A normal disconnect that ran earlier in the same attempt may
+         *    still hold that flag, and a dropped recovery request would leave the user stuck
+         *    with no other way out. This path must always dispatch.
+         *  - it also allocates its own teardown identity rather than relying on the
+         *    service's allocation, so the teardown this path causes is distinguishable in
+         *    the service's own accounting.
+         *
+         * Nothing arms a waiter for that identity: the recovery teardown is fire-and-forget
+         * precisely because the native operation may never complete, and a waiter that could
+         * never be satisfied is not worth arming.
+         */
+        override fun requestRecoveryTeardown() {
+            GlobalVpnTracker.reportDisconnecting()
+            val teardownAttemptId = SoftEtherVpnService.nextTeardownAttemptId()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                dispatchDisconnectIntents(teardownAttemptId)
+            }
+        }
+
         private val teardownDispatched = java.util.concurrent.atomic.AtomicBoolean(false)
 
         override suspend fun disconnect() {

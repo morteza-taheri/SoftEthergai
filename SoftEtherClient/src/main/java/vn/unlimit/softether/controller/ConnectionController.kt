@@ -584,6 +584,15 @@ class ConnectionController(
         Log.d(TAG, "Duplex mode: ${if (fullDuplex) "FULL" else "HALF"} (4x BOTH / directional split)")
         // Build client info (rudpPort will be filled in by native code during RUDP init)
         val clientInfo = buildClientInfo(0)
+        // [DIAG] T5-SLOT diagnosis — LOG-ONLY (no behavior change). Entry/exit timestamps
+        // around the blocking nativeConnectWithHub JNI call: the T5-SLOT defect is this
+        // call never returning, which leaves the process-wide slot held in TEARDOWN. An
+        // "entry without exit" pair in logcat is the on-device signature. The `finally`
+        // guarantees the exit line fires on BOTH the normal-return and exception paths.
+        val diagAttemptId = nativeLease?.attemptId ?: -1L
+        val diagEntryMs = System.currentTimeMillis()
+        var diagOutcome: String? = null
+        Log.d(TAG, "[DIAG] nativeConnectWithHub entry (attempt=$diagAttemptId, ts=$diagEntryMs)")
         val result = try {
             client.nativeConnectWithHub(
                 nativeHandle,
@@ -605,9 +614,16 @@ class ConnectionController(
                 clientInfo.serverHostName,
                 clientInfo.serverIpAddress,
                 clientInfo.serverPort
-            )
+            ).also { diagOutcome = "result=$it" }
         } finally {
             stopNativeStateMonitor()
+            Log.d(
+                TAG,
+                "[DIAG] nativeConnectWithHub exit (attempt=$diagAttemptId, " +
+                        "ts=${System.currentTimeMillis()}, " +
+                        "elapsed=${System.currentTimeMillis() - diagEntryMs}ms, " +
+                        "outcome=${diagOutcome ?: "exception"})",
+            )
         }
 
         // Check if cancelled during connection
@@ -928,6 +944,14 @@ class ConnectionController(
                 // attempt must stay refused; the exiting connect flow completes cleanup
                 // when it actually returns, and only then is the slot freed.
                 NativeLifetimeRegistry.process.markDeadlineExpired(nativeLease)
+                // [DIAG] T5-SLOT diagnosis — LOG-ONLY (no behavior change). The teardown
+                // wait exceeded NATIVE_TEARDOWN_TIMEOUT_MS while a connect flow is still
+                // registered: the exact condition that leaves the slot held in TEARDOWN.
+                Log.d(
+                    TAG,
+                    "[DIAG] teardown wait exceeded; flow still running " +
+                            "(attempt=${nativeLease?.attemptId ?: -1L}, waitedMs=$NATIVE_TEARDOWN_TIMEOUT_MS)",
+                )
                 Log.w(
                     TAG,
                     "Native cleanup unresolved ($teardownIdentity, ${nativeLifecycle.describe()}); " +
@@ -1262,6 +1286,12 @@ class ConnectionController(
             // Connect to server (TLS + protocol + auth + session)
             startNativeStateMonitor()
             val reconnectClientInfo = buildClientInfo(0)
+            // [DIAG] T5-SLOT diagnosis — LOG-ONLY (no behavior change). See the matching
+            // entry/exit pair in performConnectInner().
+            val diagAttemptId = nativeLease?.attemptId ?: -1L
+            val diagEntryMs = System.currentTimeMillis()
+            var diagOutcome: String? = null
+            Log.d(TAG, "[DIAG] nativeConnectWithHub entry (attempt=$diagAttemptId, ts=$diagEntryMs, path=reconnect)")
             val result = try {
                 client.nativeConnectWithHub(
                     nativeHandle,
@@ -1275,9 +1305,16 @@ class ConnectionController(
                     reconnectClientInfo.osName, reconnectClientInfo.osVersion, reconnectClientInfo.osProductId,
                     reconnectClientInfo.hostName, reconnectClientInfo.clientIpAddress, reconnectClientInfo.clientPort,
                     reconnectClientInfo.serverHostName, reconnectClientInfo.serverIpAddress, reconnectClientInfo.serverPort
-                )
+                ).also { diagOutcome = "result=$it" }
             } finally {
                 stopNativeStateMonitor()
+                Log.d(
+                    TAG,
+                    "[DIAG] nativeConnectWithHub exit (attempt=$diagAttemptId, " +
+                            "ts=${System.currentTimeMillis()}, " +
+                            "elapsed=${System.currentTimeMillis() - diagEntryMs}ms, " +
+                            "outcome=${diagOutcome ?: "exception"}, path=reconnect)",
+                )
             }
 
             if (result != 0) {

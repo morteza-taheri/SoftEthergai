@@ -68,9 +68,26 @@ class AutoModeNativeBusyTest {
         val disconnects = AtomicInteger(0)
         val logs = CopyOnWriteArrayList<String>()
 
+        /**
+         * FIX-2: every recovery teardown the controller requested on its terminal give-up.
+         *
+         * Counted separately from [disconnects] on purpose — the two mean different things.
+         * A `disconnect()` is the rotation primitive (it precedes trying the next server or
+         * protocol); a recovery teardown is issued *after* the run has already decided to
+         * stop, purely to release this application's own wedged native operation.
+         */
+        val recoveryTeardowns = AtomicInteger(0)
+
         /** When true, every armed attempt reports NATIVE_BUSY. */
         @Volatile
         var nativeBusy = false
+
+        /**
+         * FIX-3: when true, every armed attempt reports TUNNEL_UP, so a test can drive the
+         * same server from "wedged" to "verified" across two runs.
+         */
+        @Volatile
+        var tunnelUp = false
 
         override suspend fun connect(candidate: AutoModeCandidate, protocol: AutoModeProtocol) {
             connects += protocol
@@ -80,6 +97,10 @@ class AutoModeNativeBusyTest {
             disconnects.incrementAndGet()
         }
 
+        override fun requestRecoveryTeardown() {
+            recoveryTeardowns.incrementAndGet()
+        }
+
         override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean = false
 
         override suspend fun awaitArmedTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean = false
@@ -87,9 +108,11 @@ class AutoModeNativeBusyTest {
         override suspend fun awaitArmedOutcome(
             protocol: AutoModeProtocol,
             timeoutMs: Long,
-        ): AutoModeController.AttemptOutcome =
-            if (nativeBusy) AutoModeController.AttemptOutcome.NATIVE_BUSY
-            else AutoModeController.AttemptOutcome.TIMED_OUT
+        ): AutoModeController.AttemptOutcome = when {
+            tunnelUp -> AutoModeController.AttemptOutcome.TUNNEL_UP
+            nativeBusy -> AutoModeController.AttemptOutcome.NATIVE_BUSY
+            else -> AutoModeController.AttemptOutcome.TIMED_OUT
+        }
 
         override suspend fun isOwnTunnelEstablished(): Boolean = false
 
@@ -119,7 +142,12 @@ class AutoModeNativeBusyTest {
         sstpSupported = false,
     )
 
-    private fun controller(adapter: BusyAwareAdapter, servers: List<AutoModeCandidate>) =
+    private fun controller(
+        adapter: BusyAwareAdapter,
+        servers: List<AutoModeCandidate>,
+        retryDelayMs: Long = AutoModeController.NATIVE_BUSY_RETRY_DELAY_MS,
+        wedgeTracker: WedgeTracker = WedgeTracker(),
+    ) =
         AutoModeController(
             scope = scope,
             adapter = adapter,
@@ -131,6 +159,11 @@ class AutoModeNativeBusyTest {
             attemptTimeoutMs = 1_000L,
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
+            nativeBusyRetryDelayMs = retryDelayMs,
+            // FIX-3: a fresh ledger per controller, so no test depends on — or disturbs —
+            // the process-wide instance. The FIX-3 tests inject their own so they can share
+            // it across runs and assert on it directly.
+            wedgeTracker = wedgeTracker,
         )
 
     private fun runUntilTerminal(c: AutoModeController) = runBlocking {
@@ -139,6 +172,24 @@ class AutoModeNativeBusyTest {
             while (c.state.value !is AutoModeState.Error && c.state.value !is AutoModeState.Connected) {
                 delay(5)
             }
+        }
+        Unit
+    }
+
+    /**
+     * Start a run and wait for it to actually finish, even when a previous run has already
+     * left the controller in a terminal state.
+     *
+     * [runUntilTerminal] polls the *state*, so on a second run it would return immediately —
+     * the state is still the previous run's Error. `job` is assigned synchronously by
+     * [AutoModeController.start] and cleared by every terminal branch, so waiting on
+     * `isRunning` is the wait that is correct for a repeat run. Used by the FIX-3 tests,
+     * which need several runs of the same controller.
+     */
+    private fun runToCompletion(c: AutoModeController) = runBlocking {
+        c.start()
+        withTimeoutOrNull(20_000) {
+            while (c.isRunning) delay(5)
         }
         Unit
     }
@@ -201,9 +252,17 @@ class AutoModeNativeBusyTest {
             adapter.connects.contains(AutoModeProtocol.SOFTETHER_UDP),
         )
         assertEquals(
-            "no teardown may be requested for a server that was never really connected",
+            "a refusal must not ROTATE: no disconnect() may be issued for the server",
             0,
             adapter.disconnects.get(),
+        )
+        // FIX-2 supersedes the pre-FIX-2 expectation that *no* teardown is requested here.
+        // The give-up does now issue one — but through the dedicated recovery primitive, not
+        // the rotation primitive, which is exactly why the assertion above still holds.
+        assertEquals(
+            "FIX-2: the terminal give-up must issue exactly one recovery teardown",
+            1,
+            adapter.recoveryTeardowns.get(),
         )
     }
 
@@ -564,6 +623,186 @@ class AutoModeNativeBusyTest {
         assertEquals(
             AutoModeController.ERROR_NO_SERVER,
             (c.state.value as AutoModeState.Error).message,
+        )
+    }
+
+    // ------------------------------------- FIX-2: recovery teardown on the give-up path
+    //
+    // Device evidence V3: Auto Mode gave up on a wedged server while the wedged attempt was
+    // still holding the process-wide native slot, and nothing was ever asked to tear down —
+    // so the TEARDOWN soft-bound (verified working on device) had no TEARDOWN holder to
+    // reclaim. FIX-2 makes the give-up issue a teardown. These tests pin the contract the
+    // controller owes: the give-up must ask, exactly once, through the recovery primitive —
+    // and must NOT rotate (no disconnect()).
+
+    @Test
+    fun `a give-up issues a recovery teardown so the wedged slot can be reclaimed`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        val c = controller(adapter, listOf(server("stuck")), retryDelayMs = 0)
+
+        runToCompletion(c)
+
+        assertEquals(
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (c.state.value as AutoModeState.Error).message,
+        )
+        assertEquals(
+            "FIX-2: exactly one recovery teardown must be requested on the terminal give-up",
+            1,
+            adapter.recoveryTeardowns.get(),
+        )
+        assertEquals(
+            "the recovery teardown must not be a rotating disconnect()",
+            0,
+            adapter.disconnects.get(),
+        )
+        assertTrue(
+            "the request must be visible in the log for the next device run: ${adapter.logs}",
+            adapter.logs.any { it.contains("Requesting recovery teardown") },
+        )
+        assertTrue(
+            "the give-up must still stop without blaming the server: ${adapter.logs}",
+            adapter.logs.none { it.contains("Protocol failed") },
+        )
+    }
+
+    @Test
+    fun `the budget give-up also issues the recovery teardown`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        // A 3000 ms budget trips on the second retry gate (2000 + 2000 > 3000), so this
+        // exercises the BUDGET give-up branch rather than the count-exhaustion one.
+        val c = AutoModeController(
+            scope = scope,
+            adapter = adapter,
+            protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
+            serverProvider = { listOf(server("budget-stuck")) },
+            onSuccess = { _, _ -> },
+            attemptTimeoutMs = 1_000L,
+            reachabilityFilter = null,
+            activeRttProvider = { _, _ -> null },
+            nativeBusyRetryDelayMs = 0,
+            perServerRetryDelayBudgetMs = 3_000,
+            wedgeTracker = WedgeTracker(),
+        )
+
+        runToCompletion(c)
+
+        assertTrue(
+            "the budget branch must be the one that tripped: ${adapter.logs}",
+            adapter.logs.any { it.contains("Per-server retry budget exceeded") },
+        )
+        assertEquals(
+            "FIX-2 applies to both give-up sites, not just count exhaustion",
+            1,
+            adapter.recoveryTeardowns.get(),
+        )
+    }
+
+    // ------------------------------------------- FIX-3: the per-server wedge ledger
+    //
+    // Device evidence V4: the same server wedged on every run. FIX-2 releases the slot, but
+    // Auto Mode still re-selected that server — it ranks by quality, and the wedging server
+    // was often the best-ranked one — so the user simply wedged again on the next press.
+    // FIX-3 records the wedge against the server and excludes it for the rest of the process.
+
+    @Test
+    fun `a server that wedges twice is excluded for the rest of the session`() {
+        val tracker = WedgeTracker()
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        val wedging = server("wedgey")
+        val c = controller(adapter, listOf(wedging), retryDelayMs = 0, wedgeTracker = tracker)
+
+        runToCompletion(c) // wedge #1
+        assertEquals("the first give-up must be recorded", 1, c.wedgeCountFor(wedging))
+        assertEquals(
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (c.state.value as AutoModeState.Error).message,
+        )
+
+        runToCompletion(c) // wedge #2 -> the threshold is reached
+        assertEquals(2, c.wedgeCountFor(wedging))
+        assertTrue(
+            "the exclusion must be logged once the threshold is reached: ${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Excluding wedgey from this session after 2 wedges.")
+            },
+        )
+
+        val dialsBefore = adapter.connects.size
+        runToCompletion(c) // the only server is now excluded
+        assertEquals(
+            "an excluded server must never be dialled again in this session",
+            dialsBefore,
+            adapter.connects.size,
+        )
+        assertTrue(
+            "the skip must be logged: ${adapter.logs}",
+            adapter.logs.any { it.contains("Skipping wedgey: excluded for this session") },
+        )
+        assertEquals(
+            "with its only server excluded the run is an ordinary exhausted list",
+            AutoModeController.ERROR_NO_SERVER,
+            (c.state.value as AutoModeState.Error).message,
+        )
+    }
+
+    @Test
+    fun `a single wedge does not exclude the server`() {
+        val tracker = WedgeTracker()
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        val wedging = server("one-strike")
+        val c = controller(adapter, listOf(wedging), retryDelayMs = 0, wedgeTracker = tracker)
+
+        runToCompletion(c)
+
+        assertEquals(1, c.wedgeCountFor(wedging))
+        assertTrue(
+            "one wedge is below the threshold, so the server must not be excluded yet",
+            c.wedgeCountFor(wedging) < WedgeTracker.EXCLUSION_THRESHOLD,
+        )
+        assertTrue(
+            "no exclusion may be logged before the threshold is reached: ${adapter.logs}",
+            adapter.logs.none { it.contains("Excluding") },
+        )
+
+        // A second run must still dial it: one strike is not evidence about the server,
+        // because a single wedge can be caused by a leftover operation from an earlier one.
+        val dialsBefore = adapter.connects.size
+        runToCompletion(c)
+        assertTrue(
+            "a server with one wedge must still be dialled",
+            adapter.connects.size > dialsBefore,
+        )
+    }
+
+    @Test
+    fun `a verified tunnel clears the wedge record`() {
+        val tracker = WedgeTracker()
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        val flaky = server("flaky")
+        val c = controller(adapter, listOf(flaky), retryDelayMs = 0, wedgeTracker = tracker)
+
+        runToCompletion(c)
+        assertEquals("the give-up must be recorded", 1, c.wedgeCountFor(flaky))
+
+        // The same server now comes up. The record must be forgotten, not merely left alone.
+        adapter.nativeBusy = false
+        adapter.tunnelUp = true
+        runToCompletion(c)
+
+        assertTrue(
+            "the second run must have connected, was ${c.state.value}",
+            c.state.value is AutoModeState.Connected,
+        )
+        assertEquals(
+            "a verified tunnel proves the server does not wedge, so the record must be cleared",
+            0,
+            c.wedgeCountFor(flaky),
         )
     }
 }

@@ -3,6 +3,7 @@ package vn.unlimit.softether
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -427,5 +428,289 @@ class NativeLifetimeRegistryTest {
         val lease = registry.acquire()
         assertTrue(lease.toString().contains("${lease.attemptId}"))
         assertEquals("Lease(attempt=${lease.attemptId})", lease.toString())
+    }
+
+    // ----------------------------------------------------------- T5-SLOT soft-bound
+
+    /**
+     * The soft-bound releases a slot **only** when it is genuinely stuck: TEARDOWN phase,
+     * an expired reporting deadline, and elapsed-since-teardown at or beyond
+     * [NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS]. Everything else stays
+     * fail-closed. The clock is injected so the bound is exercised without sleeping, and
+     * the log sink is injected so these tests never touch `android.util.Log` (which throws
+     * under the mockable `android.jar` used by this module's JVM unit tests).
+     */
+    private class FakeClock(var now: Long)
+
+    private fun softBoundRegistry(
+        clock: FakeClock,
+        messages: MutableList<String> = mutableListOf(),
+    ): NativeLifetimeRegistry =
+        NativeLifetimeRegistry(logSink = { messages.add(it) }, nowMs = { clock.now })
+
+    @Test
+    fun softBoundLeavesTheSlotHeldWhileElapsedIsBelowTheBound() {
+        val clock = FakeClock(1_000_000L)
+        val registry = softBoundRegistry(clock)
+        val lease = registry.acquire()
+
+        registry.markNativeEntered(lease)
+        registry.markTeardownRequested(lease)
+        registry.markDeadlineExpired(lease)
+
+        // Just short of the bound.
+        clock.now += NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS - 1
+        assertNull(
+            "the soft-bound must not release a slot that is still within its window",
+            registry.tryAcquire(),
+        )
+        assertFalse(registry.isAdmissible())
+        assertEquals(NativeLifetimeRegistry.ReleaseOutcome.NORMAL, registry.lastReleaseOutcome())
+        assertTrue(registry.isHeldBy(lease))
+    }
+
+    @Test
+    fun softBoundForceReleasesASlotStuckInTeardownPastTheBound() {
+        val clock = FakeClock(1_000_000L)
+        val messages = mutableListOf<String>()
+        val registry = softBoundRegistry(clock, messages)
+        val stuck = registry.acquire()
+
+        registry.markNativeEntered(stuck)
+        registry.markTeardownRequested(stuck)
+        registry.markDeadlineExpired(stuck)
+
+        clock.now += NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS
+        val fresh = registry.tryAcquire()
+
+        assertNotNull("the soft-bound must admit a new attempt once the holder is stuck", fresh)
+        assertNotEquals(stuck.attemptId, fresh!!.attemptId)
+        assertEquals(
+            NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT,
+            registry.lastReleaseOutcome(),
+        )
+        assertTrue(
+            "the forced release must be logged with its distinct label, was: $messages",
+            messages.any {
+                it.contains("FORCED_RELEASE_AFTER_TIMEOUT") && it.contains("attempt=${stuck.attemptId}")
+            },
+        )
+    }
+
+    @Test
+    fun aForcedReleaseDoesNotLetTheObsoleteLeaseDisturbTheNewOne() {
+        val clock = FakeClock(1_000_000L)
+        val registry = softBoundRegistry(clock)
+        val stuck = registry.acquire()
+
+        registry.markTeardownRequested(stuck)
+        registry.markDeadlineExpired(stuck)
+        clock.now += NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS
+        val fresh = registry.acquire()
+
+        // The old attempt's late teardown must be a no-op against the new lease.
+        assertFalse(
+            "an obsolete confirmTeardown must not release the slot a forced-released successor owns",
+            registry.confirmTeardown(stuck),
+        )
+        assertTrue(registry.isHeldBy(fresh))
+        assertFalse(registry.isAdmissible())
+    }
+
+    /**
+     * FIX-1 re-analysis of the PART 1 test `softBoundDoesNotFireForAConnectingHolderThatIsNotInTeardown`.
+     *
+     * PART 1 advanced the clock by 10× the TEARDOWN bound and asserted the slot stayed held,
+     * because no CONNECTING bound existed at all. FIX-B added one at 120 s, so the test was
+     * re-expressed as "the TEARDOWN bound must not reach a CONNECTING holder" with an elapsed
+     * above the TEARDOWN bound (90 s) and below the CONNECTING bound (120 s).
+     *
+     * FIX-1 lowers the CONNECTING bound to 30 s, which **destroys that window**: no elapsed
+     * can now be simultaneously above 90 s and below 30 s. At 100 s a CONNECTING holder IS
+     * reclaimed — by the CONNECTING bound. So the old `assertNull` is no longer true and has
+     * been replaced by the invariant this test has always existed to protect, which FIX-1
+     * does not change: **the TEARDOWN bound must never be the bound that claims a CONNECTING
+     * holder.**
+     *
+     * The holder deliberately carries an expired reporting deadline — the TEARDOWN bound's
+     * other precondition — so that only its *phase* stands between it and
+     * [NativeLifetimeRegistry.forceReleaseIfTimedOutLocked]. The release it does get must be
+     * labelled [NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_CONNECTING_STUCK], never
+     * [NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT].
+     */
+    @Test
+    fun teardownBoundDoesNotFireForAConnectingHolder() {
+        val clock = FakeClock(1_000_000L)
+        val messages = mutableListOf<String>()
+        val registry = softBoundRegistry(clock, messages)
+        val lease = registry.acquire()
+
+        registry.markNativeEntered(lease)
+        registry.markDeadlineExpired(lease)
+        // No teardown was ever requested: the holder is CONNECTING, not TEARDOWN.
+
+        // Above the TEARDOWN bound (90 s): if that bound wrongly reached a CONNECTING holder,
+        // this elapsed is what would expose it.
+        clock.now += 100_000L
+        val fresh = registry.tryAcquire()
+
+        assertNotNull("the CONNECTING bound reclaims a CONNECTING holder", fresh)
+        assertNotEquals(lease.attemptId, fresh!!.attemptId)
+        assertEquals(
+            "a CONNECTING holder must be claimed by the CONNECTING bound, never the TEARDOWN one",
+            NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_CONNECTING_STUCK,
+            registry.lastReleaseOutcome(),
+        )
+        assertTrue(
+            "the TEARDOWN label must never appear for a CONNECTING holder, was: $messages",
+            messages.none { it.contains("FORCED_RELEASE_AFTER_TIMEOUT") },
+        )
+    }
+
+    // --------------------------------------------- CONNECTING soft-bound (FIX-B)
+
+    @Test
+    fun connectingBoundLeavesTheSlotHeldWhileElapsedIsBelowTheBound() {
+        val clock = FakeClock(1_000_000L)
+        val registry = softBoundRegistry(clock)
+        val lease = registry.acquire()
+
+        registry.markNativeEntered(lease)
+        // Never reaches CONNECTED or TEARDOWN: it is stuck in CONNECTING.
+
+        clock.now += NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS - 1
+        assertNull(
+            "the CONNECTING bound must not release a slot that is still within its window",
+            registry.tryAcquire(),
+        )
+        assertFalse(registry.isAdmissible())
+        assertEquals(NativeLifetimeRegistry.ReleaseOutcome.NORMAL, registry.lastReleaseOutcome())
+        assertTrue(registry.isHeldBy(lease))
+    }
+
+    @Test
+    fun connectingBoundForceReleasesASlotStuckInConnectingPastTheBound() {
+        val clock = FakeClock(1_000_000L)
+        val messages = mutableListOf<String>()
+        val registry = softBoundRegistry(clock, messages)
+        val stuck = registry.acquire()
+
+        registry.markNativeEntered(stuck)
+        // No deadline expiry and no teardown request: a pure CONNECTING leak, exactly the
+        // device signature (attempt=3 stuck in the TLS handshake, no exit log).
+
+        clock.now += NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS
+        val fresh = registry.tryAcquire()
+
+        assertNotNull("the CONNECTING bound must admit a new attempt once the holder is stuck", fresh)
+        assertNotEquals(stuck.attemptId, fresh!!.attemptId)
+        assertEquals(
+            NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_CONNECTING_STUCK,
+            registry.lastReleaseOutcome(),
+        )
+        assertTrue(
+            "the CONNECTING release must be logged with its DISTINCT label, was: $messages",
+            messages.any {
+                it.contains("FORCED_RELEASE_CONNECTING_STUCK") &&
+                        !it.contains("FORCED_RELEASE_AFTER_TIMEOUT") &&
+                        it.contains("attempt=${stuck.attemptId}")
+            },
+        )
+    }
+
+    @Test
+    fun connectingBoundDoesNotFireForATeardownHolder() {
+        val clock = FakeClock(1_000_000L)
+        val messages = mutableListOf<String>()
+        val registry = softBoundRegistry(clock, messages)
+        val lease = registry.acquire()
+
+        registry.markNativeEntered(lease) // entered CONNECTING first (stamps the CONNECTING time)
+        registry.markTeardownRequested(lease) // then moved to TEARDOWN
+        registry.markDeadlineExpired(lease)
+
+        // Above BOTH bounds (30 s and 90 s): what must decide is the PHASE, not the elapsed.
+        // [tryAcquire] evaluates the TEARDOWN bound first, and its `?:` short-circuits, so the
+        // CONNECTING function is never even consulted for a TEARDOWN holder.
+        clock.now += 100_000L
+        val fresh = registry.tryAcquire()
+
+        // The TEARDOWN bound releases it — and must carry the TEARDOWN label. The CONNECTING
+        // bound must not be the one that fired, so the outcome is never the CONNECTING label.
+        assertNotNull("the TEARDOWN bound still releases a TEARDOWN holder", fresh)
+        assertEquals(
+            NativeLifetimeRegistry.ReleaseOutcome.FORCED_RELEASE_AFTER_TIMEOUT,
+            registry.lastReleaseOutcome(),
+        )
+        assertTrue(
+            "the CONNECTING bound must not claim a TEARDOWN holder, was: $messages",
+            messages.any { it.contains("FORCED_RELEASE_AFTER_TIMEOUT") } &&
+                    messages.none { it.contains("FORCED_RELEASE_CONNECTING_STUCK") },
+        )
+    }
+
+    /**
+     * FIX-1 consequence: the CONNECTING bound (30 s) now sits BELOW the TEARDOWN bound
+     * (90 s), which creates a window that could not exist before — elapsed above the
+     * CONNECTING bound but below the TEARDOWN bound. A TEARDOWN holder inside that window
+     * must keep the slot: the CONNECTING bound must not leak into the TEARDOWN phase just
+     * because its number is now the smaller one.
+     *
+     * This is the mirror image of [teardownBoundDoesNotFireForAConnectingHolder]: together
+     * they pin "phase decides, not magnitude" from both sides.
+     */
+    @Test
+    fun connectingBoundDoesNotReleaseATeardownHolderBelowTheTeardownBound() {
+        val clock = FakeClock(1_000_000L)
+        val messages = mutableListOf<String>()
+        val registry = softBoundRegistry(clock, messages)
+        val lease = registry.acquire()
+
+        registry.markNativeEntered(lease) // stamps the CONNECTING entry time
+        registry.markTeardownRequested(lease) // then moves the holder to TEARDOWN
+        registry.markDeadlineExpired(lease)
+
+        // Above the CONNECTING bound (30 s), below the TEARDOWN bound (90 s).
+        clock.now += 40_000L
+        assertNull(
+            "a TEARDOWN holder inside its own window must keep the slot, even though it is " +
+                    "already well past the CONNECTING bound",
+            registry.tryAcquire(),
+        )
+        assertEquals(NativeLifetimeRegistry.ReleaseOutcome.NORMAL, registry.lastReleaseOutcome())
+        assertTrue(
+            "no soft-bound may fire for a TEARDOWN holder that is still inside its window, " +
+                    "was: $messages",
+            messages.isEmpty(),
+        )
+        assertTrue(registry.isHeldBy(lease))
+    }
+
+    /**
+     * FIX-1: pin the two soft-bound values themselves.
+     *
+     * Every other test in this section references the bounds symbolically, so they would
+     * pass for any value. This test is what actually holds the design numbers, and it
+     * asserts the TEARDOWN bound explicitly because FIX-1 was required to change ONLY the
+     * CONNECTING bound.
+     */
+    @Test
+    fun softBoundValuesAreTheDesignedOnes() {
+        assertEquals(
+            "the TEARDOWN soft-bound must remain 90 s — 3x the native UDP race timeout",
+            90_000L,
+            NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS,
+        )
+        assertEquals(
+            "FIX-1: the CONNECTING soft-bound is 30 s — the native UDP race timeout itself",
+            30_000L,
+            NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS,
+        )
+        assertTrue(
+            "FIX-1 inverts the relationship: a CONNECTING holder is reclaimed sooner than a " +
+                    "TEARDOWN holder, which has already been asked to clean up",
+            NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS <
+                    NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS,
+        )
     }
 }
