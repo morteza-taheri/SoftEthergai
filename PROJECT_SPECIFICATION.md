@@ -3,8 +3,8 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `c5720508a41ee3f46412a108673cae46abfccda0`
-**Document version:** 1.0.7
+**HEAD:** `5e51e37f83bba3db8e3f859886bf045bb5ea6255`
+**Document version:** 1.0.8
 **Last updated:** 2026-10-13
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -71,16 +71,18 @@ The release keystore is blackbox-encrypted and only deployed on CI; builds witho
 
 ### 1.6 Session Completion Summary (2026-10-12 → 2026-10-13)
 
-Two working sessions (2026-10-12 and 2026-10-13) landed the DEEP-REVIEW P0 fixes and the complete
-F.28AL single-owner / native-lifetime stack, and then verified that stack on the physical device.
+Two working sessions (2026-10-12 and 2026-10-13) landed the DEEP-REVIEW P0 fixes, the complete
+F.28AL single-owner / native-lifetime stack, and the native-lifetime (N-15/N-16) fixes; verified
+that stack on the physical device; and then pushed the whole local chain to the remote.
 
-- **9 local commits** were created for this session, forming the contiguous range `b689cfe` →
-  `c572050` on top of the pre-existing base `0714628` (see the table below). The range spans the
+- **17 local commits** constitute the chain that was pushed, forming the contiguous range `0714628`
+  → `5e51e37` (see the table below). The range spans the pre-existing UI/cleanup commit, the
   DEEP-REVIEW P0 fixes, the F.28AL single-stack work, the KSP/tooling alignment, the native bounds
-  tests, and the session audit trail.
-- **All P0 fixes from DEEP-REVIEW-VERIFY plus the whole F.28AL stack are committed locally and are
-  NOT pushed.** The remote `origin/main` is unchanged and still points at `5c13603`; local `main` is
-  **9 commits ahead, 0 behind**. Pushing is a separate, not-yet-authorized action.
+  tests, the session audit trail, the F.28AL native-lifetime fixes (N-15/N-16), the C3 test-rule
+  alignment, and the T5-SLOT instrumentation.
+- **The whole chain is now pushed.** On 2026-10-13 the local `main` was fast-forwarded onto
+  `origin/main` (`5c13603..5e51e37`); local `main` and `origin/main` are now **in sync** (0 ahead,
+  0 behind). No force, no tag. See §1.6.1 for the corrected chain and the `0714628` off-by-one note.
 - **The F.28AL single-owner / native-lifetime stack is verified on the physical device.** After one
   intermediate failure and its repair (see §1.6.2), the resumed device verification
   (RESUME-BATCH-DEVICE-VERIFY) returned **PASS**: 6/6 native bounds/RUDP tests green and manual
@@ -88,11 +90,12 @@ F.28AL single-owner / native-lifetime stack, and then verified that stack on the
 
 #### 1.6.1 Commit chain
 
-Nine commits constitute this session's range. The base commit `0714628` (the parent of `b689cfe`)
-predates the session and is not counted.
+Seventeen commits constitute the chain that was pushed to `origin/main`, forming the contiguous
+range `0714628` → `5e51e37` (oldest first).
 
 | Commit | Subject |
 |--------|---------|
+| `0714628` | feat(ui): add DNS presets, app exception icons and Auto Mode cleanup |
 | `b689cfe` | fix(native): validate JNI array lengths and release RUDP lock (P0 bounds) |
 | `49f579b` | fix(android): route reconnect failure through service onError; name teardown identity |
 | `e1132ad` | build(native): exclude test library from release build |
@@ -102,11 +105,25 @@ predates the session and is not counted.
 | `ab82ce1` | fix(native): commit the missing F28AL-U classes (repairs `49f579b`) |
 | `98a6462` | feat(softether): add session policy and TUN ownership coordinators |
 | `c572050` | feat: land the F.28AL native lifetime stack |
+| `6375818` | docs: update PROJECT_SPECIFICATION to v1.0.7 |
+| `dc8e113` | test(native): repair test35 dummy-handle contradiction |
+| `3a2f442` | fix(native): refcount rudp_context_t to close destroy-vs-poll use-after-free (N-15) |
+| `b0418cc` | fix(native): hold connect_mutex in softether_connect_with_hub itself (N-16) |
+| `38d9d33` | test(native): widen N-16-A post-release budget to 90s |
+| `4c013e8` | test(native): align C3 verdict with C4 "observe the race" semantics |
+| `5e51e37` | test(androidTest): instrument T5-SLOT holder identity in AutoModeController |
 
-> **No commit has been pushed to `origin/main`; the remote is unchanged at `5c13603`.**
-> Verified with `git rev-list --count b689cfe^..c572050` → **9** and
-> `git rev-list --left-right --count origin/main...HEAD` → **0 ahead / 9 behind** (i.e. 9 local
-> commits not on the remote).
+> **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
+> handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
+> `5c13603` (the old `origin/main`), and `0714628` is **not** an ancestor of the pre-push
+> `origin/main`, so it is the **first unpushed commit**, not the base. The base is `5c13603`.
+> Corrected here.
+>
+> **Push state (v1.0.8).** On 2026-10-13 the chain was pushed with a clean fast-forward
+> (`5c13603..5e51e37`). `origin/main` now equals `HEAD` (`5e51e37`); local `main` is **0 ahead,
+> 0 behind**. Verified with `git rev-list --count origin/main..HEAD` → **0** and
+> `git rev-parse origin/main` → `5e51e37…`. No force, no tag. (The pre-v1.0.8 text here recorded
+> **9** commits, unpushed, remote at `5c13603`; that snapshot is superseded by this revision.)
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -120,6 +137,48 @@ fixed, compiled under forced reruns, and committed. The F.28AL-U single-owner im
 dereference the test could not satisfy. That was repaired in a test-only change (FIX-N05-TEST-DEREFERENCE),
 after which the resumed device run passed cleanly. The verification also surfaced **FINDING T5-SLOT**
 (§12.4), which drives the next phase.
+
+#### 1.6.3 Post-v1.0.7 Additions
+
+Changes recorded after the v1.0.7 revision (all on 2026-10-13). Each bullet carries its evidence label
+(see the evidence taxonomy in §20).
+
+- **C3 test-rule fix landed (commit `4c013e8`).** C3's verdict was aligned with C4's "observe the
+  race" semantics: `ok = !harness_bad && premise > 0` (the old `stale == 0` clause was removed for
+  C3; a new `STALE_DONE_RATE_HIGH` diagnostic is appended when `staleDone > 25%` of iterations —
+  informational only, not a pass/fail criterion). Device-verified via `test27`
+  (`B3s C3 n=100 before=14 discResp=6 staleStart=53 staleDone=27 … ok=1`). Test-only; no production
+  change. Evidence: SOURCE CODE + PHYSICAL DEVICE.
+- **C5 formally GATED (skipped, not failed).** The C5 flakiness was triaged to a **pre-existing
+  test-harness defect** (the silent responder's frame classification is too strict); the production
+  retry DISCOVER is legitimate RFC-2131 behaviour and is not the cause. **No execution was
+  performed**; the defect is deferred to a future `C5-TRIAGE-DEVICE` phase. The gate is documented in
+  `native_test.c:2273` (`// genuine timeout control (silent responder) — gated`) and
+  `NativeConnectionTest.kt:585-589` ("NOT executed in this phase — physical execution requires
+  separate approval"). Evidence: SOURCE CODE + PRIOR REPORT.
+- **T5-SLOT instrumentation landed (commit `5e51e37`).** A **logging-only** change to
+  `AutoModeController.kt`: one import (`vn.unlimit.softether.NativeLifetimeRegistry`) plus two
+  `adapter.log(...)` string interpolations of `NativeLifetimeRegistry.process.describe()` — at the
+  retry site (`Native slot busy; retrying …`) and the terminal-refusal site (`Native slot still owned
+  by an unresolved operation …`). No control flow, no state transition, no error-code change.
+  Evidence: SOURCE CODE.
+- **T5-SLOT was NOT reproduced in the Stage B run; holder identity remains UNKNOWN.** The single
+  permitted reproduction run produced a clean, natively-confirmed teardown before the next connect
+  (`Native cleanup confirmed (attempt=1, session=1)`), so **0** occurrences of `"Native slot busy;
+  retrying"` and **0** of `"Native slot still owned"` fired. The instrumentation is installed on the
+  device and will capture the holder's `attempt=<id> phase=<PHASE>` **whenever** the contention next
+  occurs. The sole known occurrence remains the 2026-10-13 RESUME T5 window (§12.4).
+  Evidence: PHYSICAL DEVICE + PRIOR REPORT; holder identity = UNKNOWN.
+- **`test40` budget widened to 90 s** (commit `38d9d33`; the post-release wait loop 5 s → 90 s). The
+  re-run **PASSES** — 68.5 s standalone, 51.8 s in suite. (Note: the `44.2 s` figure sometimes quoted
+  alongside this item is the `test30B3sCaseC5` runtime, not `test40`.) Evidence: SOURCE CODE +
+  PHYSICAL DEVICE.
+- **All 17 local commits were pushed to `origin/main` on 2026-10-13** (clean fast-forward
+  `5c13603..5e51e37`). No force, no tag. Evidence: SOURCE CODE (`git`).
+- **Pre-existing local annotated tag `p2.4.10`** (tagger date 2026-09-28) points at `0714628`. It was
+  **not** pushed. Its fate is an **open decision** for a future phase (push it or delete it).
+  Evidence: SOURCE CODE (`git for-each-ref refs/tags`).
+- **Methodology lessons:** No new methodology lessons in v1.0.8.
 
 ---
 
@@ -1749,6 +1808,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.5 | 2026-10-12 | F.28AL-AUTOCONNECT-SPEC documentation-only update: new **§6.7 AutoConnect Button Contract (User-Directed Requirements)** documenting R1–R8 as testable contracts (empty-list message R1, disconnect-active-tunnel-first R2, probe+sort pre-pass R3, sequential one-by-one R4, per-server/per-protocol 5s timeout R5, Settings protocol priority R6, continuous-until-stop R7); new **§11.13 Automatic Reconnection in Auto Mode (Settings Requirement)** for R8 (proposed name `Reconnect on Disconnect (Auto Mode)`, proposed default DISABLED, enabled/disabled behavior). Cross-reference to F.28AL-AUTOCONNECT-BUG-DIAG (BUG 1/2/3) added in §6.7. No source/test/build/device change; documentation only. |
 | 1.0.6 | 2026-10-12 | F.28AL-AUTOCONNECT-SPEC-R8: finalized R8 setting name (`Auto-Reconnect in Auto Mode` / «اتصال همیشکی اتوکانکت») and default (ENABLED); removed pending markers in §11.13.1/§11.13.2; updated §6.7 R8 cross-reference. No source/test/build/device change; documentation only. |
 | 1.0.7 | 2026-10-13 | DOCS-UPDATE: consolidated session completion summary (§1.6), methodology lessons (§22), T5-slot finding, F.28AL session rows, roadmap update. No source/test/build/device change; documentation only. |
+| 1.0.8 | 2026-10-13 | DOCS-UPDATE: recorded the post-v1.0.7 additions (§1.6.3) — C3 test-rule fix (`4c013e8`), C5 formal gating (deferred to `C5-TRIAGE-DEVICE`), T5-SLOT instrumentation (`5e51e37`, logging-only), T5 not reproduced (holder UNKNOWN), `test40` budget widening, and the 17-commit chain pushed to `origin/main` (`5c13603..5e51e37`, fast-forward, no force/tag). Corrected the `0714628` off-by-one (it is the first unpushed commit, not the chain base) and refreshed the header HEAD field. No new methodology lessons. No source/test/build/device change; documentation only. |
 
 ### Verification Status
 
@@ -1780,6 +1840,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | References (§19) | VERIFIED — paths and artifact names cross-checked |
 | Document Status (§20) | VERIFIED — changelog and verification tables maintained each revision |
 | Session Completion Summary (§1.6) | HISTORICAL — commit chain and session outcome compiled from `git log` and the phase reports; the device-verification statement is attributed to RESUME-BATCH-DEVICE-VERIFY (PHYSICAL DEVICE EVIDENCE), not re-verified here |
+| Post-v1.0.7 Additions (§1.6.3) | HISTORICAL — each bullet attributed to its commit or phase report (SOURCE CODE / PHYSICAL DEVICE / PRIOR REPORT); the push state and the `p2.4.10` tag observation were re-read from `git` at HEAD `5e51e37` |
 | Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
 
 ### Legend
