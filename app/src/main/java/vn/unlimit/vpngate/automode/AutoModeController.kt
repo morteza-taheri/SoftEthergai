@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import vn.unlimit.softether.NativeLifetimeRegistry
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 
 /**
@@ -1436,7 +1437,8 @@ enum class AttemptOutcome {
                         accumulatedRetryDelayMs += NATIVE_BUSY_RETRY_DELAY_MS
                         adapter.log(
                             "[AUTO] Native slot busy; retrying same server in " +
-                                    "${nativeBusyRetryDelayMs / 1000}s (attempt $retry/$retryCount)",
+                                    "${nativeBusyRetryDelayMs / 1000}s (attempt $retry/$retryCount)" +
+                                    " (holder=${NativeLifetimeRegistry.process.describe()})",
                         )
                         kotlinx.coroutines.delay(nativeBusyRetryDelayMs)
                         if (!currentCoroutineContext().isActive) return
@@ -1471,7 +1473,8 @@ enum class AttemptOutcome {
                         // A retry succeeded — fall through to the success path below.
                     } else {
                         adapter.log(
-                            "[AUTO] Native slot still owned by an unresolved operation; " +
+                            "[AUTO] Native slot still owned by an unresolved operation " +
+                                    "(${NativeLifetimeRegistry.process.describe()}); " +
                                     "stopping without blaming this server",
                         )
                         setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
