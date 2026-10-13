@@ -2321,8 +2321,15 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
     return 0;
 }
 
-// Connect with HubName
-int softether_connect_with_hub(softether_connection_t* conn, const char* host, int port,
+// Connect with HubName (no connect_mutex held by the caller).
+//
+// N-16: the body keeps its original signature and control flow; it no longer
+// takes the lock itself. The public entry point softether_connect_with_hub()
+// below owns the lock, so every path into this code - softether_connect,
+// softether_connect_with_hub (JNI), softether_reconnect - is serialised
+// against softether_disconnect. Previously only the JNI caller took the lock,
+// leaving softether_connect() and softether_reconnect() unguarded.
+static int softether_connect_with_hub_nolock(softether_connection_t* conn, const char* host, int port,
                                const char* username, const char* password, const char* hub_name,
                                int use_tcp,
                                const char* client_product_name, const char* client_product_version, int client_product_build,
@@ -2684,6 +2691,42 @@ int softether_check_connection(softether_connection_t* conn) {
         LOGE("Error checking connection: %d", result);
         return -1;
     }
+}
+
+// N-16: public entry point for a hub connect. It owns conn->connect_mutex for
+// the whole connect, which is what makes the three callers -
+// softether_connect(), the JNI bridge (nativeConnectWithHub) and
+// softether_reconnect() - mutually exclusive with softether_disconnect().
+//
+// The lock lives HERE rather than in the JNI layer so that a non-JNI caller
+// cannot bypass it. The mutex is recursive (PTHREAD_MUTEX_RECURSIVE, see
+// softether_connection_t), so the softether_disconnect() call on this
+// function's internal error paths can re-enter without deadlocking.
+//
+// Lock-order note: connect_mutex is the outer lock; softether_disconnect
+// acquires write_mutex inside it (connect -> write). Nothing in the connect
+// path takes write_mutex before connect_mutex, so the order is respected.
+int softether_connect_with_hub(softether_connection_t* conn, const char* host, int port,
+                               const char* username, const char* password, const char* hub_name,
+                               int use_tcp,
+                               const char* client_product_name, const char* client_product_version, int client_product_build,
+                               const char* client_os_name, const char* client_os_version, const char* client_os_product_id,
+                               const char* client_host_name, const char* client_ip_address, int client_port,
+                               const char* server_host_name, const char* server_ip_address, int server_port) {
+    // Preserve the original null guard at the public boundary so a NULL conn
+    // does not dereference conn->connect_mutex below.
+    if (conn == NULL) {
+        return ERR_UNKNOWN;
+    }
+
+    pthread_mutex_lock(&conn->connect_mutex);
+    int result = softether_connect_with_hub_nolock(conn, host, port, username, password, hub_name, use_tcp,
+        client_product_name, client_product_version, client_product_build,
+        client_os_name, client_os_version, client_os_product_id,
+        client_host_name, client_ip_address, client_port,
+        server_host_name, server_ip_address, server_port);
+    pthread_mutex_unlock(&conn->connect_mutex);
+    return result;
 }
 
 // Disconnect

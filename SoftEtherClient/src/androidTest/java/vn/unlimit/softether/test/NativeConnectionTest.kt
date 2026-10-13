@@ -141,6 +141,17 @@ class NativeConnectionTest {
     private external fun nativeTestNativeSetClientMacRejectsWrongLengthArray(): NativeTestResult
     private external fun nativeTestRudpRecvSmallBufferReleasesLock(): NativeTestResult
 
+    // N-15 — lifetime reference counting. Hermetic: each builds its own
+    // rudp_context_t via rudp_create() and drives rudp_destroy() directly.
+    private external fun nativeTestRudpDestroyDuringPoll(): NativeTestResult
+    private external fun nativeTestRudpDestroyIsIdempotent(): NativeTestResult
+    private external fun nativeTestRudpRefBalance(): NativeTestResult
+
+    // N-16 — connect_mutex ownership. Hermetic: softether_create() + the
+    // struct field conn->connect_mutex; no server, no live tunnel.
+    private external fun nativeTestSoftetherConnectWithHubTakesLock(): NativeTestResult
+    private external fun nativeTestReconnectNoInfoReturns(): NativeTestResult
+
     @After
     fun tearDown() {
         // Cleanup if needed
@@ -703,5 +714,92 @@ class NativeConnectionTest {
             result.success
         )
         Log.d(TAG, "N-08 rudp_recv passed: ${result.errorMessage}")
+    }
+
+    /**
+     * Test 37: N-15-A — `rudp_destroy()` called while another thread is inside
+     * `rudp_poll()` must not free the context out from under it.
+     *
+     * Hermetic: no VPNGate server and no live connection. The C helper creates
+     * its own `rudp_context_t`, spawns a worker that loops in `rudp_poll()`,
+     * destroys the context from the test thread while the poll is in flight,
+     * and asserts the worker survives and keeps polling. A use-after-free would
+     * abort the test process instead of returning a result.
+     */
+    @Test
+    fun test37RudpDestroyDuringPoll() {
+        Log.d(TAG, "Running testNativeRudpDestroyDuringPoll")
+
+        val result = nativeTestRudpDestroyDuringPoll()
+        assertTrue(
+            "N-15-A destroy-during-poll failed: ${result.errorMessage} (code: ${result.errorCode})",
+            result.success
+        )
+        Log.d(TAG, "N-15-A destroy-during-poll passed: ${result.errorMessage}")
+    }
+
+    /**
+     * Test 38: N-15-B — lifetime invariants at birth (`refcount == 1`,
+     * `destroying == 0`) and a single `rudp_destroy()` returning cleanly.
+     */
+    @Test
+    fun test38RudpDestroyIsIdempotent() {
+        Log.d(TAG, "Running testNativeRudpDestroyIsIdempotent")
+
+        val result = nativeTestRudpDestroyIsIdempotent()
+        assertTrue(
+            "N-15-B lifetime invariants failed: ${result.errorMessage} (code: ${result.errorCode})",
+            result.success
+        )
+        Log.d(TAG, "N-15-B lifetime invariants passed: ${result.errorMessage}")
+    }
+
+    /**
+     * Test 39: N-15-C — every guarded entry point balances its own lifetime
+     * reference across many rounds (no leak, no early free).
+     */
+    @Test
+    fun test39RudpRefBalance() {
+        Log.d(TAG, "Running testNativeRudpRefBalance")
+
+        val result = nativeTestRudpRefBalance()
+        assertTrue(
+            "N-15-C reference balance failed: ${result.errorMessage} (code: ${result.errorCode})",
+            result.success
+        )
+        Log.d(TAG, "N-15-C reference balance passed: ${result.errorMessage}")
+    }
+
+    /**
+     * Test 40: N-16-A — `softether_connect_with_hub` must acquire
+     * `conn->connect_mutex` itself. The helper holds the lock on the test
+     * thread and proves a concurrent call from a worker blocks until release.
+     */
+    @Test
+    fun test40SoftetherConnectWithHubTakesLock() {
+        Log.d(TAG, "Running testNativeSoftetherConnectWithHubTakesLock")
+
+        val result = nativeTestSoftetherConnectWithHubTakesLock()
+        assertTrue(
+            "N-16-A connect_mutex ownership failed: ${result.errorMessage} (code: ${result.errorCode})",
+            result.success
+        )
+        Log.d(TAG, "N-16-A connect_mutex ownership passed: ${result.errorMessage}")
+    }
+
+    /**
+     * Test 41: N-16-B — `softether_reconnect` with no stored server info must
+     * return cleanly instead of deadlocking.
+     */
+    @Test
+    fun test41ReconnectNoInfoReturns() {
+        Log.d(TAG, "Running testNativeReconnectNoInfoReturns")
+
+        val result = nativeTestReconnectNoInfoReturns()
+        assertTrue(
+            "N-16-B reconnect no-info failed: ${result.errorMessage} (code: ${result.errorCode})",
+            result.success
+        )
+        Log.d(TAG, "N-16-B reconnect no-info passed: ${result.errorMessage}")
     }
 }

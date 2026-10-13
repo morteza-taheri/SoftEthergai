@@ -3849,5 +3849,146 @@ native_test_result_t test_rudp_ref_balance(void) {
   return result;
 }
 
+// ===========================================================================
+// N-16 — connect_mutex must be held by softether_connect_with_hub itself, so
+// every path into the connect code (softether_connect, the JNI bridge,
+// softether_reconnect) is serialised against softether_disconnect.
+//
+// Before the fix the lock lived in the JNI caller only, which left
+// softether_connect() and softether_reconnect() free to run concurrently with
+// a disconnect. These tests are hermetic: they use softether_create() and the
+// struct field conn->connect_mutex directly (softether_protocol.h is included
+// by this file), so no server or live tunnel is required.
+// ===========================================================================
+
+// N-16-A: the public entry point must acquire conn->connect_mutex itself.
+//
+// The test holds connect_mutex from the main thread, then calls
+// softether_connect_with_hub() from a worker on the SAME connection with an
+// address that fails immediately (no route). If the public function takes the
+// lock (the fix), the worker blocks until the main thread releases; if the
+// lock is absent (the defect), the worker returns without ever needing the
+// mutex. We detect that by keeping the lock held for a fixed window and
+// checking whether the worker has completed during it.
+typedef struct {
+  softether_connection_t* conn;
+  volatile int done;
+  volatile int result;
+} connect_serialize_t;
+
+static void* connect_serialize_thread(void* arg) {
+  connect_serialize_t* s = (connect_serialize_t*)arg;
+  // 127.0.0.1:1 refuses immediately on any Android device; the point is only
+  // that this call must first take conn->connect_mutex, which the main thread
+  // is holding, so it cannot complete while the lock is held.
+  s->result = softether_connect_with_hub(s->conn, "127.0.0.1", 1,
+                                         "user", "pass", "vpngate", 1,
+                                         "", "", 0, "", "", "",
+                                         "", "", 0, "", "", 0);
+  s->done = 1;
+  return NULL;
+}
+
+native_test_result_t test_softether_connect_with_hub_takes_lock(void) {
+  long start_time = get_test_timestamp_ms();
+  native_test_result_t result;
+
+  softether_connection_t* conn = softether_create();
+  if (conn == NULL) {
+    test_result_init(&result, false, ERR_UNKNOWN,
+                     "N-16-A: softether_create failed",
+                     get_test_timestamp_ms() - start_time);
+    return result;
+  }
+
+  // Hold the connect lock on this thread. connect_mutex is recursive, so we
+  // may take it here; a worker on another thread must block.
+  pthread_mutex_lock(&conn->connect_mutex);
+
+  connect_serialize_t s = {0};
+  s.conn = conn;
+  pthread_t th;
+  bool spawned = (pthread_create(&th, NULL, connect_serialize_thread, &s) == 0);
+
+  int completed_while_locked = 0;
+  if (spawned) {
+    // Give the worker ample time to reach the lock. If it completes while we
+    // still hold the mutex, the public function does NOT take the lock.
+    for (int i = 0; i < 100 && !s.done; i++) {
+      usleep(10 * 1000);  // up to 1000 ms
+    }
+    completed_while_locked = s.done ? 1 : 0;
+  }
+
+  // Release the lock; the worker must now finish.
+  pthread_mutex_unlock(&conn->connect_mutex);
+
+  int completed_after_release = 0;
+  if (spawned) {
+    for (int i = 0; i < 500 && !s.done; i++) {
+      usleep(10 * 1000);  // up to 5000 ms for the (failing) connect
+    }
+    completed_after_release = s.done ? 1 : 0;
+    pthread_join(th, NULL);
+  }
+
+  // Fix behaviour: the worker was BLOCKED while we held the lock
+  // (completed_while_locked == 0) and finished only after release.
+  bool pass = spawned && !completed_while_locked && completed_after_release;
+
+  softether_destroy(conn);
+
+  {
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "N-16-A public connect takes connect_mutex: spawned=%d "
+             "completed_while_lock_held=%d (want 0) completed_after_release=%d "
+             "(want 1)",
+             spawned ? 1 : 0, completed_while_locked, completed_after_release);
+    test_result_init(&result, pass, pass ? ERR_NONE : ERR_UNKNOWN, msg,
+                     get_test_timestamp_ms() - start_time);
+  }
+  return result;
+}
+
+// N-16-B: softether_reconnect() on a connection with no stored server info must
+// early-return without deadlocking. The early return happens before any lock
+// is taken in the reconnect path; with N-16 the subsequent
+// softether_connect_with_hub() owns the lock, and this test proves the guard
+// path is still reached cleanly (no hang, no crash).
+native_test_result_t test_reconnect_no_info_returns(void) {
+  long start_time = get_test_timestamp_ms();
+  native_test_result_t result;
+
+  softether_connection_t* conn = softether_create();
+  if (conn == NULL) {
+    test_result_init(&result, false, ERR_UNKNOWN,
+                     "N-16-B: softether_create failed",
+                     get_test_timestamp_ms() - start_time);
+    return result;
+  }
+
+  // server_ip[0] == '\0' and username[0] == '\0' by construction -> the
+  // "no stored connection info" guard must fire and return ERR_UNKNOWN.
+  int rc = softether_reconnect(conn);
+
+  // Reaching here at all is the assertion: a deadlock would hang the suite.
+  bool pass = (rc == ERR_UNKNOWN);
+
+  softether_destroy(conn);
+
+  {
+    char msg[224];
+    snprintf(msg, sizeof(msg),
+             "N-16-B reconnect without stored info: rc=%d (want ERR_UNKNOWN=%d), "
+             "returned without deadlock",
+             rc, ERR_UNKNOWN);
+    test_result_init(&result, pass, pass ? ERR_NONE : ERR_UNKNOWN, msg,
+                     get_test_timestamp_ms() - start_time);
+  }
+  return result;
+}
+
+
 
 

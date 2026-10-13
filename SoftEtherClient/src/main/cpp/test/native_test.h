@@ -88,6 +88,11 @@ native_test_result_t test_rudp_destroy_is_idempotent(void);
 // N-15-C: every guarded entry point balances its own lifetime reference across
 //         many rounds (no leak, no early free).
 native_test_result_t test_rudp_ref_balance(void);
+// N-16-A: the public softether_connect_with_hub must acquire conn->connect_mutex
+//         itself, so a concurrent call blocks while the lock is held.
+native_test_result_t test_softether_connect_with_hub_takes_lock(void);
+// N-16-B: softether_reconnect with no stored server info returns cleanly.
+native_test_result_t test_reconnect_no_info_returns(void);
 
 // Utility functions
 void test_result_init(native_test_result_t* result, bool success, int error_code, 

@@ -133,16 +133,15 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeCo
     
     softether_connection_t* conn = (softether_connection_t*)handle;
 
-    // Serialize connect and disconnect to prevent freeing SSL while the
-    // connect path is using it.  Recursive: softether_connect_with_hub calls
-    // softether_disconnect internally on error paths.
-    pthread_mutex_lock(&conn->connect_mutex);
+    // N-16: connect_mutex is now held by softether_connect_with_hub itself;
+    // see softether_protocol.c. The lock used to live here, which left
+    // nativeConnect() and softether_reconnect() — the other two paths into
+    // the connect code — unserialised against softether_disconnect().
     int result = softether_connect_with_hub(conn, host_str, port, username_str, password_str, hub_name_str, (int)useTcp,
         client_product_name_str, client_version_str, (int)clientBuild,
         client_os_name_str, client_os_version_str, client_os_product_id_str,
         client_host_name_str, client_ip_address_str, (int)clientPort,
         server_host_name_str, server_ip_address_str, (int)serverPort);
-    pthread_mutex_unlock(&conn->connect_mutex);
     
     (*env)->ReleaseStringUTFChars(env, host, host_str);
     (*env)->ReleaseStringUTFChars(env, username, username_str);

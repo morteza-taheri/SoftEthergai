@@ -489,3 +489,18 @@ JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_na
     native_test_result_t result = test_rudp_ref_balance();
     return create_test_result(env, &result);
 }
+
+// N-16 — connect_mutex ownership. See native_test.c for the rationale.
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestSoftetherConnectWithHubTakesLock(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestSoftetherConnectWithHubTakesLock called");
+    native_test_result_t result = test_softether_connect_with_hub_takes_lock();
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestReconnectNoInfoReturns(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestReconnectNoInfoReturns called");
+    native_test_result_t result = test_reconnect_no_info_returns();
+    return create_test_result(env, &result);
+}
