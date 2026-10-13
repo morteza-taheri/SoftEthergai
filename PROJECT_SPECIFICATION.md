@@ -3,8 +3,8 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `d61d3f8a1913bf7c7a22c2bd8013828c5111804f`
-**Document version:** 1.0.9
+**HEAD:** `5ee4e65538218e774031cc2abd994d5a2ff852b5`
+**Document version:** 1.0.10
 **Last updated:** 2026-10-13
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -90,8 +90,10 @@ that stack on the physical device; and then pushed the whole local chain to the 
 
 #### 1.6.1 Commit chain
 
-Seventeen commits constitute the chain that was pushed to `origin/main`, forming the contiguous
-range `0714628` → `5e51e37` (oldest first).
+Twenty-three commits constitute the chain now on `origin/main`, forming the contiguous
+range `0714628` → `5ee4e65` (oldest first). (The §1.6 preamble's "17 local commits" records the
+v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits and the
+v1.0.10 AutoConnect bundle — see the appended rows below.)
 
 | Commit | Subject |
 |--------|---------|
@@ -112,6 +114,12 @@ range `0714628` → `5e51e37` (oldest first).
 | `38d9d33` | test(native): widen N-16-A post-release budget to 90s |
 | `4c013e8` | test(native): align C3 verdict with C4 "observe the race" semantics |
 | `5e51e37` | test(androidTest): instrument T5-SLOT holder identity in AutoModeController |
+| `d61d3f8` | docs: update PROJECT_SPECIFICATION to v1.0.8 (post-v1.0.7 additions) |
+| `fa8a53d` | docs: update PROJECT_SPECIFICATION to v1.0.9 (close N-15/N-16; add T5-SLOT driver row) |
+| `eb21e56` | fix(native): bound the TLS handshake socket (P1) + bounded race join (P5b) |
+| `4df7e79` | fix(android): bound stuck native slots and add Auto Mode recovery (T5-SLOT) |
+| `a87c523` | test(androidTest): repair stale T3 assertion against describe() interpolation |
+| `5ee4e65` | docs: add AutoConnect audit (root-cause: unbounded TLS handshake socket) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -179,6 +187,89 @@ Changes recorded after the v1.0.7 revision (all on 2026-10-13). Each bullet carr
   **not** pushed. Its fate is an **open decision** for a future phase (push it or delete it).
   Evidence: SOURCE CODE (`git for-each-ref refs/tags`).
 - **Methodology lessons:** No new methodology lessons in v1.0.8.
+
+#### 1.6.4 AutoConnect Root-Cause Resolution (v1.0.10)
+
+This subsection records the v1.0.10 AutoConnect work: a read-only audit that isolated the root
+cause of the Auto Mode connection wedge, the native fix that landed against it, the Kotlin
+soft-bound bundle that landed alongside it, the test repair required to re-green the suite, and the
+device evidence and residual finding from the combined verification run. Each bullet carries its
+evidence label (see the evidence taxonomy in §20).
+
+- **Root cause identified (audit).** The read-only audit `AUDIT_AUTOCONNECT_LOGIC.md` isolated the
+  single root cause of the Auto Mode connection wedge: the OpenSSL TLS handshake runs on a
+  **blocking** socket with **no effective `SO_RCVTIMEO`/`SO_SNDTIMEO`**, so `SSL_do_handshake()` can
+  block **indefinitely** while holding **both** `g_openssl_lock` and `g_tls_use_lock`. Because those
+  locks are held across the stalled handshake, every later attempt is refused — the observable
+  "native slot still held" wedge. On a blocking socket, the socket timeouts are the **only**
+  mechanism that can interrupt a stalled `recv()`/`send()`; the kernel default is `0` (infinite).
+  The audit also confirmed the pre-existing `socket_set_timeout` helper in `tcp_socket.c` had
+  **zero callers** (dead code). Evidence: SOURCE CODE (audit, read-only).
+- **Native fix landed (commit `eb21e56`).** Three parts, all inside `softether-core`:
+  - **P1 — bound the handshake socket.** A new `socket_apply_timeout(fd, timeout_ms)` sets
+    `SO_RCVTIMEO` **and** `SO_SNDTIMEO` on the handshake fd, applied at **both** TCP handshake
+    sites before `SSL_do_handshake()`. The existing dead `socket_set_timeout` was **refactored to
+    delegate** to the new helper (single implementation), which also closed its original
+    silent-failure hole (both `setsockopt` returns are now checked). A timed-out `recv()`/`send()`
+    returns `EAGAIN`, which OpenSSL surfaces as `SSL_ERROR_WANT_READ`/`WANT_WRITE` — exactly the
+    condition the existing `max_attempts = 100` retry loop already handles, so `aes_wrapper.c`
+    needed no change. Evidence: SOURCE CODE.
+  - **P5a — permanent discriminator log.** Exactly **one** `LOGD` at handshake entry
+    (`[TLS] handshake entry: conn->timeout_ms=…, socket_fd=…, SO_RCVTIMEO applied=yes|no`), outside
+    any loop, so a future wedge can be attributed without re-instrumentation. Evidence: SOURCE CODE.
+  - **P5b — bounded parallel-race join.** The transport-thread race (`transport_thread_tcp` /
+    `_rudp_direct` / `_natt` / `_dns` / `_icmp`) previously ended in an **unbounded**
+    `pthread_join`. Because Android Bionic provides **neither `pthread_timedjoin_np` nor
+    `pthread_tryjoin_np`** (verified across NDK 25.1–28.2 sysroots), the bound was implemented as an
+    **exit-flag trampoline**: each transport runs behind a wrapper that publishes an `exited` flag
+    before returning; the parent polls to a deadline and, if a thread has not exited, logs the exact
+    `[RACE] transport thread N did not exit within … ms … detaching` WARN and calls
+    **`pthread_detach`** (deliberately **not** `pthread_cancel`, which could strand
+    `g_openssl_lock`). The transport-context array was moved from the stack to a `calloc`'d heap and
+    is freed only when `detached_count == 0` (winner fields snapshotted first), closing the
+    detached-thread use-after-free risk. Evidence: SOURCE CODE.
+- **Kotlin bundle landed (commit `4df7e79`).** The soft-bound / Auto-Mode-recovery bundle:
+  - **FIX-1** — lowered the CONNECTING soft-bound
+    `NATIVE_SLOT_FORCE_RELEASE_CONNECTING_AFTER_MS` from `120_000L` to `30_000L`.
+  - **FIX-2** — Auto Mode now **requests a recovery teardown** so an unresolved native operation can
+    be released and a later attempt admitted (the `[AUTO] Requesting recovery teardown …` path).
+  - **FIX-3** — the retry/terminal logging path that names the holding `attempt=N phase=<PHASE>`.
+  - **FIX-C** — the Kotlin-side `Kotlin attempt abandoned after …` guard for an abandoned attempt.
+  - **PART-1/2** — the two-part threshold work keyed off the mutually exclusive phases (TEARDOWN
+    `90_000L`; CONNECTING `30_000L`), both evaluated **only inside `tryAcquire()`**.
+  Evidence: SOURCE CODE.
+- **Test repair landed (commit `a87c523`).** `AutoModeControllerTest.nativeBusyAllRetriesFailTerminal`
+  used a **strict equality** assertion on the full terminal log line, which had gone **stale** since
+  commit `5e51e37` appended the `(${describe()})` interpolation. The assertion was relaxed to a
+  **two-part `contains`** (mirroring `AutoModeNativeBusyTest`), with a comment citing T5-SLOT /
+  `5e51e37`. Git archaeology confirmed the bundle did **not** cause the failure: the production line
+  is a **context line** in `git diff`, and `c572050` set the expectation before `5e51e37` added the
+  interpolation — it had simply never been exercised by a post-`5e51e37` `:app:testDebugUnitTest`
+  run. Only this one assertion changed. Evidence: SOURCE CODE.
+- **Device evidence (PHYSICAL DEVICE — from the FINALIZE phase log).** The combined verification run
+  on device `5585fecc` (Xiaomi 2201117TG, Android 13 / API 33) confirmed the native fix in effect:
+  `[TLS] handshake entry:` fired **2×**, both with `SO_RCVTIMEO applied=yes` (**0× `applied=no`**);
+  `SSL handshake successful` **3×**; `SSL handshake failed` **2×** (one
+  `error:0A000126:SSL routines::unexpected eof while reading`); `Starting TLS handshake` **2×**;
+  `VPN connection established` **2×**; `State changed: CONNECTED ip=10.211.1.111`; and a clean
+  `Native cleanup confirmed (attempt=1, session=1)`. Crash scan over the captured window returned
+  **0** crash indicators. All six build-verification needles were **PRESENT** in the pulled APK
+  (`[TLS] handshake entry:`, `socket_apply_timeout`, `[RACE] transport thread` in
+  `lib/*/libsoftether.so`; `requestRecoveryTeardown`, `WedgeTracker` in `classes30.dex`;
+  `Kotlin attempt abandoned after` in `classes6.dex`). Evidence: PHYSICAL DEVICE.
+- **Residual finding (OPEN — UNKNOWN).** During the same run the device logged
+  `[AUTO] Native slot still owned by an unresolved operation (attempt=2 phase=TEARDOWN, reporting
+  deadline expired (still blocked)); stopping without blaming this server`, and later attempts were
+  refused with `Start refused: native slot still held` for roughly a one-minute window (17:36:20 →
+  17:37:31). FIX-2 fired **3×**, but **no `FORCED_RELEASE_AFTER_TIMEOUT`** fired. Whether this is a
+  pure timing artefact (the 90 s TEARDOWN bound not yet reached before Auto Mode stopped) or a
+  genuine bound gap is **UNKNOWN**. Tracked as **FINDING T5-SLOT-TEARDOWN residual** in §12.5.1
+  (priority P2_MEDIUM, opportunistic). Evidence: PHYSICAL DEVICE + SOURCE CODE.
+- **Soft-bounds are now safety nets, not the primary fix.** With P1 bounding the handshake socket
+  itself, the Kotlin soft-bounds (FIX-1 CONNECTING `30_000L`, TEARDOWN `90_000L`) are re-characterized
+  in v1.0.10 as **safety nets** for a still-unresolved operation rather than the mechanism that
+  breaks the wedge. Evidence: SOURCE CODE.
+- **Methodology lessons:** No new methodology lessons in v1.0.10.
 
 ---
 
@@ -1479,6 +1570,7 @@ The following items are planned for the source-and-path architecture described i
 | 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
 | 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | Priority to be assessed | OPEN — `PARTIALLY CONFIRMED — REQUIRES DEEPER ANALYSIS` |
 | 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
+| 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | OPEN — UNKNOWN |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -1811,6 +1903,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.7 | 2026-10-13 | DOCS-UPDATE: consolidated session completion summary (§1.6), methodology lessons (§22), T5-slot finding, F.28AL session rows, roadmap update. No source/test/build/device change; documentation only. |
 | 1.0.8 | 2026-10-13 | DOCS-UPDATE: recorded the post-v1.0.7 additions (§1.6.3) — C3 test-rule fix (`4c013e8`), C5 formal gating (deferred to `C5-TRIAGE-DEVICE`), T5-SLOT instrumentation (`5e51e37`, logging-only), T5 not reproduced (holder UNKNOWN), `test40` budget widening, and the 17-commit chain pushed to `origin/main` (`5c13603..5e51e37`, fast-forward, no force/tag). Corrected the `0714628` off-by-one (it is the first unpushed commit, not the chain base) and refreshed the header HEAD field. No new methodology lessons. No source/test/build/device change; documentation only. |
 | 1.0.9 | 2026-10-13 | DOCS-UPDATE: corrected §12.5.1 row 1 (FIX-NATIVE-LIFETIME-SYNC — N-15/N-16 both CLOSED, device-verified; commits `3a2f442`, `b0418cc`) and added a separate row (8) for the still-open T5-SLOT driver finding. Refreshed the header HEAD field to `d61d3f8`. No new methodology lessons in v1.0.9. No source/test/build/device change; documentation only. |
+| 1.0.10 | 2026-10-13 | DOCS-UPDATE: recorded the AutoConnect root-cause resolution — new **§1.6.4** (audit root cause: unbounded blocking TLS handshake socket; native fix `eb21e56` P1/P5a/P5b; Kotlin bundle `4df7e79` FIX-1/2/3/C + PART-1/2; test repair `a87c523`; device evidence; residual T5-SLOT-TEARDOWN finding; soft-bounds re-characterized as safety nets). Extended §1.6.1 to the 23-commit chain (`0714628` → `5ee4e65`, 6 new rows); added §12.5.1 row 9 (T5-SLOT-TEARDOWN residual, OPEN — UNKNOWN); refreshed the header HEAD field to `5ee4e65`. No new methodology lessons in v1.0.10. No source/test/build/device change; documentation only. |
 
 ### Verification Status
 
@@ -1844,6 +1937,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Document Status (§20) | VERIFIED — changelog and verification tables maintained each revision |
 | Session Completion Summary (§1.6) | HISTORICAL — commit chain and session outcome compiled from `git log` and the phase reports; the device-verification statement is attributed to RESUME-BATCH-DEVICE-VERIFY (PHYSICAL DEVICE EVIDENCE), not re-verified here |
 | Post-v1.0.7 Additions (§1.6.3) | HISTORICAL — each bullet attributed to its commit or phase report (SOURCE CODE / PHYSICAL DEVICE / PRIOR REPORT); the push state and the `p2.4.10` tag observation were re-read from `git` at HEAD `5e51e37` |
+| AutoConnect Root-Cause Resolution (§1.6.4) | HISTORICAL — attributed to the v1.0.10 docs phase (this phase). The audit, native fix (`eb21e56`), Kotlin bundle (`4df7e79`), test repair (`a87c523`), device evidence, and residual finding are compiled from the phase reports and the FINALIZE device log; not independently re-verified here. The residual T5-SLOT-TEARDOWN finding is recorded OPEN — UNKNOWN |
 | Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
 
 ### Legend
