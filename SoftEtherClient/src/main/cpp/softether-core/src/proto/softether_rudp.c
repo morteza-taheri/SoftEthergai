@@ -43,6 +43,77 @@ static void calc_key(uint8_t* key, const uint8_t* common_key, const uint8_t* iv)
     sha1_hash(tmp, sizeof(tmp), key);
 }
 
+// ---------------------------------------------------------------------------
+// N-15: context lifetime reference counting.
+//
+// Problem (DEEP-REVIEW N-15): rudp_destroy() used to free the context
+// unconditionally. In production, softether_disconnect() (UI/teardown thread)
+// can call it while the receive thread is blocked inside rudp_poll(), which
+// dereferences ctx after the free -> use-after-free.
+//
+// Solution: a small non-blocking reference count using GCC __sync_* builtins
+// (no C11 <stdatomic.h> dependency; the Android NDK clang and the host
+// toolchain both provide __sync_bool_compare_and_swap / __sync_sub_and_fetch /
+// __sync_synchronize on int).
+//
+//   rudp_create()   -> refcount = 1 (the owner's reference)
+//   entry point     -> rudp_ref_acquire():   refcount++ (fail if destroying)
+//   entry point out -> rudp_ref_release():   refcount--; free at zero
+//   rudp_destroy()  -> destroying = 1; rudp_ref_release() (drops owner's ref)
+//
+// A caller that loses the race with destroy gets 0 from rudp_ref_acquire()
+// and returns immediately without touching the context body: fail-closed.
+// See the ordering contract in softether_rudp.h.
+// ---------------------------------------------------------------------------
+
+static void rudp_destroy_final(rudp_context_t* ctx);
+
+// Take a reference for the duration of one public call.
+// Returns 1 on success, 0 if the context is being destroyed (or is NULL).
+static int rudp_ref_acquire(rudp_context_t* ctx) {
+    if (ctx == NULL) return 0;
+    for (;;) {
+        int old = ctx->refcount;
+        if (old <= 0) {
+            // Already released by the owner, or never sentineled properly.
+            return 0;
+        }
+        // Refuse to hand out a new reference once teardown has begun. Read
+        // destroying BEFORE the CAS so that a destroyer that sets the flag
+        // then drops the last reference is observed either here (we bail) or
+        // by the CAS failing (refcount already 0) - never by resurrecting a
+        // context whose final release has already run.
+        if (ctx->destroying) return 0;
+        if (__sync_bool_compare_and_swap(&ctx->refcount, old, old + 1)) {
+            return 1;
+        }
+        // Lost the race with another acquire/release; retry.
+    }
+}
+
+// Release a reference taken by rudp_ref_acquire() (or the creator's).
+// Frees the context when the count reaches zero.
+static void rudp_ref_release(rudp_context_t* ctx) {
+    if (ctx == NULL) return;
+    if (__sync_sub_and_fetch(&ctx->refcount, 1) == 0) {
+        rudp_destroy_final(ctx);
+    }
+}
+
+// The original body of rudp_destroy(). Runs exactly once, on the thread that
+// drops the last reference, after every in-flight entry point has returned.
+// No other thread can hold ctx now, so no lock is required here.
+static void rudp_destroy_final(rudp_context_t* ctx) {
+    pthread_mutex_destroy(&ctx->lock);
+    if (ctx->evp_encrypt_ctx) EVP_CIPHER_CTX_free((EVP_CIPHER_CTX*)ctx->evp_encrypt_ctx);
+    if (ctx->evp_decrypt_ctx) EVP_CIPHER_CTX_free((EVP_CIPHER_CTX*)ctx->evp_decrypt_ctx);
+    if (ctx->udp_fd >= 0) {
+        close(ctx->udp_fd);
+        ctx->udp_fd = -1;
+    }
+    free(ctx);
+}
+
 // Create (or re-create) the UDP socket for the given address family, bind it
 // to an ephemeral port, and refresh ctx->my_port. Used by rudp_create (AF_INET)
 // and by rudp_init_* / rudp_set_udp_family when the peer is IPv6.
@@ -125,6 +196,12 @@ rudp_context_t* rudp_create(int is_client) {
     rudp_context_t* ctx = (rudp_context_t*)calloc(1, sizeof(rudp_context_t));
     if (ctx == NULL) return NULL;
 
+    // N-15: creator holds the only reference; the context is not being
+    // destroyed. calloc() already zeroed both, but set them explicitly so the
+    // lifetime invariant is visible at the point of construction.
+    ctx->refcount = 1;
+    ctx->destroying = 0;
+
     ctx->is_client_mode = is_client;
     ctx->version = 1;
 
@@ -178,16 +255,20 @@ rudp_context_t* rudp_create(int is_client) {
     return ctx;
 }
 
+// N-15: request teardown by dropping the caller's reference. The actual free
+// is deferred to rudp_destroy_final(), which runs only when refcount reaches
+// zero - i.e. after the last concurrent rudp_poll/rudp_send/rudp_recv has
+// returned. Idempotent with respect to concurrent callers: the `destroying`
+// flag makes new rudp_ref_acquire() attempts fail closed, and only one thread
+// can observe the count reach zero, so the body runs exactly once.
 void rudp_destroy(rudp_context_t* ctx) {
     if (ctx == NULL) return;
-    pthread_mutex_destroy(&ctx->lock);
-    if (ctx->evp_encrypt_ctx) EVP_CIPHER_CTX_free((EVP_CIPHER_CTX*)ctx->evp_encrypt_ctx);
-    if (ctx->evp_decrypt_ctx) EVP_CIPHER_CTX_free((EVP_CIPHER_CTX*)ctx->evp_decrypt_ctx);
-    if (ctx->udp_fd >= 0) {
-        close(ctx->udp_fd);
-        ctx->udp_fd = -1;
-    }
-    free(ctx);
+    ctx->destroying = 1;
+    // Publish `destroying` before dropping the reference so a racing
+    // rudp_ref_acquire() either sees the flag (and returns 0) or fails its
+    // CAS because the count has already gone to zero.
+    __sync_synchronize();
+    rudp_ref_release(ctx);
 }
 
 // Initialize the V2 ChaCha20-Poly1305 cipher contexts from the established keys.
@@ -468,9 +549,13 @@ static void rudp_cwin_on_loss(rudp_context_t* ctx) {
 
 int rudp_is_send_ready(rudp_context_t* ctx, int check_keepalive) {
     if (ctx == NULL || !ctx->inited || !ctx->peer_addr_set) return 0;
+    // N-15 ordering: take the lifetime reference BEFORE ctx->lock; release it
+    // AFTER ctx->lock is dropped. Never the reverse.
+    if (!rudp_ref_acquire(ctx)) return 0;
     pthread_mutex_lock(&ctx->lock);
     int ret = rudp_is_send_ready_nolock(ctx, check_keepalive);
     pthread_mutex_unlock(&ctx->lock);
+    rudp_ref_release(ctx);
     return ret;
 }
 
@@ -693,9 +778,14 @@ static int rudp_process_inner(rudp_context_t* ctx, uint8_t* buf, uint32_t size,
 void rudp_poll(rudp_context_t* ctx) {
     if (ctx == NULL || !ctx->inited) return;
 
+    // N-15 ordering: reference BEFORE ctx->lock; release AFTER it is dropped.
+    // This is the call the receive thread sits in when softether_disconnect()
+    // destroys the context - the reference is what makes the tear-down wait.
+    if (!rudp_ref_acquire(ctx)) return;
     pthread_mutex_lock(&ctx->lock);
     rudp_poll_nolock(ctx);
     pthread_mutex_unlock(&ctx->lock);
+    rudp_ref_release(ctx);
 }
 
 static void rudp_poll_nolock(rudp_context_t* ctx) {
@@ -808,9 +898,16 @@ int rudp_send(rudp_context_t* ctx, const uint8_t* data, uint32_t data_size, uint
     if (ctx == NULL || !ctx->inited || !ctx->peer_addr_set) return -1;
     if (data_size > 0 && data == NULL) return -1;
 
+    // N-15 ordering: reference BEFORE ctx->lock; release AFTER it is dropped.
+    // NOTE: rudp_send() is also reached re-entrantly from rudp_send_keepalive()
+    // inside rudp_poll_nolock() (same thread, recursive ctx->lock). That nested
+    // call takes a SECOND reference and releases it on its own return, so the
+    // count is balanced per call, not per thread.
+    if (!rudp_ref_acquire(ctx)) return -1;
     pthread_mutex_lock(&ctx->lock);
     int ret = rudp_send_nolock(ctx, data, data_size, flag);
     pthread_mutex_unlock(&ctx->lock);
+    rudp_ref_release(ctx);
     return ret;
 }
 
@@ -995,6 +1092,10 @@ int rudp_send_keepalive(rudp_context_t* ctx) {
 int rudp_recv(rudp_context_t* ctx, uint8_t* buffer, uint32_t* len, uint32_t max_len) {
     if (ctx == NULL || buffer == NULL || len == NULL) return -1;
 
+    // N-15 ordering: reference BEFORE ctx->lock; release AFTER it is dropped
+    // (at the single `out` exit below, which every path falls through to).
+    if (!rudp_ref_acquire(ctx)) return -1;
+
     int ret = 0;
 
     // NOTE: ctx->lock is a RECURSIVE mutex (PTHREAD_MUTEX_RECURSIVE, see the
@@ -1026,5 +1127,6 @@ int rudp_recv(rudp_context_t* ctx, uint8_t* buffer, uint32_t* len, uint32_t max_
 
 out:
     pthread_mutex_unlock(&ctx->lock);
+    rudp_ref_release(ctx);
     return ret;
 }

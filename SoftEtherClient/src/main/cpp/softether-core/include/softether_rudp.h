@@ -83,6 +83,26 @@ typedef struct {
 
 // RUDP context (simplified version of SoftEther's UDP_ACCEL)
 typedef struct {
+    // ---------------------------------------------------------------------
+    // N-15: context lifetime reference count (atomic; GCC __sync_* builtins).
+    //
+    // rudp_destroy() may be called from any thread (e.g. softether_disconnect)
+    // at the same moment another thread is inside rudp_poll()/rudp_send()
+    // /rudp_recv(). Without a lifetime guard, the destroyer freed the context
+    // (pthread_mutex_destroy + free) out from under the poller, which then
+    // dereferenced freed memory - a use-after-free (DEEP-REVIEW N-15).
+    //
+    // Every public entry point now takes a reference for the duration of the
+    // call via rudp_ref_acquire(); rudp_destroy() drops the creator's
+    // reference via rudp_ref_release(). The context is freed only when the
+    // count reaches zero, i.e. after the last in-flight call has returned.
+    //
+    // Ordering contract: rudp_ref_acquire() is always taken BEFORE ctx->lock
+    // and released AFTER ctx->lock is dropped; the lock is never held while
+    // the count is modified. See the note at each entry point.
+    // ---------------------------------------------------------------------
+    volatile int refcount;      // outstanding references (1 = creator only)
+    volatile int destroying;    // 1 = destroy requested; refuse new acquires
     int udp_fd;
     int is_client_mode;
     int inited;
@@ -181,6 +201,12 @@ typedef struct {
 
 // API functions
 rudp_context_t* rudp_create(int is_client);
+
+// N-15: "destroy" now means "release the caller's reference". The context is
+// torn down (mutex destroyed, EVP contexts freed, socket closed, memory freed)
+// only once the last concurrent rudp_poll/rudp_send/rudp_recv call has
+// returned. Calling this while another thread is mid-call is safe and no
+// longer produces a use-after-free. The pointer must not be used afterwards.
 void rudp_destroy(rudp_context_t* ctx);
 
 int rudp_init_client(rudp_context_t* ctx,

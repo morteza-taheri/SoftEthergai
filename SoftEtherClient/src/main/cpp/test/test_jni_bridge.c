@@ -466,3 +466,26 @@ JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_na
     native_test_result_t result = test_rudp_recv_smallBufferReleasesLock();
     return create_test_result(env, &result);
 }
+
+// N-15 — lifetime reference counting tests. No VPN server required: each test
+// creates its own rudp_context_t and drives rudp_destroy() directly.
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestRudpDestroyDuringPoll(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestRudpDestroyDuringPoll called");
+    native_test_result_t result = test_rudp_destroy_during_poll();
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestRudpDestroyIsIdempotent(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestRudpDestroyIsIdempotent called");
+    native_test_result_t result = test_rudp_destroy_is_idempotent();
+    return create_test_result(env, &result);
+}
+
+JNIEXPORT jobject JNICALL Java_vn_unlimit_softether_test_NativeConnectionTest_nativeTestRudpRefBalance(
+    JNIEnv *env, jobject thiz) {
+    LOGD("nativeTestRudpRefBalance called");
+    native_test_result_t result = test_rudp_ref_balance();
+    return create_test_result(env, &result);
+}

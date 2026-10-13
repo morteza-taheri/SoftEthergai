@@ -79,6 +79,15 @@ native_test_result_t test_nativeSetClientMac_rejectsWrongLengthArray(JNIEnv* env
 // N-08: rudp_recv with a too-small buffer must release ctx->lock, proven by a
 //       second thread acquiring the same lock within a bounded wait.
 native_test_result_t test_rudp_recv_smallBufferReleasesLock(void);
+// N-15-A: rudp_destroy() called while another thread is inside rudp_poll()
+//         must not free the context out from under it (use-after-free).
+native_test_result_t test_rudp_destroy_during_poll(void);
+// N-15-B: the lifetime invariants at birth (refcount==1, destroying==0) and a
+//         single rudp_destroy() returning cleanly.
+native_test_result_t test_rudp_destroy_is_idempotent(void);
+// N-15-C: every guarded entry point balances its own lifetime reference across
+//         many rounds (no leak, no early free).
+native_test_result_t test_rudp_ref_balance(void);
 
 // Utility functions
 void test_result_init(native_test_result_t* result, bool success, int error_code, 
