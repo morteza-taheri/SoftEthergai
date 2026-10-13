@@ -3,9 +3,9 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `071462816b1eef7e7f7459483fcd69909938cd11`
-**Document version:** 1.0.6
-**Last updated:** 2026-10-12
+**HEAD:** `c5720508a41ee3f46412a108673cae46abfccda0`
+**Document version:** 1.0.7
+**Last updated:** 2026-10-13
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -68,6 +68,58 @@ The release keystore is blackbox-encrypted and only deployed on CI; builds witho
 - **Android NDK:** required for the SoftEther native module (CMake 3.22.1, C++17)
 - **Gradle wrapper:** `gradle-9.7.0-bin.zip` (configured in `gradle/wrapper/gradle-wrapper.properties`)
 - **Room schema location:** `$projectDir/schemas` (KSP-generated, committed for migrations)
+
+### 1.6 Session Completion Summary (2026-10-12 → 2026-10-13)
+
+Two working sessions (2026-10-12 and 2026-10-13) landed the DEEP-REVIEW P0 fixes and the complete
+F.28AL single-owner / native-lifetime stack, and then verified that stack on the physical device.
+
+- **9 local commits** were created for this session, forming the contiguous range `b689cfe` →
+  `c572050` on top of the pre-existing base `0714628` (see the table below). The range spans the
+  DEEP-REVIEW P0 fixes, the F.28AL single-stack work, the KSP/tooling alignment, the native bounds
+  tests, and the session audit trail.
+- **All P0 fixes from DEEP-REVIEW-VERIFY plus the whole F.28AL stack are committed locally and are
+  NOT pushed.** The remote `origin/main` is unchanged and still points at `5c13603`; local `main` is
+  **9 commits ahead, 0 behind**. Pushing is a separate, not-yet-authorized action.
+- **The F.28AL single-owner / native-lifetime stack is verified on the physical device.** After one
+  intermediate failure and its repair (see §1.6.2), the resumed device verification
+  (RESUME-BATCH-DEVICE-VERIFY) returned **PASS**: 6/6 native bounds/RUDP tests green and manual
+  tests T2–T8 all clean. Evidence class: **PHYSICAL DEVICE EVIDENCE**.
+
+#### 1.6.1 Commit chain
+
+Nine commits constitute this session's range. The base commit `0714628` (the parent of `b689cfe`)
+predates the session and is not counted.
+
+| Commit | Subject |
+|--------|---------|
+| `b689cfe` | fix(native): validate JNI array lengths and release RUDP lock (P0 bounds) |
+| `49f579b` | fix(android): route reconnect failure through service onError; name teardown identity |
+| `e1132ad` | build(native): exclude test library from release build |
+| `ac2764a` | build(ksp): align KSP version with Kotlin |
+| `0688b51` | test(androidTest): expose native bounds tests to the Kotlin bridge |
+| `8424afa` | docs(reports): session audit and verification trail |
+| `ab82ce1` | fix(native): commit the missing F28AL-U classes (repairs `49f579b`) |
+| `98a6462` | feat(softether): add session policy and TUN ownership coordinators |
+| `c572050` | feat: land the F.28AL native lifetime stack |
+
+> **No commit has been pushed to `origin/main`; the remote is unchanged at `5c13603`.**
+> Verified with `git rev-list --count b689cfe^..c572050` → **9** and
+> `git rev-list --left-right --count origin/main...HEAD` → **0 ahead / 9 behind** (i.e. 9 local
+> commits not on the remote).
+
+#### 1.6.2 Session outcome in one paragraph
+
+The DEEP-REVIEW P0 set (native JNI bounds, the RUDP lock release, the reconnect-failure routing
+through the service `onError` channel, teardown-log identity, and the tooling/version alignment) was
+fixed, compiled under forced reruns, and committed. The F.28AL-U single-owner implementation and the
+`SoftEtherSessionPolicy` / `TunOwnershipCoordinator` additions were landed on top. One commit
+(`ab82ce1`) exists specifically to repair a dependency-closure defect in an earlier commit
+(`49f579b`) — see lesson **L4** in §22. Device verification then exposed a **test-only** defect:
+`test35` crashed because it passed a valid-length array with a dummy handle, forcing a native
+dereference the test could not satisfy. That was repaired in a test-only change (FIX-N05-TEST-DEREFERENCE),
+after which the resumed device run passed cleanly. The verification also surfaced **FINDING T5-SLOT**
+(§12.4), which drives the next phase.
 
 ---
 
@@ -169,6 +221,20 @@ The F.28 family is a sequence of defect investigations and fixes surrounding the
 | F.28AL-W | Install-and-verify attempt | Stopped at the release-signing gate: `keyStore/release.jks` absent (only CI-encrypted `release.jks.gpg` present), no resolvable release signing password → Gradle would fall back to debug signing (certificate-incompatible with installed package). Reported **RELEASE_SIGNING_UNAVAILABLE**; no build/install/device test performed |
 | F.28AL-Y-PREP | Debug APK build + signature comparison | Built proDebug APK from current working tree (`app/build/outputs/apk/pro/debug/app-pro-debug.apk`, SHA-256 `CB0764664B7104F1C22A7DC3A057535468CEA3437F16401C97281A9490E0DEC7`); DEX-verified all five F.28AL-U classes present (each exactly once). Signature comparison `SIGNATURE_COMPATIBLE` → material correction: installed package 2.4.10/143 is **DEBUG-SIGNED** (cert SHA-256 `247423ce…39e9a` == local debug keystore), RISK-A observed in practice. No install performed. Evidence: SOURCE + PHYSICAL DEVICE EVIDENCE |
 | F.28AL-Y-FULL | Install-and-verify F.28AL-U on installed debug APK | In-place `adb install -r` on `5585fecc` succeeded (no uninstall, no data clear); post-install `versionName=2.4.10-dev` (`-dev` confirms debug build); installed APK SHA-256 == built APK → F.28AL-V `NOT OBSERVABLE` gap closed. Test A (connect/disconnect) PASS, Test B (reconnect) PASS (ownership serialization captured in A, not B), Test C observed organically PASS, Test D NOT REPRODUCED; zero crashes. Natural dual-path overlap during Test A disconnect: two cleanup paths fired, `nativeDestroy` called **exactly once**, competitor serialized `NOOP_REENTRANT` (ownership retained, new native attempt refused), cleanup confirmed and slot released. **Debug-build evidence only; F.28AL-U remains OPEN.** Evidence: PHYSICAL DEVICE EVIDENCE |
+| FIX-NATIVE-P0-BOUNDS | JNI bounds + RUDP lock-release hardening (N-01…N-05, N-08) | Six native entry points now validate array lengths before use and `rudp_recv` releases its lock on the small-buffer path. Verdict: **APPLIED — JVM + native tests green.** Evidence: SOURCE + TEST. Ref: `FIX_NATIVE_P0_BOUNDS_REPORT.md` |
+| FIX-KOTLIN-BRIDGE-DECLARATIONS | Six native bridges re-declared as instance-level `external fun` | All six JNI exports take `jobject thiz`, so the Kotlin declarations were moved out of `companion object`. Verdict: **APPLIED — bridges resolve at runtime.** Evidence: SOURCE + TEST. Ref: `FIX_KOTLIN_BRIDGE_DECLARATIONS_REPORT.md` |
+| FIX-G1-IMPL | Eliminate the stale-service leak (G-1) | A superseded session could leave the service in a state where the next AutoConnect was refused as "a connected session already owns the service". Verdict: **APPLIED — confirmed 0 occurrences across 3 device AutoConnect cycles.** Evidence: PHYSICAL DEVICE EVIDENCE. Ref: `FIX_G1_IMPL_REPORT.md` |
+| FIX-LOG-IDENTITY | Teardown logs carry attempt/session identity (G-2) | Teardown completion log lines now emit `attempt=<n>` and `session=<n>`. Verdict: **APPLIED — 3 device teardowns all emitted `(attempt=N, session=1)` with no `attempt=none` fallback.** Evidence: PHYSICAL DEVICE EVIDENCE. Ref: `FIX_LOG_IDENTITY_REPORT.md` |
+| FIX-N05-TEST-DEREFERENCE | Repair the unsound `test35` dummy-handle contradiction | `test35` passed a valid 6-byte array with dummy handle `0x1`, bypassing the length guard and forcing `softether_set_client_mac()` to dereference an invalid pointer (SIGSEGV). The test was narrowed to its actual rejection contract. Verdict: **FIX APPLIED — test35 converted CRASH → PASS on device.** Evidence: SOURCE + PHYSICAL DEVICE EVIDENCE. Ref: `FIX_N05_TEST_DEREFERENCE_REPORT.md` |
+| BATCH-DEVICE-VERIFY | First full device pass of the accumulated fixes | 5/6 native tests PASSED; `test35` **CRASHED** (SIGSEGV, `fault addr 0x4bd`, backtrace through `memcpy` ← `softether_set_client_mac`). Diagnosed as a **test-logic** defect, not a product defect. Verdict: **BATCH VERIFY FAIL — SPECIFIC TEST FAILED / CRASH_OBSERVED.** Evidence: PHYSICAL DEVICE EVIDENCE. Ref: `BATCH_DEVICE_VERIFY_REPORT.md` |
+| RESUME-BATCH-DEVICE-VERIFY | Resumed device pass after the `test35` repair | 6/6 native tests **PASS** (`OK (1 test)` each; crash buffer empty); T2 (G-1) 0 stale-service refusals over 3 AutoConnect cycles; T3 (G-2) 3 teardowns with correct identity; T4 BUG 1 82/103 reachable, reproducible; T5 BUG 2 skip path fires exactly once; T6 BUG 3 `nativeSetOption value=5000` on every attempt; T7 zero crashes (app PID stable); T8 settings unchanged. Verdict: **RESUME VERIFY PASS — TEST35 + T2-T8 ALL CLEAN.** Surfaced FINDING T5-SLOT (§12.4). Evidence: PHYSICAL DEVICE EVIDENCE. Ref: `RESUME_BATCH_DEVICE_VERIFY_REPORT.md` |
+| FIX-U36-KSP-ALIGN | Align the KSP plugin version with Kotlin | KSP `2.3.12` pinned to match Kotlin `2.4.0`, removing the version-skew failure that blocked the U-36 build verification. Verdict: **APPLIED.** Evidence: SOURCE. Ref: `FIX_U36_KSP_ALIGN_REPORT.md` |
+| FIX-U36-FULL-BUILD-VERIFY | Full forced build verification after the KSP alignment | Full forced toolchain run confirms the tree compiles end to end. Verdict: **VERIFIED.** Evidence: SOURCE + BUILD. Ref: `FIX_U36_FULL_BUILD_VERIFY_REPORT.md` |
+| COMMIT-BATCH-F28AL-AUDIT | Pre-commit dependency-closure audit | Found the commit-2 defect: `ConnectionController` imported F.28AL-U classes that had never been committed. Verdict: **DEFECT FOUND — repaired by `ab82ce1`.** Evidence: SOURCE. Ref: `COMMIT_BATCH_F28AL_AUDIT_REPORT.md` |
+| COMMIT-BATCH-F28AL-REPAIR | Commit the missing F.28AL-U classes | Committed the omitted `NativeHandleSlot` / `NativeHandleOwner` / `NativeHandleClaim` classes so the import closure resolves. Verdict: **REPAIRED.** Evidence: SOURCE. Ref: `COMMIT_BATCH_F28AL_REPAIR_REPORT.md` |
+| COMMIT-BATCH-F28AL-GROUP2 | Second commit group verification | Verdict: **VERIFIED**, with two methodology lessons recorded (forced cache-disabled tests; KDoc references are not dependencies). Evidence: SOURCE + TEST. Ref: `COMMIT_BATCH_F28AL_GROUP2_REPORT.md` |
+| COMMIT-BATCH-F28AL-SINGLE-STACK | Single-stack commit and verification | Verdict: **COMMITTED — COMPILE VERIFIED — TESTS VERIFIED.** Evidence: SOURCE + TEST. Ref: `COMMIT_BATCH_F28AL_SINGLE_STACK_REPORT.md` |
+| VERIFY-STACK-CLOSURE | Whole-tree forced compile closure | 40/40 tasks executed under `--rerun-tasks`, proving the tree compiles. Evidence: BUILD. Ref: `VERIFY_STACK_CLOSURE_REPORT.md` |
 
 ### 3.2 F.28 Defect Chain — Narrative
 
@@ -1248,6 +1314,10 @@ The F.28 lifecycle fixes were developed and unit-tested on the JVM, but several 
   published by F.28AL-W/X/Y-PREP** (Y-FULL intentionally installed a debug build for verification).
 - **Future decision (separately authorized, NOT done here):** make signing **fail-closed** (reject
   `proRelease` when release signing material is unavailable) versus an explicit, logged policy.
+- **Release-build hygiene remediation (applied):** commit `e1132ad` (`build(native): exclude test
+  library from release build`) — the FIX-L01 CMake change — stops the native **test** library from
+  being packaged into release builds. This does not fix the signing fallback itself; it removes a
+  separate release-hygiene defect (shipping test code) that was found during the same audit.
 
 #### RISK-B — Legacy Native Cleanup Method May Bypass NativeHandleSlot
 
@@ -1266,6 +1336,33 @@ The F.28 lifecycle fixes were developed and unit-tested on the JVM, but several 
   production defect and is treated as legacy/dead code pending confirmation.
 - **Action:** **No source change made.** Requires a separate read-only call-graph audit or future
   hardening decision (OUT OF SCOPE for F.28AL-W and F.28AL-X).
+
+#### FINDING T5-SLOT — Native slot unresolved after user skip (2026-10-13, RESUME-BATCH-DEVICE-VERIFY T5)
+
+- **Observed (PHYSICAL DEVICE EVIDENCE):** after a user-initiated "Try next server" during an active
+  AutoMode connection, the reconnect to the next server was refused twice by
+  `[AUTO] Native slot busy; retrying same server in 2s (attempt 1/2)` and
+  `(attempt 2/2)`, then stopped with
+  `[AUTO] Native slot still owned by an unresolved operation; stopping without blaming this server`.
+  Teardown then completed cleanly: `Native cleanup confirmed (attempt=3, session=1): structure
+  destroyed and slot released`. The candidate server (`vpn421485820`) was therefore never given a
+  fair attempt.
+- **Interpretation (INFERENCE):** this is **designed guard behaviour, not a regression.** The
+  slot-ownership guard correctly detected that a native operation had not been confirmed resolved and
+  refused to admit a new attempt; it also correctly **declined to blame the candidate server**, since
+  the server was never actually tried. The G-1 stale-service FAIL criterion did **not** appear in this
+  window, so this is not the stale-session leak. The final state was a clean, retryable
+  `DISCONNECTED`/`ERROR` with a working `Tap to retry`.
+- **Gap (UNKNOWN):** the log does **not** identify **which** operation held the slot. Whether the
+  holder was a benign slow release (self-clearing on the next attempt) or a genuinely leaked slot (a
+  lifetime bug) is **not determinable from the current logs**. This distinction matters: a benign
+  slow release needs no fix, whereas a leaked slot would be a second, undiscovered lifetime defect.
+- **Action:** to be investigated in **FIX-NATIVE-LIFETIME-SYNC (N-15 RUDP destroy vs poll
+  synchronisation; N-16 `nativeConnect` serialisation)** — see §12.5. Consider enriching
+  `NativeLifetimeRegistry.describe()` or the slot guard's log message to include the holder's
+  `attemptId`, `phase`, and elapsed-since-declared, so the holder is identifiable in future logs.
+- **Evidence class:** PHYSICAL DEVICE EVIDENCE (verbatim log lines in
+  `RESUME_BATCH_DEVICE_VERIFY_REPORT.md` §11).
 
 #### OPEN QUESTION — Dual-Path Cleanup Overlap: Designed Behavior or Incidental Race?
 
@@ -1310,6 +1407,20 @@ investigation was performed in this phase.
 ### 12.5 Roadmap: Dynamic Server-Source Access
 
 The following items are planned for the source-and-path architecture described in §11.8–§11.12. Do not arbitrarily assign release numbers or mark these items complete. Use the document's existing priority conventions; if priority is unclear, mark it "Priority to be assessed" rather than inventing a commitment.
+
+#### 12.5.1 Active Fix Queue (DEEP-REVIEW + F.28AL follow-up)
+
+| # | Item | Scope | Priority | Status |
+|---|------|-------|----------|--------|
+| 1 | **FIX-NATIVE-LIFETIME-SYNC (N-15 + N-16)** | N-15: `rudp_destroy` (`rudp_destroy:181`) destroys `ctx->lock` and frees `ctx` with no guarantee a concurrent `rudp_poll` (`rudp_poll:693`) has returned — a poll in flight during destroy is a use-after-free. N-16: `nativeConnect` (`softether_jni.c:54`) is **not** serialised by `conn->connect_mutex` while `nativeConnectWithHub` (`softether_jni.c:139–145`) is — two concurrent native connects on the same `conn` can interleave. | **P1_HIGH** | OPEN — no device required. Driven additionally by **FINDING T5-SLOT** (§12.4). See `DEEP_REVIEW_VERIFY_REPORT.md` rows N-15/N-16 |
+| 2 | **DEEP-REVIEW P0 set** | JNI bounds (N-01…N-05, N-08), RUDP lock release, reconnect terminal routing (G-1), teardown log identity (G-2) | — | **CLOSED — device-verified.** RESUME-BATCH-DEVICE-VERIFY: 6/6 native tests PASS, T2–T8 clean. Evidence: PHYSICAL DEVICE EVIDENCE |
+| 3 | `proRelease` build/test path | The release variant has never been built or tested locally (only `proDebug`). Blocked by the RISK-A signing fallback (§12.4) and the absence of local release signing material. | Priority to be assessed | OPEN — see RISK-A |
+| 4 | **N-06** TLS certificate verification | `aes_wrapper.c:110` `ssl_configure_client_ctx` sets `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)`. Deliberate for self-signed VPNGate certs, but a genuine MITM exposure. | P2_MEDIUM | OPEN — design decision required |
+| 5 | **N-09** non-cryptographic `rand()` | `softether_rudp.c:154–173` derives keys/cookies from `rand()`; `rudp_transport.c:316,370,402,1146` derive IVs/padding/ICMP id/seq from `rand()`. The generator is not cryptographically secure. | P2_MEDIUM | OPEN — migrate to `RAND_bytes` |
+| 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
+| 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | Priority to be assessed | OPEN — `PARTIALLY CONFIRMED — REQUIRES DEEPER ANALYSIS` |
+
+#### 12.5.2 Dynamic Server-Source Access roadmap
 
 | # | Item | Description |
 |---|------|-------------|
@@ -1626,7 +1737,6 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 ---
 
 ## 20. Document Status
-
 ### Changelog
 
 | Version | Date | Author | Change |
@@ -1638,6 +1748,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.4 | 2026-10-11 | F.28AL-Y-DOCS documentation update after F.28AL-Y-PREP and F.28AL-Y-FULL: §3.1 rows for F.28AL-Y-PREP and F.28AL-Y-FULL; §3.3 F.28AL-U status refined to OPEN with three-of-four evidence layers (SOURCE satisfied, JVM TEST satisfied, PHYSICAL-DEBUG satisfied, PHYSICAL-RELEASE NOT YET OBTAINED) plus debug-build caveat; RISK-A escalated to "CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE" (installed 2.4.10/143 proven debug-signed; post-install 2.4.10-dev); new OPEN QUESTION on dual-path cleanup overlap (designed vs incidental race); RISK-B preserved PARTIALLY CONFIRMED; §20 Verification Status updated for §13. No source/test/build/device change; documentation only. |
 | 1.0.5 | 2026-10-12 | F.28AL-AUTOCONNECT-SPEC documentation-only update: new **§6.7 AutoConnect Button Contract (User-Directed Requirements)** documenting R1–R8 as testable contracts (empty-list message R1, disconnect-active-tunnel-first R2, probe+sort pre-pass R3, sequential one-by-one R4, per-server/per-protocol 5s timeout R5, Settings protocol priority R6, continuous-until-stop R7); new **§11.13 Automatic Reconnection in Auto Mode (Settings Requirement)** for R8 (proposed name `Reconnect on Disconnect (Auto Mode)`, proposed default DISABLED, enabled/disabled behavior). Cross-reference to F.28AL-AUTOCONNECT-BUG-DIAG (BUG 1/2/3) added in §6.7. No source/test/build/device change; documentation only. |
 | 1.0.6 | 2026-10-12 | F.28AL-AUTOCONNECT-SPEC-R8: finalized R8 setting name (`Auto-Reconnect in Auto Mode` / «اتصال همیشکی اتوکانکت») and default (ENABLED); removed pending markers in §11.13.1/§11.13.2; updated §6.7 R8 cross-reference. No source/test/build/device change; documentation only. |
+| 1.0.7 | 2026-10-13 | DOCS-UPDATE: consolidated session completion summary (§1.6), methodology lessons (§22), T5-slot finding, F.28AL session rows, roadmap update. No source/test/build/device change; documentation only. |
 
 ### Verification Status
 
@@ -1666,6 +1777,10 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Rules for Future AI Agents (§16) | POLICY — derived from architecture and constraints |
 | Constants Summary (§17) | VERIFIED — line-anchored |
 | File Index (§18) | VERIFIED — glob-verified paths |
+| References (§19) | VERIFIED — paths and artifact names cross-checked |
+| Document Status (§20) | VERIFIED — changelog and verification tables maintained each revision |
+| Session Completion Summary (§1.6) | HISTORICAL — commit chain and session outcome compiled from `git log` and the phase reports; the device-verification statement is attributed to RESUME-BATCH-DEVICE-VERIFY (PHYSICAL DEVICE EVIDENCE), not re-verified here |
+| Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
 
 ### Legend
 
@@ -1682,3 +1797,105 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 - **PHYSICAL DEVICE EVIDENCE** — Observed on the authorized physical device (logcat, `dumpsys`, dex dump of the installed binary, etc.).
 - **INFERENCE** — A conclusion reasoned from other evidence; never a directly observed fact.
 - **UNKNOWN / NOT OBSERVABLE / NOT TESTABLE / NOT REPRODUCED** — The claim could not be established by the required evidence category; recorded explicitly rather than fabricated.
+
+---
+
+## 22. Build and Verification Methodology (Lessons)
+
+> Section number **22** is reserved for this content; **§21 is intentionally unassigned** in this
+> revision (no section was removed or renumbered). Each lesson below was **verified by an incident in
+> this project**, not adopted as a generic best practice. Each entry states the rule, why it matters,
+> and the incident that proved it.
+
+### L1 — Forced compile is mandatory
+
+`--rerun-tasks` defeats `UP-TO-DATE` masking: a Gradle task reported as `UP-TO-DATE` did not run, so
+its success proves nothing about the current source tree. A cached compile result is not evidence
+that the tree compiles. Any compile claim must come from a run in which the relevant tasks actually
+**executed**.
+**Incident:** VERIFY-STACK-CLOSURE — *40/40 tasks executed* is what proves the tree compiles; a
+40/40 *up-to-date* report would have proven nothing.
+
+### L2 — Forced cache-disabled tests are mandatory
+
+`--rerun-tasks` **alone is not sufficient** for `testDebugUnitTest`: the test task can still be
+satisfied from the build cache and replay a stale result. The correct invocation is
+`--rerun-tasks --no-build-cache`. Always force **both** flags.
+**Incident:** COMMIT-BATCH-F28AL-GROUP2 — the test task replayed from cache under `--rerun-tasks`
+alone, producing a green result that reflected old code.
+
+### L3 — KDoc references are not dependencies
+
+A text match inside a comment or KDoc block does **not** imply a compile dependency. Grepping for a
+class name and finding a hit in prose tells you nothing about imports. Dependency claims must be
+checked at the **import level**, not by substring search.
+**Incident:** COMMIT-BATCH-F28AL-GROUP2 P3 — `NativeLifetimeRegistry` mentions
+`SoftEtherSessionPolicy` only in prose; the grep hit was not a dependency.
+
+### L4 — Dependency closure before commit is mandatory
+
+Every import in every committed file must resolve **inside the same commit or inside HEAD**. A commit
+that references a class it does not itself contain is broken for anyone who checks out that commit,
+even if the *working tree* compiles because the file is still present untracked.
+**Incident:** COMMIT-BATCH-F28AL-AUDIT §1 — the commit-2 defect: `ConnectionController` imported
+F.28AL-U classes that had never been committed. The canonical failure, later repaired by `ab82ce1`.
+
+### L5 — Hermetic tests must not exercise dereference paths with a dummy handle
+
+A hermetic native test may pass a fake handle (`0x1`) **only** when the code path under test is
+guaranteed to reject or return before dereferencing it. If the test's success criterion requires the
+call to proceed past that guard — i.e. the operation genuinely cannot succeed with a fake handle —
+the test is unsound and will crash. Test only the **rejection** contract when the acceptance path
+needs a live connection.
+**Incident:** `test35` SIGSEGV — the test passed a valid 6-byte array with dummy handle `0x1`, the
+length guard passed by design, and `softether_set_client_mac()` dereferenced `0x1` (`fault addr
+0x4bd`, backtrace `__memcpy` ← `softether_set_client_mac` ← `nativeSetClientMac`).
+
+### L6 — The instrumentation runner package must be read from the device, not assumed
+
+The authoritative runner identity comes from `adb shell pm list instrumentation`, or from the
+`androidTest` APK's own manifest — never from a replica of the module name or a guess. A wrong runner
+string fails with "instrumentation not found", which can be misread as a build defect. Related: the
+test package is not necessarily the application package.
+**Incident:** BATCH-DEVICE-VERIFY N1 — **both** runner packages given in the brief
+(`vn.unlimit.vpngatepro.test` and `vn.unlimit.vpngate.pro.test`) were wrong; the real runner is
+`vn.unlimit.softether.test/androidx.test.runner.AndroidJUnitRunner`.
+
+### L7 — `strings` may not be installed; use `grep -a` on raw dex
+
+A missing inspection tool produces a **silent empty result**, which is easily misread as a negative
+finding. A command that fails because its binary is absent is not evidence of absence. Verify that
+the tool exists, or use a method that does not depend on it.
+**Incident:** BATCH-DEVICE-VERIFY — the initial "the APK contains **zero** F.28AL classes" conclusion
+was a false alarm: `strings` was not installed (`strings: command not found`), so every scan silently
+returned nothing. Re-scanning with `grep -a` directly on extracted dex binaries showed all six
+F.28AL classes **present**.
+
+### L8 — Long-running capture must be a managed background task, not a plain shell `&`
+
+A capture started with a plain `&` inside a shell invocation dies when that shell exits, so the
+output file freezes at the moment the launching command returns — potentially before the event under
+test even occurs. Use the harness's managed background mechanism, and cross-check against the
+device's persistent log buffer (`adb logcat -d`), which survives independently.
+**Incident:** RESUME-BATCH-DEVICE-VERIFY T1 — the first logcat capture stopped at 158 lines /
+`09:10:47`, **before** the connect tap, and contained no app logs at all; it had to be restarted as a
+managed background task and reconciled against the device buffer.
+
+### L9 — A searched token must match the real identifier
+
+Before concluding that a process died, a symbol is absent, or a package is missing, confirm the exact
+identifier being searched. A wrong-but-plausible name yields an empty result indistinguishable from a
+true absence.
+**Incident:** RESUME-BATCH-DEVICE-VERIFY — `pidof vn.unlimit.vpngate.pro` returned empty and briefly
+looked like an app crash; the real package is `vn.unlimit.vpngatepro`, and the app had been alive the
+whole time.
+
+### L10 — Shell tooling availability and argument semantics must be confirmed, not assumed
+
+Several standard tools are absent or behave unexpectedly in this environment, and each absence is a
+potential silent false negative: `strings` is not installed (see L7); `bc` is not installed, breaking
+arithmetic pipelines; `grep -c` against multiple files prefixes each count line with the filename and
+therefore corrupts arithmetic accumulation (use `grep -al` to identify containing files); and `grep -F`
+and `grep -E` cannot be combined in one invocation (`grep: conflicting matchers specified`).
+**Incident:** RESUME-BATCH-DEVICE-VERIFY B3/T2 — a `paste -sd+ | bc` accumulation failed with an
+arithmetic error (`bc` missing), and a multi-file `grep -c` produced unusable output.
