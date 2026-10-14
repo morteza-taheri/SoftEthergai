@@ -1696,16 +1696,29 @@ static int softether_try_nat_t_connect(softether_connection_t* conn,
 // thread with a staggered delay. The first to complete a successful TLS
 // handshake claims the result; losing threads cancel and clean up.
 
+// Forward declaration so transport_thread_ctx_t can hold a back-pointer.
+typedef struct race_control_s race_control_t;
+
 // Per-thread context for the parallel transport race.
+//
+// NATIVE-RACE-AND-DEADLINE-HARDENING (AC-01): every field a worker thread can
+// reach now lives in this HEAP-allocated struct (softether_connect_parallel_race
+// calloc's the array), never on the parent's stack. The string fields are fixed
+// buffers the parent copies into (bounded strncpy) so a worker can never
+// dereference the caller's stack `resolved_ip[64]` or a JNI UTF string that is
+// released when the native call returns. The cancel flag, winner arbitration and
+// thread bookkeeping live in race_control_t (also heap). A worker that is
+// detached after the join budget expires keeps reading only heap memory.
 typedef struct {
     int transport_type;             // TRANSPORT_*
-    const char* host;               // original hostname (for NAT-T relay)
-    const char* resolved_ip;        // resolved server IP
+    char host[256];                 // original hostname (for NAT-T relay) — copied
+    char resolved_ip[64];           // resolved server IP — copied
     int port;                       // server TCP port
-    const char* connect_host;       // hostname for TLS SNI
-    uint32_t timeout_ms;            // per-transport connect timeout
+    char connect_host[256];         // hostname for TLS SNI — copied
+    uint32_t timeout_ms;            // per-transport connect timeout (informational)
     int udp_port;                   // seUdpPort (for TRANSPORT_RUDP_DIRECT)
-    const volatile int* cancel_flag; // shared cancel flag
+    int index;                      // slot index within the race
+    race_control_t* ctrl;           // back-pointer to the shared heap control block
 
     // Output (written by thread, read by main after join)
     transport_result_t result;
@@ -1733,6 +1746,30 @@ typedef struct {
     void* arg;
     volatile int* exited;
 } race_trampoline_t;
+
+// Shared, heap-allocated race control block (AC-01). Holds the single cancel
+// flag, the AC-02 winner arbitration flag, the winner index, the race deadline
+// and the thread bookkeeping arrays. Never on the parent's stack.
+struct race_control_s {
+    volatile int cancel_flag;
+    volatile int winner_claimed;    // AC-02: only one worker may keep its resources
+    int winner_index;               // -1 = none
+    uint32_t race_timeout_ms;       // budget for this whole attempt (no 5s floor)
+    uint64_t race_deadline_ms;      // monotonic deadline for this whole attempt
+    pthread_t* thread_ids;          // heap, one per attempted transport
+    race_trampoline_t* trampolines; // heap, one per attempted transport
+    int* created;                  // heap, 0 = pthread_create failed (N-03)
+};
+
+// AC-03 / STEP 6: remaining time budget (ms) for this race. Every worker uses
+// this instead of the full race_timeout_ms so the total attempt cannot be
+// multiplied by the number of serial stages.
+static uint32_t race_remaining_budget_ms(race_control_t* ctrl) {
+    if (ctrl == NULL) return 0;
+    int64_t rem = (int64_t)ctrl->race_deadline_ms - (int64_t)softether_tick_ms();
+    if (rem < 0) rem = 0;
+    return (uint32_t)rem;
+}
 
 static void* race_thread_trampoline(void* p) {
     race_trampoline_t* t = (race_trampoline_t*)p;
@@ -1780,6 +1817,15 @@ static void* transport_thread_tcp(void* arg) {
     r->transport_type = TRANSPORT_TCP;
     r->socket_fd = -1;
 
+    // AC-03 / STEP 6: use the remaining race budget, not the full timeout.
+    uint32_t budget = race_remaining_budget_ms(ctx->ctrl);
+
+    if (budget == 0) {
+        LOGD("[%s] race budget exhausted before start; aborting",
+             transport_name(TRANSPORT_TCP));
+        return NULL;
+    }
+
     // Staggered delay
     uint32_t delay = transport_delay_ms(TRANSPORT_TCP);
     if (delay > 0) {
@@ -1787,7 +1833,7 @@ static void* transport_thread_tcp(void* arg) {
         nanosleep(&ts, NULL);
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled before start", transport_name(TRANSPORT_TCP));
         return NULL;
     }
@@ -1803,8 +1849,8 @@ static void* transport_thread_tcp(void* arg) {
         return NULL;
     }
 
-    // Connect (with timeout)
-    if (socket_connect_timeout(sock, ctx->connect_host, ctx->port, ctx->timeout_ms) != 0) {
+    // Connect (with timeout) — bounded by the remaining race budget.
+    if (socket_connect_timeout(sock, ctx->connect_host, ctx->port, (int)budget) != 0) {
         LOGD("[%s] connect failed", transport_name(TRANSPORT_TCP));
         socket_destroy(sock);
         r->error = ERR_TCP_CONNECT;
@@ -1815,7 +1861,7 @@ static void* transport_thread_tcp(void* arg) {
     sock->fd = -1;  // take ownership
     socket_destroy(sock);
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled after connect", transport_name(TRANSPORT_TCP));
         close(fd);
         r->error = ERR_TCP_CONNECT;
@@ -1830,10 +1876,10 @@ static void* transport_thread_tcp(void* arg) {
     // conn->socket_fd (AUDIT_AUTOCONNECT_LOGIC.md §A6-1). Bounding it here is
     // what lets the race's bounded join actually finish instead of detaching a
     // thread that is still holding g_openssl_lock.
-    if (socket_apply_timeout(fd, (int)ctx->timeout_ms) != 0) {
-        LOGD("[%s] socket timeout not applied (fd=%d, timeout_ms=%u); handshake "
+    if (socket_apply_timeout(fd, (int)budget) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, budget_ms=%u); handshake "
              "may block until the race detaches this thread",
-             transport_name(TRANSPORT_TCP), fd, ctx->timeout_ms);
+             transport_name(TRANSPORT_TCP), fd, budget);
     }
 
     // TLS handshake
@@ -1853,12 +1899,15 @@ static void* transport_thread_tcp(void* arg) {
         return NULL;
     }
 
-    // Try to claim winner
-    if (__sync_bool_compare_and_swap(&r->finished, 0, 1)) {
-        r->ok = 1;
+    // AC-02: shared winner arbitration. Only one worker may keep its resources;
+    // every other worker that also completed a handshake must clean up its own.
+    if (__sync_bool_compare_and_swap(&ctx->ctrl->winner_claimed, 0, 1)) {
+        ctx->ctrl->winner_index = ctx->index;
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
+        __sync_synchronize();   // publish winner payload before ok
+        r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_TCP), fd);
     } else {
         // Lost the race — clean up
@@ -1882,6 +1931,15 @@ static void* transport_thread_rudp_direct(void* arg) {
         return NULL;
     }
 
+    // AC-03 / STEP 6: use the remaining race budget, not the full timeout.
+    uint32_t budget = race_remaining_budget_ms(ctx->ctrl);
+
+    if (budget == 0) {
+        LOGD("[%s] race budget exhausted before start; aborting",
+             transport_name(TRANSPORT_RUDP_DIRECT));
+        return NULL;
+    }
+
     // Staggered delay
     uint32_t delay = transport_delay_ms(TRANSPORT_RUDP_DIRECT);
     if (delay > 0) {
@@ -1889,7 +1947,7 @@ static void* transport_thread_rudp_direct(void* arg) {
         nanosleep(&ts, NULL);
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled before start", transport_name(TRANSPORT_RUDP_DIRECT));
         return NULL;
     }
@@ -1914,16 +1972,16 @@ static void* transport_thread_rudp_direct(void* arg) {
     cfg.server_ip = ip4.s_addr;
     cfg.server_port = (uint16_t)ctx->udp_port;
     cfg.udp_fd = -1;
-    cfg.connect_timeout_ms = ctx->timeout_ms;
+    cfg.connect_timeout_ms = budget;
 
-    if (rudp_transport_connect(tr, &cfg, ctx->cancel_flag) != 0) {
+    if (rudp_transport_connect(tr, &cfg, &ctx->ctrl->cancel_flag) != 0) {
         LOGD("[%s] R-UDP connect failed", transport_name(TRANSPORT_RUDP_DIRECT));
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
@@ -1931,6 +1989,13 @@ static void* transport_thread_rudp_direct(void* arg) {
 
     // TLS handshake over the R-UDP transport
     int fd = rudp_transport_get_fd(tr);
+    // AC-03 / STEP 5.1: bound the handshake on this transport's fd too. The fd
+    // returned by rudp_transport_get_fd() is the app-facing end of the RUDP
+    // socketpair (rudp_transport.c), which is exactly the fd OpenSSL reads from.
+    if (socket_apply_timeout(fd, (int)budget) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, budget_ms=%u)",
+             transport_name(TRANSPORT_RUDP_DIRECT), fd, budget);
+    }
     ssl_context_t* ssl_ctx = ssl_create_client();
     if (ssl_ctx == NULL || ssl_connect(ssl_ctx, fd, ctx->connect_host) != 0) {
         LOGD("[%s] TLS handshake failed", transport_name(TRANSPORT_RUDP_DIRECT));
@@ -1940,13 +2005,15 @@ static void* transport_thread_rudp_direct(void* arg) {
         return NULL;
     }
 
-    // Try to claim winner
-    if (__sync_bool_compare_and_swap(&r->finished, 0, 1)) {
-        r->ok = 1;
+    // AC-02: shared winner arbitration.
+    if (__sync_bool_compare_and_swap(&ctx->ctrl->winner_claimed, 0, 1)) {
+        ctx->ctrl->winner_index = ctx->index;
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        __sync_synchronize();
+        r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_RUDP_DIRECT), fd);
     } else {
         LOGD("[%s] lost race, cleaning up", transport_name(TRANSPORT_RUDP_DIRECT));
@@ -1964,6 +2031,15 @@ static void* transport_thread_natt(void* arg) {
     memset(r, 0, sizeof(*r));
     r->transport_type = TRANSPORT_NATT;
 
+    // AC-03 / STEP 6: use the remaining race budget, not the full timeout.
+    uint32_t budget = race_remaining_budget_ms(ctx->ctrl);
+
+    if (budget == 0) {
+        LOGD("[%s] race budget exhausted before start; aborting",
+             transport_name(TRANSPORT_NATT));
+        return NULL;
+    }
+
     // Staggered delay
     uint32_t delay = transport_delay_ms(TRANSPORT_NATT);
     if (delay > 0) {
@@ -1971,7 +2047,7 @@ static void* transport_thread_natt(void* arg) {
         nanosleep(&ts, NULL);
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled before start", transport_name(TRANSPORT_NATT));
         return NULL;
     }
@@ -1990,15 +2066,15 @@ static void* transport_thread_natt(void* arg) {
     softether_nat_t_result_t nr;
     memset(&nr, 0, sizeof(nr));
     if (nat_t_connect_ex(ip4.s_addr, NAT_T_SVC_NAME, NULL, ctx->host,
-                         ctx->timeout_ms, &nr,
-                         ctx->cancel_flag) != 0) {
+                         (int)budget, &nr,
+                         &ctx->ctrl->cancel_flag) != 0) {
         LOGD("[%s] rendezvous failed: error=%d", transport_name(TRANSPORT_NATT),
              nr.error_code);
         r->error = ERR_TCP_CONNECT;
         return NULL;
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         if (nr.udp_fd >= 0) close(nr.udp_fd);
         r->error = ERR_TCP_CONNECT;
         return NULL;
@@ -2017,16 +2093,16 @@ static void* transport_thread_natt(void* arg) {
     cfg.server_ip = nr.result_ip;
     cfg.server_port = nr.result_port;
     cfg.udp_fd = nr.same_lan ? -1 : nr.udp_fd;
-    cfg.connect_timeout_ms = ctx->timeout_ms;
+    cfg.connect_timeout_ms = budget;
 
-    if (rudp_transport_connect(tr, &cfg, ctx->cancel_flag) != 0) {
+    if (rudp_transport_connect(tr, &cfg, &ctx->ctrl->cancel_flag) != 0) {
         LOGD("[%s] R-UDP transport connect failed", transport_name(TRANSPORT_NATT));
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
@@ -2034,6 +2110,11 @@ static void* transport_thread_natt(void* arg) {
 
     // TLS handshake over the R-UDP transport
     int fd = rudp_transport_get_fd(tr);
+    // AC-03 / STEP 5.2: bound the handshake on this transport's fd too.
+    if (socket_apply_timeout(fd, (int)budget) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, budget_ms=%u)",
+             transport_name(TRANSPORT_NATT), fd, budget);
+    }
     ssl_context_t* ssl_ctx = ssl_create_client();
     if (ssl_ctx == NULL || ssl_connect(ssl_ctx, fd, ctx->connect_host) != 0) {
         LOGD("[%s] TLS handshake failed", transport_name(TRANSPORT_NATT));
@@ -2043,13 +2124,15 @@ static void* transport_thread_natt(void* arg) {
         return NULL;
     }
 
-    // Try to claim winner
-    if (__sync_bool_compare_and_swap(&r->finished, 0, 1)) {
-        r->ok = 1;
+    // AC-02: shared winner arbitration.
+    if (__sync_bool_compare_and_swap(&ctx->ctrl->winner_claimed, 0, 1)) {
+        ctx->ctrl->winner_index = ctx->index;
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        __sync_synchronize();
+        r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_NATT), fd);
     } else {
         LOGD("[%s] lost race, cleaning up", transport_name(TRANSPORT_NATT));
@@ -2067,6 +2150,15 @@ static void* transport_thread_dns(void* arg) {
     memset(r, 0, sizeof(*r));
     r->transport_type = TRANSPORT_DNS;
 
+    // AC-03 / STEP 6: use the remaining race budget, not the full timeout.
+    uint32_t budget = race_remaining_budget_ms(ctx->ctrl);
+
+    if (budget == 0) {
+        LOGD("[%s] race budget exhausted before start; aborting",
+             transport_name(TRANSPORT_DNS));
+        return NULL;
+    }
+
     // Staggered delay
     uint32_t delay = transport_delay_ms(TRANSPORT_DNS);
     if (delay > 0) {
@@ -2074,7 +2166,7 @@ static void* transport_thread_dns(void* arg) {
         nanosleep(&ts, NULL);
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled before start", transport_name(TRANSPORT_DNS));
         return NULL;
     }
@@ -2099,17 +2191,17 @@ static void* transport_thread_dns(void* arg) {
     cfg.server_ip = ip4.s_addr;
     cfg.server_port = 53;  // DNS standard port
     cfg.udp_fd = -1;
-    cfg.connect_timeout_ms = ctx->timeout_ms;
+    cfg.connect_timeout_ms = budget;
     cfg.transport_mode = RUDP_T_MODE_DNS;
 
-    if (rudp_transport_connect(tr, &cfg, ctx->cancel_flag) != 0) {
+    if (rudp_transport_connect(tr, &cfg, &ctx->ctrl->cancel_flag) != 0) {
         LOGD("[%s] R-UDP connect failed", transport_name(TRANSPORT_DNS));
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
@@ -2117,6 +2209,11 @@ static void* transport_thread_dns(void* arg) {
 
     // TLS handshake over the DNS transport
     int fd = rudp_transport_get_fd(tr);
+    // AC-03 / STEP 5.3: bound the handshake on this transport's fd too.
+    if (socket_apply_timeout(fd, (int)budget) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, budget_ms=%u)",
+             transport_name(TRANSPORT_DNS), fd, budget);
+    }
     ssl_context_t* ssl_ctx = ssl_create_client();
     if (ssl_ctx == NULL || ssl_connect(ssl_ctx, fd, ctx->connect_host) != 0) {
         LOGD("[%s] TLS handshake failed", transport_name(TRANSPORT_DNS));
@@ -2126,13 +2223,15 @@ static void* transport_thread_dns(void* arg) {
         return NULL;
     }
 
-    // Try to claim winner
-    if (__sync_bool_compare_and_swap(&r->finished, 0, 1)) {
-        r->ok = 1;
+    // AC-02: shared winner arbitration.
+    if (__sync_bool_compare_and_swap(&ctx->ctrl->winner_claimed, 0, 1)) {
+        ctx->ctrl->winner_index = ctx->index;
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        __sync_synchronize();
+        r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_DNS), fd);
     } else {
         LOGD("[%s] lost race, cleaning up", transport_name(TRANSPORT_DNS));
@@ -2150,6 +2249,15 @@ static void* transport_thread_icmp(void* arg) {
     memset(r, 0, sizeof(*r));
     r->transport_type = TRANSPORT_ICMP;
 
+    // AC-03 / STEP 6: use the remaining race budget, not the full timeout.
+    uint32_t budget = race_remaining_budget_ms(ctx->ctrl);
+
+    if (budget == 0) {
+        LOGD("[%s] race budget exhausted before start; aborting",
+             transport_name(TRANSPORT_ICMP));
+        return NULL;
+    }
+
     // Staggered delay
     uint32_t delay = transport_delay_ms(TRANSPORT_ICMP);
     if (delay > 0) {
@@ -2157,7 +2265,7 @@ static void* transport_thread_icmp(void* arg) {
         nanosleep(&ts, NULL);
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         LOGD("[%s] cancelled before start", transport_name(TRANSPORT_ICMP));
         return NULL;
     }
@@ -2182,17 +2290,17 @@ static void* transport_thread_icmp(void* arg) {
     cfg.server_ip = ip4.s_addr;
     cfg.server_port = 0;  // ICMP has no port
     cfg.udp_fd = -1;
-    cfg.connect_timeout_ms = ctx->timeout_ms;
+    cfg.connect_timeout_ms = budget;
     cfg.transport_mode = RUDP_T_MODE_ICMP;
 
-    if (rudp_transport_connect(tr, &cfg, ctx->cancel_flag) != 0) {
+    if (rudp_transport_connect(tr, &cfg, &ctx->ctrl->cancel_flag) != 0) {
         LOGD("[%s] R-UDP connect failed (no root?)", transport_name(TRANSPORT_ICMP));
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
     }
 
-    if (*ctx->cancel_flag) {
+    if (ctx->ctrl->cancel_flag) {
         rudp_transport_destroy(tr);
         r->error = ERR_TCP_CONNECT;
         return NULL;
@@ -2200,6 +2308,11 @@ static void* transport_thread_icmp(void* arg) {
 
     // TLS handshake over the ICMP transport
     int fd = rudp_transport_get_fd(tr);
+    // AC-03 / STEP 5.4: bound the handshake on this transport's fd too.
+    if (socket_apply_timeout(fd, (int)budget) != 0) {
+        LOGD("[%s] socket timeout not applied (fd=%d, budget_ms=%u)",
+             transport_name(TRANSPORT_ICMP), fd, budget);
+    }
     ssl_context_t* ssl_ctx = ssl_create_client();
     if (ssl_ctx == NULL || ssl_connect(ssl_ctx, fd, ctx->connect_host) != 0) {
         LOGD("[%s] TLS handshake failed", transport_name(TRANSPORT_ICMP));
@@ -2209,13 +2322,15 @@ static void* transport_thread_icmp(void* arg) {
         return NULL;
     }
 
-    // Try to claim winner
-    if (__sync_bool_compare_and_swap(&r->finished, 0, 1)) {
-        r->ok = 1;
+    // AC-02: shared winner arbitration.
+    if (__sync_bool_compare_and_swap(&ctx->ctrl->winner_claimed, 0, 1)) {
+        ctx->ctrl->winner_index = ctx->index;
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        __sync_synchronize();
+        r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_ICMP), fd);
     } else {
         LOGD("[%s] lost race, cleaning up", transport_name(TRANSPORT_ICMP));
@@ -2230,12 +2345,6 @@ static void* transport_thread_icmp(void* arg) {
 static int softether_connect_parallel_race(softether_connection_t* conn,
                                            const char* host, const char* resolved_ip,
                                            int port, const char* connect_host) {
-    volatile int cancel_flag = 0;
-
-    // Determine which transports to launch
-    // TCP is always tried sequentially first (for TCP-available servers) or
-    // skipped entirely (for UDP-only). The parallel race only races UDP
-    // transports: R-UDP direct, NAT-T relay, DNS, ICMP.
     int want_tcp = 0;
     int want_rudp_direct = (conn->udp_port > 0);
     int want_natt = 1;  // always try NAT-T (it's the CGNAT path)
@@ -2245,12 +2354,13 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
     int want_dns = 1;
     int want_icmp = 1;
 
-    // Count active transports
     int num_transports = 0;
-    // NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): heap-allocated, NOT a stack array.
-    // A transport thread that is detached after the join budget expires may
-    // still be running and reading its context, so the context must outlive this
-    // function's stack frame. Freed below only when every thread was joined.
+
+    // NATIVE-RACE-AND-DEADLINE-HARDENING (AC-01): heap-allocated transport
+    // contexts. A transport thread that is detached after the join budget
+    // expires may still be running and reading its context, so the context must
+    // outlive this function's stack frame. Freed below only when every thread
+    // was joined.
     transport_thread_ctx_t* threads =
         (transport_thread_ctx_t*)calloc(TRANSPORT_ICMP + 1, sizeof(transport_thread_ctx_t));
     if (threads == NULL) {
@@ -2258,86 +2368,122 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
         return -1;
     }
 
-    // Compute per-transport timeout (race deadline = max(5000, timeout))
-    uint32_t race_timeout_ms = conn->timeout_ms;
-    if (race_timeout_ms < 5000) race_timeout_ms = 5000;
+    // NATIVE-RACE-AND-DEADLINE-HARDENING (AC-01 / AC-02 / STEP 6): single heap
+    // control block shared by all workers and the parent. Holds the cancel flag
+    // (no longer on the parent stack), the shared winner arbitration flag, the
+    // winner index, the absolute race deadline and the thread bookkeeping
+    // arrays. Nothing a worker can reach lives on the parent's stack.
+    race_control_t* ctrl = (race_control_t*)calloc(1, sizeof(race_control_t));
+    if (ctrl == NULL) {
+        LOGE("Parallel race: no memory for race control");
+        free(threads);
+        return -1;
+    }
+    ctrl->winner_index = -1;
+    ctrl->race_timeout_ms = conn->timeout_ms;   // STEP 6: no 5s floor
+    ctrl->race_deadline_ms = softether_tick_ms() + (uint64_t)ctrl->race_timeout_ms;
+
+    // Heap bookkeeping for the worker threads (N-03 / STEP 4): thread ids,
+    // trampolines and a "created" flag per slot so the bounded join can skip
+    // slots whose pthread_create() failed.
+    ctrl->thread_ids = (pthread_t*)calloc(TRANSPORT_ICMP + 1, sizeof(pthread_t));
+    ctrl->trampolines = (race_trampoline_t*)calloc(TRANSPORT_ICMP + 1, sizeof(race_trampoline_t));
+    ctrl->created = (int*)calloc(TRANSPORT_ICMP + 1, sizeof(int));
+    if (ctrl->thread_ids == NULL || ctrl->trampolines == NULL || ctrl->created == NULL) {
+        LOGE("Parallel race: no memory for thread bookkeeping");
+        free(ctrl->thread_ids); free(ctrl->trampolines); free(ctrl->created);
+        free(ctrl); free(threads);
+        return -1;
+    }
+
+    uint32_t race_timeout_ms = ctrl->race_timeout_ms;  // no 5s floor (STEP 6)
 
     if (want_tcp) {
         transport_thread_ctx_t* t = &threads[num_transports];
         t->transport_type = TRANSPORT_TCP;
-        t->host = host;
-        t->resolved_ip = resolved_ip;
+        strncpy(t->host, host, sizeof(t->host) - 1); t->host[sizeof(t->host) - 1] = '\0';
+        strncpy(t->resolved_ip, resolved_ip, sizeof(t->resolved_ip) - 1); t->resolved_ip[sizeof(t->resolved_ip) - 1] = '\0';
         t->port = port;
-        t->connect_host = connect_host;
+        strncpy(t->connect_host, connect_host, sizeof(t->connect_host) - 1); t->connect_host[sizeof(t->connect_host) - 1] = '\0';
         t->timeout_ms = race_timeout_ms;
         t->udp_port = 0;
-        t->cancel_flag = &cancel_flag;
+        t->index = num_transports;
+        t->ctrl = ctrl;
         num_transports++;
     }
     if (want_rudp_direct) {
         transport_thread_ctx_t* t = &threads[num_transports];
         t->transport_type = TRANSPORT_RUDP_DIRECT;
-        t->host = host;
-        t->resolved_ip = resolved_ip;
+        strncpy(t->host, host, sizeof(t->host) - 1); t->host[sizeof(t->host) - 1] = '\0';
+        strncpy(t->resolved_ip, resolved_ip, sizeof(t->resolved_ip) - 1); t->resolved_ip[sizeof(t->resolved_ip) - 1] = '\0';
         t->port = port;
-        t->connect_host = connect_host;
+        strncpy(t->connect_host, connect_host, sizeof(t->connect_host) - 1); t->connect_host[sizeof(t->connect_host) - 1] = '\0';
         t->timeout_ms = race_timeout_ms;
         t->udp_port = conn->udp_port;
-        t->cancel_flag = &cancel_flag;
+        t->index = num_transports;
+        t->ctrl = ctrl;
         num_transports++;
     }
     if (want_natt) {
         transport_thread_ctx_t* t = &threads[num_transports];
         t->transport_type = TRANSPORT_NATT;
-        t->host = host;
-        t->resolved_ip = resolved_ip;
+        strncpy(t->host, host, sizeof(t->host) - 1); t->host[sizeof(t->host) - 1] = '\0';
+        strncpy(t->resolved_ip, resolved_ip, sizeof(t->resolved_ip) - 1); t->resolved_ip[sizeof(t->resolved_ip) - 1] = '\0';
         t->port = port;
-        t->connect_host = connect_host;
+        strncpy(t->connect_host, connect_host, sizeof(t->connect_host) - 1); t->connect_host[sizeof(t->connect_host) - 1] = '\0';
         t->timeout_ms = race_timeout_ms;
         t->udp_port = 0;
-        t->cancel_flag = &cancel_flag;
+        t->index = num_transports;
+        t->ctrl = ctrl;
         num_transports++;
     }
     if (want_dns) {
         transport_thread_ctx_t* t = &threads[num_transports];
         t->transport_type = TRANSPORT_DNS;
-        t->host = host;
-        t->resolved_ip = resolved_ip;
+        strncpy(t->host, host, sizeof(t->host) - 1); t->host[sizeof(t->host) - 1] = '\0';
+        strncpy(t->resolved_ip, resolved_ip, sizeof(t->resolved_ip) - 1); t->resolved_ip[sizeof(t->resolved_ip) - 1] = '\0';
         t->port = port;
-        t->connect_host = connect_host;
+        strncpy(t->connect_host, connect_host, sizeof(t->connect_host) - 1); t->connect_host[sizeof(t->connect_host) - 1] = '\0';
         t->timeout_ms = race_timeout_ms;
         t->udp_port = 0;
-        t->cancel_flag = &cancel_flag;
+        t->index = num_transports;
+        t->ctrl = ctrl;
         num_transports++;
     }
     if (want_icmp) {
         transport_thread_ctx_t* t = &threads[num_transports];
         t->transport_type = TRANSPORT_ICMP;
-        t->host = host;
-        t->resolved_ip = resolved_ip;
+        strncpy(t->host, host, sizeof(t->host) - 1); t->host[sizeof(t->host) - 1] = '\0';
+        strncpy(t->resolved_ip, resolved_ip, sizeof(t->resolved_ip) - 1); t->resolved_ip[sizeof(t->resolved_ip) - 1] = '\0';
         t->port = port;
-        t->connect_host = connect_host;
+        strncpy(t->connect_host, connect_host, sizeof(t->connect_host) - 1); t->connect_host[sizeof(t->connect_host) - 1] = '\0';
         t->timeout_ms = race_timeout_ms;
         t->udp_port = 0;
-        t->cancel_flag = &cancel_flag;
+        t->index = num_transports;
+        t->ctrl = ctrl;
         num_transports++;
     }
 
     if (num_transports == 0) {
         LOGE("No transports to attempt");
         free(threads);
+        free(ctrl->thread_ids);
+        free(ctrl->trampolines);
+        free(ctrl->created);
+        free(ctrl);
         return -1;
     }
 
-    LOGD("Parallel race: %d transports, race timeout %u ms", num_transports, race_timeout_ms);
+    LOGD("Parallel race: %d transports, race timeout %u ms (deadline model)",
+         num_transports, race_timeout_ms);
 
     // Launch all transport threads through the bounded-join trampoline (P5b), so
-    // each one publishes its own exit flag for the bounded join below.
-    pthread_t thread_ids[TRANSPORT_ICMP + 1];
-    race_trampoline_t trampolines[TRANSPORT_ICMP + 1];
-    memset(trampolines, 0, sizeof(trampolines));
+    // each one publishes its own exit flag for the bounded join below. Every
+    // pthread_create() return is checked (N-03 / STEP 4): only slots whose
+    // creation succeeded are marked created[i] = 1 and only those are joined.
+    memset(ctrl->trampolines, 0, sizeof(race_trampoline_t) * (TRANSPORT_ICMP + 1));
     for (int i = 0; i < num_transports; i++) {
-        void* (*func)(void*);
+        void* (*func)(void*) = NULL;
         switch (threads[i].transport_type) {
             case TRANSPORT_TCP:        func = transport_thread_tcp; break;
             case TRANSPORT_RUDP_DIRECT: func = transport_thread_rudp_direct; break;
@@ -2346,31 +2492,38 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
             case TRANSPORT_ICMP:       func = transport_thread_icmp; break;
             default:                   func = NULL; break;
         }
-        if (func) {
-            trampolines[i].func = func;
-            trampolines[i].arg = &threads[i];
-            trampolines[i].exited = &threads[i].exited;
-            pthread_create(&thread_ids[i], NULL, race_thread_trampoline, &trampolines[i]);
+        if (func == NULL) continue;
+        ctrl->trampolines[i].func = func;
+        ctrl->trampolines[i].arg = &threads[i];
+        ctrl->trampolines[i].exited = &threads[i].exited;
+        int rc = pthread_create(&ctrl->thread_ids[i], NULL, race_thread_trampoline,
+                                &ctrl->trampolines[i]);
+        if (rc == 0) {
+            ctrl->created[i] = 1;
+        } else {
+            LOGW("[RACE] pthread_create failed for slot %d (rc=%d); skipping",
+                 i, rc);
         }
     }
 
-    // Wait for first winner or deadline
-    uint64_t deadline = softether_tick_ms() + race_timeout_ms;
+    // Wait for the first winner (shared AC-02 slot) or the absolute deadline.
+    // Workers publish the winner via ctrl->winner_claimed / ctrl->winner_index,
+    // so the parent no longer inspects per-thread finished/ok flags.
     transport_result_t* winner = NULL;
-    while (softether_tick_ms() < deadline) {
-        // Check if any thread won
-        for (int i = 0; i < num_transports; i++) {
-            if (threads[i].result.finished && threads[i].result.ok) {
-                winner = &threads[i].result;
-                break;
+    while (softether_tick_ms() < ctrl->race_deadline_ms) {
+        if (ctrl->winner_claimed) {
+            __sync_synchronize();   // AC-02: make winner payload visible here
+            int wi = ctrl->winner_index;
+            if (wi >= 0 && wi < num_transports) {
+                winner = &threads[wi].result;
             }
+            break;
         }
-        if (winner) break;
         usleep(10000);  // 10ms poll
     }
 
-    // Cancel all threads
-    __sync_lock_test_and_set(&cancel_flag, 1);
+    // Signal all live threads to abort.
+    __sync_lock_test_and_set(&ctrl->cancel_flag, 1);
 
     // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P5b): BOUNDED join -------------------
     // The poll loop above already spent the first race_timeout_ms budget, so the
@@ -2388,22 +2541,25 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
     uint64_t join_deadline = softether_tick_ms() + race_timeout_ms;
     int detached_count = 0;
     for (int i = 0; i < num_transports; i++) {
-        while (trampolines[i].exited == 0) {
+        if (ctrl->created[i] == 0) continue;   // N-03: never created -> skip
+        while (ctrl->trampolines[i].exited == 0) {
             if (softether_tick_ms() >= join_deadline) break;
             usleep(10000);  // 10ms poll
         }
-        if (trampolines[i].exited != 0) {
-            pthread_join(thread_ids[i], NULL);
+        if (ctrl->trampolines[i].exited != 0) {
+            pthread_join(ctrl->thread_ids[i], NULL);
         } else {
             LOGW("[RACE] transport thread %d did not exit within %u ms after race "
                  "deadline; detaching to avoid an unbounded join",
                  i, race_timeout_ms);
-            pthread_detach(thread_ids[i]);
+            pthread_detach(ctrl->thread_ids[i]);
             detached_count++;
         }
     }
 
-    // Snapshot the winner's fields BEFORE the context array may be freed.
+    // Snapshot the winner's fields BEFORE the context array may be freed. The
+    // winner index comes from the shared AC-02 slot, so a single winner is read
+    // exactly once regardless of how many transports completed a handshake.
     int winner_fd = -1;
     void* winner_ssl_ctx = NULL;
     void* winner_ssl = NULL;
@@ -2417,15 +2573,23 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
         winner_type = winner->transport_type;
     }
 
+    // Free the heap control block and bookkeeping arrays ONLY when no thread was
+    // detached. A detached worker still holds ctx->ctrl and may read
+    // ctrl->cancel_flag, so in that case the control block (like the context
+    // array) is deliberately retained to avoid a use-after-free.
     if (detached_count == 0) {
+        free(ctrl->thread_ids);
+        free(ctrl->trampolines);
+        free(ctrl->created);
+        free(ctrl);
         free(threads);
     } else {
-        // A detached thread may still be running and reading its context, so the
-        // array is deliberately retained rather than freed under a live thread.
-        // A bounded, one-off leak on an already-failing connect path is the
-        // correct trade against a use-after-free.
+        // A detached thread may still be running and reading its context AND its
+        // ctrl block, so both are deliberately retained rather than freed under
+        // a live thread. A bounded, one-off leak on an already-failing connect
+        // path is the correct trade against a use-after-free.
         LOGW("Parallel race: %d transport thread(s) detached; retaining transport "
-             "contexts to avoid a use-after-free", detached_count);
+             "contexts and control block to avoid a use-after-free", detached_count);
     }
 
     if (winner == NULL) {
@@ -3801,6 +3965,17 @@ int softether_additional_connect(softether_connection_t* conn) {
         close(fd);
         conn->additional_failed_count++;
         return -1;
+    }
+
+    // AC-03 / STEP 5.5: bound the TLS handshake on this additional-TCP fd too.
+    // socket_connect_timeout() leaves this fd blocking with no SO_RCVTIMEO, so
+    // without this an unresponsive peer could block ssl_connect() on it forever
+    // — and this fd is not reachable by softether_force_close_socket(), which
+    // only targets conn->socket_fd. (The later SO_RCVTIMEO=5000ms for the data
+    // phase is set after the handshake, so it does not cover the handshake.)
+    if (socket_apply_timeout(fd, conn->timeout_ms) != 0) {
+        LOGD("additional_connect: socket timeout not applied (fd=%d); handshake "
+             "may block until the OS TCP stack gives up", fd);
     }
 
     if (ssl_connect(ssl_ctx, fd, conn->server_ip) != 0) {
