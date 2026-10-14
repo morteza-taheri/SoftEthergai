@@ -256,6 +256,10 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSe
         LOGE("Invalid offset/length");
         return -1;
     }
+    if (data == NULL) {
+        LOGE("Null data array");
+        return -1;
+    }
 
     jsize array_len = (*env)->GetArrayLength(env, data);
     if ((jlong)offset + length > array_len) {
@@ -501,10 +505,19 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeGe
     JNIEnv *env, jobject thiz, jlong handle) {
     if (handle == 0) return -1;
     softether_connection_t* conn = (softether_connection_t*)handle;
+    // N-02 / N-12: snapshot the NAT-T transport and its fd under connect_mutex.
+    // softether_disconnect() (which nulls / destroys conn->nat_t_transport)
+    // runs serialized by connect_mutex, so taking it here guarantees the
+    // pointer and the underlying udp_fd cannot be torn down while we read them.
+    // We copy the int fd out before releasing the lock, so even a subsequent
+    // free of conn after unlock cannot affect the returned value.
+    int fd = -1;
+    pthread_mutex_lock(&conn->connect_mutex);
     if (conn->using_nat_t && conn->nat_t_transport != NULL) {
-        return rudp_transport_get_udp_fd(conn->nat_t_transport);
+        fd = rudp_transport_get_udp_fd(conn->nat_t_transport);
     }
-    return -1;
+    pthread_mutex_unlock(&conn->connect_mutex);
+    return fd;
 }
 
 JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetOption(
@@ -520,14 +533,31 @@ JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSe
     
     switch (option) {
         case 1: // OPTION_TIMEOUT
+            // N-06: range-check the jlong before casting to int. A value
+            // outside [100, 120000] ms would either spin (too small) or hang
+            // the connect budget far too long (too large).
+            if (value < 100 || value > 120000) {
+                LOGE("OPTION_TIMEOUT out of range [100,120000]: %ld", (long)value);
+                break;
+            }
             conn->timeout_ms = (int)value;
             LOGD("Set timeout to %d ms", conn->timeout_ms);
             break;
         case 4: // OPTION_UDP_PORT (seUdpPort) — enables the direct R-UDP stage
+            // N-06: a UDP port must be a valid 1..65535 port number.
+            if (value < 1 || value > 65535) {
+                LOGE("OPTION_UDP_PORT out of range [1,65535]: %ld", (long)value);
+                break;
+            }
             conn->udp_port = (int)value;
             LOGD("Set UDP port to %d", conn->udp_port);
             break;
         case 5: // OPTION_UDP_ONLY — skip the doomed direct-TCP attempt
+            // N-06: this is a boolean flag; only 0 or 1 are meaningful.
+            if (value != 0 && value != 1) {
+                LOGE("OPTION_UDP_ONLY must be 0 or 1: %ld", (long)value);
+                break;
+            }
             conn->udp_only = (int)value;
             LOGD("Set UDP-only to %d", conn->udp_only);
             break;
