@@ -3,8 +3,8 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `6119a2a8fd6b256c41066829aeb9399e33b8a4a3`
-**Document version:** 1.0.11
+**HEAD:** `3dfb0f3126e2f2af267784180bdf2a0fc3b66b24`
+**Document version:** 1.0.12
 **Last updated:** 2026-10-14
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -90,11 +90,15 @@ that stack on the physical device; and then pushed the whole local chain to the 
 
 #### 1.6.1 Commit chain
 
-Twenty-eight commits constitute the chain now on `origin/main`, forming the contiguous
-range `0714628` → `6119a2a` (oldest first). (The §1.6 preamble's "17 local commits" records the
+Thirty-seven commits constitute the chain now on `origin/main`, forming the contiguous
+range `0714628` → `3dfb0f3` (oldest first). (The §1.6 preamble's "17 local commits" records the
 v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits, the
-v1.0.10 AutoConnect bundle, the v1.0.10 spec-update commit itself, and the v1.0.11 native-hardening
-bundle — see the appended rows below.)
+v1.0.10 AutoConnect bundle, the v1.0.10/v1.0.11 spec-update commits, the v1.0.11 native-hardening
+bundle, the R1–R6 / R4a / R4b source work, and the R4b report — see the appended rows below.) The
+count is the size of the **inclusive** range `0714628` → `3dfb0f3`; the range-exclusive form
+`git log --oneline 0714628..HEAD | wc -l` reports **36**, because it omits the range's own first
+commit, `0714628`. This revision (v1.0.12) adds three further commits, extending the chain to
+**40** (39 range-exclusive) — see the note below the table.
 
 | Commit | Subject |
 |--------|---------|
@@ -126,6 +130,15 @@ bundle — see the appended rows below.)
 | `c8acb5d` | fix(native/rudp): refcount re-check after CAS (N-01), ICMP port-0 (N-04), fd-leak on nonblocking fail (N-10), NAT-T backoff exponent (N-05) |
 | `1a4818a` | fix(native/race): heap race control, shared winner, absolute deadline model, defensive budget guard (AC-01..AC-04, N-03, D-1) |
 | `6119a2a` | docs: device-verify hardening bundle on 5585fecc (all goals VERIFIED) |
+| `68758ae` | docs: update PROJECT_SPECIFICATION to v1.0.11 (native hardening bundle + axes audit) |
+| `0e011e3` | docs: add Axes A/B/C audit and v1.0.11 docs-update reports |
+| `0e3f9ca` | fix(android): capture re-entrant teardown caller + split terminal message by outcome (R1, R2) |
+| `607c651` | feat(android): add RX/EIO counters + classify TUN EIO + drop dead MAX_PACKET_SIZE (R4a, R5, R6) |
+| `2841dc5` | docs: report for FIX-AND-VERIFY-AUDIT-TOP-PRIORITIES |
+| `7b4adba` | docs(audit): append §10 addendum correcting §2.3 mechanism (R1 evidence) |
+| `a9e16fd` | feat(collector): per-request Network.getSocketFactory binding + RX wiring (R4b) |
+| `3c656a4` | test(automode): bound awaitNextTerminalAfterChange to prevent hang |
+| `3dfb0f3` | docs: report for FIX-AND-VERIFY-R4B (R4b + skip-test fix) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -138,6 +151,13 @@ bundle — see the appended rows below.)
 > 0 behind**. Verified with `git rev-list --count origin/main..HEAD` → **0** and
 > `git rev-parse origin/main` → `5e51e37…`. No force, no tag. (The pre-v1.0.8 text here recorded
 > **9** commits, unpushed, remote at `5c13603`; that snapshot is superseded by this revision.)
+>
+> **Push state (v1.0.12).** This revision (FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12) contributes three
+> further commits — `test: synchronize collector-log collection and bound awaitTerminal`,
+> `docs: update PROJECT_SPECIFICATION to v1.0.12 (R1-R6 + R4b + test fixes)`, and
+> `docs: report for FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12` — bringing the chain to **40** commits
+> (39 range-exclusive). Per this document's convention, a revision's own commits are listed by hash
+> only once they exist, so the three are named by subject here.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -334,6 +354,57 @@ T5-SLOT-TEARDOWN residual. Each bullet carries its evidence label (see the evide
   `6119a2a`) were pushed with a clean fast-forward (`5773c60..6119a2a`). No force, no tag.
   Evidence: SOURCE CODE (`git`).
 - **Methodology lessons:** No new methodology lessons in v1.0.11.
+
+#### 1.6.6 Test Flakiness and Docs Bundle (v1.0.12)
+
+This subsection records the v1.0.12 work: the two open test-suite defects carried over from the
+FIX-HANGING-SKIP-TEST phase (**OPEN-1**, **OPEN-2**), their fixes, the regression test added for
+OPEN-1, and the two full green JVM runs that verify them. No production code, no build artifact and
+no device were touched in this phase. Each bullet carries its evidence label (see the evidence
+taxonomy in §20).
+
+- **OPEN-1 root cause confirmed (test-only defect).** `VpnServerRepositoryR4bTest` collected its
+  `[collector] path=...` lines into a plain `ArrayList` through the injected `pathLog` lambda.
+  `VpnServerRepository.refresh` (§8.1) runs the api and html fetches as two concurrent `async`
+  coroutines under `Dispatchers.IO` (the mirror rung is awaited first, then `apiDeferred` and
+  `htmlDeferred` are launched together), so two threads call `add` on the same list with no
+  synchronisation. A lost `add` shortens the list — exactly the intermittently-missing
+  `[collector] path=vpn source=html` line that `vpn path is chosen when every input holds` asserted.
+  Evidence: SOURCE CODE.
+- **OPEN-1 fix landed (test-only).** The collector is now a `CopyOnWriteArrayList`. No assertion
+  logic was changed; the element-wise `List.equals` comparisons the tests already used
+  (`assertEquals(listOf(...), logs)`) are unaffected. Evidence: SOURCE CODE.
+- **OPEN-1 regression test added.** `vpn-path-logs-are-never-lost-under-concurrent-fetch` drives
+  `refresh()` 50 times on the VPN rung and asserts both the exact total (250 lines) and the exact
+  per-line count (50) for each of the five expected lines, so a dropped write shows up as a short
+  count rather than a rare suite failure. It ran in **0.783 s** (run 1) / **0.755 s** (run 2),
+  comfortably inside the <2 s budget, and is deterministic under the fix. Evidence: TEST.
+- **OPEN-2 root cause confirmed (test-only defect).** `AutoModeControllerTest.awaitTerminal()` — the
+  helper used by 40 call sites — looped `while (true)` until a terminal state with `!isRunning`,
+  with no bound. A controller that never settled would stall the whole `:app:testProDebugUnitTest`
+  suite instead of failing one test — the same failure mode already fixed in
+  `awaitNextTerminalAfterChange` (commit `3c656a4`). The success predicate itself was correct.
+  Evidence: SOURCE CODE.
+- **OPEN-2 fix landed (test-only).** The wait is now wrapped in `withTimeoutOrNull(10_000)` with the
+  same 25 ms poll; on timeout it fails loudly, naming the last state, `isRunning` and the last twelve
+  adapter log lines. The success predicate is unchanged and the timeout is a defaulted parameter, so
+  every existing call site is untouched. Evidence: SOURCE CODE.
+- **JVM verification — library module.** `CI=true ./gradlew :SoftEtherClient:test --rerun-tasks
+  --no-build-cache --no-daemon` → **BUILD SUCCESSFUL** (1 m 11 s), **160 / 0 / 0 / 0**
+  (tests / failures / errors / skipped) across 9 result files. Evidence: TEST.
+- **JVM verification — app module, run twice.** `CI=true ./gradlew :app:testProDebugUnitTest
+  --rerun-tasks --no-build-cache --no-daemon` was executed **twice**; both runs were **BUILD
+  SUCCESSFUL** (5 m 48 s and 5 m 40 s) with **647 / 0 / 0 / 1** across 48 result files. The single
+  skip is the pre-existing, legitimate `AssumptionViolatedException` in
+  `HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp` ("no SE-UDP-only + OVPN-TCP row in
+  current snapshot"). The count is 647 — one higher than the pre-phase 646 — because of the new
+  OPEN-1 regression test. Evidence: TEST.
+- **No build artifact and no device were touched.** This phase did **not** run
+  `assembleProDebug`/`assembleFreeDebug` and performed **no** `adb`/device interaction; the
+  verification is JVM-only, as scoped. Evidence: SOURCE CODE (the phase's own command log).
+- **§12.5.1 rows 11 and 12 added and marked CLOSED** for OPEN-1 and OPEN-2 respectively, each
+  pointing back to this subsection. Evidence: SOURCE CODE.
+- **Methodology lessons:** No new methodology lessons in v1.0.12.
 
 ---
 
@@ -1636,6 +1707,8 @@ The following items are planned for the source-and-path architecture described i
 | 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
 | 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | **OPEN — scope narrowed by v1.0.11** (§1.6.5): the residual fired **7×** in the hardening device run and **self-healed in 7/7** (`Native cleanup confirmed … structure destroyed and slot released` within ~1 s, next attempt proceeded normally). The mechanism is now understood from source (a `NOOP_REENTRANT` completion for the same attempt id satisfies `TunnelStateWatcher`'s exact-attempt-id wait before the real `CONFIRMED` arrives — `AndroidConnectionAdapter.kt:226`, `SoftEtherVpnService.kt:1081–1106`, `ConnectionController.kt:937`). Still **UNKNOWN**: the upstream trigger for the re-entrant teardown call, and why the same log line corresponded to a ~1 s window in v1.0.11 but a ~1 min window in v1.0.10. Classification in `AUDIT_AXES_A_B_C_v1.0.11.md` §2 |
 | 10 | **Axis A / B / C audit findings (v1.0.11, read-only)** | Three read-only axes audited; no source change authorised. **Axis A** (tunnel state / UI sync): two concurrent state models with no designated UI owner — `GlobalVpnTracker` vs `AutoModeController._state`/`AutoModeEngine.stateFlow`, both consumed in one composable (`HomeScreen.kt:125–126`); the 500 ms `onLost` delayed re-check; protocol egating in `GlobalVpnTracker.updateState` (a disconnect of one protocol cannot clear another protocol's state); three loss paths at different latencies in `startConnectedWatcher`. **Axis B** (server list network binding): no binding in the retrieval path (`HttpFetcher.kt` plain `OkHttpClient`; single instance at `VpnServerRepository.kt:40`); the `Network` captured in `GlobalVpnTracker.onAvailable` is discarded; and `isTunnelUsable()` is **not implementable** because `GlobalVpnTracker` has **no RX counter and no TUN-EIO counter** — a hard blocker on the already-decided bind design (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, USER-DIRECTED REQUIREMENT: per-request `Network.getSocketFactory()`, never `bindProcessToNetwork()`; open → VPN fallback → emergency → manual). **Axis C** (SoftEther UDP / TUN `EIO`): `udp_only` servers run a parallel race with a structurally ~0% success rate per `RUDP_IMPLEMENTATION_PLAN.md` (measured: full 5000 ms deadline consumed; OpenVPN fallback is Open Item #1, unstarted); TUN `EIO` has **no branch** in `TunTerminal.readLoop()` (only `EBADF` is special-cased) so a revoked interface funnels into `triggerReconnect()`; `MAX_PACKET_SIZE = 32767` is a dead constant while the read buffer is 8192 (not a live defect — TUN MTU is 1500). | P2_MEDIUM (opportunistic; not blocking) | **OPEN** — full register (A-1..C-4, cross-axis matrix, dependency-ordered recommendations) in `AUDIT_AXES_A_B_C_v1.0.11.md` §7–§8 |
+| 11 | **OPEN-1 — `VpnServerRepositoryR4bTest.logs` unsynchronized under concurrent fetch** | The test's `pathLog` collector was a plain `ArrayList`, written by **two concurrent `async` coroutines** (`VpnServerRepository.refresh` runs the api and html fetches in parallel, §8.1). A concurrent `add` can drop a line, so the `vpn path is chosen when every input holds` assertion could see a short list and fail intermittently (the observed symptom was a missing `[collector] path=vpn source=html`). **Test-only defect** — no production code was involved. | P2_MEDIUM | **CLOSED (v1.0.12)** — collector changed to `CopyOnWriteArrayList` (assertion logic unchanged); deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` added (50 concurrent runs, exact per-line counts). See §1.6.6. Evidence: SOURCE CODE + TEST |
+| 12 | **OPEN-2 — `AutoModeControllerTest.awaitTerminal()` unbounded wait** | The helper looped `while (true)` until a terminal state with `!isRunning`, with no bound. A controller that never settled stalled the whole `:app:testProDebugUnitTest` suite rather than failing one test — the same failure mode already fixed in `awaitNextTerminalAfterChange` (commit `3c656a4`). The success predicate was correct; only the wait was unbounded. | P2_MEDIUM | **CLOSED (v1.0.12)** — bounded with `withTimeoutOrNull(10_000)` and a 25 ms poll; on timeout it fails loudly, naming the last state, `isRunning`, and the last 12 adapter log lines. Predicate unchanged; all call sites unchanged (timeout defaulted). See §1.6.6. Evidence: SOURCE CODE + TEST |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -1969,6 +2042,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.8 | 2026-10-13 | DOCS-UPDATE: recorded the post-v1.0.7 additions (§1.6.3) — C3 test-rule fix (`4c013e8`), C5 formal gating (deferred to `C5-TRIAGE-DEVICE`), T5-SLOT instrumentation (`5e51e37`, logging-only), T5 not reproduced (holder UNKNOWN), `test40` budget widening, and the 17-commit chain pushed to `origin/main` (`5c13603..5e51e37`, fast-forward, no force/tag). Corrected the `0714628` off-by-one (it is the first unpushed commit, not the chain base) and refreshed the header HEAD field. No new methodology lessons. No source/test/build/device change; documentation only. |
 | 1.0.9 | 2026-10-13 | DOCS-UPDATE: corrected §12.5.1 row 1 (FIX-NATIVE-LIFETIME-SYNC — N-15/N-16 both CLOSED, device-verified; commits `3a2f442`, `b0418cc`) and added a separate row (8) for the still-open T5-SLOT driver finding. Refreshed the header HEAD field to `d61d3f8`. No new methodology lessons in v1.0.9. No source/test/build/device change; documentation only. |
 | 1.0.11 | 2026-10-14 | DOCS-UPDATE + READ-ONLY AUDIT | recorded the **native hardening bundle** in a new **§1.6.5** — the read-only characterization of the five uncommitted native files (verdict FIX: coherent, matched to AC-01..AC-04/N-01/N-04/N-05/N-10, but non-compiling), the one-line compile repair (`c8acb5d`, forward declaration of `rudp_ref_release`), the pre-device defensive `budget == 0` guard in all five transport workers (`1a4818a`), and the automated device verification of the whole bundle on `5585fecc` (`6119a2a` — `[TLS] handshake entry:` 12× with `applied=yes` 12× / `applied=no` 0×; the parallel race to `all transports failed` at exactly 5000 ms with 0 detaching threads and 0 budget-exhausted events; 0 crashes; threads 54 → 35; lib/slot/destroy counts 11× each; fd-leak INCONCLUSIVE because `/proc/<pid>/fd` is Permission-denied). Extended **§1.6.1** to the 28-commit chain (`0714628` → `6119a2a`, 5 new rows including the previously unlisted `5773c60`). Updated **§12.5.1 row 9** (T5-SLOT-TEARDOWN narrowed: 7/7 device occurrences self-healed within ~1 s; mechanism understood; upstream trigger and the ~1 s vs ~1 min window variance remain UNKNOWN) and added **§12.5.1 row 10** (Axis A / B / C read-only audit register, P2_MEDIUM, opportunistic). New artifacts: `AUDIT_AXES_A_B_C_v1.0.11.md`, `DOCS_UPDATE_v1.0.11_REPORT.md`, plus the three earlier-phase reports they cite. Refreshed the header HEAD field to `6119a2a`. No new methodology lessons in v1.0.11. **This revision itself made no source/test/build/device change** (documentation + read-only audit only); it records the native hardening commits `fd4fcf9`, `c8acb5d` and `1a4818a` that were made in earlier phases of the same chain |
+| 1.0.12 | 2026-10-14 | DOCS-UPDATE + TEST FIX | closed the two open test-suite defects carried over from FIX-HANGING-SKIP-TEST in a new **§1.6.6**. **OPEN-1** — `VpnServerRepositoryR4bTest`'s `[collector] path=...` collector was a plain `ArrayList` written by two concurrent `async` coroutines in `VpnServerRepository.refresh`, so a lost `add` could drop the `path=vpn source=html` line; the collector is now a `CopyOnWriteArrayList` (assertions unchanged) and a deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` (50 concurrent runs, exact per-line counts; 0.78 s / 0.76 s) was added. **OPEN-2** — `AutoModeControllerTest.awaitTerminal()` was an unbounded `while (true)`; it is now bounded with `withTimeoutOrNull(10_000)` (25 ms poll) and fails loudly, naming the last state, `isRunning` and the last 12 adapter logs; the success predicate and all call sites are unchanged. Extended **§1.6.1** to the 37-commit chain (`0714628` → `3dfb0f3`, 9 new rows: `68758ae`, `0e011e3`, `0e3f9ca`, `607c651`, `2841dc5`, `7b4adba`, `a9e16fd`, `3c656a4`, `3dfb0f3`). Added **§12.5.1 rows 11 and 12** (OPEN-1 / OPEN-2, both CLOSED). Verified JVM-only: `:SoftEtherClient:test` **160/0/0/0**; `:app:testProDebugUnitTest` run twice, **647/0/0/1** both times (the single skip is the pre-existing legitimate `AssumptionViolatedException` in `HtmlParserOracleTest`). **No APK was built and no device was touched.** Refreshed the header HEAD field to `3dfb0f3`. No new methodology lessons in v1.0.12. **This revision made no production-code change**; the only non-documentation edits are the two test files |
 
 ### Verification Status
 
@@ -2005,6 +2079,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | AutoConnect Root-Cause Resolution (§1.6.4) | HISTORICAL — attributed to the v1.0.10 docs phase (this phase). The audit, native fix (`eb21e56`), Kotlin bundle (`4df7e79`), test repair (`a87c523`), device evidence, and residual finding are compiled from the phase reports and the FINALIZE device log; not independently re-verified here. The residual T5-SLOT-TEARDOWN finding is recorded OPEN — UNKNOWN |
 | Native Hardening Bundle (§1.6.5) | HISTORICAL — the unknown-patch characterization (verdict FIX), the compile repair (`c8acb5d`), the defensive budget guard (`1a4818a`), and the device evidence are each attributed to their own phase report (`INVESTIGATE_UNKNOWN_NATIVE_CHANGES_REPORT.md`, `PRE_DEVICE_BUDGET_GUARD_REPORT.md`, `DEVICE_VERIFY_HARDENING_AUTO_REPORT.md`) rather than re-verified in this revision; the device statements are PHYSICAL DEVICE evidence for that phase. Goal F of the device verification is PARTIAL because `/proc/<pid>/fd` is Permission-denied, so the fd-leak check is INCONCLUSIVE (thread count used as the proxy). The T5-SLOT-TEARDOWN narrowing is sourced from the same device-verify report; the upstream trigger of the re-entrant teardown remains UNKNOWN |
 | Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
+| Test Flakiness and Docs Bundle (§1.6.6) | HISTORICAL + TEST — the OPEN-1 / OPEN-2 root causes are attributed to direct source inspection of `VpnServerRepository.refresh` (§8.1) and `AutoModeControllerTest`; the fixes and the regression test are TEST evidence, as are the three green JVM runs (`:SoftEtherClient:test` 160/0/0/0; `:app:testProDebugUnitTest` 647/0/0/1 twice). The "no APK / no device" statement is verified from the phase's own command log. Not independently re-verified here beyond the recorded runs |
 
 ### Legend
 
