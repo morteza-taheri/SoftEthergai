@@ -3,9 +3,9 @@
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 **Branch:** `main`
-**HEAD:** `5ee4e65538218e774031cc2abd994d5a2ff852b5`
-**Document version:** 1.0.10
-**Last updated:** 2026-10-13
+**HEAD:** `6119a2a8fd6b256c41066829aeb9399e33b8a4a3`
+**Document version:** 1.0.11
+**Last updated:** 2026-10-14
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -90,10 +90,11 @@ that stack on the physical device; and then pushed the whole local chain to the 
 
 #### 1.6.1 Commit chain
 
-Twenty-three commits constitute the chain now on `origin/main`, forming the contiguous
-range `0714628` → `5ee4e65` (oldest first). (The §1.6 preamble's "17 local commits" records the
-v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits and the
-v1.0.10 AutoConnect bundle — see the appended rows below.)
+Twenty-eight commits constitute the chain now on `origin/main`, forming the contiguous
+range `0714628` → `6119a2a` (oldest first). (The §1.6 preamble's "17 local commits" records the
+v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits, the
+v1.0.10 AutoConnect bundle, the v1.0.10 spec-update commit itself, and the v1.0.11 native-hardening
+bundle — see the appended rows below.)
 
 | Commit | Subject |
 |--------|---------|
@@ -120,6 +121,11 @@ v1.0.10 AutoConnect bundle — see the appended rows below.)
 | `4df7e79` | fix(android): bound stuck native slots and add Auto Mode recovery (T5-SLOT) |
 | `a87c523` | test(androidTest): repair stale T3 assertion against describe() interpolation |
 | `5ee4e65` | docs: add AutoConnect audit (root-cause: unbounded TLS handshake socket) |
+| `5773c60` | docs: update PROJECT_SPECIFICATION to v1.0.10 (AutoConnect root-cause resolution) |
+| `fd4fcf9` | fix(native/jni): guard nativeSend array, snapshot NAT-T fd under connect_mutex, validate option ranges |
+| `c8acb5d` | fix(native/rudp): refcount re-check after CAS (N-01), ICMP port-0 (N-04), fd-leak on nonblocking fail (N-10), NAT-T backoff exponent (N-05) |
+| `1a4818a` | fix(native/race): heap race control, shared winner, absolute deadline model, defensive budget guard (AC-01..AC-04, N-03, D-1) |
+| `6119a2a` | docs: device-verify hardening bundle on 5585fecc (all goals VERIFIED) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -270,6 +276,64 @@ evidence label (see the evidence taxonomy in §20).
   in v1.0.10 as **safety nets** for a still-unresolved operation rather than the mechanism that
   breaks the wedge. Evidence: SOURCE CODE.
 - **Methodology lessons:** No new methodology lessons in v1.0.10.
+
+#### 1.6.5 Native Hardening Bundle (v1.0.11)
+
+This subsection records the v1.0.11 work: the characterization of an uncommitted native patch, the
+one-line compile repair it required, the defensive race-budget guard added before device
+verification, the automated device verification of the whole bundle, and the narrowing of the
+T5-SLOT-TEARDOWN residual. Each bullet carries its evidence label (see the evidence taxonomy in
+§20).
+
+- **The unknown native patch was characterized as a coherent hardening patch, and the verdict was
+  FIX.** Five native files were found modified and uncommitted. A strictly read-only investigation
+  (`INVESTIGATE_UNKNOWN_NATIVE_CHANGES_REPORT.md`) matched every hunk to a named audit finding
+  (AC-01..AC-04 parallel-race lifetime/deadline/TLS bounds; N-01 refcount re-check; N-04 ICMP
+  port-0; N-10 fd-leak on non-blocking connect failure; N-05 NAT-T backoff exponent), confirmed the
+  oddity scan was clean (0 `printf`, 0 `exit`, 0 `TODO`), and confirmed each audit section is inline
+  Doxygen. The patch was coherent but **did not compile**. Evidence: SOURCE CODE (read-only audit).
+- **Compile repair landed (commit `c8acb5d`).** `rudp_ref_release` (defined at `softether_rudp.c:111`)
+  was called inside `rudp_ref_acquire` (`:100`) with no forward declaration. The minimal fix — one
+  forward declaration adjacent to the existing `rudp_destroy_final` declaration, plus a two-line
+  comment — restored the build. Evidence: SOURCE CODE.
+- **Pre-device defensive guard landed (commit `1a4818a`).** A `budget == 0` guard was added to all
+  five transport workers in `softether_protocol.c` immediately after
+  `uint32_t budget = race_remaining_budget_ms(ctx->ctrl);`: each worker now logs
+  `race budget exhausted before start; aborting` and returns instead of entering the race with a
+  zero remaining budget. `PRE_DEVICE_BUDGET_GUARD_REPORT.md` records the edit; the file's numstat
+  moved 257/112 → 287/112. Evidence: SOURCE CODE.
+- **The hardened bundle was device-verified with zero operator taps (commit `6119a2a`).** On device
+  `5585fecc` (Xiaomi 2201117TG, Android 13 / API 33), with UI automation substituting for operator
+  input: `[TLS] handshake entry:` fired **12×**, all with `applied=yes` and **0× `applied=no`**;
+  the parallel race ran once to `Parallel race: all transports failed` at exactly **5000 ms** under
+  the deadline model, with **0** `[RACE] transport thread … detaching` events and **0**
+  `race budget exhausted`; **0** crashes/tombstones/SIGSEGV; thread count went **54 → 35** (no
+  monotonic leak); `nativeDestroy completed`, `Released process-wide native slot` and
+  `Connection destroyed` each fired **11×**. `DEVICE_VERIFY_HARDENING_AUTO_REPORT.md` records all
+  eight goals VERIFIED (goal F PARTIAL only because `/proc/<pid>/fd` is Permission-denied, which
+  makes the fd-leak measurement INCONCLUSIVE — thread count was used as the leak proxy).
+  Evidence: PHYSICAL DEVICE.
+- **The T5-SLOT-TEARDOWN residual is narrowed, not closed.** The residual fired **7×** as
+  `[AUTO] Teardown finished but NATIVE CLEANUP UNCONFIRMED (teardown#N, NOOP_REENTRANT); ownership
+  retained, a new native attempt will be refused`, and in **every** case the
+  `ConnectionController` confirmed cleanup within ~1 s and the next attempt proceeded normally.
+  The mechanism is now understood from source (a `NOOP_REENTRANT` completion for the same attempt
+  id satisfies `TunnelStateWatcher`'s exact-attempt-id wait before the real `CONFIRMED` arrives —
+  see `AndroidConnectionAdapter.kt:226`, `SoftEtherVpnService.kt:1081–1106`,
+  `ConnectionController.kt:937`); the **upstream trigger** for the re-entrant teardown call remains
+  **UNKNOWN**, and the ~1 s vs ~1 minute window variance between the v1.0.10 and v1.0.11 runs is
+  unexplained. §12.5.1 row 9 therefore stays **OPEN** with narrowed scope. Full classification in
+  `AUDIT_AXES_A_B_C_v1.0.11.md` §2. Evidence: PHYSICAL DEVICE + SOURCE CODE.
+- **Three read-only axes were audited alongside the spec update** (tunnel state / UI sync; server
+  list network binding; SoftEther UDP / TUN `EIO`), each with its findings register and
+  recommendations, in `AUDIT_AXES_A_B_C_v1.0.11.md`. No final value, timeout, algorithm, ordering,
+  or network-binding implementation was invented by that audit; already-decided requirements
+  (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, each a **USER-DIRECTED REQUIREMENT**) were cited, not
+  re-decided. Evidence: SOURCE CODE (read-only) + PRIOR REPORT.
+- **Push state (v1.0.11).** The five appended commits (`5773c60`, `fd4fcf9`, `c8acb5d`, `1a4818a`,
+  `6119a2a`) were pushed with a clean fast-forward (`5773c60..6119a2a`). No force, no tag.
+  Evidence: SOURCE CODE (`git`).
+- **Methodology lessons:** No new methodology lessons in v1.0.11.
 
 ---
 
@@ -1570,7 +1634,8 @@ The following items are planned for the source-and-path architecture described i
 | 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
 | 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | Priority to be assessed | OPEN — `PARTIALLY CONFIRMED — REQUIRES DEEPER ANALYSIS` |
 | 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
-| 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | OPEN — UNKNOWN |
+| 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | **OPEN — scope narrowed by v1.0.11** (§1.6.5): the residual fired **7×** in the hardening device run and **self-healed in 7/7** (`Native cleanup confirmed … structure destroyed and slot released` within ~1 s, next attempt proceeded normally). The mechanism is now understood from source (a `NOOP_REENTRANT` completion for the same attempt id satisfies `TunnelStateWatcher`'s exact-attempt-id wait before the real `CONFIRMED` arrives — `AndroidConnectionAdapter.kt:226`, `SoftEtherVpnService.kt:1081–1106`, `ConnectionController.kt:937`). Still **UNKNOWN**: the upstream trigger for the re-entrant teardown call, and why the same log line corresponded to a ~1 s window in v1.0.11 but a ~1 min window in v1.0.10. Classification in `AUDIT_AXES_A_B_C_v1.0.11.md` §2 |
+| 10 | **Axis A / B / C audit findings (v1.0.11, read-only)** | Three read-only axes audited; no source change authorised. **Axis A** (tunnel state / UI sync): two concurrent state models with no designated UI owner — `GlobalVpnTracker` vs `AutoModeController._state`/`AutoModeEngine.stateFlow`, both consumed in one composable (`HomeScreen.kt:125–126`); the 500 ms `onLost` delayed re-check; protocol egating in `GlobalVpnTracker.updateState` (a disconnect of one protocol cannot clear another protocol's state); three loss paths at different latencies in `startConnectedWatcher`. **Axis B** (server list network binding): no binding in the retrieval path (`HttpFetcher.kt` plain `OkHttpClient`; single instance at `VpnServerRepository.kt:40`); the `Network` captured in `GlobalVpnTracker.onAvailable` is discarded; and `isTunnelUsable()` is **not implementable** because `GlobalVpnTracker` has **no RX counter and no TUN-EIO counter** — a hard blocker on the already-decided bind design (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, USER-DIRECTED REQUIREMENT: per-request `Network.getSocketFactory()`, never `bindProcessToNetwork()`; open → VPN fallback → emergency → manual). **Axis C** (SoftEther UDP / TUN `EIO`): `udp_only` servers run a parallel race with a structurally ~0% success rate per `RUDP_IMPLEMENTATION_PLAN.md` (measured: full 5000 ms deadline consumed; OpenVPN fallback is Open Item #1, unstarted); TUN `EIO` has **no branch** in `TunTerminal.readLoop()` (only `EBADF` is special-cased) so a revoked interface funnels into `triggerReconnect()`; `MAX_PACKET_SIZE = 32767` is a dead constant while the read buffer is 8192 (not a live defect — TUN MTU is 1500). | P2_MEDIUM (opportunistic; not blocking) | **OPEN** — full register (A-1..C-4, cross-axis matrix, dependency-ordered recommendations) in `AUDIT_AXES_A_B_C_v1.0.11.md` §7–§8 |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -1903,7 +1968,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.7 | 2026-10-13 | DOCS-UPDATE: consolidated session completion summary (§1.6), methodology lessons (§22), T5-slot finding, F.28AL session rows, roadmap update. No source/test/build/device change; documentation only. |
 | 1.0.8 | 2026-10-13 | DOCS-UPDATE: recorded the post-v1.0.7 additions (§1.6.3) — C3 test-rule fix (`4c013e8`), C5 formal gating (deferred to `C5-TRIAGE-DEVICE`), T5-SLOT instrumentation (`5e51e37`, logging-only), T5 not reproduced (holder UNKNOWN), `test40` budget widening, and the 17-commit chain pushed to `origin/main` (`5c13603..5e51e37`, fast-forward, no force/tag). Corrected the `0714628` off-by-one (it is the first unpushed commit, not the chain base) and refreshed the header HEAD field. No new methodology lessons. No source/test/build/device change; documentation only. |
 | 1.0.9 | 2026-10-13 | DOCS-UPDATE: corrected §12.5.1 row 1 (FIX-NATIVE-LIFETIME-SYNC — N-15/N-16 both CLOSED, device-verified; commits `3a2f442`, `b0418cc`) and added a separate row (8) for the still-open T5-SLOT driver finding. Refreshed the header HEAD field to `d61d3f8`. No new methodology lessons in v1.0.9. No source/test/build/device change; documentation only. |
-| 1.0.10 | 2026-10-13 | DOCS-UPDATE: recorded the AutoConnect root-cause resolution — new **§1.6.4** (audit root cause: unbounded blocking TLS handshake socket; native fix `eb21e56` P1/P5a/P5b; Kotlin bundle `4df7e79` FIX-1/2/3/C + PART-1/2; test repair `a87c523`; device evidence; residual T5-SLOT-TEARDOWN finding; soft-bounds re-characterized as safety nets). Extended §1.6.1 to the 23-commit chain (`0714628` → `5ee4e65`, 6 new rows); added §12.5.1 row 9 (T5-SLOT-TEARDOWN residual, OPEN — UNKNOWN); refreshed the header HEAD field to `5ee4e65`. No new methodology lessons in v1.0.10. No source/test/build/device change; documentation only. |
+| 1.0.11 | 2026-10-14 | DOCS-UPDATE + READ-ONLY AUDIT | recorded the **native hardening bundle** in a new **§1.6.5** — the read-only characterization of the five uncommitted native files (verdict FIX: coherent, matched to AC-01..AC-04/N-01/N-04/N-05/N-10, but non-compiling), the one-line compile repair (`c8acb5d`, forward declaration of `rudp_ref_release`), the pre-device defensive `budget == 0` guard in all five transport workers (`1a4818a`), and the automated device verification of the whole bundle on `5585fecc` (`6119a2a` — `[TLS] handshake entry:` 12× with `applied=yes` 12× / `applied=no` 0×; the parallel race to `all transports failed` at exactly 5000 ms with 0 detaching threads and 0 budget-exhausted events; 0 crashes; threads 54 → 35; lib/slot/destroy counts 11× each; fd-leak INCONCLUSIVE because `/proc/<pid>/fd` is Permission-denied). Extended **§1.6.1** to the 28-commit chain (`0714628` → `6119a2a`, 5 new rows including the previously unlisted `5773c60`). Updated **§12.5.1 row 9** (T5-SLOT-TEARDOWN narrowed: 7/7 device occurrences self-healed within ~1 s; mechanism understood; upstream trigger and the ~1 s vs ~1 min window variance remain UNKNOWN) and added **§12.5.1 row 10** (Axis A / B / C read-only audit register, P2_MEDIUM, opportunistic). New artifacts: `AUDIT_AXES_A_B_C_v1.0.11.md`, `DOCS_UPDATE_v1.0.11_REPORT.md`, plus the three earlier-phase reports they cite. Refreshed the header HEAD field to `6119a2a`. No new methodology lessons in v1.0.11. **This revision itself made no source/test/build/device change** (documentation + read-only audit only); it records the native hardening commits `fd4fcf9`, `c8acb5d` and `1a4818a` that were made in earlier phases of the same chain |
 
 ### Verification Status
 
@@ -1926,7 +1991,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Persistence/Merge/Retention (§11.11) | DESIGN — principles stated; database schema not designed |
 | Future Extensibility (§11.12) | DESIGN — goal stated; no interfaces mandated |
 | Remaining Work (§12) | PARTIAL — F.28AD-A scope pending definition; test gaps identified; roadmap and acceptance criteria added |
-| Active Fix Queue (§12.5.1) | HISTORICAL — row 1 (FIX-NATIVE-LIFETIME-SYNC) corrected to CLOSED for N-15/N-16 (device-verified; commits `3a2f442`, `b0418cc`); new row 8 tracks the still-open T5-SLOT driver. Attributed to the v1.0.9 docs phase, not independently re-verified here |
+| Active Fix Queue (§12.5.1) | HISTORICAL — row 1 (FIX-NATIVE-LIFETIME-SYNC) corrected to CLOSED for N-15/N-16 (device-verified; commits `3a2f442`, `b0418cc`); rows 8/9/10 track the still-open T5-SLOT driver, the T5-SLOT-TEARDOWN residual (narrowed in v1.0.11, cause still UNKNOWN), and the Axis A/B/C audit register. Row 9's narrowing and row 10 are attributed to the v1.0.11 device-verify report and the read-only axes audit respectively, not independently re-verified here |
 | Physical Device Verification (§13) | PARTIAL — F.28AL-U physically exercised on a debug build at F.28AL-Y-FULL (§3.3: Tests A/B PASS, C observed organically, D NOT REPRODUCED, zero crashes); release-signed (CI) physical verification still outstanding |
 | Test Baseline (§14) | HISTORICAL — test file inventory verified; exact counts to be re-verified by running `./gradlew :SoftEtherClient:test` and `./gradlew :app:test` |
 | Release/Git Discipline (§15) | VERIFIED — `AGENTS.md`, `build.gradle` |
@@ -1938,6 +2003,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Session Completion Summary (§1.6) | HISTORICAL — commit chain and session outcome compiled from `git log` and the phase reports; the device-verification statement is attributed to RESUME-BATCH-DEVICE-VERIFY (PHYSICAL DEVICE EVIDENCE), not re-verified here |
 | Post-v1.0.7 Additions (§1.6.3) | HISTORICAL — each bullet attributed to its commit or phase report (SOURCE CODE / PHYSICAL DEVICE / PRIOR REPORT); the push state and the `p2.4.10` tag observation were re-read from `git` at HEAD `5e51e37` |
 | AutoConnect Root-Cause Resolution (§1.6.4) | HISTORICAL — attributed to the v1.0.10 docs phase (this phase). The audit, native fix (`eb21e56`), Kotlin bundle (`4df7e79`), test repair (`a87c523`), device evidence, and residual finding are compiled from the phase reports and the FINALIZE device log; not independently re-verified here. The residual T5-SLOT-TEARDOWN finding is recorded OPEN — UNKNOWN |
+| Native Hardening Bundle (§1.6.5) | HISTORICAL — the unknown-patch characterization (verdict FIX), the compile repair (`c8acb5d`), the defensive budget guard (`1a4818a`), and the device evidence are each attributed to their own phase report (`INVESTIGATE_UNKNOWN_NATIVE_CHANGES_REPORT.md`, `PRE_DEVICE_BUDGET_GUARD_REPORT.md`, `DEVICE_VERIFY_HARDENING_AUTO_REPORT.md`) rather than re-verified in this revision; the device statements are PHYSICAL DEVICE evidence for that phase. Goal F of the device verification is PARTIAL because `/proc/<pid>/fd` is Permission-denied, so the fd-leak check is INCONCLUSIVE (thread count used as the proxy). The T5-SLOT-TEARDOWN narrowing is sourced from the same device-verify report; the upstream trigger of the re-entrant teardown remains UNKNOWN |
 | Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
 
 ### Legend
