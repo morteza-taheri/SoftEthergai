@@ -2,10 +2,11 @@
 
 **Project:** SoftEthergai — Native SoftEther VPN Client for Android
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
+> **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `3dfb0f3126e2f2af267784180bdf2a0fc3b66b24`
-**Document version:** 1.0.12
-**Last updated:** 2026-10-14
+**HEAD:** `b38efa7526c9ed2920175afd0e3a15712a907f49`
+**Document version:** 1.0.13
+**Last updated:** 2026-10-15
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -90,15 +91,15 @@ that stack on the physical device; and then pushed the whole local chain to the 
 
 #### 1.6.1 Commit chain
 
-Thirty-seven commits constitute the chain now on `origin/main`, forming the contiguous
-range `0714628` → `3dfb0f3` (oldest first). (The §1.6 preamble's "17 local commits" records the
+Forty-one commits constitute the chain now on `origin/main`, forming the contiguous
+range `0714628` → `b38efa7` (oldest first). (The §1.6 preamble's "17 local commits" records the
 v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits, the
 v1.0.10 AutoConnect bundle, the v1.0.10/v1.0.11 spec-update commits, the v1.0.11 native-hardening
-bundle, the R1–R6 / R4a / R4b source work, and the R4b report — see the appended rows below.) The
-count is the size of the **inclusive** range `0714628` → `3dfb0f3`; the range-exclusive form
-`git log --oneline 0714628..HEAD | wc -l` reports **36**, because it omits the range's own first
-commit, `0714628`. This revision (v1.0.12) adds three further commits, extending the chain to
-**40** (39 range-exclusive) — see the note below the table.
+bundle, the R1–R6 / R4a / R4b source work, the R4b report, the FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12
+test fixes and spec update, and the FIX-HANGING-SKIP-TEST report commit — see the appended rows
+below.) The count is the size of the **inclusive** range `0714628` → `b38efa7`; the range-exclusive
+form `git log --oneline 0714628..HEAD | wc -l` reports **40**, because it omits the range's own first
+commit, `0714628`.
 
 | Commit | Subject |
 |--------|---------|
@@ -139,6 +140,10 @@ commit, `0714628`. This revision (v1.0.12) adds three further commits, extending
 | `a9e16fd` | feat(collector): per-request Network.getSocketFactory binding + RX wiring (R4b) |
 | `3c656a4` | test(automode): bound awaitNextTerminalAfterChange to prevent hang |
 | `3dfb0f3` | docs: report for FIX-AND-VERIFY-R4B (R4b + skip-test fix) |
+| `6360228` | test: synchronize collector-log collection and bound awaitTerminal |
+| `203addf` | docs: update PROJECT_SPECIFICATION to v1.0.12 (R1-R6 + R4b + test fixes) |
+| `81163e4` | docs: report for FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12 |
+| `b38efa7` | docs: commit FIX-HANGING-SKIP-TEST report (was left untracked) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -158,6 +163,12 @@ commit, `0714628`. This revision (v1.0.12) adds three further commits, extending
 > `docs: report for FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12` — bringing the chain to **40** commits
 > (39 range-exclusive). Per this document's convention, a revision's own commits are listed by hash
 > only once they exist, so the three are named by subject here.
+>
+> **Push state (v1.0.13).** The three commits named in the v1.0.12 note above are now listed by hash
+> in the table (`6360228`, `203addf`, `81163e4`), which is why the chain reads 40 through
+> `81163e4`. This revision adds `b38efa7` (the FIX-HANGING-SKIP-TEST report commit, previously
+> untracked) as the 41st row; its own commit will be recorded by hash in v1.0.14, per the same
+> convention.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -458,6 +469,31 @@ The application is organized into three logical layers:
 - **Authentication:** Anonymous (free servers), Hashed Password (free servers), Plain Password / RADIUS (paid servers)
 
 > **Note — Dynamic server-source access:** The product intent for dynamic server-source and network-path evaluation is specified in §11.8. In brief, the application must not depend on a single fixed network path for server-list retrieval; see §11.8 for the full requirement.
+
+### 2.6 Local Mirrors / Working Copies
+
+The canonical repository identity is `SoftEthergai` (a Gradle multi-module Android project). It is a
+single logical repository with a single `origin/main`; local filesystem paths are machine-specific
+and are not part of the repository's identity.
+
+**Current working copies in active use:**
+
+| Path | Purpose | Status |
+|------|---------|--------|
+| `D:\PMC\Documents\Android\SoftEthergai` | Original path (historical). Suffers severe I/O slowness on that machine — `gradlew help` measured ~22 minutes vs ~7 seconds on a healthy SSD. | Read-only backup preferred; not used for active builds. |
+| `C:\Dev\SoftEthergai` | Current working copy for development and builds. Moved on 2026-10-14 after the D:-drive I/O problem was isolated. | Active. |
+
+**Rule:** documentation and commit messages refer to the canonical repository name and to
+`origin/main` — never to a machine-specific filesystem path — unless the machine-specific path is
+itself the subject of a report.
+
+**Reason for the move (historical record):** the D: volume showed pathological I/O latency. A cold
+machine restart did not fix it. A bounded diagnostic isolated the failure to AAPT2/Kotlin daemon
+exits during build execution. Moving the working copy to C: resolved it: the same commands that hung
+on D: for 20–45 minutes completed on C: in seconds to minutes. The D: copy is retained as a fallback
+backup.
+
+Evidence class: PHYSICAL DEVICE (measurements) + SOURCE CODE (paths).
 
 ---
 
@@ -2043,6 +2079,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.9 | 2026-10-13 | DOCS-UPDATE: corrected §12.5.1 row 1 (FIX-NATIVE-LIFETIME-SYNC — N-15/N-16 both CLOSED, device-verified; commits `3a2f442`, `b0418cc`) and added a separate row (8) for the still-open T5-SLOT driver finding. Refreshed the header HEAD field to `d61d3f8`. No new methodology lessons in v1.0.9. No source/test/build/device change; documentation only. |
 | 1.0.11 | 2026-10-14 | DOCS-UPDATE + READ-ONLY AUDIT | recorded the **native hardening bundle** in a new **§1.6.5** — the read-only characterization of the five uncommitted native files (verdict FIX: coherent, matched to AC-01..AC-04/N-01/N-04/N-05/N-10, but non-compiling), the one-line compile repair (`c8acb5d`, forward declaration of `rudp_ref_release`), the pre-device defensive `budget == 0` guard in all five transport workers (`1a4818a`), and the automated device verification of the whole bundle on `5585fecc` (`6119a2a` — `[TLS] handshake entry:` 12× with `applied=yes` 12× / `applied=no` 0×; the parallel race to `all transports failed` at exactly 5000 ms with 0 detaching threads and 0 budget-exhausted events; 0 crashes; threads 54 → 35; lib/slot/destroy counts 11× each; fd-leak INCONCLUSIVE because `/proc/<pid>/fd` is Permission-denied). Extended **§1.6.1** to the 28-commit chain (`0714628` → `6119a2a`, 5 new rows including the previously unlisted `5773c60`). Updated **§12.5.1 row 9** (T5-SLOT-TEARDOWN narrowed: 7/7 device occurrences self-healed within ~1 s; mechanism understood; upstream trigger and the ~1 s vs ~1 min window variance remain UNKNOWN) and added **§12.5.1 row 10** (Axis A / B / C read-only audit register, P2_MEDIUM, opportunistic). New artifacts: `AUDIT_AXES_A_B_C_v1.0.11.md`, `DOCS_UPDATE_v1.0.11_REPORT.md`, plus the three earlier-phase reports they cite. Refreshed the header HEAD field to `6119a2a`. No new methodology lessons in v1.0.11. **This revision itself made no source/test/build/device change** (documentation + read-only audit only); it records the native hardening commits `fd4fcf9`, `c8acb5d` and `1a4818a` that were made in earlier phases of the same chain |
 | 1.0.12 | 2026-10-14 | DOCS-UPDATE + TEST FIX | closed the two open test-suite defects carried over from FIX-HANGING-SKIP-TEST in a new **§1.6.6**. **OPEN-1** — `VpnServerRepositoryR4bTest`'s `[collector] path=...` collector was a plain `ArrayList` written by two concurrent `async` coroutines in `VpnServerRepository.refresh`, so a lost `add` could drop the `path=vpn source=html` line; the collector is now a `CopyOnWriteArrayList` (assertions unchanged) and a deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` (50 concurrent runs, exact per-line counts; 0.78 s / 0.76 s) was added. **OPEN-2** — `AutoModeControllerTest.awaitTerminal()` was an unbounded `while (true)`; it is now bounded with `withTimeoutOrNull(10_000)` (25 ms poll) and fails loudly, naming the last state, `isRunning` and the last 12 adapter logs; the success predicate and all call sites are unchanged. Extended **§1.6.1** to the 37-commit chain (`0714628` → `3dfb0f3`, 9 new rows: `68758ae`, `0e011e3`, `0e3f9ca`, `607c651`, `2841dc5`, `7b4adba`, `a9e16fd`, `3c656a4`, `3dfb0f3`). Added **§12.5.1 rows 11 and 12** (OPEN-1 / OPEN-2, both CLOSED). Verified JVM-only: `:SoftEtherClient:test` **160/0/0/0**; `:app:testProDebugUnitTest` run twice, **647/0/0/1** both times (the single skip is the pre-existing legitimate `AssumptionViolatedException` in `HtmlParserOracleTest`). **No APK was built and no device was touched.** Refreshed the header HEAD field to `3dfb0f3`. No new methodology lessons in v1.0.12. **This revision made no production-code change**; the only non-documentation edits are the two test files |
+| 1.0.13 | 2026-10-15 | DOCS-HYGIENE | header path clarified — the canonical `**Repository:**` line is **retained unchanged** and a new **§2.6 Local Mirrors / Working Copies** documents the D: → C: move, its cause (D: I/O slowness: `gradlew help` ~22 min vs ~7 s on a healthy SSD) and the rule that filesystem paths are machine-specific while the repository identity (`SoftEthergai`) is not; a one-line canonical-name note was added under the header. Committed the previously-untracked `FIX_HANGING_SKIP_TEST_REPORT.md` **unchanged** (commit `b38efa7`). Verified **§1.6.1** chain sanity: `git log --oneline 0714628^..HEAD` = **41** and the table = **41 rows** (delta 0) after adding the four missing rows (`6360228`, `203addf`, `81163e4`, `b38efa7`); the phase-start delta was **3**. Refreshed the header HEAD field to `b38efa7` and `Last updated` to 2026-10-15. **No source / test / native / build / device change.** §22 untouched. No new methodology lessons in v1.0.13 |
 
 ### Verification Status
 
@@ -2050,6 +2087,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 |---------|-------------|
 | Project Baseline (§1) | VERIFIED — `build.gradle`, `gradle-wrapper.properties`, module structure |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
+| Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
 | Current Native Lifetime Model (§4) | VERIFIED — `NativeLifetimeRegistry.kt`, `NativeAttemptCoordinator.kt`, `softether_protocol.c`, `ConnectionController.kt` |
 | Teardown Completion Identity (§5) | VERIFIED — `TeardownCompletion.kt`, `SoftEtherVpnService.kt` (lines 100–139, 434–807) |
