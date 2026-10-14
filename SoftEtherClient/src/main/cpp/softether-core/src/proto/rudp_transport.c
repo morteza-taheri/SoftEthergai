@@ -1110,8 +1110,13 @@ int rudp_transport_connect(rudp_transport_t* t, const rudp_transport_config_t* c
     uint64_t deadline;
     struct timespec ts;
 
-    if (t == NULL || cfg == NULL || cfg->server_ip == 0 ||
-        cfg->server_port == 0) {
+    if (t == NULL || cfg == NULL || cfg->server_ip == 0) {
+        t->error_code = RUDP_T_ERR_UNKNOWN;
+        return -1;
+    }
+    // N-04: ICMP transport has no port (addressed by IP + ICMP echo id), so
+    // server_port == 0 is valid for ICMP. Every other mode requires a port.
+    if (cfg->transport_mode != RUDP_T_MODE_ICMP && cfg->server_port == 0) {
         t->error_code = RUDP_T_ERR_UNKNOWN;
         return -1;
     }
@@ -1191,6 +1196,11 @@ int rudp_transport_connect(rudp_transport_t* t, const rudp_transport_config_t* c
         goto fail;
     }
     if (rt_set_nonblocking(fds[0]) != 0) {
+        // N-10: fds[0]/fds[1] are not yet assigned to t->worker_fd/t->app_fd,
+        // so the fail: handler would skip them and leak both ends. Close them
+        // here before jumping to fail.
+        close(fds[0]);
+        close(fds[1]);
         goto fail;
     }
     t->worker_fd = fds[0];

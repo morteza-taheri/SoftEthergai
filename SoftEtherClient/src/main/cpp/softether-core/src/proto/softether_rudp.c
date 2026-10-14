@@ -67,6 +67,10 @@ static void calc_key(uint8_t* key, const uint8_t* common_key, const uint8_t* iv)
 // ---------------------------------------------------------------------------
 
 static void rudp_destroy_final(rudp_context_t* ctx);
+// Forward declaration (N-01 compile fix): rudp_ref_release() is called inside
+// rudp_ref_acquire() below but is defined further down this translation unit,
+// so it must be declared here to avoid an implicit-function-declaration error.
+static void rudp_ref_release(rudp_context_t* ctx);
 
 // Take a reference for the duration of one public call.
 // Returns 1 on success, 0 if the context is being destroyed (or is NULL).
@@ -85,6 +89,21 @@ static int rudp_ref_acquire(rudp_context_t* ctx) {
         // context whose final release has already run.
         if (ctx->destroying) return 0;
         if (__sync_bool_compare_and_swap(&ctx->refcount, old, old + 1)) {
+            // N-01 hardening: we now hold a reference. Re-check `destroying`
+            // now that the count is bumped. If teardown began in the
+            // load-to-acquire window between our pre-check and the CAS, roll
+            // the reference back and fail closed. This closes the common
+            // interleaving (destroy set destroying=1 and dropped its ref, but
+            // our CAS kept the count >= 1 so no free has happened yet). The
+            // residual case where the context is already freed is covered by
+            // the documented N-15 calling convention: rudp_destroy() is
+            // serialized by the outer connect lock against the start of any
+            // new entry point, so no fresh acquire can begin after teardown
+            // starts.
+            if (ctx->destroying) {
+                rudp_ref_release(ctx);
+                return 0;
+            }
             return 1;
         }
         // Lost the race with another acquire/release; retry.

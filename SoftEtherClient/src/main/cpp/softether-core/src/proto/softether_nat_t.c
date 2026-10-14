@@ -362,9 +362,14 @@ static int nat_t_connect_internal(uint32_t server_ip_net, const char* svc_name,
                 pack_free(p);
             }
 
+            // N-05: backoff exponent must grow with num_tries and saturate at
+            // NAT_T_MAX_BACKOFF_EXP. The previous (reversed) expression used the
+            // MAX exponent on the very first retry (200ms << 6 ~= 12.8s), so the
+            // first reconnect attempt waited ~13s. Correct: exp = min(tries,
+            // MAX) so the first retry is short and later ones saturate.
             uint32_t exp = (num_tries < NAT_T_MAX_BACKOFF_EXP)
-                               ? NAT_T_MAX_BACKOFF_EXP
-                               : (uint32_t)num_tries;
+                               ? (uint32_t)num_tries
+                               : NAT_T_MAX_BACKOFF_EXP;
             uint64_t interval = (uint64_t)NAT_T_CONNECT_INTERVAL * (1ULL << exp);
             next_send_tick = now + interval;
             num_tries++;
