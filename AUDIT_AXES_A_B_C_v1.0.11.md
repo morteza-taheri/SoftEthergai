@@ -496,3 +496,84 @@ accompany.
 
 
 
+
+---
+
+## 10. Addendum — Correction to §2.3 (2026-10-14)
+
+**Provenance:** PHASE `FIX-AND-VERIFY-AUDIT-TOP-PRIORITIES`, commit `0e3f9ca` (R1
+instrumentation), device `5585fecc`, 7 observed occurrences. This section is appended as an
+**addendum**: it corrects §2.3, but **§2.3 itself is preserved unmodified as a historical
+artifact** of what was hypothesised before the instrumentation existed.
+
+### §10.1 Evidence
+
+The R1 log line (`[TEARDOWN-REENTRY]`, `SoftEtherVpnService.stopVpn()`, `NOOP_REENTRANT` branch)
+fired 7/7 times with an **identical signature**:
+
+```
+W SoftEtherVpnService: [TEARDOWN-REENTRY] attempt=1,
+  state=(isStopping=true, controller=false, tunHeld=false, job=false),
+  thread=main, callers=vn.unlimit.softether.SoftEtherVpnService
+```
+
+Ordering of the re-entrant call against the real teardown it duplicates, for every occurrence:
+
+```
+attempt=1  -> teardown#1,   delta=220ms
+attempt=2  -> teardown#3,   delta=185ms
+attempt=3  -> teardown#5,   delta=274ms
+attempt=4  -> teardown#7,   delta=212ms
+attempt=5  -> teardown#9,   delta=242ms
+attempt=6  -> teardown#11,  delta=153ms
+attempt=7  -> teardown#13,  delta=384ms
+```
+
+### §10.2 The corrected mechanism
+
+§2.3 hypothesised that the `NOOP_REENTRANT` completion satisfies
+`TunnelStateWatcher.TeardownWaiter`'s exact-attempt-id wait **before** the real `CONFIRMED`
+arrives — i.e. a race that the duplicate *wins*. The measured evidence shows the **opposite
+ordering**: `Native cleanup confirmed` **precedes** `NOOP_REENTRANT` in 7/7 cases, by
+**153–384 ms**.
+
+The corrected mechanism is therefore:
+
+> The re-entrant call is a **LATE DUPLICATE** arriving **after** teardown has already completed
+> natively. It lands on the **main thread** while the service is **already fully idle**
+> (`isStopping=true`, `controller=null`, TUN ownership released, connection job null). The
+> `NOOP_REENTRANT` outcome it produces is **benign bookkeeping**, not a concurrency defect.
+
+The most probable upstream trigger — consistent with a post-teardown callback on the main
+thread — is an Android framework `VpnService` revocation/`onRevoke()` notification delivered
+after the service has already torn itself down.
+
+Corroborating evidence: teardown attempt ids step by exactly 2 per AutoConnect cycle
+(`#1, #3, #5, #7, #9, #11, #13`), i.e. one real teardown plus one duplicate per cycle, and
+**0 native lifetime-slot refusals** were observed across all 7 cycles.
+
+### §10.3 Consequence for R3
+
+The case for **R3 (single-flight teardown lock)** is **weakened** by this evidence. A
+single-flight gate would suppress a duplicate that arrives when nothing is in flight, so it
+would buy little; it would also add a failure mode of its own if a legitimate second
+`stopVpn()` were rejected while state was still settling. **R3 should be re-scoped against the
+corrected mechanism** rather than against §2.3's race hypothesis. If it is retained at all, it
+should be framed as *duplicate suppression / log hygiene*, not as race prevention.
+
+### §10.4 Known limitation (still UNKNOWN)
+
+The R1 caller filter is deliberately restricted to `vn.unlimit.*` frames, per the phase brief.
+That filter **hides the external framework caller** (`android.net.VpnService`,
+`ConnectivityService`, …), so the **exact identity of the upstream trigger remains UNKNOWN**.
+The corrected mechanism in §10.2 is an inference from thread/state/timing, not a directly
+observed call site. Confirming it would require widening the frame filter to include
+`android.*` — a change deliberately not made in this phase because the filter was prescribed.
+
+### §10.5 Status
+
+- §2.3: **preserved unmodified** (historical artifact).
+- Residual `NOOP_REENTRANT` log line: **B-class, self-healing, benign** — unchanged
+  classification, corrected cause.
+- R3: **re-scope recommended** (see §10.3).
+- Upstream trigger identity: **UNKNOWN** (see §10.4).
