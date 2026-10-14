@@ -61,6 +61,42 @@ static rudp_context_t* take_rudp_ctx(softether_connection_t* conn) {
         ? (rudp_context_t*)p : NULL;
 }
 
+// N-11: strict Content-Length parse. Returns the parsed value, 0 for an
+// empty/absent value, or -1 for a malformed value (leading sign, no leading
+// digit, trailing junk, or a value beyond N11_MAX_CONTENT_LENGTH). Never
+// wraps to 0xFFFFFFFF the way (uint32_t)atoi() could.
+#define N11_MAX_CONTENT_LENGTH (64u * 1024u * 1024u)  // 64 MiB
+static long parse_content_length(const char* s) {
+    if (s == NULL) {
+        return 0;
+    }
+    // Leading spaces/tabs are tolerated (atoi-compatible).
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    if (*s == '\0') {
+        return 0;  // empty / absent value
+    }
+    if (*s < '0' || *s > '9') {
+        return -1;  // leading sign or non-digit where a digit is required
+    }
+    unsigned long v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10ul + (unsigned long)(*s - '0');
+        if (v > N11_MAX_CONTENT_LENGTH) {
+            return -1;  // overflow / beyond the sane maximum
+        }
+        s++;
+    }
+    // The value must end at a legitimate delimiter (end of string, or the
+    // CR/LF/space that terminates the header line). Arbitrary trailing junk
+    // is rejected; subsequent header lines are not examined.
+    if (*s != '\0' && *s != '\r' && *s != '\n' && *s != ' ' && *s != '\t') {
+        return -1;
+    }
+    return (long)v;
+}
+
 // Per-packet trace logging (Phase 13A) — compiled out unless SE_TRACE_PACKETS.
 #ifdef SE_TRACE_PACKETS
 #define LOGT(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
@@ -810,12 +846,17 @@ static int read_http_response(softether_connection_t* conn,
     buf[hdr_len] = '\0';
     *body_offset = hdr_len;
 
-    // Parse Content-Length from headers
+    // Parse Content-Length from headers (N-11: strict parse; -1 rejects)
     uint32_t content_length = 0;
     const char* cl_str = strstr((char*)buf, "Content-Length: ");
     if (!cl_str) cl_str = strstr((char*)buf, "content-length: ");
     if (cl_str) {
-        content_length = (uint32_t)atoi(cl_str + 16);
+        long cl = parse_content_length(cl_str + 16);
+        if (cl < 0) {
+            LOGE("read_http_response: malformed Content-Length");
+            return -1;
+        }
+        content_length = (uint32_t)cl;
     }
     LOGD("read_http_response: headers=%d bytes, Content-Length=%u", hdr_len, content_length);
     // Log HTTP status line and key headers
@@ -4072,7 +4113,16 @@ int softether_additional_connect(softether_connection_t* conn) {
         const char* cl_str = strstr((char*)resp, "Content-Length: ");
         if (!cl_str) cl_str = strstr((char*)resp, "content-length: ");
         if (cl_str) {
-            content_length = (uint32_t)atoi(cl_str + 16);
+            long cl = parse_content_length(cl_str + 16);
+            if (cl < 0) {
+                LOGE("additional_connect: malformed connect.cgi Content-Length");
+                ssl_shutdown(ssl_ctx);
+                ssl_destroy(ssl_ctx);
+                close(fd);
+                conn->additional_failed_count++;
+                return -1;
+            }
+            content_length = (uint32_t)cl;
         }
 
         if (content_length > 0 && hdr_len + (int)content_length < (int)sizeof(resp)) {
@@ -4199,7 +4249,16 @@ int softether_additional_connect(softether_connection_t* conn) {
         const char* cl_str = strstr((char*)auth_resp, "Content-Length: ");
         if (!cl_str) cl_str = strstr((char*)auth_resp, "content-length: ");
         if (cl_str) {
-            content_length = (uint32_t)atoi(cl_str + 16);
+            long cl = parse_content_length(cl_str + 16);
+            if (cl < 0) {
+                LOGE("additional_connect: malformed auth Content-Length");
+                ssl_shutdown(ssl_ctx);
+                ssl_destroy(ssl_ctx);
+                close(fd);
+                conn->additional_failed_count++;
+                return -1;
+            }
+            content_length = (uint32_t)cl;
         }
 
         int body_off = hdr_len;

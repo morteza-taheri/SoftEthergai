@@ -43,6 +43,20 @@ static void calc_key(uint8_t* key, const uint8_t* common_key, const uint8_t* iv)
     sha1_hash(tmp, sizeof(tmp), key);
 }
 
+// N-09: 32-bit value from the CSPRNG (OpenSSL RAND_bytes via
+// generate_random_bytes, aes_wrapper.c:337). Replaces the non-cryptographic
+// rand() for the RUDP key/IV/cookie material and the remaining non-secret uses
+// so the whole generator surface is the CSPRNG. Returns 0 if the CSPRNG fails
+// (the caller keeps its existing error handling; see each call site).
+static uint32_t rudp_rand_u32(void) {
+    uint8_t b[4];
+    if (generate_random_bytes(b, sizeof(b)) != 0) {
+        return 0;
+    }
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
 // ---------------------------------------------------------------------------
 // N-15: context lifetime reference counting.
 //
@@ -246,26 +260,21 @@ rudp_context_t* rudp_create(int is_client) {
         return NULL;
     }
 
-    // Generate random keys and IVs
-    for (int i = 0; i < (int)sizeof(ctx->my_key); i++)
-        ctx->my_key[i] = (uint8_t)(rand() & 0xFF);
-    for (int i = 0; i < (int)sizeof(ctx->your_key); i++)
-        ctx->your_key[i] = (uint8_t)(rand() & 0xFF);
-    for (int i = 0; i < (int)sizeof(ctx->my_key_v2); i++)
-        ctx->my_key_v2[i] = (uint8_t)(rand() & 0xFF);
-    for (int i = 0; i < (int)sizeof(ctx->your_key_v2); i++)
-        ctx->your_key_v2[i] = (uint8_t)(rand() & 0xFF);
-    for (int i = 0; i < (int)sizeof(ctx->next_iv); i++)
-        ctx->next_iv[i] = (uint8_t)(rand() & 0xFF);
-    for (int i = 0; i < (int)sizeof(ctx->next_iv_v2); i++)
-        ctx->next_iv_v2[i] = (uint8_t)(rand() & 0xFF);
+    // Generate random keys and IVs (N-09: CSPRNG via generate_random_bytes,
+    // not the non-cryptographic rand()).
+    generate_random_bytes(ctx->my_key, sizeof(ctx->my_key));
+    generate_random_bytes(ctx->your_key, sizeof(ctx->your_key));
+    generate_random_bytes(ctx->my_key_v2, sizeof(ctx->my_key_v2));
+    generate_random_bytes(ctx->your_key_v2, sizeof(ctx->your_key_v2));
+    generate_random_bytes(ctx->next_iv, sizeof(ctx->next_iv));
+    generate_random_bytes(ctx->next_iv_v2, sizeof(ctx->next_iv_v2));
 
     do {
-        ctx->my_cookie = (uint32_t)(rand() & 0xFFFFFFFF);
+        ctx->my_cookie = rudp_rand_u32();
     } while (ctx->my_cookie == 0);
 
     do {
-        ctx->your_cookie = (uint32_t)(rand() & 0xFFFFFFFF);
+        ctx->your_cookie = rudp_rand_u32();
     } while (ctx->your_cookie == 0 || ctx->your_cookie == ctx->my_cookie);
 
     ctx->now = tick64();
@@ -835,7 +844,7 @@ static void rudp_poll_nolock(rudp_context_t* ctx) {
             ka_max = RUDP_KA_INTERVAL_MAX;
         }
         ctx->next_send_keepalive = ctx->now +
-            (uint64_t)(ka_min + (rand() % (uint32_t)(ka_max - ka_min)));
+            (uint64_t)(ka_min + (rudp_rand_u32() % (uint32_t)(ka_max - ka_min)));
     }
 
     // Read all available UDP packets
@@ -1015,7 +1024,7 @@ static int rudp_send_nolock(rudp_context_t* ctx, const uint8_t* data, uint32_t d
         if (current_size < ctx->max_udp_packet_size) {
             uint32_t pad_size = ctx->max_udp_packet_size - current_size;
             if (pad_size > RUDP_MAX_PADDING_SIZE) pad_size = RUDP_MAX_PADDING_SIZE;
-            pad_size = (uint32_t)(rand() % (pad_size + 1));
+            pad_size = rudp_rand_u32() % (pad_size + 1);
             memset(buf, 0, pad_size);
             buf += pad_size;
             size += pad_size;
@@ -1045,7 +1054,7 @@ static int rudp_send_nolock(rudp_context_t* ctx, const uint8_t* data, uint32_t d
         if (current_size < ctx->max_udp_packet_size) {
             uint32_t pad_size = ctx->max_udp_packet_size - current_size;
             if (pad_size > RUDP_MAX_PADDING_SIZE) pad_size = RUDP_MAX_PADDING_SIZE;
-            pad_size = (uint32_t)(rand() % (pad_size + 1));
+            pad_size = rudp_rand_u32() % (pad_size + 1);
             memset(buf, 0, pad_size);
             buf += pad_size;
             size += pad_size;

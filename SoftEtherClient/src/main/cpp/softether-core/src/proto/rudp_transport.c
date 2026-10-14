@@ -36,6 +36,21 @@ static uint64_t rt_tick64(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
 }
 
+// N-09: 32-bit value from the CSPRNG (OpenSSL RAND_bytes via
+// generate_random_bytes, aes_wrapper.c:337). Replaces the non-cryptographic
+// rand() for IV selection and the remaining non-secret uses (padding, probe
+// size, ICMP/DNS ids, interval jitter) so the whole generator surface is the
+// CSPRNG. Returns 0 if the CSPRNG fails (the caller keeps its existing error
+// handling; see each call site).
+static uint32_t rt_rand_u32(void) {
+    uint8_t b[4];
+    if (generate_random_bytes(b, sizeof(b)) != 0) {
+        return 0;
+    }
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
 // Big-endian write/read helpers (match WRITE_UINT64/WRITE_UINT in MayaType.h)
 static void rt_w64(uint8_t* p, uint64_t v) {
     p[0] = (uint8_t)(v >> 56); p[1] = (uint8_t)(v >> 48);
@@ -313,7 +328,7 @@ static void rt_send_udp(rudp_transport_t* t, const uint8_t* data, uint32_t size)
 
     // Next IV: random 20 bytes (for non-DNS/ICMP modes, use raw data)
     if (t->transport_mode == RUDP_T_MODE_UDP) {
-        uint32_t next_iv_pos = (uint32_t)(rand() % (size > RUDP_T_SHA1_SIZE ? size - RUDP_T_SHA1_SIZE : 1));
+        uint32_t next_iv_pos = rt_rand_u32() % (size > RUDP_T_SHA1_SIZE ? size - RUDP_T_SHA1_SIZE : 1);
         memcpy(t->se.next_iv, data + next_iv_pos, RUDP_T_SHA1_SIZE);
     } else {
         generate_random_bytes(t->se.next_iv, RUDP_T_SHA1_SIZE);
@@ -367,7 +382,7 @@ static void rt_send_segment_now(rudp_transport_t* t, uint64_t seq,
     }
 
     // Padding (1..255 bytes, value = padlen)
-    padlen = (uint8_t)(rand() % 255) + 1;
+    padlen = (uint8_t)(rt_rand_u32() % 255) + 1;
     for (i = 0; i < padlen; i++) {
         *p = padlen;
         p++;
@@ -399,7 +414,7 @@ static void rt_send_segment_now(rudp_transport_t* t, uint64_t seq,
     }
 
     // Next IV: random 20 bytes copied from the packet just sent
-    next_iv_pos = (uint32_t)(rand() % (current_size - RUDP_T_SHA1_SIZE));
+    next_iv_pos = rt_rand_u32() % (current_size - RUDP_T_SHA1_SIZE);
     memcpy(se->next_iv, pkt + next_iv_pos, RUDP_T_SHA1_SIZE);
 }
 
@@ -728,7 +743,7 @@ static void rt_segment_send_fifo(rudp_transport_t* t) {
 // application-layer data that the ICMP receive path discards (not an Echo
 // Reply, type 0). Sends only when the peer endpoint is known.
 static void rt_send_icmp_echo(rudp_transport_t* t) {
-    uint32_t size = (uint32_t)(rand() % 64) + 64;
+    uint32_t size = (rt_rand_u32() % 64) + 64;
     uint8_t* pkt = (uint8_t*)malloc((size_t)size);
     if (pkt == NULL) {
         return;
@@ -757,7 +772,7 @@ static void rt_interrupt(rudp_transport_t* t, uint64_t now) {
                 // the client side (Network.c:2759-2777).
                 rt_send_icmp_echo(t);
                 se->next_icmp_echo_tick = now + RUDP_T_ICMP_ECHO_INTERVAL_MIN +
-                    (uint32_t)(rand() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
+                    (rt_rand_u32() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
                 rt_send_udp(t, tmp, 39); // type = ECHO_RESPONSE (0)
                 t->icmp_type = 7;        // subsequent init(s) use INFORMATION_REQUEST (7)
             } else {
@@ -774,7 +789,7 @@ static void rt_interrupt(rudp_transport_t* t, uint64_t now) {
             now >= se->next_icmp_echo_tick) {
             rt_send_icmp_echo(t);
             se->next_icmp_echo_tick = now + RUDP_T_ICMP_ECHO_INTERVAL_MIN +
-                (uint32_t)(rand() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
+                (rt_rand_u32() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
         }
         return;
     }
@@ -837,7 +852,7 @@ static void rt_interrupt(rudp_transport_t* t, uint64_t now) {
             rt_queue_segment(t, se->magic_req, RUDP_T_SHA1_SIZE);
         }
         se->next_keepalive_interval = RUDP_T_KEEPALIVE_MIN +
-            (uint32_t)(rand() % (RUDP_T_KEEPALIVE_MAX - RUDP_T_KEEPALIVE_MIN));
+            (rt_rand_u32() % (RUDP_T_KEEPALIVE_MAX - RUDP_T_KEEPALIVE_MIN));
     }
 
     // ICMP keep-alive echo while established (Network.c:2796-2812): random-size
@@ -847,7 +862,7 @@ static void rt_interrupt(rudp_transport_t* t, uint64_t now) {
     if (t->transport_mode == RUDP_T_MODE_ICMP && now >= se->next_icmp_echo_tick) {
         rt_send_icmp_echo(t);
         se->next_icmp_echo_tick = now + RUDP_T_ICMP_ECHO_INTERVAL_MIN +
-            (uint32_t)(rand() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
+            (rt_rand_u32() % (RUDP_T_ICMP_ECHO_INTERVAL_MAX - RUDP_T_ICMP_ECHO_INTERVAL_MIN));
     }
 
     // Retransmit due segments with exponential backoff
@@ -1023,7 +1038,8 @@ rudp_transport_t* rudp_transport_create(void) {
 #else
     pthread_cond_init(&t->cond, NULL);
 #endif
-    srand((unsigned int)(rt_tick64() ^ (uint64_t)(uintptr_t)t));
+    // N-09: no srand() — all randomness now comes from the CSPRNG
+    // (rt_rand_u32 / generate_random_bytes), so the libc PRNG is unused.
     return t;
 }
 
@@ -1071,7 +1087,11 @@ static void rt_derive_keys(rt_session_t* se) {
             low = ((uint64_t)rnd[0] << 24) | ((uint64_t)rnd[1] << 16) |
                   ((uint64_t)rnd[2] << 8) | (uint64_t)rnd[3];
         } else {
-            low = (uint64_t)rand();
+            // N-09: CSPRNG unavailable — derive the fallback from the session's
+            // CSPRNG-generated init key instead of the non-crypto rand(). By this
+            // point key_init was already filled by generate_random_bytes (rt_create).
+            low = ((uint64_t)se->key_init[0] << 24) | ((uint64_t)se->key_init[1] << 16) |
+                  ((uint64_t)se->key_init[2] << 8) | (uint64_t)se->key_init[3];
         }
         se->magic_disconnect = 0xffffffff00000000ULL | low;
     }
@@ -1148,8 +1168,8 @@ int rudp_transport_connect(rudp_transport_t* t, const rudp_transport_config_t* c
             return -1;
         }
         // Generate random ICMP ID and sequence number
-        uint16_t my_icmp_id = (uint16_t)(rand() % 65535 + 1);
-        uint16_t my_icmp_seq = (uint16_t)(rand() % 65535 + 1);
+        uint16_t my_icmp_id = (uint16_t)(rt_rand_u32() % 65535 + 1);
+        uint16_t my_icmp_seq = (uint16_t)(rt_rand_u32() % 65535 + 1);
         t->client_icmp_id[0] = (uint8_t)(my_icmp_id >> 8);
         t->client_icmp_id[1] = (uint8_t)(my_icmp_id & 0xFF);
         t->client_icmp_seq[0] = (uint8_t)(my_icmp_seq >> 8);
@@ -1180,7 +1200,7 @@ int rudp_transport_connect(rudp_transport_t* t, const rudp_transport_config_t* c
         }
         // DNS mode: generate random transaction ID
         if (t->transport_mode == RUDP_T_MODE_DNS) {
-            t->dns_tran_id = (uint16_t)(rand() % 65535 + 1);
+            t->dns_tran_id = (uint16_t)(rt_rand_u32() % 65535 + 1);
         }
     }
     if (rt_set_nonblocking(udp_fd) != 0) {
@@ -1222,7 +1242,7 @@ int rudp_transport_connect(rudp_transport_t* t, const rudp_transport_config_t* c
     se->next_send_seq = 1;
     se->latest_recv_my_tick = rt_tick64();
     se->next_keepalive_interval = RUDP_T_KEEPALIVE_MIN +
-        (uint32_t)(rand() % (RUDP_T_KEEPALIVE_MAX - RUDP_T_KEEPALIVE_MIN));
+        (rt_rand_u32() % (RUDP_T_KEEPALIVE_MAX - RUDP_T_KEEPALIVE_MIN));
     rt_fifo_init(&se->send_fifo, RUDP_T_MAX_FIFO_SIZE);
     rt_fifo_init(&se->recv_fifo, RUDP_T_MAX_FIFO_SIZE);
     if (se->send_fifo.cap == 0 || se->recv_fifo.cap == 0) {
