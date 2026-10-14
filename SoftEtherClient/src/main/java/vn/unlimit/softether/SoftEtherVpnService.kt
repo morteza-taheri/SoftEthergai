@@ -1023,6 +1023,26 @@ if (sessionPolicy.isRunning) {
         }
     }
 
+    /**
+     * R1 (v1.0.11 audit §2.5): caller-identity hint for the re-entrant teardown path.
+     *
+     * Returns the last few `vn.unlimit.*` frames of the current stack, oldest first,
+     * joined by " <- ". Reflection, coroutine-machinery, framework and JDK frames are
+     * filtered out so the output names app-level callers only. Used solely by the
+     * `[TEARDOWN-REENTRY]` diagnostic log; it never influences control flow.
+     */
+    private fun reentrantTeardownCallers(limit: Int = 3): String {
+        val frames = Thread.currentThread().stackTrace
+            .asSequence()
+            .map { it.className }
+            .filter { it.startsWith("vn.unlimit.") }
+            .filterNot { it.startsWith("vn.unlimit.softether.SoftEtherVpnService$") }
+            .distinct()
+            .take(limit)
+            .toList()
+        return if (frames.isEmpty()) "<none>" else frames.joinToString(" <- ")
+    }
+
     private fun stopVpn(disconnectByError: Boolean = false, suppliedAttemptId: Int = 0) {
         // Stage 2F-F.28A-REVIEW: the session being torn down. Teardown finishes
         // asynchronously, so this identity is what stops a late completion from
@@ -1078,6 +1098,20 @@ if (sessionPolicy.isRunning) {
         val teardownComplete =
             controller == null && !tunOwnership.isHeld() && connectionJob == null
         if (!sessionPolicy.beginTeardown(resourcesLive = !teardownComplete)) {
+            // R1 (v1.0.11 audit §2.5): the upstream trigger that issues a second,
+            // re-entrant teardown for an attempt already in TEARDOWN was UNKNOWN — no
+            // instrumentation named the caller, so the ~1 s vs ~1 min window variance
+            // in the T5-SLOT-TEARDOWN residual could not be attributed. Logging-only:
+            // capture the caller identity plus the resource state at this instant.
+            // No control flow changes.
+            Log.w(
+                TAG,
+                "[TEARDOWN-REENTRY] attempt=$teardownAttemptId, " +
+                    "state=(isStopping=${sessionPolicy.isStopping}, controller=${controller != null}, " +
+                    "tunHeld=${tunOwnership.isHeld()}, job=${connectionJob != null}), " +
+                    "thread=${Thread.currentThread().name}, " +
+                    "callers=${reentrantTeardownCallers()}",
+            )
             Log.d(TAG, "Already torn down, skipping re-entrant call")
             // Still publish the terminal state so a teardown waiter armed by
             // disconnect() always completes instead of hanging on its timeout.
@@ -1685,3 +1719,100 @@ if (sessionPolicy.isRunning) {
         }
     }
 }
+
+/**
+ * R4a (v1.0.11 audit §4.4 / §5.4): process-wide tunnel-health counters.
+ *
+ * Deliberately placed in the **`SoftEtherClient` module** rather than in
+ * `GlobalVpnTracker` (which lives in `app`): the only module dependency
+ * direction available is `app → SoftEtherClient`, and the TUN read loop
+ * that observes EIO lives in `SoftEtherClient`. `GlobalVpnTracker` cannot
+ * be the owner of a counter that a `SoftEtherClient` file must write.
+ * `GlobalVpnTracker` delegates to this object and keeps the public API.
+ *
+ * These counters are the missing input for the already-decided
+ * `isTunnelUsable()` contract (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1,
+ * USER-DIRECTED REQUIREMENT). Scope: the counters exist and `noteTunEio`
+ * is wired (TunTerminal R5), but `noteRxAdvance` is **not** called by any
+ * data-forwarding path in this phase — that wiring is deferred to R4b and
+ * must not be inferred from this object's existence.
+ */
+object TunnelHealth {
+    private val rxCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val tunEioCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val lastRxAdvanceAtMs = java.util.concurrent.atomic.AtomicLong(0L)
+    private val lastEioAtMs = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /** RX must have advanced within this window for the tunnel to be usable. */
+    const val RX_WINDOW_MS = 10_000L
+
+    /** No TUN EIO may have occurred within this window. */
+    const val EIO_WINDOW_MS = 30_000L
+
+    /** Process-wide monotonic RX counter. */
+    fun rxCounter(): Long = rxCounter.get()
+
+    /** Wall-clock ms of the most recent RX advance; 0 if never observed. */
+    fun lastRxAdvanceAtMs(): Long = lastRxAdvanceAtMs.get()
+
+    /** Process-wide monotonic TUN-EIO counter. */
+    fun tunEioCount(): Long = tunEioCounter.get()
+
+    /** Wall-clock ms of the most recent TUN EIO; 0 if never observed. */
+    fun lastEioAtMs(): Long = lastEioAtMs.get()
+
+    /** Record one RX advance (increments the counter and stamps the clock). */
+    fun noteRxAdvance() {
+        rxCounter.incrementAndGet()
+        lastRxAdvanceAtMs.set(System.currentTimeMillis())
+    }
+
+    /** Record one TUN EIO read failure. */
+    fun noteTunEio() {
+        tunEioCounter.incrementAndGet()
+        lastEioAtMs.set(System.currentTimeMillis())
+    }
+
+    /** True once an EIO has ever been recorded (diagnostic). */
+    fun hasSeenEio(): Boolean = tunEioCounter.get() > 0L
+
+            /** Reset all four fields. Exposed only for the R4a unit tests. */
+            fun resetHealthCountersForTest() {
+                rxCounter.set(0L)
+                tunEioCounter.set(0L)
+                lastRxAdvanceAtMs.set(0L)
+                lastEioAtMs.set(0L)
+            }
+
+            /**
+             * The R4a usability decision, as a pure function.
+             *
+             * `isConnected` and `nowMs` are parameters rather than reads of
+             * global state so the §7 Q1 contract is unit-testable in a plain JVM
+             * test — `GlobalVpnTracker`'s object initializer needs the Android
+             * runtime (`Handler(Looper.getMainLooper())`), so its
+             * `isTunnelUsable()` cannot be exercised directly on the JVM.
+             *
+             * All three conditions of §7 Q1 must hold: (a) connected,
+             * (b) an RX advance within [RX_WINDOW_MS] of [nowMs], (c) no TUN EIO
+             * within [EIO_WINDOW_MS] of [nowMs]. Missing evidence fails closed.
+             */
+            fun isUsable(isConnected: Boolean, nowMs: Long): Boolean {
+                if (!isConnected) return false
+                val lastRx = lastRxAdvanceAtMs.get()
+                if (lastRx == 0L || nowMs - lastRx >= RX_WINDOW_MS) return false
+                val lastEio = lastEioAtMs.get()
+                if (lastEio != 0L && nowMs - lastEio < EIO_WINDOW_MS) return false
+                return true
+            }
+
+            /** Test-only: force the RX timestamp so the window can be exercised. */
+            fun setLastRxAdvanceAtMsForTest(ms: Long) {
+                lastRxAdvanceAtMs.set(ms)
+            }
+
+            /** Test-only: force the EIO timestamp so the window can be exercised. */
+            fun setLastEioAtMsForTest(ms: Long) {
+                lastEioAtMs.set(ms)
+            }
+        }

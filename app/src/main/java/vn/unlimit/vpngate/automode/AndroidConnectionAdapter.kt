@@ -222,11 +222,31 @@ class AndroidConnectionAdapter(
                     // Mode came to start a new server while the old native operation was
                     // still running. Naming the real outcome keeps the distinction
                     // visible in the log without changing what this function returns.
-                    log(
-                        "[AUTO] Teardown finished but NATIVE CLEANUP UNCONFIRMED " +
-                                "(${result.describe()}); ownership retained, " +
-                                "a new native attempt will be refused",
-                    )
+                    //
+                    // R2 (v1.0.11 audit §2.5 sub-defect): that single message was
+                    // emitted for BOTH NATIVE_UNRESOLVED and NOOP_REENTRANT, so it
+                    // promised "ownership retained … will be refused" on a condition
+                    // that never refuses anything — every observed NOOP_REENTRANT was
+                    // followed by a real NATIVE_CONFIRMED within ~1 s. The
+                    // NATIVE_UNRESOLVED text below is preserved VERBATIM because
+                    // AutoModeNativeBusyTest / AutoModeControllerTest assert it; only a
+                    // distinct NOOP_REENTRANT branch is added.
+                    when (result.outcome) {
+                        TeardownCompletion.Outcome.NATIVE_UNRESOLVED -> log(
+                            "[AUTO] Teardown finished but NATIVE CLEANUP UNCONFIRMED " +
+                                    "(${result.describe()}); ownership retained, " +
+                                    "a new native attempt will be refused",
+                        )
+
+                        TeardownCompletion.Outcome.NOOP_REENTRANT -> log(
+                            "[AUTO] Re-entrant teardown completion observed; native " +
+                                    "confirmation expected shortly (${result.describe()})",
+                        )
+
+                        else -> log(
+                            "[AUTO] Teardown finished: ${result.describe()}",
+                        )
+                    }
             }
             currentProtocol = null
         }
