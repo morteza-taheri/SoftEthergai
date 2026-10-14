@@ -4,6 +4,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import kotlinx.coroutines.*
+import vn.unlimit.softether.TunnelHealth
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -20,8 +21,25 @@ class TunTerminal(
 
     companion object {
         private const val TAG = "TunTerminal"
-        private const val MAX_PACKET_SIZE = 32767 // Max VPN packet size
-        private const val BUFFER_SIZE = 8192 // 8KB buffer
+        // R6 (v1.0.11 audit §5.5): the old `MAX_PACKET_SIZE = 32767` was dead — a
+        // whole-tree search found zero references to it. Rather than keep an unused
+        // constant that disagrees with the actual allocation, it is removed and the
+        // relationship is recorded here: the TUN MTU is 1500 (SoftEtherVpnService
+        // sets `setMtu(config.mtu)` with `ConnectionConfig.mtu = 1500`), and
+        // BUFFER_SIZE is 8192, so the buffer is comfortably sufficient for a full
+        // packet — a `read()` on a TUN fd returns one packet per call and a packet
+        // larger than the buffer would be truncated silently, which cannot happen
+        // at 8192 vs an MTU of 1500.
+        internal const val BUFFER_SIZE = 8192 // 8KB buffer; > 1500 TUN MTU (see above)
+
+        /**
+         * R5: true when an IOException message denotes a TUN `EIO`. Matches the raw
+         * errno token ("EIO") and Android's localized English rendering
+         * ("Input/output error"), since the message text is not guaranteed stable
+         * across versions or locales.
+         */
+        fun isTunEio(message: String): Boolean =
+            message.contains("EIO") || message.contains("Input/output error")
     }
 
     private val inputStream = FileInputStream(vpnInterface.fileDescriptor)
@@ -134,6 +152,26 @@ class TunTerminal(
                     val msg = e.message ?: ""
                     if (e is java.io.IOException && (msg.contains("EBADF") || msg.contains("Bad file descriptor"))) {
                         Log.d(TAG, "TUN interface closed (EBADF), stopping read loop")
+                    } else if (e is java.io.IOException && isTunEio(msg)) {
+                        // R5 (v1.0.11 audit §5.2): a revoked TUN interface surfaces on
+                        // several Android versions as an IOException whose text is
+                        // EIO-based rather than EBADF. It previously fell through to
+                        // onError() and was funnelled into triggerReconnect(), i.e. a
+                        // clean shutdown was misread as a transient I/O error.
+                        //
+                        // This branch mirrors the EBADF treatment: record the event on
+                        // the process-wide TUN-EIO counter (R4a), stop the loop cleanly,
+                        // and do NOT call onError. Match both the raw errno text and the
+                        // localized message form.
+                        //
+                        // The counter lives in the top-level TunnelHealth object (this module), not in
+                        // GlobalVpnTracker: `app → SoftEtherClient` is the only module
+                        // dependency direction, and this file is in SoftEtherClient.
+                        Log.w(TAG, "TUN read failed with EIO (interface revoked?), stopping read loop")
+                        TunnelHealth.noteTunEio()
+                        isRunning.set(false)
+                        Log.d(TAG, "TUN read loop ended")
+                        return
                     } else {
                         Log.e(TAG, "Error reading from TUN", e)
                         onError?.invoke(e)

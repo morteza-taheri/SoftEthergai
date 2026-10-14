@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import vn.unlimit.softether.SoftEtherVpnService
+import vn.unlimit.softether.TunnelHealth
 import vn.unlimit.vpngate.automode.TunnelStateWatcher
 
 /**
@@ -98,6 +99,67 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     private var vpnNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private var appContext: Context? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // ─────────────────────────────────────────────────────────────────────
+    // R4a (v1.0.11 audit §4.4 / §5.4): tunnel health counters.
+    //
+    // The audit established that the app had NO RX counter and NO TUN-EIO
+    // counter, which made `isTunnelUsable()` — already decided in
+    // SERVER_SOURCE_ARCHITECTURE.md §7 Q1 (USER-DIRECTED REQUIREMENT) —
+    // NOT IMPLEMENTABLE. This lifts that blocker.
+    //
+    // Storage lives in the top-level `TunnelHealth` object (SoftEtherClient
+    // module), NOT here: the TUN read loop that observes EIO lives in
+    // SoftEtherClient, and `app → SoftEtherClient` is the only module
+    // dependency direction (SoftEtherClient cannot see `app`). This class
+    // delegates and keeps the public API.
+    //
+    // IMPORTANT SCOPE: the counters are NOT yet wired to real traffic in
+    // this phase. Nothing calls [noteRxAdvance]; the RX advance must come
+    // from the data-forwarding path (a separate phase that touches
+    // ConnectionController/SoftEtherClient — neither authorized here).
+    // [noteTunEio] IS called — from TunTerminal's new EIO branch (R5).
+    // Until RX is wired, [isTunnelUsable] reports false because no RX
+    // advance has ever been observed, which is the safe direction.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Process-wide monotonic RX counter (read-only snapshot). */
+    fun rxCounter(): Long = TunnelHealth.rxCounter()
+
+    /** Wall-clock ms of the most recent RX advance; 0 if never observed. */
+    fun lastRxAdvanceAtMs(): Long = TunnelHealth.lastRxAdvanceAtMs()
+
+    /** Process-wide monotonic TUN-EIO counter. */
+    fun tunEioCount(): Long = TunnelHealth.tunEioCount()
+
+    /** Wall-clock ms of the most recent TUN EIO; 0 if never observed. */
+    fun lastEioAtMs(): Long = TunnelHealth.lastEioAtMs()
+
+    /** Record one RX advance (increments the counter and stamps the clock). */
+    fun noteRxAdvance() = TunnelHealth.noteRxAdvance()
+
+    /** Record one TUN EIO read failure. */
+    fun noteTunEio() = TunnelHealth.noteTunEio()
+
+    /**
+     * Whether the tunnel is *usable* (not merely CONNECTED).
+     *
+     * Implements `SERVER_SOURCE_ARCHITECTURE.md` §7 Q1 exactly: all three
+     * of (a) state == CONNECTED, (b) an RX advance within
+     * [TunnelHealth.RX_WINDOW_MS], (c) no TUN EIO within
+     * [TunnelHealth.EIO_WINDOW_MS]. Any missing evidence
+     * fails closed — an unobserved RX advance and a never-observed EIO both
+     * read as "not usable", never as a false positive.
+     *
+     * The decision itself lives in [TunnelHealth.isUsable] as a pure function so
+     * it can be unit-tested on the JVM; this method only supplies the two live
+     * inputs (the tracked connection state and the current wall clock).
+     */
+    fun isTunnelUsable(): Boolean =
+        TunnelHealth.isUsable(isConnected, System.currentTimeMillis())
+
+    /** Exposed for the unit tests written for R4a. */
+    internal fun resetHealthCountersForTest() = TunnelHealth.resetHealthCountersForTest()
 
     fun init(context: Context) {
         if (isInitialized) return
