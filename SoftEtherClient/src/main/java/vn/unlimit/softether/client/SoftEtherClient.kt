@@ -77,21 +77,6 @@ class SoftEtherClient {
     }
 
     /**
-     * Disconnect from VPN server
-     */
-    fun disconnect() {
-        if (!isConnected.getAndSet(false) || nativeHandle == 0L) {
-            return
-        }
-
-        Log.d(tag, "Disconnecting...")
-        nativeDisconnect(nativeHandle)
-        nativeDestroy(nativeHandle)
-        nativeHandle = 0
-        Log.d(tag, "Disconnected")
-    }
-
-    /**
      * Send data through the VPN tunnel
      *
      * @param data Data to send

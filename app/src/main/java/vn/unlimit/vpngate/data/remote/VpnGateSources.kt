@@ -20,18 +20,25 @@ import vn.unlimit.vpngate.parser.VpnGateHtmlParser
  */
 object VpnGateUrls {
     const val MAIN_URL = "https://www.vpngate.net/en/"
-    const val MAIN_HTTP_URL = "http://www.vpngate.net/en/"
     const val API_URL = "https://www.vpngate.net/api/iphone/"
-    const val API_HTTP_URL = "http://www.vpngate.net/api/iphone/"
     const val MIRRORS_URL = "https://www.vpngate.net/en/sites.aspx"
-    const val MIRRORS_HTTP_URL = "http://www.vpngate.net/en/sites.aspx"
     const val MAX_MIRRORS = 12
 
     const val HTML_PATH = "/en/"
     const val API_PATH = "/api/iphone/"
     const val DIRECTORY_PATH = "/en/sites.aspx"
 
-    /** Reliable official IP mirrors provided by VPN Gate project to bypass DNS/SNI censorship */
+    /**
+     * Reliable official IP mirrors provided by VPN Gate project to bypass DNS/SNI
+     * censorship.
+     *
+     * SEC-02: these are reached by IP and expose no TLS endpoint, so they are the
+     * ONLY cleartext (HTTP) hosts the app permits. Each IP is listed explicitly in
+     * `app/src/main/res/xml/network_security_config.xml` under a
+     * `<domain-config cleartextTrafficPermitted="true">`. Every other host —
+     * including `www.vpngate.net`, whose HTTP fallback URLs were removed — is
+     * HTTPS-only.
+     */
     val BOOTSTRAP_MIRRORS = listOf(
         "http://150.40.105.19:35399",
         "http://150.40.105.6:11803",
@@ -51,18 +58,14 @@ object VpnGateSourceCandidates {
 
     fun canonicalHtml(): List<SourceIdentity> = listOfNotNull(
         SourceUrl.parse(VpnGateUrls.MAIN_URL, SourceKind.CANONICAL_HTML),
-        SourceUrl.parse(VpnGateUrls.MAIN_HTTP_URL, SourceKind.CANONICAL_HTML),
     )
 
     fun canonicalApi(): List<SourceIdentity> = listOfNotNull(
         SourceUrl.parse(VpnGateUrls.API_URL, SourceKind.CANONICAL_API),
-        SourceUrl.parse(VpnGateUrls.API_HTTP_URL, SourceKind.CANONICAL_API),
     )
 
     fun canonicalDirectory(): List<SourceIdentity> = listOfNotNull(
         SourceUrl.parse(VpnGateUrls.MIRRORS_URL, SourceKind.CANONICAL_HTML)
-            ?.withPath(VpnGateUrls.DIRECTORY_PATH),
-        SourceUrl.parse(VpnGateUrls.MIRRORS_HTTP_URL, SourceKind.CANONICAL_HTML)
             ?.withPath(VpnGateUrls.DIRECTORY_PATH),
     )
 

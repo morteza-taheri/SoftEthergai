@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  SEC-02: HTTPS-only by default. Cleartext (HTTP) is permitted ONLY for the
+  VPN Gate bootstrap IP mirrors, which are addressed by IP and expose no TLS
+  endpoint. Keep this list in sync with VpnGateUrls.BOOTSTRAP_MIRRORS in
+  app/src/main/java/vn/unlimit/vpngate/data/remote/VpnGateSources.kt.
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">150.40.105.19</domain>
+        <domain includeSubdomains="false">150.40.105.6</domain>
+        <domain includeSubdomains="false">150.40.105.11</domain>
+        <domain includeSubdomains="false">150.40.105.23</domain>
+        <domain includeSubdomains="false">194.156.89.134</domain>
+        <domain includeSubdomains="false">121.186.186.97</domain>
+    </domain-config>
 </network-security-config>
