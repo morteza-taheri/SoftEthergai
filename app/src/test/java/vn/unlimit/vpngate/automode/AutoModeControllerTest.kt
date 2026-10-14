@@ -835,12 +835,17 @@ val sstp = AutoModeCandidate(
         // is armed and waits for the skip flag.
         assertTrue(c.awaitTerminal() is AutoModeState.Connected)
 
+        // Snapshot BEFORE the skip: skipToNextServer() restarts the run on the
+        // controller's own dispatcher, so the disconnect-and-reconnect can complete
+        // before this test thread resumes (see awaitNextTerminalAfterChange()).
+        val beforeSkip = c.state.value
+
         // User presses Try next server while connected.
         c.skipToNextServer()
 
         // A fresh run over the remaining candidate(s) must start and reach
         // Connected(s2) without retrying s1.
-        val final = c.awaitNextTerminalAfterChange()
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
         assertTrue(final is AutoModeState.Connected)
         assertEquals("s2", (final as AutoModeState.Connected).hostname)
         assertEquals(1, adapter.logs.count { it == "connect:s1" })
@@ -848,19 +853,48 @@ val sstp = AutoModeCandidate(
         assertTrue("[AUTO] Connected server skipped by user; trying next" in adapter.logs)
     }
 
-    /** Waits for a state change away from the current terminal, then the next terminal. */
-    private suspend fun AutoModeController.awaitNextTerminalAfterChange(): AutoModeState {
-        val before = state.value
-        withTimeoutOrNull(5_000) {
-            while (state.value == before) kotlinx.coroutines.delay(25)
-        }
-        while (true) {
-            val s = state.value
-            if ((s is AutoModeState.Connected || s is AutoModeState.Error) && !isRunning) {
-                return s
+    /**
+     * Waits (bounded) for the run to settle into a terminal state other than [before].
+     *
+     * Two properties matter, both learned the hard way
+     * (see FIX_HANGING_SKIP_TEST_REPORT.md):
+     *
+     *  1. **Bounded.** The second stage used to be an unbounded `while (true)`, so a
+     *     controller that did not settle stalled the entire `:app:testProDebugUnitTest`
+     *     suite instead of failing one test. It now fails loudly, naming the state it
+     *     was stuck in and what the controller logged while it waited.
+     *  2. **[before] is passed in, not sampled here.** `skipToNextServer()` restarts the
+     *     run on the controller's own dispatcher, so the disconnect-and-reconnect can
+     *     finish before the calling test thread resumes. Sampling the "before" state
+     *     inside this helper then recorded the *post*-skip state, so the
+     *     wait-for-a-change stage waited for a change that had already happened.
+     */
+    private suspend fun AutoModeController.awaitNextTerminalAfterChange(
+        before: AutoModeState,
+        timeoutMs: Long = 10_000,
+    ): AutoModeState {
+        val reached = withTimeoutOrNull(timeoutMs) {
+            var result: AutoModeState? = null
+            while (result == null) {
+                val s = state.value
+                if (s != before &&
+                    (s is AutoModeState.Connected || s is AutoModeState.Error) &&
+                    !isRunning
+                ) {
+                    result = s
+                } else {
+                    kotlinx.coroutines.delay(25)
+                }
             }
-            kotlinx.coroutines.delay(25)
+            result
         }
+        // Fail loudly rather than silently: name the state we came from, the state we are
+        // stuck in, and what the controller logged while we waited.
+        return reached ?: error(
+            "AutoModeController did not settle into a terminal state other than $before " +
+                "within ${timeoutMs}ms; last=${state.value}, isRunning=$isRunning, " +
+                "recentLogs=${adapter.logs.takeLast(12)}",
+        )
     }
 
     // ==================================================================
