@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.repository
 
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -27,7 +28,14 @@ class VpnServerRepositoryR4bTest {
     @get:Rule
     val tempFolder = TemporaryFolder()
 
-    private val logs = mutableListOf<String>()
+    /**
+     * OPEN-1: [VpnServerRepository.refresh] writes this from two concurrent
+     * `async` coroutines (the api and html fetches), so a plain `ArrayList`
+     * could silently drop a line under a concurrent `add`. A
+     * `CopyOnWriteArrayList` makes every write visible; the assertions below
+     * are unchanged.
+     */
+    private val logs = CopyOnWriteArrayList<String>()
 
     /** Always "fails": sources report nothing acquired. */
     private class EmptyFetcher : HttpFetcher {
@@ -102,6 +110,53 @@ class VpnServerRepositoryR4bTest {
             logs.sorted(),
         )
         assertTrue("no plain open line may appear", logs.none { it == "[collector] path=open source=api" })
+    }
+
+    /**
+     * OPEN-1 regression: [VpnServerRepository.refresh] runs its api and html
+     * fetches as two concurrent `async` coroutines, and both write their
+     * `[collector] path=...` lines through the same `pathLog` lambda. Before
+     * this fix the collector was a plain `ArrayList`, whose `add` is not
+     * thread-safe, so a concurrent pair of `add`s could drop a line — exactly
+     * the intermittently-missing `source=html` line seen in CI.
+     *
+     * The test drives that concurrent path 50 times and asserts the exact
+     * per-line counts, so a lost write shows up as a short count rather than as
+     * a rare, unexplained suite failure.
+     */
+    @Test
+    fun `vpn-path-logs-are-never-lost-under-concurrent-fetch`() = runBlocking {
+        val iterations = 50
+        val repo = repository(vpnInput, EmptyFetcher())
+
+        logs.clear()
+        repeat(iterations) { repo.refresh() }
+
+        // Every run on the VPN rung with a failing bound fetcher emits, per
+        // source: mirror -> a single `path=vpn` line (the bootstrap mirrors make
+        // it succeed, so it never falls back); api and html -> one `path=vpn`
+        // line each plus one `path=fallback-to-open` line each. Five lines per
+        // run, so any dropped `add` shortens the total.
+        val perRun = listOf(
+            "[collector] path=vpn source=mirror",
+            "[collector] path=vpn source=api",
+            "[collector] path=vpn source=html",
+            "[collector] path=fallback-to-open source=api",
+            "[collector] path=fallback-to-open source=html",
+        )
+
+        assertEquals(
+            "expected ${perRun.size * iterations} lines from $iterations runs, got ${logs.size}: $logs",
+            perRun.size * iterations,
+            logs.size,
+        )
+        for (line in perRun) {
+            assertEquals(
+                "lost writes for '$line' across $iterations concurrent runs: $logs",
+                iterations,
+                logs.count { it == line },
+            )
+        }
     }
 
     /**

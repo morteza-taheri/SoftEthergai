@@ -258,16 +258,36 @@ class AutoModeControllerTest {
         activeRttMs = rtt,
     )
 
-    private suspend fun AutoModeController.awaitTerminal(): AutoModeState {
-        while (true) {
-            val s = state.value
-            // Wait until we hit a terminal state AND the run has fully completed
-            // (job == null or job not active), so a subsequent start() launches a fresh run.
-            if ((s is AutoModeState.Connected || s is AutoModeState.Error) && !isRunning) {
-                return s
+    /**
+     * Waits (bounded) for the run to settle into a terminal state.
+     *
+     * OPEN-2: this used to be an unbounded `while (true)`. A controller that
+     * never settled would stall the entire suite instead of failing one test —
+     * the same failure mode already fixed in [awaitNextTerminalAfterChange]. The
+     * success predicate is unchanged (terminal state AND `!isRunning`, so a
+     * later `start()` launches a fresh run); only the wait is bounded, and a
+     * timeout now names the state it was stuck in and what the controller logged
+     * while it waited.
+     */
+    private suspend fun AutoModeController.awaitTerminal(timeoutMs: Long = 10_000): AutoModeState {
+        val reached = withTimeoutOrNull(timeoutMs) {
+            var result: AutoModeState? = null
+            while (result == null) {
+                val s = state.value
+                // Wait until we hit a terminal state AND the run has fully completed
+                // (job == null or job not active), so a subsequent start() launches a fresh run.
+                if ((s is AutoModeState.Connected || s is AutoModeState.Error) && !isRunning) {
+                    result = s
+                } else {
+                    kotlinx.coroutines.delay(25)
+                }
             }
-            kotlinx.coroutines.delay(25)
+            result
         }
+        return reached ?: error(
+            "AutoModeController did not reach a terminal state within ${timeoutMs}ms; " +
+                "last=${state.value}, isRunning=$isRunning, recentLogs=${adapter.logs.takeLast(12)}",
+        )
     }
 
     // Test 1: initial state is Disconnected
