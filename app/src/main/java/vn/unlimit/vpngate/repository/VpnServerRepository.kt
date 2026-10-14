@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.repository
 
+import android.util.Log
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
@@ -11,11 +12,15 @@ import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.data.persistence.CollectorSnapshotStore
+import vn.unlimit.vpngate.data.remote.CollectorPath
+import vn.unlimit.vpngate.data.remote.CollectorRouting
+import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
 import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
 import vn.unlimit.vpngate.data.remote.VpnGateHtmlSource
 import vn.unlimit.vpngate.data.remote.VpnGateMirrorSource
+import vn.unlimit.vpngate.data.remote.boundToSocketFactory
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
@@ -23,6 +28,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
 import vn.unlimit.vpngate.parser.VpnGateApiParser
 import vn.unlimit.vpngate.parser.VpnGateHtmlParser
 import vn.unlimit.vpngate.ranking.ServerQualityCalculator
+import vn.unlimit.vpngate.state.GlobalVpnTracker
 import java.io.File
 
 /**
@@ -39,11 +45,65 @@ import java.io.File
 class VpnServerRepository(
     private val fetcher: HttpFetcher = OkHttpFetcher(),
     private val cacheDir: File? = null,
+    /**
+     * R4b: the three inputs to the open-vs-VPN decision, re-read once per
+     * [refresh]. The default reads the app's live tracker, so production picks
+     * the transport from real state; tests inject a constant.
+     */
+    private val routing: () -> CollectorRoutingInput = { productionRouting() },
+    /**
+     * R4b: the fetcher used on the VPN rung, or null when there is nothing to
+     * bind to. Built once per [refresh] and shared by every source on that
+     * run.
+     *
+     * Injected rather than constructed inline so tests can supply a fake: a
+     * real [OkHttpFetcher] here would make live requests to vpngate.net, which
+     * both makes the suite slow and makes it pass or fail depending on whether
+     * the build machine happens to have a network. Production uses
+     * [productionBoundFetcher].
+     */
+    private val boundFetcherFactory: () -> HttpFetcher? = { productionBoundFetcher() },
+    /**
+     * R4b: where the `[collector] path=...` line goes. Default is INFO on a
+     * device. Wrapped in runCatching because this class's unit tests run on a
+     * plain JVM where `android.util.Log` is an unmocked stub — the same reason
+     * [ServerListUpdater.isKeyConflict] matches by class name instead of type.
+     */
+    private val pathLog: (String) -> Unit = { runCatching { Log.i(TAG, it) } },
 ) {
     companion object {
         private const val MAIN_TIMEOUT_MS = 45_000L
         private const val MIRROR_TIMEOUT_MS = 30_000L
         private const val RAW_CAPTURE_LIMIT = 512 * 1024
+        private const val TAG = "VpnServerRepository"
+
+        /** Source tags used in the R4b `[collector] path=...` log lines. */
+        internal const val SOURCE_TAG_HTML = "html"
+        internal const val SOURCE_TAG_API = "api"
+        internal const val SOURCE_TAG_MIRROR = "mirror"
+
+        /**
+         * Production routing inputs: the user's opt-in, whether the tunnel is
+         * genuinely usable, and whether a VPN network is at hand.
+         */
+        internal fun productionRouting(): CollectorRoutingInput = CollectorRoutingInput(
+            preferVpn = GlobalVpnTracker.prefersVpnForCollector(),
+            tunnelUsable = GlobalVpnTracker.isTunnelUsable(),
+            hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
+        )
+
+        /**
+         * The fetcher the VPN rung binds with, or null.
+         *
+         * This is the only place the [androidNetwork][android.net.Network] is
+         * touched, and only to ask it for its [SocketFactory] — never
+         * `bindProcessToNetwork()` (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q2).
+         */
+        internal fun productionBoundFetcher(): HttpFetcher? {
+            val network = GlobalVpnTracker.currentVpnNetwork() ?: return null
+            val socketFactory = runCatching { network.socketFactory }.getOrNull() ?: return null
+            return OkHttpFetcher(client = boundToSocketFactory(socketFactory))
+        }
     }
 
     /**
@@ -67,10 +127,6 @@ class VpnServerRepository(
         val rawApi: String?,
     )
 
-    private val htmlSource = VpnGateHtmlSource(fetcher)
-    private val apiSource = VpnGateApiSource(fetcher)
-    private val mirrorSource = VpnGateMirrorSource(fetcher)
-
     // §33: in-memory provenance from the LAST network collection.
     // Not persisted: after restart the debug panel reports no data.
     @Volatile
@@ -90,11 +146,23 @@ class VpnServerRepository(
      * Every body is parsed under its OWN source tag: the canonical feeds
      * as `"html"`/`"api"`, and a mirror as its own `mirror_<n>` tag, so a
      * mirror body can never be attributed to the canonical source.
+     *
+     * R4b: the transport is chosen once per run (see
+     * [CollectorRouting.choose]) and applied per source, so each source's
+     * `[collector] path=...` line names the transport it actually used. The
+     * three sources are built inside the run rather than once at
+     * construction precisely so the chosen fetcher can differ between runs.
      */
     suspend fun refresh(): CollectResult? = withContext(Dispatchers.IO) {
         // Set once the parallel fetches have resolved; it describes what this
         // run's sources could provide, and is reported with the dataset.
         var collectedCapability = SourceCapability.UNKNOWN
+
+        // R4b: re-read per refresh, never cached across runs, so a tunnel that
+        // comes up between two refreshes is honoured by the next one.
+        val path = CollectorRouting.choose(routing())
+        val boundFetcher: HttpFetcher? =
+            if (path == CollectorPath.VPN) bindHttpFetcher() else null
 
         val records = coroutineScope {
             val cachedMirrors = runCatching {
@@ -102,7 +170,9 @@ class VpnServerRepository(
             }.getOrDefault(emptyList())
 
             val mirrorsDeferred = async {
-                mirrorSource.discoverMirrors(cachedMirrors)
+                fetchOnChosenPath(SOURCE_TAG_MIRROR, path, boundFetcher, { it.isNotEmpty() }) { f ->
+                    VpnGateMirrorSource(f).discoverMirrors(cachedMirrors)
+                }
             }
             val mirrors = mirrorsDeferred.await().orEmpty()
 
@@ -116,10 +186,15 @@ class VpnServerRepository(
             val apiDeferred = async {
                 // Canonical CSV only: a mirror's CSV schema is undefined
                 // for this project, so it is never fed to the API parser.
-                apiSource.fetch()
+                // A null result IS the failure signal for this source.
+                fetchOnChosenPath(SOURCE_TAG_API, path, boundFetcher, { true }) { f ->
+                    VpnGateApiSource(f).fetch()
+                }
             }
             val htmlDeferred = async {
-                htmlSource.fetch(mirrors)
+                fetchOnChosenPath(SOURCE_TAG_HTML, path, boundFetcher, { true }) { f ->
+                    VpnGateHtmlSource(f).fetch(mirrors)
+                }
             }
 
             val apiFetched = apiDeferred.await()
@@ -198,6 +273,75 @@ class VpnServerRepository(
             capability = collectedCapability,
         )
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // R4b transport routing.
+    //
+    // `SERVER_SOURCE_ARCHITECTURE.md` §7 Q2 binds a request by handing
+    // `network.socketFactory` to that request's own client — never
+    // `bindProcessToNetwork()`, which would capture every other socket in the
+    // process. §7 Q3's ordering is honoured in its first two rungs only: open
+    // is the default, VPN is an opt-in that falls back to open. Emergency and
+    // manual sources are out of scope for this phase.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * The fetcher bound to the captured VPN network, or null when there is
+     * nothing to bind to.
+     *
+     * Built once per [refresh] and shared by every source on that run: the
+     * clients differ only in their socket factory (see
+     * [collectorClientBuilder][vn.unlimit.vpngate.data.remote.collectorClientBuilder]),
+     * so one bound client per run is equivalent to one per request while
+     * creating a single connection pool instead of three.
+     */
+    private fun bindHttpFetcher(): HttpFetcher? = boundFetcherFactory()
+
+    /**
+     * Runs one source's fetch on the transport [path] chose for this run.
+     *
+     * The source tag is part of the log line because the transport is chosen
+     * per run but the *outcome* is per source: one source can succeed on the
+     * VPN rung while another produces nothing, and that must be visible.
+     *
+     * [succeeded] is supplied by the caller rather than assumed to be
+     * `result != null`, because the three sources do not report failure the
+     * same way: `VpnGateApiSource.fetch` and `VpnGateHtmlSource.fetch` return
+     * null, while `VpnGateMirrorSource.discoverMirrors` returns an empty
+     * list. Keying the fallback on null alone would silently never retry the
+     * mirror discovery.
+     *
+     * @param boundFetcher the already-built VPN-bound fetcher, or null when
+     *   the VPN rung was asked for but no network was available.
+     */
+    internal suspend fun <T> fetchOnChosenPath(
+        sourceTag: String,
+        path: CollectorPath,
+        boundFetcher: HttpFetcher?,
+        succeeded: (T) -> Boolean,
+        fetch: suspend (HttpFetcher) -> T?,
+    ): T? {
+        if (path == CollectorPath.OPEN || boundFetcher == null) {
+            // Either the user did not opt in, or the tunnel is not usable, or
+            // there is no VPN network at hand. Any of the three lands here,
+            // which is the pre-R4b behaviour and the fail-safe direction.
+            pathLog("[collector] path=open source=$sourceTag")
+            return fetch(fetcher)
+        }
+
+        pathLog("[collector] path=vpn source=$sourceTag")
+        val primary = fetch(boundFetcher)
+        if (primary != null && succeeded(primary)) return primary
+
+        // The VPN rung was tried and produced nothing. Falling back to open is
+        // strictly better than failing the whole refresh: the user asked for
+        // the VPN rung to be *preferred*, not *required*, and a collector that
+        // cannot reach vpngate.net serves nobody.
+        pathLog("[collector] path=fallback-to-open source=$sourceTag")
+        return fetch(fetcher)
+    }
+
+    /** Visible for tests; builds the R4b fetcher actually used by a run. */
 
     /**
      * §33: locate the merged record behind a displayed server and

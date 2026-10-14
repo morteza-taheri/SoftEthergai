@@ -17,6 +17,7 @@ import vn.unlimit.softether.NativeLifetimeRegistry
 import vn.unlimit.softether.SoftEtherVpnService
 import vn.unlimit.softether.TeardownCompletion
 import vn.unlimit.softether.SoftEtherTrafficSnapshot
+import vn.unlimit.softether.TunnelHealth
 import vn.unlimit.softether.client.SoftEtherClient
 import vn.unlimit.softether.client.protocol.KeepAliveManager
 import vn.unlimit.softether.model.ClientInfo
@@ -1070,6 +1071,24 @@ class ConnectionController(
                     val total = client.receiveBatch(receiveBuffer, batchLengths)
                     when {
                         total > 0 -> {
+                            // R4b: one RX advance per successfully-received
+                            // BATCH, not per packet. A batch already carries
+                            // several frames (Phase 13D drains them per JNI
+                            // crossing), so a per-packet call would re-stamp
+                            // the same instant several times and burn a
+                            // SystemClock read per frame on the hot path. One
+                            // call per batch is enough for
+                            // `TunnelHealth.isUsable` (§7 Q1: an RX advance
+                            // within 10 s) and costs one atomic increment.
+                            //
+                            // Routed through TunnelHealth rather than
+                            // `GlobalVpnTracker.noteRxAdvance()` because that
+                            // tracker lives in module `app`, and only
+                            // `app -> SoftEtherClient` is a legal dependency
+                            // direction. TunnelHealth is the same module and
+                            // already backs both counters.
+                            TunnelHealth.noteRxAdvance()
+
                             // Valid data received — write frames back-to-back
                             var offset = 0
                             var written = 0

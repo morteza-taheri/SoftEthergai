@@ -97,8 +97,35 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     }
 
     private var vpnNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * R4b: the system VPN [Network] the watcher last saw, or null when there
+     * is none.
+     *
+     * Before this field existed, `onAvailable`'s `network` argument was used
+     * only for a log line and then dropped — the v1.0.11 audit recorded that
+     * as the Axis B defect "the captured Network is discarded". It is now
+     * retained purely so a collector request can be bound to it via
+     * `network.socketFactory` (§7 Q2). Nothing else consumes it.
+     *
+     * Volatile because it is written from a ConnectivityManager callback
+     * thread and read from the collector's IO dispatchers.
+     */
+    @Volatile
+    private var systemVpnNetwork: Network? = null
+
     private var appContext: Context? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Lazily built, NOT eagerly: this object's initializer runs on any first
+     * reference, and `Looper.getMainLooper()` does not exist on a plain JVM.
+     * Building it eagerly made *any* reference to `GlobalVpnTracker` from a
+     * unit test fail class initialization — which is exactly what happened
+     * when R4b's `VpnServerRepository` default routing started reading this
+     * object, breaking 19 pre-existing repository tests. Nothing here is read
+     * before `registerSystemVpnWatcher`, so laziness is free.
+     */
+    private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
     // ─────────────────────────────────────────────────────────────────────
     // R4a (v1.0.11 audit §4.4 / §5.4): tunnel health counters.
@@ -161,6 +188,40 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     /** Exposed for the unit tests written for R4a. */
     internal fun resetHealthCountersForTest() = TunnelHealth.resetHealthCountersForTest()
 
+    // ─────────────────────────────────────────────────────────────────────
+    // R4b — collector transport binding inputs.
+    //
+    // Two accessors, both read-only views of state this class already owns.
+    // Neither changes any state-machine behaviour: the first reports a
+    // reference the watcher already captured, the second reports the user's
+    // opt-in. They exist so `VpnServerRepository` can make its open-vs-VPN
+    // decision without this class knowing the collector exists.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * The system VPN [Network] the watcher last observed, or null.
+     *
+     * A caller uses `network.socketFactory` on it to bind one request
+     * (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q2). `bindProcessToNetwork()` is
+     * never used: binding the whole process would make every other socket
+     * in the app — including the tunnel's own control channel — depend on a
+     * network that can disappear underneath it.
+     */
+    fun currentVpnNetwork(): Network? = systemVpnNetwork
+
+    /**
+     * The R4b user opt-in: send collector requests over the VPN when one is
+     * usable. **Default false**, which keeps open as the default transport
+     * exactly as it was before R4b.
+     *
+     * Read as a raw preference rather than through `AppConfig` so it can be
+     * flipped without shipping a config value, and read defensively so a JVM
+     * unit test — where [prefs] is null — simply reports "not opted in".
+     */
+    fun prefersVpnForCollector(): Boolean =
+        runCatching { prefs?.getBoolean(PREF_ALWAYS_PREFER_VPN, false) == true }
+            .getOrDefault(false)
+
     fun init(context: Context) {
         if (isInitialized) return
         isInitialized = true
@@ -183,10 +244,14 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d("GlobalVpnTracker", "System VPN network available: $network")
+                    // R4b: retain the reference so a collector request can be
+                    // bound to it. See [systemVpnNetwork].
+                    systemVpnNetwork = network
                 }
 
                 override fun onLost(network: Network) {
                     Log.d("GlobalVpnTracker", "System VPN network lost: $network")
+                    if (systemVpnNetwork == network) systemVpnNetwork = null
                     mainHandler.postDelayed({
                         val hasVpnTransport = cm.allNetworks.any { net ->
                             runCatching {
@@ -334,3 +399,12 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         }
     }
 }
+
+/**
+ * R4b preference key: always prefer VPN for collector requests.
+ *
+ * Absent or false means open, which is the pre-R4b default. Declared at file
+ * scope rather than in a companion because `GlobalVpnTracker` is a standalone
+ * `object` and cannot carry one.
+ */
+internal const val PREF_ALWAYS_PREFER_VPN = "vpn_always_prefer_vpn"

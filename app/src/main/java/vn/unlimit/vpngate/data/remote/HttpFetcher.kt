@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.data.remote
 
+import android.net.Network
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -10,6 +11,7 @@ import vn.unlimit.vpngate.data.model.CollectorLog
 import java.io.IOException
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
 /**
  * One HTTP exchange, including where it ACTUALLY ended up.
@@ -91,16 +93,56 @@ class ResilientDns : Dns {
     }
 }
 
+/**
+ * The one place every collector client gets its knobs.
+ *
+ * R4b added a *second* client that is bound to a specific [Network]. If the
+ * open and the bound client drifted apart — a different timeout, a different
+ * DNS provider, redirects followed on one and not the other — then "the same
+ * request on the other path" would stop being the same request, and a
+ * fallback to open would silently change what is fetched. Building both from
+ * this one builder makes that drift impossible.
+ */
+internal fun collectorClientBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
+    .dns(ResilientDns())
+    .connectTimeout(10, TimeUnit.SECONDS)
+    .readTimeout(15, TimeUnit.SECONDS)
+    // Redirects are followed by hand so every hop can be checked against
+    // the source's own policy. OkHttp must not follow them blindly.
+    .followRedirects(false)
+    .followSslRedirects(false)
+
+/** The default (open-network) collector client. */
+fun defaultCollectorClient(): OkHttpClient = collectorClientBuilder().build()
+
+/**
+ * R4b: a collector client whose sockets come from [socketFactory] instead of
+ * from the system default.
+ *
+ * This is the whole of the binding mechanism, and it is deliberately narrow:
+ * it changes *which interface the socket is opened on* and nothing else.
+ * `Network.bindProcessToNetwork()` is NOT used anywhere — see
+ * `SERVER_SOURCE_ARCHITECTURE.md` §7 Q2, which requires per-request binding
+ * precisely so that a bound fetch can never capture the rest of the process.
+ *
+ * Split out from [boundToNetwork] so it can be unit-tested on a plain JVM:
+ * `android.net.Network` cannot be constructed there, but a [SocketFactory]
+ * can.
+ */
+fun boundToSocketFactory(socketFactory: SocketFactory): OkHttpClient =
+    collectorClientBuilder().socketFactory(socketFactory).build()
+
+/**
+ * R4b: same as [boundToSocketFactory], taking the [Network] the caller holds.
+ *
+ * @param network typically `GlobalVpnTracker.currentVpnNetwork()` — the
+ *   system VPN network the tracker's watcher observed.
+ */
+fun boundToNetwork(network: Network): OkHttpClient =
+    boundToSocketFactory(network.socketFactory)
+
 class OkHttpFetcher(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .dns(ResilientDns())
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        // Redirects are followed by hand so every hop can be checked against
-        // the source's own policy. OkHttp must not follow them blindly.
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .build(),
+    private val client: OkHttpClient = defaultCollectorClient(),
     private val requestDelayMs: Long = 0,
 ) : HttpFetcher {
     companion object {
@@ -231,4 +273,62 @@ class OkHttpFetcher(
             return response
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// R4b — collector transport routing.
+//
+// SERVER_SOURCE_ARCHITECTURE.md §7 Q2 requires per-request binding via
+// `Network.getSocketFactory()`, never `bindProcessToNetwork()`. §7 Q3's
+// "open → VPN fallback → emergency → manual" ordering is implemented only
+// in its first two rungs here: open stays the default, the VPN rung is an
+// opt-in, and emergency/manual sources are out of scope for this phase.
+//
+// The decision is a pure value + a pure function so it can be unit-tested
+// without Android, a Looper or a live tunnel: the caller gathers the three
+// inputs and [CollectorRouting.choose] says which transport to use.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Which transport a collector request should be sent on. */
+enum class CollectorPath {
+    /** The default system network — unchanged behaviour. */
+    OPEN,
+
+    /** The system VPN network the tracker observed while the tunnel is usable. */
+    VPN,
+}
+
+/**
+ * The three inputs the routing decision needs. All three must hold for the
+ * VPN rung to be taken:
+ *
+ *  1. [preferVpn] — the user opted in ("always prefer VPN").
+ *  2. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsable()` (§7 Q1), i.e. a
+ *     tunnel that is CONNECTED *and* forwarding, not a half-up one.
+ *  3. [hasBoundNetwork] — a system VPN Network is actually at hand.
+ *
+ * Anything missing keeps the request on [CollectorPath.OPEN], which is the
+ * fail-safe direction: it is the behaviour that existed before R4b.
+ */
+data class CollectorRoutingInput(
+    val preferVpn: Boolean,
+    val tunnelUsable: Boolean,
+    val hasBoundNetwork: Boolean,
+)
+
+object CollectorRouting {
+
+    /**
+     * The whole decision, as one expression.
+     *
+     * Deliberately an AND of all three: an opt-in that is silently defeated
+     * by a stale tracker, or a usable tunnel that is silently used without
+     * the user asking, would both be worse than staying on open.
+     */
+    fun choose(input: CollectorRoutingInput): CollectorPath =
+        if (input.preferVpn && input.tunnelUsable && input.hasBoundNetwork) {
+            CollectorPath.VPN
+        } else {
+            CollectorPath.OPEN
+        }
 }
