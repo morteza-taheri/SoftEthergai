@@ -1,6 +1,7 @@
 package vn.unlimit.softether.client
 
 import android.util.Log
+import vn.unlimit.softether.security.ServerFingerprint
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -257,6 +258,7 @@ class SoftEtherClient {
     external fun nativeGetClientMac(handle: Long): ByteArray?
     external fun nativeSetClientMac(handle: Long, mac: ByteArray)
     external fun nativeSendRaw(handle: Long, data: ByteArray, length: Int): Int
+    external fun nativeGetPeerFingerprint(handle: Long): ByteArray?
 
     /**
      * This session's virtual MAC address (6 bytes), or null if the handle is invalid.
@@ -274,6 +276,24 @@ class SoftEtherClient {
      */
     fun sendRaw(handle: Long = nativeHandle, frame: ByteArray): Int =
         nativeSendRaw(handle, frame, frame.size)
+
+    /**
+     * SEC-01 (TOFU fingerprint pinning): the SHA-256 fingerprint of the certificate the
+     * peer presented on this connection's completed TLS handshake, as 64 lowercase hex
+     * characters.
+     *
+     * @param handle the native connection handle owned by the caller. The controller-managed
+     *   connect path must pass its own handle explicitly, since this object's private
+     *   `nativeHandle` is 0 there (same reason as [setTimeout]).
+     * @return 64-char lowercase hex, or null when the handle is invalid, the TLS handshake has
+     *   not completed, or the native extraction failed.
+     */
+    fun getPeerFingerprint(handle: Long = nativeHandle): String? {
+        if (handle == 0L) return null
+        val bytes = nativeGetPeerFingerprint(handle) ?: return null
+        if (bytes.size != 32) return null
+        return ServerFingerprint.toHex(bytes)
+    }
 
     /**
      * Perform DHCP over SoftEther tunnel to get IP configuration

@@ -24,6 +24,12 @@ import vn.unlimit.softether.model.ClientInfo
 import vn.unlimit.softether.model.ConnectionConfig
 import vn.unlimit.softether.model.ConnectionState
 import vn.unlimit.softether.model.SoftEtherError
+import vn.unlimit.softether.security.ServerFingerprintStore
+import vn.unlimit.softether.security.ServerFingerprintStoreAndroid
+import vn.unlimit.softether.security.ServerKey
+import vn.unlimit.softether.security.TofuDecision
+import vn.unlimit.softether.security.VerifyResult
+import vn.unlimit.softether.security.toDecision
 import vn.unlimit.softether.terminal.TunTerminal
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -81,6 +87,12 @@ class ConnectionController(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val client = SoftEtherClient()
+    /**
+     * SEC-01: TOFU certificate-fingerprint pins, keyed per endpoint. Backed by
+     * SharedPreferences; the pure decision logic lives in [ServerFingerprintStore].
+     * Constructed from the VpnService context, so no service wiring change is needed.
+     */
+    private val fingerprintStore: ServerFingerprintStore = ServerFingerprintStoreAndroid(service)
     private val isCancelled = AtomicBoolean(false)
     private val isReconnecting = AtomicBoolean(false)
     @Volatile
@@ -636,6 +648,47 @@ class ConnectionController(
         if (result != 0) {
             currentState = ConnectionState.ERROR
             throw Exception("Connection failed: ${SoftEtherError.getErrorString(result)} ($result)")
+        }
+
+        // SEC-01 — TOFU certificate-fingerprint pinning (Design B, audit §2).
+        //
+        // The TLS handshake completed inside nativeConnectWithHub, so the peer
+        // certificate is now available. Extract its SHA-256 fingerprint and pin it
+        // per endpoint; every later connect to the same endpoint must present the
+        // same fingerprint. A brand-new endpoint is TOFU-accepted and recorded, so
+        // an empty store still connects normally — the AutoConnect UX is unchanged.
+        //
+        // Policy (VerifyResult.toDecision()): MATCH / FIRST_USE / MISSING proceed;
+        // MISMATCH blocks. The native verify policy (SSL_VERIFY_NONE) is deliberately
+        // unchanged — this is a Kotlin-side rejection after the handshake, which is
+        // what the audit specifies (VPN Gate relays are self-signed and IP-addressed).
+        val presentedFingerprint = client.getPeerFingerprint(nativeHandle)
+        val serverKey = ServerKey(
+            hostname = config.serverHost,
+            ip = config.serverHost,
+            port = config.serverPort,
+        )
+        val verifyResult = fingerprintStore.verify(serverKey, presentedFingerprint ?: "")
+        when (verifyResult) {
+            VerifyResult.MATCH ->
+                Log.i(TAG, "[TOFU] match key=${serverKey.canonical}")
+            VerifyResult.FIRST_USE ->
+                Log.i(TAG, "[TOFU] first-use stored key=${serverKey.canonical} fp=$presentedFingerprint")
+            VerifyResult.MISSING ->
+                Log.i(TAG, "[TOFU] missing key=${serverKey.canonical} (no fingerprint available; proceeding)")
+            VerifyResult.MISMATCH ->
+                Log.e(TAG, "[TOFU] mismatch key=${serverKey.canonical} presented=${presentedFingerprint ?: "<none>"}")
+        }
+        if (verifyResult.toDecision() == TofuDecision.BLOCK) {
+            currentState = ConnectionState.ERROR
+            // Route through the existing error channel and stop connect()'s retry loop:
+            // a pin mismatch is deterministic, so a retry cannot succeed and must not be
+            // reported a second time. The throw below runs performConnect()'s existing
+            // teardown path (teardownNativeConnection); NativeHandleSlot is never touched
+            // directly here.
+            isCancelled.set(true)
+            onError("TLS fingerprint mismatch")
+            throw Exception("TLS fingerprint mismatch")
         }
 
         // Connection established at protocol level — run DHCP before announcing CONNECTED
