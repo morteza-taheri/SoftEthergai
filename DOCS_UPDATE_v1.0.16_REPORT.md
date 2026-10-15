@@ -126,6 +126,19 @@ Command: `git log --oneline 0714628^..HEAD | wc -l` (the **inclusive** range, wh
 Phase-start state: the table held **47** rows and the text read "47 through `23816cb`"; `git` reported 47
 inclusive. The 6 added rows bring both to 53. **Delta 0 as required.**
 
+### 4.1 Note on the post-commit count (+1) — documented convention, not a defect
+
+The delta-0 check is evaluated **at the spec's stated HEAD (`e6b9eef`)** — that is what the chain describes.
+Verified: `git log --oneline 0714628^..e6b9eef | wc -l` = **53** = table rows **53** → **delta 0**.
+
+After this phase's own commit, HEAD advances to `8edaee8`, so `git log --oneline 0714628^..HEAD | wc -l`
+reads **54** while the table still holds **53** (delta −1). This is the document's **stated convention**
+(§1.6.1): a revision lists its own commit by hash only in a *later* revision, so immediately after any docs
+commit the table is exactly one behind HEAD. The prior revision shows the same property — v1.0.15's text read
+"47 through `23816cb`" while its own commit `df94a81` was pending, and
+`git log --oneline 0714628^..23816cb | wc -l` = **47**. This revision's commit (`8edaee8`) is to be listed by
+hash in the next docs revision, exactly as it listed `df94a81` here.
+
 ---
 
 ## 5. §12.5.1 row 4 — before / after
