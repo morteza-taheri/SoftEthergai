@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `a7c449fa19455204953bba5d92185b45debdc39a`
-**Document version:** 1.0.17
+**HEAD:** `0c5754e6e9a2c86e7df3b2e7bd966848f68a3210`
+**Document version:** 1.0.18
 **Last updated:** 2026-10-15
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -163,6 +163,9 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 | `71edd67` | docs: clarify the §1.6.1 chain-count convention in the v1.0.16 report |
 | `067d4a3` | fix(automode): reduce tunnel/UI state-owner mismatches (Axis A) |
 | `a7c449f` | docs: PART A commit report with ANR attribution (unattributed, not reproduced) |
+| `a3a6434` | docs: update PROJECT_SPECIFICATION to v1.0.17 (Axis A + already-landed B/C/D + ANR finding) |
+| `94e02b7` | docs: report for COMMIT-PART-A-AND-DOCS-v1.0.17 (spec 1.0.17 update + tag decision) |
+| `0c5754e` | docs: commit Phase 12 IMPLEMENT_P1_REMAINING report (was untracked) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -219,6 +222,18 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > listed by hash in a future revision, per the same convention. No push was performed while this text was
 > written, so the remote remains at `71edd67` until the push step completes; after the push the four commits
 > above plus this revision's own two form one fast-forward, with no force and no tag.
+>
+> **Push state (v1.0.18).** The two commits named by subject in the v1.0.17 note above (`a3a6434` — the spec
+> update to v1.0.17 — and `94e02b7` — the `DOCS-UPDATE-v1.0.17` report) are now listed by hash in the table,
+> which is why the chain reads **59** through `94e02b7`. This revision (CLOSE-OUT-AND-SPEC-HYGIENE-v1.0.18)
+> opens with one documentation commit — `0c5754e` (`docs: commit Phase 12 IMPLEMENT_P1_REMAINING report (was
+> untracked)`) — bringing the chain to **60** through `0c5754e` (**59** range-exclusive). Verified
+> `git log --oneline 0714628^..HEAD | wc -l` = **60** against a table of **60** rows, **delta 0**, measured
+> at `HEAD = 0c5754e`, i.e. before this revision's own spec and report commits are made. This revision's own
+> two commits — the spec update to v1.0.18 and the `CLOSE-OUT-v1.0.18` report — are named by subject here and
+> will be listed by hash in a future revision, per the same convention. At the time this text was written the
+> remote is at `94e02b7`; after the push the three commits above plus this revision's own two form one
+> fast-forward, with no force and **no tag** — `p2.4.10` deliberately remains local-only (see §1.6.11 bullet 2).
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -753,6 +768,50 @@ bullet carries its evidence label.
    executed. §22 is byte-unchanged. Evidence: SOURCE CODE (git history and command log).
 
 - **Methodology lessons:** No new methodology lessons in v1.0.17.
+
+#### 1.6.11 Line-Reference Corrections and Tag Decision (v1.0.18)
+
+This subsection records the **CLOSE-OUT-AND-SPEC-HYGIENE-v1.0.18** revision — a documentation-only,
+**device-free** phase that closes out two loose ends and makes one explicit decision. It ran **no build, no
+test and no device command**, and performed **no tag operation**. The frozen sections §1.6.2–§1.6.10 are
+**not modified**; the corrections below are recorded *here* precisely so that their text can stay frozen.
+Each bullet carries its evidence label.
+
+1. **Line-reference correction — `SSL_CTX_set_verify` is at `aes_wrapper.c:111`, not `:110`.**
+   - *Historical citations:* §1.6.7 and §1.6.8 both cite `aes_wrapper.c:110` for the
+     `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)` call (the §1.6.7 citation and the §1.6.8 bullet on
+     N-06/SEC-01).
+   - *Current location:* the call is at `aes_wrapper.c:111`. Verified by direct inspection at HEAD: the
+     `SSL_CTX_set_verify` occurrence is on line 111, and the surrounding context (the
+     `SSL_MODE_AUTO_RETRY` line and the "Disable verification for VPN connections" comment) confirms the
+     identity of the site. The drift is one line, caused by commit `b652198` (SEC-01 part 1, native
+     peer-fingerprint exposure) adding one `#include` near the top of the file.
+   - *Why it is not fixed in place:* §1.6.7 and §1.6.8 are frozen sections under this document's rule that
+     historical session summaries are not retro-edited. §1.6.9 already cites `:111` and already notes that
+     "the `:110` citations in §1.6.7/§1.6.8 predate commit `b652198`" — this bullet is the durable,
+     non-invasive record of that correction, so a future reader who follows a `:110` citation from §1.6.7
+     or §1.6.8 is not misled.
+   - Evidence: SOURCE CODE.
+
+2. **Tag `p2.4.10` — decision: leave it local-only.**
+   - *State:* the tag exists **only locally** and has **never** been pushed. The remote knows exactly four
+     tags (`p2.4.5`, `p2.4.7`, `p2.4.8`, `p2.4.9`); `p2.4.10` is absent from
+     `git ls-remote --tags origin`, confirmed by a targeted query and by the full remote tag list.
+   - *What it points at:* `071462816b1eef7e7f7459483fcd69909938cd11` — the first commit of the pushed
+     chain, whose subject is `feat(ui): add DNS presets, app exception icons and Auto Mode cleanup`. That
+     is a UI/cleanup commit, **not** a release cut.
+   - *Decision:* **leave it local-only.** Rationale: it carries no semantic release value (it does not mark
+     a release, and pushing it would add a remote tag with no clear meaning); the remote tag set is
+     already complete and consistent without it; and keeping it local costs nothing.
+   - *Operation performed:* **none.** No tag was created, moved, deleted or pushed in this phase.
+   - Evidence: SOURCE CODE.
+
+3. **`IMPLEMENT_P1_REMAINING_REPORT.md` (Phase 12) — committed.** The Phase 12 implementation report had
+   been left untracked when that phase ended with a STOP condition. It is committed unmodified in this
+   revision as a single commit (`0c5754e`); verified unmodified at 606 lines / 30,431 bytes, matching the
+   Phase 12 record. Evidence: SOURCE CODE.
+
+4. **Methodology lessons:** No new methodology lessons in v1.0.18.
 
 ---
 
@@ -2085,7 +2144,8 @@ The following items are planned for the source-and-path architecture described i
 | 13 | **SEC-02 / APP-1** cleartext HTTP permitted globally | `AndroidManifest.xml:28` `usesCleartextTraffic="true"` plus the blanket `network_security_config.xml:3` (`<base-config cleartextTrafficPermitted="true"/>`); HTTP fallback/bootstrap URLs in `VpnGateSources.kt`. HTTPS-first ordering and `ResilientDns` are existing mitigations, but the policy permits cleartext to any host. | P2_MEDIUM | **FIXED (v1.0.15) — device-verified active enforcement; see §1.6.8 bullets 4–5. Commit `1bbf8a6`.** Evidence: SOURCE CODE + PHYSICAL DEVICE |
 | 14 | **N-11** `atoi()` parses `Content-Length` | `softether_protocol.c:818, 4075, 4202` cast `atoi()` to `uint32_t`; a negative/malformed value becomes `0xFFFFFFFF`, but every site is bounded downstream (`:838–839`, `:4078`, `:4207`), so this is robustness/defence-in-depth rather than a demonstrated exploit. | P3_LOW | **FIXED (v1.0.15) — see §1.6.8 bullet 2. Commit `f66f464`.** Evidence: SOURCE CODE + TEST |
 | 15 | **SEC-01 reconnect-path coverage (partial)** | The reconnect handshake is TOFU-checked — `verifyTofuAfterHandshake()` is called from `attemptReconnect()` as well as `performConnectInner()` (commit `ff78116`) — but was **not** device-reproduced: reaching it needs a mid-session network interruption, which the project's rules forbid inducing. Coverage rests on SOURCE CODE + the 2 source-shape tests in `Sec01ReconnectTofuCoverageTest`. Re-capture opportunistically if a reconnect occurs naturally during a future device run. See §1.6.9 bullet 6. | P3_LOW (opportunistic) | **OPEN — UNKNOWN (no live trace).** Not a known bypass: the check is present at both call sites; only the device-level confirmation is outstanding. Evidence: SOURCE CODE + UNKNOWN |
-| 16 | **FINDING ANR-2026-10-15 — unattributed ANR during the Axis A (PART A) device run** | One ANR observed while exercising the PART A build on the physical device: main-thread degradation from 15:58:56 (Skipped 35 → 1311 → 1821 frames), ANR at 16:06:01, process death pid 23115 → 25247, **tunnel stayed healthy throughout**. The changed Axis A paths demonstrably did **not** run: `GlobalVpnTracker` logged only "network available" (A-2's `onLost` never executed), no service state change was observed (A-3's `updateState` fold never executed), and no `[AUTO]` lines were emitted (A-4/A-5 never executed). Controls: a baseline-control run of the pre-change build was clean, and a re-test of the same PART A APK was clean. `/data/anr` is unreadable without root, so the **blocked frame is UNKNOWN**. Most probable remaining explanation, labelled **INFERENCE**: a pre-existing duplicate-`CONNECT` race combined with UI log-panel degradation. Forensics in `IMPLEMENT_P1_REMAINING_REPORT.md` and `COMMIT_PART_A_REPORT.md` §4; the commit body of `067d4a3` carries the same caveat. | P2_MEDIUM (unattributed; not blocking PART A, which is otherwise green on JVM + build) | **OPEN — UNKNOWN, NOT REPRODUCED.** Not attributed to PART A: the negative assurance above shows none of the three Axis A paths was in flight. To close: read `/data/anr` on a rooted or userdebug device, or reproduce with `Debug.` systrace / a `StrictMode` dump attached; and instrument the CONNECT path to determine whether the suspected duplicate-`CONNECT` race exists. **Re-verify on device before the next feature revision** so the PARTIAL status is either upgraded to PASS by a clean multi-route run or escalated with a trace. Evidence: PHYSICAL DEVICE (logcat) + INFERENCE + **UNKNOWN** + **NOT REPRODUCED** |
+| 16 | **FINDING ANR-2026-10-15 — unattributed ANR during the Axis A (PART A) device run** | One ANR observed while exercising the PART A build on the physical device: main-thread degradation from 15:58:56 (Skipped 35 → 1311 → 1821 frames), ANR at 16:06:01, process death pid 23115 → 25247, **tunnel stayed healthy throughout**. The changed Axis A paths demonstrably did **not** run: `GlobalVpnTracker` logged only "network available" (A-2's `onLost` never executed), no service state change was observed (A-3's `updateState` fold never executed), and no `[AUTO]` lines were emitted (A-4/A-5 never executed). Controls: a baseline-control run of the pre-change build was clean, and a re-test of the same PART A APK was clean. `/data/anr` is unreadable without root, so the **blocked frame is UNKNOWN**. Most probable remaining explanation, labelled **INFERENCE**: a pre-existing duplicate-`CONNECT` race combined with UI log-panel degradation. Forensics in `IMPLEMENT_P1_REMAINING_REPORT.md` and `COMMIT_PART_A_REPORT.md` §4; the commit body of `067d4a3` carries the same caveat. **Carried forward from Phase 13: opportunistic re-capture when a future AutoConnect run hits the same stall.** | P2_MEDIUM (unattributed; not blocking PART A, which is otherwise green on JVM + build) | **OPEN — UNKNOWN, NOT REPRODUCED.** Not attributed to PART A: the negative assurance above shows none of the three Axis A paths was in flight. To close: read `/data/anr` on a rooted or userdebug device, or reproduce with `Debug.` systrace / a `StrictMode` dump attached; and instrument the CONNECT path to determine whether the suspected duplicate-`CONNECT` race exists. **Re-verify on device before the next feature revision** so the PARTIAL status is either upgraded to PASS by a clean multi-route run or escalated with a trace. Evidence: PHYSICAL DEVICE (logcat) + INFERENCE + **UNKNOWN** + **NOT REPRODUCED** |
+| 17 | **PART A device verification (partial)** | The four Axis A changes (A-2 `onLost` re-check budget 500 ms → 50 ms; A-3 `VpnStackLedger.reconcile` replacing four protocol egates; A-4 the single `reportArmedTunnelLoss()` funnel; A-5 `Disconnected` published after the OQ-7/OQ-6/OQ-1 decision) are committed (`067d4a3`) and JVM-tested: `:app:testProDebugUnitTest` **671/0/0/1** (+24 new over the 647 baseline), `:SoftEtherClient:test` **173/0/0/0**, `:app:assembleProDebug` SUCCESSFUL with a reproducible APK SHA-256. Device verification was **PARTIAL**: one ANR during cycle 1 (unattributed, NOT REPRODUCED — see row 16). Re-verify on a future device run to convert PARTIAL to FULL. See §1.6.10. | P3_LOW (opportunistic) | **OPEN — PARTIAL (no complete device trace).** The JVM and build layers are green and reproducible; only the device layer is incomplete, and the single ANR is recorded separately as row 16 rather than counted against PART A. Evidence: SOURCE CODE + TEST + PRIOR REPORT + PHYSICAL DEVICE (the PARTIAL run) |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -2425,6 +2485,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.15 | 2026-10-15 | DOCS-UPDATE: recorded the four implemented + device-verified security fixes (N-09, N-11, RISK-B, SEC-02) in §1.6.8; updated §12.5.1 rows 4/5/7/13/14 to reflect their fixed/closed status; advanced the §1.6.1 chain through `23816cb`. SEC-01 remains OPEN (design deferred). No source/test/build/device change. |
 | 1.0.16 | 2026-10-15 | DOCS-UPDATE: recorded SEC-01 TOFU fingerprint pinning in a new **§1.6.9** — Design B landed (`b652198` native peer-fingerprint exposure, `9954c03` Kotlin store + primary-handshake wiring + 11 pure-JVM tests), primary handshake **device-verified** (Phase 9/10 on `5585fecc`: `[TOFU] match` × 3, 0 mismatch, pin store persisted through install/upgrade), and the **reconnect path fixed** (`ff78116`) so `verifyTofuAfterHandshake()` runs at both handshake-completing sites — with an explicit **PARTIAL** caveat (reconnect not device-reproduced; covered by SOURCE CODE + 2 source-shape tests; library suite **173/0/0/0**, app suite **647/0/0/1**). Updated **§12.5.1 row 4** to **CLOSED (v1.0.16)** and added **row 15** for the opportunistic reconnect re-capture. Advanced **§1.6.1** to **53** commits through `e6b9eef` (adding the previously deferred `df94a81` plus the five SEC-01 commits; inclusive-count vs table-row delta 0). Refreshed the header HEAD field to `e6b9eef`. **No source / test / native / build / device change**; §22 untouched. No new methodology lessons in v1.0.16. |
 | 1.0.17 | 2026-10-15 | DOCS-UPDATE + PART A COMMIT | records the landing of **PART A** (Axis A: tunnel state / UI sync) in a new **§1.6.10** — A-2 the `onLost` re-check budget 500 ms → 50 ms via the named constant `VPN_LOST_RECHECK_MS` (**reduced, not removed**, because `onLost` precedes `onAvailable` and the re-check is what absorbs a network handover); A-3 four protocol-name "egates" in `GlobalVpnTracker` replaced by the pure stateless fold `VpnStackLedger.reconcile(live, current, event)` (on losing X with a surviving protocol Y, Y is republished as CONNECTED **from Y's own identity** and is never clobbered by X's teardown; the `sstpListener:280` egate is deliberately left in place as provably equivalent and test-pinned); A-4 the three armed-tunnel loss paths in `startConnectedWatcher` funnelled through one `reportArmedTunnelLoss()` with the detection latencies deliberately **not** unified; A-5 `AutoModeState.Disconnected` published only **after** the OQ-7/OQ-6/OQ-1 decision rather than as the first statement of `onUnexpectedDisconnect`. Adds 24 JVM tests (13 new `VpnStackLedgerTest`, +5 `GlobalVpnTrackerTest`, +6 `AutoModeControllerTest`). Records the verification status as **PARTIAL** with an explicit **ANR caveat**: one ANR at 16:06:01 (pid 23115 → 25247, Skipped 35 → 1311 → 1821 frames, tunnel healthy) that is **UNATTRIBUTED** and **NOT REPRODUCED**, with the negative assurance that the Axis A paths did not run (`GlobalVpnTracker` logged only "network available"; no service state change; no `[AUTO]` lines) and two clean controls (baseline-control run, re-test of the same APK); the blocked frame is **UNKNOWN** because `/data/anr` is unreadable without root. Records **PARTs B, C and D as already landed** (`a9e16fd`, `607c651`, `c572050`) and **not re-landed**, including PART D's live probe (`:app:assembleProRelease` exits 1 with the intended `GradleException` at `app/build.gradle:109`, so the RISK-A fail-closed guard fires and `assembleProDebug` still succeeds). Advances **§1.6.1** to **57** commits through `a7c449f` (delta 0 at `HEAD = a7c449f`, adding `8edaee8`, `71edd67`, `067d4a3`, `a7c449f`). Adds **§12.5.1 row 16** (the ANR finding, OPEN — UNKNOWN) and notes rows 6 (RISK-A partially mitigated, guard verified firing) and 10 (Axis A/B/C PARTIALLY CLOSED). New artifact `COMMIT_PART_A_REPORT.md` (commit `a7c449f`). Refreshes the header HEAD field to `a7c449f`. **This revision made no source, test, native, build, manifest or XML change and ran no build, test, or device command**; §22 untouched. No new methodology lessons in v1.0.17. |
+| 1.0.18 | 2026-10-15 | DOCS-HYGIENE + CLOSE-OUT | a **documentation-only, device-free** close-out. Commits the previously-untracked **`IMPLEMENT_P1_REMAINING_REPORT.md`** (the Phase 12 implementation report, left untracked when that phase ended on a STOP condition) unmodified — 606 lines / 30,431 bytes, verified. Adds a new **§1.6.11** — "Line-Reference Corrections and Tag Decision (v1.0.18)" — with four evidence-labelled bullets: (1) the `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)` call is at **`aes_wrapper.c:111`**, not the `:110` cited by §1.6.7 and §1.6.8 (one-line drift from commit `b652198`'s added include); those frozen sections are **not** retro-edited, so the correction is recorded here, and §1.6.9 already cites `:111`; (2) the **tag `p2.4.10` decision — leave it local-only**: it exists only locally, has never been pushed, resolves to `0714628` (a UI/cleanup commit, not a release cut), carries no semantic release value, and keeping it local costs nothing — **no tag operation was performed**; (3) the Phase 12 report commit; (4) no new methodology lessons. Updates **§12.5.1**: row 16 (the ANR) gains a "**Carried forward from Phase 13** — opportunistic re-capture when a future AutoConnect run hits the same stall" note, and a new **row 17** records **PART A device verification as OPEN — PARTIAL** (JVM/build green and reproducible, device layer incomplete, the ANR tracked separately as row 16 rather than counted against PART A). Advances **§1.6.1** to **60** commits through `0c5754e` (delta 0 at `HEAD = 0c5754e`, adding `a3a6434`, `94e02b7`, `0c5754e`). Refreshes the header HEAD field to `0c5754e`. **No source / test / native / build / manifest / XML change; no build, test, or device command; no tag operation**; §22 untouched. No new methodology lessons in v1.0.18 |
 
 ### Verification Status
 
@@ -2467,6 +2528,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Security Fixes Landed + Device-Verified (§1.6.8) | HISTORICAL — the four fixes are attributed to the FIX-NATIVE-SECURITY-SMALL implementation phase (commits `f66f464`, `1bbf8a6`; SOURCE CODE + TEST) and the device statements to DEVICE-VERIFY-SECURITY-SMALL (PHYSICAL DEVICE), not re-verified in this revision. SEC-01 remains OPEN — design deferred |
 | SEC-01 TOFU Fingerprint Pinning (§1.6.9) | HISTORICAL + PARTIAL — attributed to the FIX-SEC01-TOFU-PINNING-IMPL phase (commits `b652198`, `9954c03`; SOURCE CODE + TEST) and its FIX-SEC01-RECONNECT follow-up (`ff78116`; SOURCE CODE + TEST); the **primary-handshake** device statements are PHYSICAL DEVICE evidence from Phase 9 (FIX-SEC01-TOFU-PINNING) and Phase 10 (VERIFY-AND-FIX-SEC01-RECONNECT), not re-verified in this revision. The **reconnect** handshake is recorded explicitly as **UNKNOWN — not device-reproduced** (coverage is SOURCE CODE + 2 source-shape tests only). This revision ran no build, test, or device command |
 | PART A (Axis A) Landed, with an Explicit ANR Caveat (§1.6.10) | HISTORICAL + PARTIAL — the four Axis A changes are attributed to commit `067d4a3` (SOURCE CODE) and to the 24 added JVM tests (TEST); PARTs B/C/D are attributed to their already-landed commits (`a9e16fd`, `607c651`, `c572050`) and PART D's guard probe to the IMPLEMENT-AND-VERIFY-P1-REMAINING phase (TEST). The JVM/build figures are carried forward as **PRIOR REPORT** — this revision re-ran nothing. The **ANR finding** is PHYSICAL DEVICE evidence (logcat) for the device run in which it occurred, with an explicit **negative assurance** (the Axis A paths did not run), two clean controls, **NOT REPRODUCED**, and the blocked frame recorded as **UNKNOWN** because `/data/anr` is unreadable without root; the most probable remaining explanation is labelled **INFERENCE**, not fact. This revision ran no build, test, or device command |
+| Line-Reference Corrections and Tag Decision (§1.6.11) | HISTORICAL — the `SSL_CTX_set_verify` location is **SOURCE CODE** (verified at `aes_wrapper.c:111` by direct inspection at HEAD; the `:110` citations in the frozen §1.6.7/§1.6.8 are left unmodified and the drift is attributed to commit `b652198`'s added include); the `p2.4.10` tag state is **SOURCE CODE** (local `git tag -l` lists it; `git ls-remote --tags origin` does not, and it resolves to `0714628`), with the decision and its rationale recorded and **no tag operation performed**; the Phase 12 report commit is **SOURCE CODE** (git). This revision ran no build, test, or device command |
 
 ### Legend
 
