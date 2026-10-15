@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * SEC-01 — pure-JVM tests for the TOFU certificate-fingerprint store.
@@ -188,5 +189,77 @@ class ServerFingerprintStoreTest {
         assertFalse(ServerFingerprint.isWellFormed("ab".repeat(31)))   // 62 chars
         assertFalse(ServerFingerprint.isWellFormed("zz".repeat(32)))   // non-hex
         assertTrue(ServerFingerprint.isWellFormed("deadBEEF".repeat(8)))
+    }
+}
+
+/**
+ * SEC-01 follow-up (FIX-SEC01-RECONNECT) — source-shape regression guard for the TOFU **call sites**.
+ *
+ * ## Why this is a source-shape assertion
+ *
+ * `ConnectionController` cannot be constructed in a JVM unit test: it needs a `SoftEtherVpnService`
+ * context, `ParcelFileDescriptor`, coroutines, and the native library. So the TOFU *decision* is covered
+ * behaviourally by [ServerFingerprintStoreTest], and the *placement* of the check — which is what the
+ * reconnect gap was — is pinned here by reading the controller source. This is the same technique
+ * `SoftEtherClientHandleGuardTest` uses for the same reason.
+ *
+ * ## The invariant
+ *
+ * The TOFU check must run on **both** paths that complete a new TLS handshake: the initial connect
+ * (`performConnectInner`) and every reconnect (`attemptReconnect`). Dropping it from either is a security
+ * regression — an unchecked handshake — so both call sites are asserted.
+ */
+class Sec01ReconnectTofuCoverageTest {
+
+    // The Gradle unit-test CWD for this module is `SoftEtherClient/`.
+    private val controllerSource = File(
+        "src/main/java/vn/unlimit/softether/controller/ConnectionController.kt",
+    )
+
+    private fun readController(): String {
+        assertTrue(
+            "ConnectionController.kt must be readable from the module test CWD (${controllerSource.absolutePath})",
+            controllerSource.exists(),
+        )
+        return controllerSource.readText()
+    }
+
+    /** The reconnect path must run the same TOFU check as the initial connect. */
+    @Test
+    fun reconnectPathRunsTheTofuCheck() {
+        val text = readController()
+
+        val start = text.indexOf("private suspend fun attemptReconnect()")
+        assertTrue("attemptReconnect() must exist", start >= 0)
+        // The function ends at the next top-level member declaration.
+        val nextMember = text.indexOf("\n    private fun ", start + 1)
+        val reconnectBody = text.substring(start, if (nextMember < 0) text.length else nextMember)
+
+        assertTrue(
+            "attemptReconnect() must call verifyTofuAfterHandshake — otherwise a relay substituted " +
+                "after first use goes undetected on every reconnect",
+            reconnectBody.contains("verifyTofuAfterHandshake(nativeHandle)"),
+        )
+        assertTrue(
+            "the reconnect path must block on a MISMATCH decision",
+            reconnectBody.contains("TofuDecision.BLOCK"),
+        )
+        assertTrue(
+            "the reconnect path must report the mismatch through the existing error channel",
+            reconnectBody.contains("onError(\"TLS fingerprint mismatch\")"),
+        )
+    }
+
+    /** Both handshake-completing paths must share the one check. */
+    @Test
+    fun bothHandshakePathsUseTheSharedCheck() {
+        val text = readController()
+        val occurrences = Regex("""verifyTofuAfterHandshake\(nativeHandle\)""").findAll(text).count()
+        assertEquals(
+            "verifyTofuAfterHandshake must be called from exactly the two handshake-completing paths " +
+                "(initial connect + reconnect)",
+            2,
+            occurrences,
+        )
     }
 }

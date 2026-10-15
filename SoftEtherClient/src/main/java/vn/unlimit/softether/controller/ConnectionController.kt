@@ -532,6 +532,42 @@ class ConnectionController(
         }
     }
 
+    /**
+     * SEC-01 — TOFU certificate-fingerprint pinning (Design B, `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md` §2),
+     * evaluated on **every** path that completes a NEW TLS handshake.
+     *
+     * There are exactly two such paths: the initial connect ([performConnectInner]) and every reconnect
+     * ([attemptReconnect] — which claims/destroys the old handle, runs a fresh `nativeCreate`, and then a
+     * fresh `nativeConnectWithHub`, i.e. a brand-new TLS handshake). Both must run this check; checking only
+     * the initial connect would leave a relay substituted after first use undetected on reconnect.
+     *
+     * The handshake has completed when this runs, so the peer certificate is available. The SHA-256
+     * fingerprint is compared against the per-endpoint pin and the outcome is logged once. Returns the policy
+     * decision: `PROCEED` for MATCH / FIRST_USE / MISSING, `BLOCK` for MISMATCH (a pin that no longer matches,
+     * or a pinned endpoint that can no longer be re-verified). The caller owns the abort, because each call
+     * site has its own teardown path.
+     */
+    private fun verifyTofuAfterHandshake(handle: Long): TofuDecision {
+        val presentedFingerprint = client.getPeerFingerprint(handle)
+        val serverKey = ServerKey(
+            hostname = config.serverHost,
+            ip = config.serverHost,
+            port = config.serverPort,
+        )
+        val verifyResult = fingerprintStore.verify(serverKey, presentedFingerprint ?: "")
+        when (verifyResult) {
+            VerifyResult.MATCH ->
+                Log.i(TAG, "[TOFU] match key=${serverKey.canonical}")
+            VerifyResult.FIRST_USE ->
+                Log.i(TAG, "[TOFU] first-use stored key=${serverKey.canonical} fp=$presentedFingerprint")
+            VerifyResult.MISSING ->
+                Log.i(TAG, "[TOFU] missing key=${serverKey.canonical} (no fingerprint available; proceeding)")
+            VerifyResult.MISMATCH ->
+                Log.e(TAG, "[TOFU] mismatch key=${serverKey.canonical} presented=${presentedFingerprint ?: "<none>"}")
+        }
+        return verifyResult.toDecision()
+    }
+
     private suspend fun performConnectInner() {
         // Check if already cancelled before proceeding
         if (isCancelled.get()) {
@@ -650,36 +686,14 @@ class ConnectionController(
             throw Exception("Connection failed: ${SoftEtherError.getErrorString(result)} ($result)")
         }
 
-        // SEC-01 — TOFU certificate-fingerprint pinning (Design B, audit §2).
-        //
-        // The TLS handshake completed inside nativeConnectWithHub, so the peer
-        // certificate is now available. Extract its SHA-256 fingerprint and pin it
-        // per endpoint; every later connect to the same endpoint must present the
-        // same fingerprint. A brand-new endpoint is TOFU-accepted and recorded, so
-        // an empty store still connects normally — the AutoConnect UX is unchanged.
-        //
-        // Policy (VerifyResult.toDecision()): MATCH / FIRST_USE / MISSING proceed;
-        // MISMATCH blocks. The native verify policy (SSL_VERIFY_NONE) is deliberately
-        // unchanged — this is a Kotlin-side rejection after the handshake, which is
-        // what the audit specifies (VPN Gate relays are self-signed and IP-addressed).
-        val presentedFingerprint = client.getPeerFingerprint(nativeHandle)
-        val serverKey = ServerKey(
-            hostname = config.serverHost,
-            ip = config.serverHost,
-            port = config.serverPort,
-        )
-        val verifyResult = fingerprintStore.verify(serverKey, presentedFingerprint ?: "")
-        when (verifyResult) {
-            VerifyResult.MATCH ->
-                Log.i(TAG, "[TOFU] match key=${serverKey.canonical}")
-            VerifyResult.FIRST_USE ->
-                Log.i(TAG, "[TOFU] first-use stored key=${serverKey.canonical} fp=$presentedFingerprint")
-            VerifyResult.MISSING ->
-                Log.i(TAG, "[TOFU] missing key=${serverKey.canonical} (no fingerprint available; proceeding)")
-            VerifyResult.MISMATCH ->
-                Log.e(TAG, "[TOFU] mismatch key=${serverKey.canonical} presented=${presentedFingerprint ?: "<none>"}")
-        }
-        if (verifyResult.toDecision() == TofuDecision.BLOCK) {
+        // SEC-01 — TOFU certificate-fingerprint pinning (Design B, audit §2). The TLS
+        // handshake completed inside nativeConnectWithHub, so the peer certificate is
+        // available; [verifyTofuAfterHandshake] pins its SHA-256 per endpoint and
+        // reports the decision. MISMATCH blocks. The native verify policy
+        // (SSL_VERIFY_NONE) is deliberately unchanged — this is a Kotlin-side rejection
+        // after the handshake, which is what the audit specifies (VPN Gate relays are
+        // self-signed and IP-addressed).
+        if (verifyTofuAfterHandshake(nativeHandle) == TofuDecision.BLOCK) {
             currentState = ConnectionState.ERROR
             // Route through the existing error channel and stop connect()'s retry loop:
             // a pin mismatch is deterministic, so a retry cannot succeed and must not be
@@ -1391,6 +1405,30 @@ class ConnectionController(
 
             if (result != 0) {
                 throw Exception("Reconnection failed with error code: $result")
+            }
+
+            // SEC-01 — TOFU certificate-fingerprint pinning (Design B, audit §2).
+            //
+            // The reconnect above performed a NEW TLS handshake (the old handle was
+            // claimed/destroyed at the top of this function and a fresh nativeCreate +
+            // nativeConnectWithHub ran), so it must run the SAME check as the initial
+            // connect. Without this, a relay substituted after first use would go
+            // undetected on every reconnect — a latent bypass of the pin.
+            if (verifyTofuAfterHandshake(nativeHandle) == TofuDecision.BLOCK) {
+                currentState = ConnectionState.ERROR
+                // Stop any further work in this attempt (the checks below all read
+                // isCancelled) and tear down through the existing single-owner claim —
+                // the same primitive every other early-exit branch in this function uses.
+                isCancelled.set(true)
+                claimAndDestroyNativeHandle()
+                onError("TLS fingerprint mismatch")
+                // Deliberately NOT a throw. This function's catch block unconditionally
+                // calls onError("Reconnect failed: …"), so throwing would emit a second,
+                // differently worded error and re-run the dual-channel teardown the F.28
+                // lifecycle work exists to prevent. Returning after the explicit cleanup
+                // above keeps exactly one owner and one error report, matching what the
+                // initial-connect path produces (see performConnectInner).
+                return
             }
 
             if (isCancelled.get() || nativeLifecycle.isDestroyed() || currentState == ConnectionState.DISCONNECTED) {
