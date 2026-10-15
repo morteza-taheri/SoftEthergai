@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `e6b9eef371a0190156021c8ea51e18e6ec3ee4a3`
-**Document version:** 1.0.16
+**HEAD:** `a7c449fa19455204953bba5d92185b45debdc39a`
+**Document version:** 1.0.17
 **Last updated:** 2026-10-15
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -159,6 +159,10 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 | `e03f45d` | docs: report for FIX-SEC01-TOFU-PINNING |
 | `ff78116` | fix(security): run TOFU fingerprint check on the reconnect path (SEC-01 follow-up) |
 | `e6b9eef` | docs: report for FIX-SEC01-RECONNECT |
+| `8edaee8` | docs: update PROJECT_SPECIFICATION to v1.0.16 (SEC-01 TOFU pinning — partial-verification caveat) |
+| `71edd67` | docs: clarify the §1.6.1 chain-count convention in the v1.0.16 report |
+| `067d4a3` | fix(automode): reduce tunnel/UI state-owner mismatches (Axis A) |
+| `a7c449f` | docs: PART A commit report with ANR attribution (unattributed, not reproduced) |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -204,6 +208,17 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > chain to **53** through `e6b9eef` (52 range-exclusive). This revision's own commit will be recorded by
 > hash in a future revision, per the same convention. (The v1.0.15 note's "47 through `23816cb`" was
 > correct for that revision; it listed 47 rows and had not yet listed its own commit, `df94a81`.)
+>
+> **Push state (v1.0.17).** Four commits are now listed by hash in the table — `8edaee8` and `71edd67` (the
+> v1.0.16 spec commit and its chain-count-clarification report commit, both previously deferred by the
+> v1.0.16 note), plus `067d4a3` (PART A — the first Axis A source change) and `a7c449f` (the PART A commit
+> report) — bringing the chain to **57** through `a7c449f` (**56** range-exclusive). Verified
+> `git log --oneline 0714628^..HEAD | wc -l` = **57** against a table of **57** rows, **delta 0**, measured
+> at `HEAD = a7c449f`, i.e. before this revision's own commits are made. This revision's own two commits —
+> the spec update to v1.0.17 and the `DOCS-UPDATE-v1.0.17` report — are named by subject here and will be
+> listed by hash in a future revision, per the same convention. No push was performed while this text was
+> written, so the remote remains at `71edd67` until the push step completes; after the push the four commits
+> above plus this revision's own two form one fast-forward, with no force and no tag.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -641,6 +656,103 @@ in *this* documentation revision. Each bullet carries its evidence label.
    Evidence: SOURCE CODE + INFERENCE.
 
 - **Methodology lessons:** No new methodology lessons in v1.0.16.
+
+#### 1.6.10 PART A (Axis A) Landed, with an Explicit ANR Caveat (v1.0.17)
+
+This subsection records the **COMMIT-PART-A-AND-DOCS-v1.0.17** revision. **PART A** — the Axis A
+(tunnel state / UI sync) work registered at **§12.5.1 row 10** — is committed for the first time here
+(`067d4a3`), together with its rationale record (`a7c449f`). The revision is **documentation plus a
+commit**: it ran **no build, no test and no device command**, and the device (5585fecc) was DETACHED
+throughout. PARTs B, C and D were found **already landed** and were **not** re-landed (bullet 8). Each
+bullet carries its evidence label.
+
+1. **PART A — A-2, the `onLost` re-check budget (500 ms → 50 ms).** `GlobalVpnTracker.onLost` delayed
+   its re-check by a hard-coded `500` ms; it is now `VPN_LOST_RECHECK_MS`, a new file-scope constant
+   (`internal const val VPN_LOST_RECHECK_MS = 50L`) with a documenting comment. The budget was **reduced,
+   not removed**: `onLost` is delivered *before* `onAvailable`, so the re-check is what absorbs a network
+   handover — a handover arriving inside the window is re-observed rather than published as a disconnect.
+   Removing it outright would re-introduce the handover flap that the budget exists to prevent. Evidence:
+   SOURCE CODE.
+
+2. **PART A — A-3, four protocol-name "egates" replaced by a stateless fold.** The four
+   `_vpnState.value.protocol == <literal>` checks in `GlobalVpnTracker` silently dropped or mis-published
+   state: two swallowed a disconnect belonging to the non-current protocol, and two could publish a
+   teardown for protocol X while protocol Y was still the live tunnel. They are replaced by a pure,
+   stateless fold — `object VpnStackLedger { fun reconcile(live, current, event): VpnStackReconciliation }`
+   — backed by a `CopyOnWriteArrayList<VpnStackReport>`. On losing X with a surviving protocol Y, Y is
+   republished as CONNECTED **from Y's own identity** (Y's protocol, session id and timestamps), never
+   clobbered by X's teardown; if no survivor exists, X's teardown is published only when
+   `current.protocol == X`, otherwise nothing is published. `updateState(...)` now folds through the ledger
+   and applies `verdict.live` plus `verdict.publish?.let { _vpnState.value = it }`. The `sstpListener:280`
+   egate is **deliberately left in place**: it is provably equivalent to the ledger's outcome and is pinned
+   by a test, so removing it would add risk with no behavioural gain. Evidence: SOURCE CODE + TEST
+   (`VpnStackLedgerTest`, 13 pure behavioural tests).
+
+3. **PART A — A-4, a single armed-loss funnel.** The three armed-tunnel loss paths in
+   `AutoModeController.startConnectedWatcher` each carried its own copy of the teardown sequence (log,
+   cancel watcher, stop liveness probe, clear `onTunnelLost`, dispatch `onUnexpectedDisconnect`). All three
+   now call one `private fun reportArmedTunnelLoss(reason: String, dropped: AutoModeCandidate?)`. The
+   **detection latencies are deliberately NOT unified**: each path's measured latency is part of its
+   behaviour, and collapsing them is a separate, riskier change. Only the reporting side is funnelled.
+   Evidence: SOURCE CODE + TEST.
+
+4. **PART A — A-5, `Disconnected` published after the decision.** `onUnexpectedDisconnect` published
+   `AutoModeState.Disconnected` as its **first** statement, before the OQ-7 / OQ-6 / OQ-1 decision, so a UI
+   observer could see a stale `Disconnected` racing the controller's own reasoning. The publish now happens
+   **inside** the decision: in the OQ-7 stand-down branch, in the OQ-6 branch, and once before the OQ-3
+   delay; the OQ-1 limit publishes `Error(ERROR_RECONNECT_LIMIT)` only. `onUnexpectedDisconnectForTests`'s
+   KDoc was updated to match. Evidence: SOURCE CODE + TEST (3 behavioural ordered-trace tests).
+
+5. **Tests added.** `VpnStackLedgerTest.kt` (new, 13 pure tests) covers the A-3 fold, including the
+   previously-closed clobber-Y case and stale-protocol silence. `GlobalVpnTrackerTest` gains 5 tests: the
+   A-2 bounds (`VPN_LOST_RECHECK_MS < 500L`, `>= 10L`) and named-constant source guard, plus A-3 guards
+   (exactly one remaining `if (_vpnState.value.protocol ==` guard, the SoftEther/OpenVPN egates gone,
+   `updateState` delegates to the ledger). `AutoModeControllerTest` gains 6 tests: 3 behavioural A-5
+   ordered-trace tests over a `trace` recorder on `FakeAdapter`, and 3 A-4 source-shape tests, with
+   `isTunnelBusy` / `reconnectInitialDelayMs` defaulted onto the `controller(...)` factory. Evidence: TEST.
+
+6. **PART A verification status — PARTIAL, recorded explicitly.** JVM and build evidence is green and is
+   carried forward from the implementation phase as **PRIOR REPORT**: `:app:testProDebugUnitTest`
+   **671/0/0/1** (baseline 647, i.e. **+24** new tests); `:SoftEtherClient:test` **173/0/0/0**;
+   `:app:assembleProDebug` SUCCESSFUL; APK SHA-256
+   `713b1014e3785f35bbc69e74e05726ce10fb3e87c9a57ad66072734091186c97` reproduced. **Device verification is
+   PARTIAL, not clean**: one ANR was observed during live testing and is **NOT REPRODUCED** (bullet 7).
+   This revision re-ran none of it. Evidence: PRIOR REPORT + TEST.
+
+7. **ANR finding — unattributed, NOT REPRODUCED, carried as an open item.** One ANR at **16:06:01**,
+   followed by process death (pid 23115 → 25247), with main-thread degradation from 15:58:56 (Skipped
+   35 → 1311 → 1821 frames) and the tunnel **staying healthy** throughout. The **negative assurance** —
+   which is the load-bearing part of the attribution argument — is that the Axis A paths did not run:
+   `GlobalVpnTracker` logged only "network available", so A-2's `onLost` never executed; no service
+   state-change event was observed, so A-3's `updateState` fold never executed; and no `[AUTO]` lines were
+   emitted, so A-4/A-5 never executed. Controls: a baseline-control run of the pre-change build was clean,
+   and a re-test of the same PART A APK was clean. `/data/anr` is unreadable without root, so the blocked
+   frame is **UNKNOWN**. The most probable remaining explanation is labelled **INFERENCE**: a pre-existing
+   duplicate-`CONNECT` race combined with UI log-panel degradation. The finding is registered as
+   **§12.5.1 row 16**; it is **not** a regression of PART A. Evidence: PHYSICAL DEVICE (logcat) +
+   INFERENCE + **UNKNOWN** (blocked frame) + **NOT REPRODUCED**.
+
+8. **PARTs B, C and D — already landed, no change made.** **PART B** (Axis B, `isTunnelUsable()` in Auto
+   Mode routing) is a **NO-OP**: `VpnServerRepository.productionRouting()` already returns `preferVpn`,
+   `tunnelUsable` and `hasBoundNetwork`, and `refresh()` already calls `CollectorRouting.choose()`, which
+   ANDs all three — landed by `a9e16fd`. Its honest limitation is carried forward unchanged: nothing calls
+   `noteRxAdvance()` from the data-forwarding path, so `isTunnelUsable()` can only ever report **false**
+   today, which is the safe direction. **PART C** (Axis C: TUN `EIO` classification, bounded read loop, dead
+   `MAX_PACKET_SIZE`) is a **NO-OP**: all three items are already in `TunTerminal.kt` with 6 passing
+   `TunTerminalTest` tests — landed by `607c651`. **PART D** (RISK-A fail-closed release signing) is a
+   **NO-OP**: `app/build.gradle:88–116` already registers a `gradle.taskGraph.whenReady` hook that throws a
+   `GradleException` for any release `assemble|bundle|package…Release` task when the signing material is
+   absent — landed by `c572050` (v1.0.7), and **the guard was verified firing**: `:app:assembleProRelease`
+   exits **1** at `app/build.gradle:109` with "Release build blocked: release signing configuration is
+   incomplete", while `:app:assembleProDebug` still succeeds. No file in PARTs B/C/D was touched in this
+   revision. Evidence: SOURCE CODE + TEST + PRIOR REPORT.
+
+9. **Discipline of this revision.** No `git add -A` / `git add .` — the five PART A files were staged by
+   exact path, then the report, then the spec. No `--force`, no tag, no reset, no clean, no stash. No build,
+   test or device command was run. No `D:\PMC\Documents\Android\SoftEthergai` path was touched. C5 was not
+   executed. §22 is byte-unchanged. Evidence: SOURCE CODE (git history and command log).
+
+- **Methodology lessons:** No new methodology lessons in v1.0.17.
 
 ---
 
@@ -1963,16 +2075,17 @@ The following items are planned for the source-and-path architecture described i
 | 3 | `proRelease` build/test path | The release variant has never been built or tested locally (only `proDebug`). Blocked by the RISK-A signing fallback (§12.4) and the absence of local release signing material. | Priority to be assessed | OPEN — see RISK-A |
 | 4 | **N-06 / SEC-01** TLS certificate verification | `aes_wrapper.c:110` `ssl_configure_client_ctx` sets `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)`; no trust store, no hostname binding, no pin; SNI is the resolved **IP** (`:424–428`). Deliberate for self-signed VPNGate certs, but a genuine MITM exposure. | P2_MEDIUM | **CLOSED (v1.0.16) — TOFU fingerprint pinning landed (commits `b652198`, `9954c03`, `ff78116`). Primary handshake DEVICE-VERIFIED (Phase 9/10); reconnect path fixed and covered by SOURCE CODE + 2 source-shape tests but NOT device-reproduced. See §1.6.9 for the explicit caveat.** (Supersedes the v1.0.14 "OPEN — design proposed" status; see §1.6.7, §1.6.8 bullet 10 and `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`.) Evidence: SOURCE CODE + PHYSICAL DEVICE + TEST |
 | 5 | **N-09** non-cryptographic `rand()` | `softether_rudp.c:251–268` derives RC4 keys / `next_iv` / cookies from `rand()` (also `:838`, `:1018`, `:1048` for jitter/pad); `rudp_transport.c:316,370,402,731,760,777,840,850,1074,1151,1152,1183,1225` derive IV positioning / pad / ICMP-DNS ids / jitter, with `srand()` at `:1026`. The generator is not cryptographically secure. (The pre-v1.0.14 line refs were stale and are corrected here.) | P2_MEDIUM | **FIXED (v1.0.15) — device-non-observable; see §1.6.8 bullet 1. Commit `f66f464`.** Evidence: SOURCE CODE + TEST |
-| 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
+| 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | **PARTIALLY MITIGATED (v1.0.17)** — the fail-closed decision described in §12.4 was taken and landed by `c572050` (v1.0.7): `app/build.gradle:88–116` now throws a `GradleException` for any release `assemble|bundle|package…Release` task when the signing material is absent, so a `proRelease` build can no longer silently fall back to debug signing. Verified firing in the IMPLEMENT-AND-VERIFY-P1-REMAINING phase (PART D): `:app:assembleProRelease` exits **1** with "Release build blocked: release signing configuration is incomplete" at `app/build.gradle:109`, while `:app:assembleProDebug` still succeeds. Still **OPEN** as a *build-availability* item: the local release path remains blocked because the keystore and `SIGN_KEY_PASSWORD` are absent (§12.4 F.28AL-X). The "CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE" status for the *pre-fix* fallback is superseded by this note. Evidence: SOURCE CODE + TEST |
 | 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | — | **CLOSED (v1.0.15)** — dead code deleted (v1.0.14 call-graph audit: unreachable body — `isConnected` never set true, `nativeHandle` never assigned non-zero — plus zero production/test callers and no reflection); see §1.6.8 bullet 3. Commit `1bbf8a6`. Evidence: SOURCE CODE + TEST |
 | 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
 | 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | **OPEN — scope narrowed by v1.0.11** (§1.6.5): the residual fired **7×** in the hardening device run and **self-healed in 7/7** (`Native cleanup confirmed … structure destroyed and slot released` within ~1 s, next attempt proceeded normally). The mechanism is now understood from source (a `NOOP_REENTRANT` completion for the same attempt id satisfies `TunnelStateWatcher`'s exact-attempt-id wait before the real `CONFIRMED` arrives — `AndroidConnectionAdapter.kt:226`, `SoftEtherVpnService.kt:1081–1106`, `ConnectionController.kt:937`). Still **UNKNOWN**: the upstream trigger for the re-entrant teardown call, and why the same log line corresponded to a ~1 s window in v1.0.11 but a ~1 min window in v1.0.10. Classification in `AUDIT_AXES_A_B_C_v1.0.11.md` §2 |
-| 10 | **Axis A / B / C audit findings (v1.0.11, read-only)** | Three read-only axes audited; no source change authorised. **Axis A** (tunnel state / UI sync): two concurrent state models with no designated UI owner — `GlobalVpnTracker` vs `AutoModeController._state`/`AutoModeEngine.stateFlow`, both consumed in one composable (`HomeScreen.kt:125–126`); the 500 ms `onLost` delayed re-check; protocol egating in `GlobalVpnTracker.updateState` (a disconnect of one protocol cannot clear another protocol's state); three loss paths at different latencies in `startConnectedWatcher`. **Axis B** (server list network binding): no binding in the retrieval path (`HttpFetcher.kt` plain `OkHttpClient`; single instance at `VpnServerRepository.kt:40`); the `Network` captured in `GlobalVpnTracker.onAvailable` is discarded; and `isTunnelUsable()` is **not implementable** because `GlobalVpnTracker` has **no RX counter and no TUN-EIO counter** — a hard blocker on the already-decided bind design (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, USER-DIRECTED REQUIREMENT: per-request `Network.getSocketFactory()`, never `bindProcessToNetwork()`; open → VPN fallback → emergency → manual). **Axis C** (SoftEther UDP / TUN `EIO`): `udp_only` servers run a parallel race with a structurally ~0% success rate per `RUDP_IMPLEMENTATION_PLAN.md` (measured: full 5000 ms deadline consumed; OpenVPN fallback is Open Item #1, unstarted); TUN `EIO` has **no branch** in `TunTerminal.readLoop()` (only `EBADF` is special-cased) so a revoked interface funnels into `triggerReconnect()`; `MAX_PACKET_SIZE = 32767` is a dead constant while the read buffer is 8192 (not a live defect — TUN MTU is 1500). | P2_MEDIUM (opportunistic; not blocking) | **OPEN** — full register (A-1..C-4, cross-axis matrix, dependency-ordered recommendations) in `AUDIT_AXES_A_B_C_v1.0.11.md` §7–§8 |
+| 10 | **Axis A / B / C audit findings (v1.0.11, read-only)** | Three read-only axes audited; no source change authorised. **Axis A** (tunnel state / UI sync): two concurrent state models with no designated UI owner — `GlobalVpnTracker` vs `AutoModeController._state`/`AutoModeEngine.stateFlow`, both consumed in one composable (`HomeScreen.kt:125–126`); the 500 ms `onLost` delayed re-check; protocol egating in `GlobalVpnTracker.updateState` (a disconnect of one protocol cannot clear another protocol's state); three loss paths at different latencies in `startConnectedWatcher`. **Axis B** (server list network binding): no binding in the retrieval path (`HttpFetcher.kt` plain `OkHttpClient`; single instance at `VpnServerRepository.kt:40`); the `Network` captured in `GlobalVpnTracker.onAvailable` is discarded; and `isTunnelUsable()` is **not implementable** because `GlobalVpnTracker` has **no RX counter and no TUN-EIO counter** — a hard blocker on the already-decided bind design (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, USER-DIRECTED REQUIREMENT: per-request `Network.getSocketFactory()`, never `bindProcessToNetwork()`; open → VPN fallback → emergency → manual). **Axis C** (SoftEther UDP / TUN `EIO`): `udp_only` servers run a parallel race with a structurally ~0% success rate per `RUDP_IMPLEMENTATION_PLAN.md` (measured: full 5000 ms deadline consumed; OpenVPN fallback is Open Item #1, unstarted); TUN `EIO` has **no branch** in `TunTerminal.readLoop()` (only `EBADF` is special-cased) so a revoked interface funnels into `triggerReconnect()`; `MAX_PACKET_SIZE = 32767` is a dead constant while the read buffer is 8192 (not a live defect — TUN MTU is 1500). | P2_MEDIUM (opportunistic; not blocking) | **PARTIALLY CLOSED (v1.0.17)** — the four **Axis A** items are landed by commit `067d4a3` (A-2 `onLost` re-check budget 500 ms → 50 ms; A-3 protocol egates replaced by `VpnStackLedger.reconcile`; A-4 single `reportArmedTunnelLoss()` funnel; A-5 `Disconnected` published after the OQ decision), each with JVM test coverage; see **§1.6.10**. Axis A's device verification is **PARTIAL** — one ANR was observed and is **NOT REPRODUCED**, registered separately as **row 16**. **Axis B** is closed by `a9e16fd` (PART B, §1.6.10 bullet 8) with the honest limitation that nothing calls `noteRxAdvance()` from the data-forwarding path, so `isTunnelUsable()` can only ever report `false`. **Axis C** is closed by `607c651` (PART C, §1.6.10 bullet 8). The full register (A-1..C-4, cross-axis matrix, dependency-ordered recommendations) remains in `AUDIT_AXES_A_B_C_v1.0.11.md` §7–§8 |
 | 11 | **OPEN-1 — `VpnServerRepositoryR4bTest.logs` unsynchronized under concurrent fetch** | The test's `pathLog` collector was a plain `ArrayList`, written by **two concurrent `async` coroutines** (`VpnServerRepository.refresh` runs the api and html fetches in parallel, §8.1). A concurrent `add` can drop a line, so the `vpn path is chosen when every input holds` assertion could see a short list and fail intermittently (the observed symptom was a missing `[collector] path=vpn source=html`). **Test-only defect** — no production code was involved. | P2_MEDIUM | **CLOSED (v1.0.12)** — collector changed to `CopyOnWriteArrayList` (assertion logic unchanged); deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` added (50 concurrent runs, exact per-line counts). See §1.6.6. Evidence: SOURCE CODE + TEST |
 | 12 | **OPEN-2 — `AutoModeControllerTest.awaitTerminal()` unbounded wait** | The helper looped `while (true)` until a terminal state with `!isRunning`, with no bound. A controller that never settled stalled the whole `:app:testProDebugUnitTest` suite rather than failing one test — the same failure mode already fixed in `awaitNextTerminalAfterChange` (commit `3c656a4`). The success predicate was correct; only the wait was unbounded. | P2_MEDIUM | **CLOSED (v1.0.12)** — bounded with `withTimeoutOrNull(10_000)` and a 25 ms poll; on timeout it fails loudly, naming the last state, `isRunning`, and the last 12 adapter log lines. Predicate unchanged; all call sites unchanged (timeout defaulted). See §1.6.6. Evidence: SOURCE CODE + TEST |
 | 13 | **SEC-02 / APP-1** cleartext HTTP permitted globally | `AndroidManifest.xml:28` `usesCleartextTraffic="true"` plus the blanket `network_security_config.xml:3` (`<base-config cleartextTrafficPermitted="true"/>`); HTTP fallback/bootstrap URLs in `VpnGateSources.kt`. HTTPS-first ordering and `ResilientDns` are existing mitigations, but the policy permits cleartext to any host. | P2_MEDIUM | **FIXED (v1.0.15) — device-verified active enforcement; see §1.6.8 bullets 4–5. Commit `1bbf8a6`.** Evidence: SOURCE CODE + PHYSICAL DEVICE |
 | 14 | **N-11** `atoi()` parses `Content-Length` | `softether_protocol.c:818, 4075, 4202` cast `atoi()` to `uint32_t`; a negative/malformed value becomes `0xFFFFFFFF`, but every site is bounded downstream (`:838–839`, `:4078`, `:4207`), so this is robustness/defence-in-depth rather than a demonstrated exploit. | P3_LOW | **FIXED (v1.0.15) — see §1.6.8 bullet 2. Commit `f66f464`.** Evidence: SOURCE CODE + TEST |
 | 15 | **SEC-01 reconnect-path coverage (partial)** | The reconnect handshake is TOFU-checked — `verifyTofuAfterHandshake()` is called from `attemptReconnect()` as well as `performConnectInner()` (commit `ff78116`) — but was **not** device-reproduced: reaching it needs a mid-session network interruption, which the project's rules forbid inducing. Coverage rests on SOURCE CODE + the 2 source-shape tests in `Sec01ReconnectTofuCoverageTest`. Re-capture opportunistically if a reconnect occurs naturally during a future device run. See §1.6.9 bullet 6. | P3_LOW (opportunistic) | **OPEN — UNKNOWN (no live trace).** Not a known bypass: the check is present at both call sites; only the device-level confirmation is outstanding. Evidence: SOURCE CODE + UNKNOWN |
+| 16 | **FINDING ANR-2026-10-15 — unattributed ANR during the Axis A (PART A) device run** | One ANR observed while exercising the PART A build on the physical device: main-thread degradation from 15:58:56 (Skipped 35 → 1311 → 1821 frames), ANR at 16:06:01, process death pid 23115 → 25247, **tunnel stayed healthy throughout**. The changed Axis A paths demonstrably did **not** run: `GlobalVpnTracker` logged only "network available" (A-2's `onLost` never executed), no service state change was observed (A-3's `updateState` fold never executed), and no `[AUTO]` lines were emitted (A-4/A-5 never executed). Controls: a baseline-control run of the pre-change build was clean, and a re-test of the same PART A APK was clean. `/data/anr` is unreadable without root, so the **blocked frame is UNKNOWN**. Most probable remaining explanation, labelled **INFERENCE**: a pre-existing duplicate-`CONNECT` race combined with UI log-panel degradation. Forensics in `IMPLEMENT_P1_REMAINING_REPORT.md` and `COMMIT_PART_A_REPORT.md` §4; the commit body of `067d4a3` carries the same caveat. | P2_MEDIUM (unattributed; not blocking PART A, which is otherwise green on JVM + build) | **OPEN — UNKNOWN, NOT REPRODUCED.** Not attributed to PART A: the negative assurance above shows none of the three Axis A paths was in flight. To close: read `/data/anr` on a rooted or userdebug device, or reproduce with `Debug.` systrace / a `StrictMode` dump attached; and instrument the CONNECT path to determine whether the suspected duplicate-`CONNECT` race exists. **Re-verify on device before the next feature revision** so the PARTIAL status is either upgraded to PASS by a clean multi-route run or escalated with a trace. Evidence: PHYSICAL DEVICE (logcat) + INFERENCE + **UNKNOWN** + **NOT REPRODUCED** |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -2311,6 +2424,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.14 | 2026-10-15 | AUDIT-DESIGN-SECURITY-AND-RISK-B (read-only + design) | records the security audit and the RISK-B closure in a new **§1.6.7**. **SEC-01** (== §12.5.1 row 4 / N-06): the single production verification site `aes_wrapper.c:110` sets `SSL_VERIFY_NONE`, with no trust store, no hostname binding and no pin, and SNI set to the resolved IP; three candidate designs were compared and **TOFU fingerprint pinning** is recommended, implementation deferred. **SEC-02 / APP-1**: global `usesCleartextTraffic` + blanket `network_security_config.xml`; migration design (scope cleartext to named hosts), deferred. **N-09**: `rand()` feeds RC4 keys/IV/cookies in `softether_rudp.c:251–268` and 13 `rudp_transport.c` sites (with `srand()` at `:1026`); migration onto the existing `generate_random_bytes()` / `RAND_bytes` wrapper designed, deferred; §12.5.1 row 5's stale line refs corrected. **N-11**: `atoi()` parses `Content-Length` at `softether_protocol.c:818,4075,4202` (bounded downstream); strict-parse design, deferred. **RISK-B CLOSED** — an exhaustive call-graph audit proves the legacy `SoftEtherClient.disconnect()` is dead code (unreachable body + zero production/test callers + no reflection); deletion recommended, deferred. Extended **§1.6.1** to the 42-commit chain (`0714628` → `6cffd1e`, adding the v1.0.13 spec commit) and added **§12.5.1 rows 13/14**. New artifact `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Refreshed the header HEAD field to `6cffd1e`. No new methodology lessons in v1.0.14. **This revision made no source / test / native / build / manifest / XML change and ran no build, test, or device command** |
 | 1.0.15 | 2026-10-15 | DOCS-UPDATE: recorded the four implemented + device-verified security fixes (N-09, N-11, RISK-B, SEC-02) in §1.6.8; updated §12.5.1 rows 4/5/7/13/14 to reflect their fixed/closed status; advanced the §1.6.1 chain through `23816cb`. SEC-01 remains OPEN (design deferred). No source/test/build/device change. |
 | 1.0.16 | 2026-10-15 | DOCS-UPDATE: recorded SEC-01 TOFU fingerprint pinning in a new **§1.6.9** — Design B landed (`b652198` native peer-fingerprint exposure, `9954c03` Kotlin store + primary-handshake wiring + 11 pure-JVM tests), primary handshake **device-verified** (Phase 9/10 on `5585fecc`: `[TOFU] match` × 3, 0 mismatch, pin store persisted through install/upgrade), and the **reconnect path fixed** (`ff78116`) so `verifyTofuAfterHandshake()` runs at both handshake-completing sites — with an explicit **PARTIAL** caveat (reconnect not device-reproduced; covered by SOURCE CODE + 2 source-shape tests; library suite **173/0/0/0**, app suite **647/0/0/1**). Updated **§12.5.1 row 4** to **CLOSED (v1.0.16)** and added **row 15** for the opportunistic reconnect re-capture. Advanced **§1.6.1** to **53** commits through `e6b9eef` (adding the previously deferred `df94a81` plus the five SEC-01 commits; inclusive-count vs table-row delta 0). Refreshed the header HEAD field to `e6b9eef`. **No source / test / native / build / device change**; §22 untouched. No new methodology lessons in v1.0.16. |
+| 1.0.17 | 2026-10-15 | DOCS-UPDATE + PART A COMMIT | records the landing of **PART A** (Axis A: tunnel state / UI sync) in a new **§1.6.10** — A-2 the `onLost` re-check budget 500 ms → 50 ms via the named constant `VPN_LOST_RECHECK_MS` (**reduced, not removed**, because `onLost` precedes `onAvailable` and the re-check is what absorbs a network handover); A-3 four protocol-name "egates" in `GlobalVpnTracker` replaced by the pure stateless fold `VpnStackLedger.reconcile(live, current, event)` (on losing X with a surviving protocol Y, Y is republished as CONNECTED **from Y's own identity** and is never clobbered by X's teardown; the `sstpListener:280` egate is deliberately left in place as provably equivalent and test-pinned); A-4 the three armed-tunnel loss paths in `startConnectedWatcher` funnelled through one `reportArmedTunnelLoss()` with the detection latencies deliberately **not** unified; A-5 `AutoModeState.Disconnected` published only **after** the OQ-7/OQ-6/OQ-1 decision rather than as the first statement of `onUnexpectedDisconnect`. Adds 24 JVM tests (13 new `VpnStackLedgerTest`, +5 `GlobalVpnTrackerTest`, +6 `AutoModeControllerTest`). Records the verification status as **PARTIAL** with an explicit **ANR caveat**: one ANR at 16:06:01 (pid 23115 → 25247, Skipped 35 → 1311 → 1821 frames, tunnel healthy) that is **UNATTRIBUTED** and **NOT REPRODUCED**, with the negative assurance that the Axis A paths did not run (`GlobalVpnTracker` logged only "network available"; no service state change; no `[AUTO]` lines) and two clean controls (baseline-control run, re-test of the same APK); the blocked frame is **UNKNOWN** because `/data/anr` is unreadable without root. Records **PARTs B, C and D as already landed** (`a9e16fd`, `607c651`, `c572050`) and **not re-landed**, including PART D's live probe (`:app:assembleProRelease` exits 1 with the intended `GradleException` at `app/build.gradle:109`, so the RISK-A fail-closed guard fires and `assembleProDebug` still succeeds). Advances **§1.6.1** to **57** commits through `a7c449f` (delta 0 at `HEAD = a7c449f`, adding `8edaee8`, `71edd67`, `067d4a3`, `a7c449f`). Adds **§12.5.1 row 16** (the ANR finding, OPEN — UNKNOWN) and notes rows 6 (RISK-A partially mitigated, guard verified firing) and 10 (Axis A/B/C PARTIALLY CLOSED). New artifact `COMMIT_PART_A_REPORT.md` (commit `a7c449f`). Refreshes the header HEAD field to `a7c449f`. **This revision made no source, test, native, build, manifest or XML change and ran no build, test, or device command**; §22 untouched. No new methodology lessons in v1.0.17. |
 
 ### Verification Status
 
@@ -2352,6 +2466,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Security Audit and RISK-B Closure (§1.6.7) | HISTORICAL + SOURCE CODE — the SEC-01 / SEC-02 / N-09 / N-11 characterisations are direct source inspection at the stated file/line; the RISK-B closure is SOURCE CODE (exhaustive call-graph) plus TEST (no test pins the method). All designs are DEFERRED and no fix was applied; the findings are not independently re-verified here |
 | Security Fixes Landed + Device-Verified (§1.6.8) | HISTORICAL — the four fixes are attributed to the FIX-NATIVE-SECURITY-SMALL implementation phase (commits `f66f464`, `1bbf8a6`; SOURCE CODE + TEST) and the device statements to DEVICE-VERIFY-SECURITY-SMALL (PHYSICAL DEVICE), not re-verified in this revision. SEC-01 remains OPEN — design deferred |
 | SEC-01 TOFU Fingerprint Pinning (§1.6.9) | HISTORICAL + PARTIAL — attributed to the FIX-SEC01-TOFU-PINNING-IMPL phase (commits `b652198`, `9954c03`; SOURCE CODE + TEST) and its FIX-SEC01-RECONNECT follow-up (`ff78116`; SOURCE CODE + TEST); the **primary-handshake** device statements are PHYSICAL DEVICE evidence from Phase 9 (FIX-SEC01-TOFU-PINNING) and Phase 10 (VERIFY-AND-FIX-SEC01-RECONNECT), not re-verified in this revision. The **reconnect** handshake is recorded explicitly as **UNKNOWN — not device-reproduced** (coverage is SOURCE CODE + 2 source-shape tests only). This revision ran no build, test, or device command |
+| PART A (Axis A) Landed, with an Explicit ANR Caveat (§1.6.10) | HISTORICAL + PARTIAL — the four Axis A changes are attributed to commit `067d4a3` (SOURCE CODE) and to the 24 added JVM tests (TEST); PARTs B/C/D are attributed to their already-landed commits (`a9e16fd`, `607c651`, `c572050`) and PART D's guard probe to the IMPLEMENT-AND-VERIFY-P1-REMAINING phase (TEST). The JVM/build figures are carried forward as **PRIOR REPORT** — this revision re-ran nothing. The **ANR finding** is PHYSICAL DEVICE evidence (logcat) for the device run in which it occurred, with an explicit **negative assurance** (the Axis A paths did not run), two clean controls, **NOT REPRODUCED**, and the blocked frame recorded as **UNKNOWN** because `/data/anr` is unreadable without root; the most probable remaining explanation is labelled **INFERENCE**, not fact. This revision ran no build, test, or device command |
 
 ### Legend
 
