@@ -1,9 +1,17 @@
 #include "softether_jni.h"
 #include "softether_protocol.h"
+#include "softether_crypto.h"
 #include <android/log.h>
 #include <string.h>
 #include <stdlib.h>
 #include <signal.h>
+
+// SEC-01 (TOFU fingerprint pinning): implemented in crypto/aes_wrapper.c. It is
+// declared here rather than in softether_crypto.h because this phase's
+// authorized file set is limited to aes_wrapper.c and this file; the signature
+// is kept byte-for-byte identical to the definition so the two translation
+// units agree.
+extern int ssl_get_peer_cert_fingerprint(ssl_context_t* ctx, uint8_t* out_sha256, size_t out_len);
 
 #define TAG "SoftEtherJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
@@ -670,4 +678,37 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeSe
     int ret = softether_send_raw(conn, (const uint8_t*)buf, (size_t)length);
     (*env)->ReleaseByteArrayElements(env, data, buf, JNI_ABORT);
     return ret;
+}
+
+// SEC-01 (TOFU fingerprint pinning): the SHA-256 fingerprint (32 bytes) of the
+// certificate the peer presented on this connection's completed TLS handshake.
+//
+// Returns a 32-byte jbyteArray, or NULL when the handle is invalid, the
+// connection has no live SSL object, or no peer certificate is available. The
+// Kotlin side converts the bytes to lowercase hex and performs the TOFU
+// comparison; this entry point is read-only and changes no verify policy.
+JNIEXPORT jbyteArray JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeGetPeerFingerprint(
+    JNIEnv *env, jobject thiz, jlong handle) {
+    if (handle == 0) {
+        LOGE("nativeGetPeerFingerprint: invalid handle");
+        return NULL;
+    }
+
+    softether_connection_t* conn = (softether_connection_t*)handle;
+    // conn->ssl is a void* holding the ssl_context_t* for the primary transport;
+    // it is only non-NULL once the TLS handshake has completed.
+    if (conn->ssl == NULL) {
+        LOGE("nativeGetPeerFingerprint: no SSL context (handshake not complete)");
+        return NULL;
+    }
+
+    uint8_t fingerprint[32];
+    if (ssl_get_peer_cert_fingerprint((ssl_context_t*)conn->ssl, fingerprint, sizeof(fingerprint)) != 0) {
+        return NULL;
+    }
+
+    jbyteArray arr = (*env)->NewByteArray(env, 32);
+    if (arr == NULL) return NULL;
+    (*env)->SetByteArrayRegion(env, arr, 0, 32, (jbyte*)fingerprint);
+    return arr;
 }

@@ -4,6 +4,7 @@
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <string.h>
@@ -653,6 +654,56 @@ int ssl_has_pending(ssl_context_t* ctx) {
     int pending = (s != NULL && SSL_pending(s) > 0) ? 1 : 0;
     pthread_rwlock_unlock(&g_tls_use_lock);
     return pending;
+}
+
+// SEC-01 (TOFU fingerprint pinning, design B): return the SHA-256 fingerprint
+// (32 bytes) of the certificate the peer presented on this TLS session.
+//
+// This is READ-ONLY and does NOT change the verify policy: verification stays
+// SSL_VERIFY_NONE (ssl_configure_client_ctx above), because VPN Gate relays
+// commonly use self-signed certs and the client connects by IP literal. The
+// trust decision is made Kotlin-side (ServerFingerprintStore), which compares
+// this fingerprint against a per-endpoint pin and rejects a post-first-use
+// mismatch. Extraction therefore runs only after the handshake has completed.
+//
+// Returns 0 on success, -1 on any failure (no context, no peer certificate,
+// digest error). Uses the same lock discipline as the rest of the SSL calls:
+// g_tls_use_lock (rd) keeps the SSL object alive against a concurrent
+// ssl_destroy, and g_openssl_lock serializes the provider-touching X509_digest
+// against every other OpenSSL call.
+int ssl_get_peer_cert_fingerprint(ssl_context_t* ctx, uint8_t* out_sha256, size_t out_len) {
+    if (ctx == NULL || out_sha256 == NULL || out_len < 32) {
+        return -1;
+    }
+
+    pthread_rwlock_rdlock(&g_tls_use_lock);
+    SSL* ssl = ctx->ssl;  // read ctx->ssl under the lock, not before it
+    if (ssl == NULL) {
+        pthread_rwlock_unlock(&g_tls_use_lock);
+        LOGE("ssl_get_peer_cert_fingerprint: no SSL object");
+        return -1;
+    }
+
+    int rc = -1;
+    pthread_mutex_lock(&g_openssl_lock);
+    // SSL_get_peer_certificate increments the refcount; the caller owns (and must
+    // free) the returned X509. It is NULL when the peer sent no certificate.
+    X509* cert = SSL_get_peer_certificate(ssl);
+    if (cert != NULL) {
+        unsigned int len = 0;
+        if (X509_digest(cert, EVP_sha256(), out_sha256, &len) == 1 && len == 32) {
+            rc = 0;
+        } else {
+            LOGE("ssl_get_peer_cert_fingerprint: X509_digest failed");
+        }
+        X509_free(cert);
+    } else {
+        LOGE("ssl_get_peer_cert_fingerprint: peer presented no certificate");
+    }
+    pthread_mutex_unlock(&g_openssl_lock);
+
+    pthread_rwlock_unlock(&g_tls_use_lock);
+    return rc;
 }
 
 // MD5 hashing
