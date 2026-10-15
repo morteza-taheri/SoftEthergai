@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -15,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import vn.unlimit.vpngate.data.model.VpnPortSource
+import java.io.File
 
 /**
  * JVM tests for the Auto Mode orchestration core, covering the ten
@@ -38,6 +40,14 @@ class AutoModeControllerTest {
         val nonAutomatable = mutableSetOf<AutoModeProtocol>()
         /** Every connect() the controller actually invoked, with its protocol. */
         val connects = mutableListOf<Pair<String?, AutoModeProtocol>>()
+        /**
+         * A-5: optional shared ordered trace. When attached, every log line is
+         * mirrored here; a test that also funnels `onStateChange` into the same
+         * list can then assert the order of a decision log versus the state it
+         * produced. `null` (the default) keeps every pre-existing test
+         * untouched.
+         */
+        var trace: MutableList<String>? = null
         private var activeWait: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
 
         /**
@@ -152,6 +162,12 @@ class AutoModeControllerTest {
 
         override fun log(message: String) {
             logs += message
+            // A-5: when a shared trace is attached, log lines and state
+            // publications land in ONE ordered list, so their relative order
+            // can be asserted. Everything inside onUnexpectedDisconnect runs
+            // sequentially in a single coroutine, so the order is deterministic
+            // even though the controller dispatches across threads.
+            trace?.let { it += message }
         }
     }
 
@@ -191,6 +207,10 @@ class AutoModeControllerTest {
         perServerRetryDelayBudgetMs: Long = AutoModeController.PER_SERVER_RETRY_DELAY_BUDGET_MS,
         /** R8 (§11.13.2): whether Auto-Reconnect is enabled; default matches production. */
         autoReconnectEnabled: () -> Boolean = { true },
+        /** R8 (OQ-7): whether someone else owns a connection attempt. Default matches production. */
+        isTunnelBusy: () -> Boolean = { false },
+        /** R8 (OQ-3): settle delay before the first reconnect attempt; 0 keeps JVM tests fast. */
+        reconnectInitialDelayMs: Long = 0L,
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -203,6 +223,8 @@ class AutoModeControllerTest {
         nativeBusyRetryDelayMs = nativeBusyRetryDelayMs,
         perServerRetryDelayBudgetMs = perServerRetryDelayBudgetMs,
         autoReconnectEnabled = autoReconnectEnabled,
+        isTunnelBusy = isTunnelBusy,
+        reconnectInitialDelayMs = reconnectInitialDelayMs,
     )
 
     private fun server(
@@ -2223,5 +2245,252 @@ val sstp = AutoModeCandidate(
             3,
             adapter.connects.count { it.second == AutoModeProtocol.SOFTETHER_UDP },
         )
+    }
+
+    // ==================================================================
+    // A-5 (§3.5): the Disconnected publication must FOLLOW the
+    // OQ-7/OQ-6/OQ-1 follow-up decision, not lead it.
+    //
+    // Before A-5, `onUnexpectedDisconnect` published Disconnected as its
+    // very first statement, so a consumer observing that state could not
+    // tell whether the run had decided to reconnect (2 s of settle delay
+    // plus a fresh dial still ahead) or to stand down. The publication now
+    // happens in each terminal branch, once the decision is known.
+    //
+    // Ordering is asserted through a shared trace that funnels BOTH the
+    // adapter's log lines and `onStateChange` into one list. Everything in
+    // `onUnexpectedDisconnect` runs sequentially inside a single coroutine,
+    // so the relative order is deterministic despite the controller
+    // dispatching across threads.
+    //
+    // Driven through `onUnexpectedDisconnectForTests()`, the same seam
+    // `AutoModeReconnectTest` uses: it invokes the identical decision with
+    // the identical argument the armed paths use.
+    // ==================================================================
+
+    /** Reaches Connected so a drop has an armed tunnel to lose. */
+    private suspend fun AutoModeController.awaitConnectedRun() {
+        assertTrue(
+            "precondition: the run must reach Connected",
+            awaitTerminal() is AutoModeState.Connected,
+        )
+    }
+
+    @Test
+    fun a5_manualPrecedencePublishesDisconnectedAfterTheDecision() = runBlocking {
+        val trace = mutableListOf<String>()
+        adapter.trace = trace
+        val controller = controller(
+            servers = listOf(server("alpha")),
+            isTunnelBusy = { true },
+        )
+        controller.onStateChange = { state -> trace += "state:${state::class.simpleName}" }
+
+        controller.start()
+        controller.awaitConnectedRun()
+
+        val mark = trace.size
+        controller.onUnexpectedDisconnectForTests()
+        delay(300)
+
+        val after = trace.drop(mark)
+        val decisionIdx = after.indexOfFirst { it.contains("Manual connect in progress") }
+        val disconnectedIdx = after.indexOfFirst { it.startsWith("state:") && it.contains("Disconnected") }
+
+        assertTrue("the OQ-7 decision log must be present; trace=$after", decisionIdx >= 0)
+        assertTrue("Disconnected must still be published on this path; trace=$after", disconnectedIdx >= 0)
+        assertTrue(
+            "A-5: Disconnected must follow the OQ-7 decision, not lead it; trace=$after",
+            decisionIdx < disconnectedIdx,
+        )
+        assertEquals(
+            "exactly one Disconnected publication per drop",
+            1,
+            after.count { it.startsWith("state:") && it.contains("Disconnected") },
+        )
+        assertTrue(controller.state.value is AutoModeState.Disconnected)
+        assertEquals(
+            "no reconnect may be dialled while a manual connect is in flight",
+            1,
+            adapter.connects.size,
+        )
+    }
+
+    @Test
+    fun a5_autoReconnectDisabledPublishesDisconnectedAfterTheDecision() = runBlocking {
+        val trace = mutableListOf<String>()
+        adapter.trace = trace
+        val controller = controller(
+            servers = listOf(server("alpha")),
+            autoReconnectEnabled = { false },
+        )
+        controller.onStateChange = { state -> trace += "state:${state::class.simpleName}" }
+
+        controller.start()
+        controller.awaitConnectedRun()
+
+        val mark = trace.size
+        controller.onUnexpectedDisconnectForTests()
+        delay(300)
+
+        val after = trace.drop(mark)
+        val decisionIdx = after.indexOfFirst { it.contains("Auto-Reconnect is disabled") }
+        val disconnectedIdx = after.indexOfFirst { it.startsWith("state:") && it.contains("Disconnected") }
+
+        assertTrue("the OQ-6 decision log must be present; trace=$after", decisionIdx >= 0)
+        assertTrue("Disconnected must still be published on this path; trace=$after", disconnectedIdx >= 0)
+        assertTrue(
+            "A-5: Disconnected must follow the OQ-6 decision, not lead it; trace=$after",
+            decisionIdx < disconnectedIdx,
+        )
+        assertEquals(
+            "exactly one Disconnected publication per drop",
+            1,
+            after.count { it.startsWith("state:") && it.contains("Disconnected") },
+        )
+    }
+
+    @Test
+    fun a5_reconnectPathPublishesDisconnectedWithTheDecision() = runBlocking {
+        val trace = mutableListOf<String>()
+        adapter.trace = trace
+        val controller = controller(servers = listOf(server("alpha"), server("beta")))
+        controller.onStateChange = { state -> trace += "state:${state::class.simpleName}" }
+
+        controller.start()
+        controller.awaitConnectedRun()
+        val connectsBefore = adapter.connects.size
+
+        val mark = trace.size
+        controller.onUnexpectedDisconnectForTests()
+        delay(300)
+
+        val after = trace.drop(mark)
+        val disconnectedIdx = after.indexOfFirst { it.startsWith("state:") && it.contains("Disconnected") }
+        val decisionIdx = after.indexOfFirst { it.contains("Unexpected disconnect:") }
+
+        assertTrue("Disconnected must be published; trace=$after", disconnectedIdx >= 0)
+        assertTrue("the reconnect decision log must be present; trace=$after", decisionIdx >= 0)
+        assertTrue(
+            "A-5: Disconnected is published together with the decision to " +
+                "reconnect, after the OQ-7/OQ-6/OQ-1 checks; trace=$after",
+            disconnectedIdx < decisionIdx,
+        )
+        assertEquals(
+            "exactly one Disconnected publication per drop",
+            1,
+            after.count { it.startsWith("state:") && it.contains("Disconnected") },
+        )
+        assertTrue(
+            "the reconnect must actually re-dial",
+            adapter.connects.size > connectsBefore,
+        )
+    }
+
+    // ==================================================================
+    // A-4 (§3.4): the three armed loss paths must route through ONE
+    // disarm-and-dispatch funnel.
+    //
+    // The detectors themselves (an OS event, a 1 s passive poll, a watchdog
+    // silence timeout) are intentionally NOT unified — each is the cheapest
+    // correct detector for its own failure mode. What A-4 removes is the
+    // divergence between the three inline copies of the teardown sequence,
+    // which had already drifted apart. These are source-shape tests, the
+    // same technique AutoModeDatasetSourceTest uses, because the armed
+    // paths reference `TunnelStateWatcher` / `GlobalVpnTracker` objects
+    // that cannot be class-loaded off-device.
+    // ==================================================================
+
+    @Test
+    fun a4_theThreeArmedPathsShareOneLossFunnel() {
+        val source = sourceOf("src/main/java/vn/unlimit/vpngate/automode/AutoModeController.kt")
+
+        assertTrue(
+            "a single reportArmedTunnelLoss funnel must exist",
+            source.contains("private fun reportArmedTunnelLoss("),
+        )
+
+        // 3 detector call sites + the 1 definition itself.
+        val mentions = Regex("""reportArmedTunnelLoss\(""").findAll(source).count()
+        assertEquals(
+            "all three armed paths (event, poll, watchdog) must call the funnel",
+            3 + 1,
+            mentions,
+        )
+
+        val watcherBody = source.substringAfter("private fun startConnectedWatcher(")
+            .substringBefore("private fun reportArmedTunnelLoss(")
+        assertTrue(
+            "the watcher must not repeat the disarm sequence inline",
+            !watcherBody.contains("TunnelStateWatcher.onTunnelLost = null"),
+        )
+        // One production dispatch (inside the funnel), the definition itself,
+        // and the @VisibleForTesting seam. Nothing else may call it.
+        assertEquals(
+            "onUnexpectedDisconnect has exactly one production call site",
+            3,
+            Regex("""onUnexpectedDisconnect\(""").findAll(source).count(),
+        )
+        val funnelBody = source.substringAfter("private fun reportArmedTunnelLoss(")
+            .substringBefore("\n    }")
+        assertTrue(
+            "the funnel must be the single production dispatch site",
+            funnelBody.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+        )
+    }
+
+    @Test
+    fun a4_theFunnelDisarmsInOneCanonicalOrder() {
+        val source = sourceOf("src/main/java/vn/unlimit/vpngate/automode/AutoModeController.kt")
+        val body = source.substringAfter("private fun reportArmedTunnelLoss(")
+            .substringBefore("\n    }")
+
+        val order = listOf(
+            "connectedWatcher?.cancel()",
+            "connectedWatcher = null",
+            "stopLivenessProbe()",
+            "TunnelStateWatcher.onTunnelLost = null",
+        )
+        var previous = -1
+        for (step in order) {
+            val index = body.indexOf(step)
+            assertTrue("the disarm must contain $step; body=$body", index > previous)
+            previous = index
+        }
+        assertTrue(
+            "the funnel must dispatch the follow-up through the controller scope",
+            body.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+        )
+    }
+
+    @Test
+    fun a4_detectionLatenciesAreNotFlattened() {
+        val source = sourceOf("src/main/java/vn/unlimit/vpngate/automode/AutoModeController.kt")
+
+        // The 1 s passive poll and the watchdog silence timeout must survive:
+        // unifying the *detectors* would delete the passive safety net that
+        // catches a quiet death.
+        assertTrue(
+            "the passive 1 s poll must remain a poll",
+            source.contains("kotlinx.coroutines.delay(1000)"),
+        )
+        assertTrue(
+            "the watchdog silence timeout must remain in force",
+            source.contains("TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS"),
+        )
+        // Each detector still logs its own reason, so the device evidence can
+        // tell them apart.
+        assertTrue(source.contains("Tunnel disconnected externally / revoked by system"))
+        assertTrue(source.contains("GlobalVpnTracker confirmed disconnected"))
+        assertTrue(source.contains("No proof of life for"))
+    }
+
+    /** Reads a production source file, relative to the module directory. */
+    private fun sourceOf(relativePath: String): String {
+        for (path in listOf(relativePath, "../$relativePath", "app/$relativePath")) {
+            val file = File(path)
+            if (file.isFile) return file.readText(Charsets.UTF_8)
+        }
+        error("source file not found: $relativePath (cwd=${File(".").absolutePath})")
     }
 }

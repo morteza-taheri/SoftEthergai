@@ -587,14 +587,13 @@ enum class AttemptOutcome {
         stopLivenessProbe()
         TunnelStateWatcher.onTunnelLost = {
             if (_state.value is AutoModeState.Connected) {
-                val dropped = connectedCandidate
-                adapter.log("[AUTO] Tunnel disconnected externally / revoked by system")
-                connectedWatcher?.cancel()
-                connectedWatcher = null
-                stopLivenessProbe()
-                TunnelStateWatcher.onTunnelLost = null
-                // R8 (path A): the tunnel was lost while armed -> unexpected.
-                scope.launch { onUnexpectedDisconnect(dropped) }
+                // A-4 (path A): an OS-level revocation is an event, so this is
+                // the fastest detector — but it is the only one that must not
+                // assume it runs inside the watcher coroutine.
+                reportArmedTunnelLoss(
+                    "[AUTO] Tunnel disconnected externally / revoked by system",
+                    connectedCandidate,
+                )
             }
         }
         val probe = livenessProbeFactory?.let { factory ->
@@ -609,14 +608,13 @@ enum class AttemptOutcome {
                 kotlinx.coroutines.delay(1000)
                 if (_state.value !is AutoModeState.Connected) break
                 if (!GlobalVpnTracker.isConnected) {
-                    adapter.log("[AUTO] GlobalVpnTracker confirmed disconnected")
-                    val dropped = connectedCandidate
-                    connectedWatcher?.cancel()
-                    connectedWatcher = null
-                    TunnelStateWatcher.onTunnelLost = null
-                    stopLivenessProbe()
-                    // R8 (path B): loss confirmed while armed -> unexpected.
-                    onUnexpectedDisconnect(dropped)
+                    // A-4 (path B): passive 1 s poll. Deliberately still a poll
+                    // — it is the only detector that works when nothing else
+                    // volunteers a loss.
+                    reportArmedTunnelLoss(
+                        "[AUTO] GlobalVpnTracker confirmed disconnected",
+                        connectedCandidate,
+                    )
                     break
                 }
                 // Active liveness: only consulted after the passive checks pass,
@@ -628,18 +626,12 @@ enum class AttemptOutcome {
                     if (activeProbe.consumeProof()) {
                         wd.onProvenAlive(now)
                     } else if (wd.onSample(now)) {
-                        adapter.log(
+                        reportArmedTunnelLoss(
                             "[AUTO] No proof of life for " +
                                 "${TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS}ms; " +
                                 "tunnel considered lost",
+                            connectedCandidate,
                         )
-                        val dropped = connectedCandidate
-                        connectedWatcher?.cancel()
-                        connectedWatcher = null
-                        stopLivenessProbe()
-                        TunnelStateWatcher.onTunnelLost = null
-                        // R8 (path C): watchdog declared the tunnel dead -> unexpected.
-                        onUnexpectedDisconnect(dropped)
                         break
                     }
                 }
@@ -648,37 +640,77 @@ enum class AttemptOutcome {
     }
 
     /**
+     * A-4 (§3.4): the one place an armed-tunnel loss becomes an
+     * Auto-Reconnect.
+     *
+     * Before A-4 each of the three armed paths in [startConnectedWatcher]
+     * repeated the same five disarm lines inline — and the copies had already
+     * drifted: path A nulled `TunnelStateWatcher.onTunnelLost` *before*
+     * `stopLivenessProbe()`, path C after it, and paths B/C called
+     * [onUnexpectedDisconnect] directly from the watcher coroutine while path A
+     * wrapped it in a fresh `scope.launch`. Three copies of a teardown sequence
+     * is how a half-disarmed watcher (probe still running, callback still
+     * armed) gets shipped.
+     *
+     * This funnel fixes the order once: cancel the poll, drop the reference,
+     * stop the probe, disarm the OS callback, then hand off. The
+     * *detection* latency is intentionally NOT unified — path A is an event
+     * (immediate), path B a 1 s passive poll, path C the watchdog's silence
+     * timeout. Each is the cheapest correct detector for its own failure mode;
+     * flattening them (polling at event speed) would delete the passive net
+     * that catches a quiet death. What is unified is everything after
+     * detection, which is where the replay risk lived.
+     *
+     * Safe to call from any thread: the OS callback (path A) arrives on a
+     * ConnectivityManager thread, so the follow-up is dispatched through
+     * [scope] rather than assumed to already be in a coroutine.
+     */
+    private fun reportArmedTunnelLoss(reason: String, dropped: AutoModeCandidate?) {
+        adapter.log(reason)
+        connectedWatcher?.cancel()
+        connectedWatcher = null
+        stopLivenessProbe()
+        TunnelStateWatcher.onTunnelLost = null
+        scope.launch { onUnexpectedDisconnect(dropped) }
+    }
+
+    /**
      * R8 (§11.13.3, D1): the single funnel for an **unexpected** disconnect of a
-     * tunnel Auto Mode itself established. Called only from the three armed
-     * paths in [startConnectedWatcher] — never from [stop], [disconnectNow] or
-     * [skipToNextServer], which disarm the watcher before tearing down precisely
-     * so their deliberate teardown is not mistaken for a loss.
+     * tunnel Auto Mode itself established. Called only from the armed paths in
+     * [startConnectedWatcher] (via [reportArmedTunnelLoss]) — never from
+     * [stop], [disconnectNow] or [skipToNextServer], which disarm the watcher
+     * before tearing down precisely so their deliberate teardown is not
+     * mistaken for a loss.
      *
      * Steps, in order:
-     *  1. publish [AutoModeState.Disconnected] (the tunnel is really gone);
-     *  2. OQ-7 manual precedence — if someone else is connecting, stand down;
-     *  3. OQ-6 setting — if DISABLED, stay disconnected;
-     *  4. OQ-1 loop guard — bound recent reconnects;
+     *  1. OQ-7 manual precedence — if someone else is connecting, stand down;
+     *  2. OQ-6 setting — if DISABLED, stay disconnected;
+     *  3. OQ-1 loop guard — bound recent reconnects;
+     *  4. publish [AutoModeState.Disconnected] once the follow-up decision is
+     *     known, so a consumer that observes Disconnected is guaranteed to be
+     *     observing a settled decision rather than the 2 s window before one;
      *  5. OQ-3 settle delay, then seed [pendingReconnectServer] and re-run.
      *
      * @param droppedServer the candidate Auto Mode was connected to (may be null
      *   if the success record was somehow unavailable — then the reconnect simply
      *   runs over [remainingCandidates]).
      */
-    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {        // The tunnel is genuinely gone, whatever we decide next. This matches the
-        // pre-existing behaviour of all three armed paths.
-        setState(AutoModeState.Disconnected)
-
+    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {
         // OQ-7: a manual connect that is still coming up owns the tunnel. Do not
         // race it with a reconnect.
         if (isTunnelBusy()) {
             adapter.log("[AUTO] Manual connect in progress; skipping Auto-Reconnect")
+            // A-5 (§3.5): Disconnected is published on the way OUT of the
+            // decision, never ahead of it — so the OQ-7/OQ-6/OQ-1 follow-up is
+            // already visible to any consumer that sees this state.
+            setState(AutoModeState.Disconnected)
             return
         }
 
         // OQ-6 (§11.13.4): the setting governs behaviour AFTER a drop.
         if (!autoReconnectEnabled()) {
             adapter.log("[AUTO] Auto-Reconnect is disabled; staying disconnected")
+            setState(AutoModeState.Disconnected)
             return
         }
 
@@ -702,6 +734,15 @@ enum class AttemptOutcome {
             setState(AutoModeState.Error(ERROR_RECONNECT_LIMIT))
             return
         }
+
+        // A-5 (§3.5): the decision is now final — reconnect. Publishing
+        // Disconnected here rather than before the OQ-7/OQ-6/OQ-1 checks is the
+        // whole fix: it is still published exactly once per drop (including on
+        // the stand-down paths above), but it no longer leads the follow-up by
+        // up to [reconnectInitialDelayMs] + log traffic, during which the UI
+        // could show "disconnected" next to a log that still says a reconnect
+        // is being considered.
+        setState(AutoModeState.Disconnected)
 
         adapter.log(
             "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
@@ -745,18 +786,21 @@ enum class AttemptOutcome {
     /**
      * R8 — test seam only.
      *
-     * The production trigger for an unexpected disconnect is the lambda the
-     * controller assigns to `TunnelStateWatcher.onTunnelLost` inside
-     * [startConnectedWatcher]. `TunnelStateWatcher` is an `object` whose
-     * initialiser builds an Android `Handler(Looper.getMainLooper())`, so it
-     * cannot be class-loaded in a plain JVM unit test — the same constraint that
-     * made [TunnelStateWatcher.stateProvider] injectable.
+     * The production triggers for an unexpected disconnect are the three armed
+     * paths in [startConnectedWatcher], each routed through
+     * [reportArmedTunnelLoss]. Two of them (the 1 s `GlobalVpnTracker` poll and
+     * the liveness watchdog) and all of the disarm machinery reference
+     * `TunnelStateWatcher` / `GlobalVpnTracker` — Kotlin `object`s whose
+     * initialisers build an Android `Handler(Looper.getMainLooper())`, so they
+     * cannot be class-loaded in a plain JVM unit test. That is the same
+     * constraint that made [TunnelStateWatcher.stateProvider] injectable.
      *
-     * This method therefore invokes the SAME decision the armed path invokes
-     * ([onUnexpectedDisconnect]) with the same argument the armed path passes
-     * ([connectedCandidate]), so a JVM test can assert R8's decision without an
-     * Android runtime. It changes no production behaviour: nothing in main source
-     * calls it.
+     * This method therefore invokes the SAME decision the armed paths invoke
+     * ([onUnexpectedDisconnect]) with the same argument they pass
+     * ([connectedCandidate]), and dispatches it the same way
+     * ([reportArmedTunnelLoss] does), so a JVM test can assert R8's decision
+     * without an Android runtime. It changes no production behaviour: nothing
+     * in main source calls it.
      */
     @androidx.annotation.VisibleForTesting
     internal fun onUnexpectedDisconnectForTests() {

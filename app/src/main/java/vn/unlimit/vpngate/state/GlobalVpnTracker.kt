@@ -59,6 +59,182 @@ data class GlobalVpnState(
     val errorMessage: String? = null,
 )
 
+// ─────────────────────────────────────────────────────────────────────
+// A-3 (v1.0.11 audit §3.3): protocol reconciliation.
+//
+// PROBLEM. `GlobalVpnState` is a single slot, but two stacks publish into it.
+// Every terminal branch therefore guarded itself with
+// `if (_vpnState.value.protocol == "<me>")`, i.e. it *dropped* the event
+// whenever some other protocol happened to own the slot. Dropping is only half
+// right: it does suppress a stale teardown from the loser, but it also means a
+// teardown from the stack that IS published can be thrown away after a second
+// stack overwrote the slot, and it gives no answer at all when two stacks are
+// legitimately live. The audit's requirement is to reconcile instead:
+//
+//   * a DISCONNECTED/ERROR for stack X clears any stale CONNECTED from X;
+//   * it must not touch stack Y — in particular it must not publish a
+//     DISCONNECTED that says "no tunnel" while Y is still up ("do not clobber
+//     Y").
+//
+// DESIGN. The decision is a pure function over plain data
+// ([VpnStackReport] / [GlobalVpnState] carry no Android types), so it is
+// unit-testable on the JVM. `GlobalVpnTracker` itself cannot be class-loaded
+// in a plain JVM test — its initializer needs `Handler(Looper.getMainLooper())`
+// — so the state machine is deliberately NOT inside the `object`. The tracker
+// owns the live-stack list and only applies the verdict.
+//
+// A stack is keyed by its protocol name ("SoftEther", "OpenVPN", "SSTP"):
+// Android permits only one app VPN at a time, so the protocol *is* the stack's
+// identity. The reconciliation never invents a protocol: an event that arrives
+// without one cannot be attributed and is left to the caller's own default.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * One live stack as seen by the reconciliation ledger.
+ *
+ * Identity fields are merged from the events that stack published, so a
+ * survivor republished after another stack's teardown carries **its own**
+ * last-known server/assigned address, not whatever the other stack happened
+ * to leave in the shared slot.
+ */
+internal data class VpnStackReport(
+    val protocol: String,
+    val serverHost: String? = null,
+    val serverIp: String? = null,
+    val assignedIp: String? = null,
+)
+
+/** A stack's state transition as handed to [VpnStackLedger.reconcile]. */
+internal data class VpnStackEvent(
+    val status: VpnConnectionStatus,
+    val protocol: String?,
+    val serverHost: String? = null,
+    val serverIp: String? = null,
+    val assignedIp: String? = null,
+    val errorMessage: String? = null,
+)
+
+/**
+ * Verdict of one [VpnStackLedger.reconcile] call.
+ *
+ * @param live the ledger after folding the event in — the caller replaces its
+ *   copy with this.
+ * @param publish the state to publish, or `null` to leave the currently
+ *   published state untouched (a stale event from a stack that owns nothing).
+ */
+internal data class VpnStackReconciliation(
+    val live: List<VpnStackReport>,
+    val publish: GlobalVpnState?,
+)
+
+/**
+ * The A-3 decision, as a pure fold: `(ledger, current, event) -> verdict`.
+ *
+ * Stateless on purpose — the ledger is passed in and returned, so the same
+ * call is trivially reproducible in a test and cannot leak between tests.
+ */
+internal object VpnStackLedger {
+
+    fun reconcile(
+        live: List<VpnStackReport>,
+        current: GlobalVpnState,
+        event: VpnStackEvent,
+    ): VpnStackReconciliation {
+        val key = event.protocol
+            // Unattributable (the caller passed no protocol and the published
+            // state carries none): nothing to reconcile against.
+            ?: return VpnStackReconciliation(live, null)
+
+        return when (event.status) {
+            VpnConnectionStatus.CONNECTED -> {
+                // A verified tunnel becomes (or refreshes) a live stack and
+                // takes the slot — last writer wins, exactly as before A-3.
+                val previous = live.lastOrNull { it.protocol == key }
+                val refreshed = VpnStackReport(
+                    protocol = key,
+                    serverHost = event.serverHost ?: previous?.serverHost,
+                    serverIp = event.serverIp ?: previous?.serverIp,
+                    assignedIp = event.assignedIp ?: previous?.assignedIp,
+                )
+                VpnStackReconciliation(
+                    live = live.filterNot { it.protocol == key } + refreshed,
+                    publish = GlobalVpnState(
+                        status = VpnConnectionStatus.CONNECTED,
+                        protocol = key,
+                        serverHost = refreshed.serverHost,
+                        serverIp = refreshed.serverIp,
+                        assignedIp = refreshed.assignedIp,
+                        errorMessage = null,
+                    ),
+                )
+            }
+
+            // Not stack-lifetime events: an attempt is in flight or being torn
+            // down, so the stack stays live and the caller's identity is
+            // published verbatim — the pre-A-3 behaviour, unchanged.
+            VpnConnectionStatus.CONNECTING,
+            VpnConnectionStatus.DISCONNECTING -> VpnStackReconciliation(
+                live = live,
+                publish = GlobalVpnState(
+                    status = event.status,
+                    protocol = key,
+                    serverHost = event.serverHost ?: current.serverHost,
+                    serverIp = event.serverIp ?: current.serverIp,
+                    assignedIp = event.assignedIp ?: current.assignedIp,
+                    errorMessage = event.errorMessage,
+                ),
+            )
+
+            VpnConnectionStatus.DISCONNECTED,
+            VpnConnectionStatus.ERROR -> {
+                val nextLive = live.filterNot { it.protocol == key }
+                val survivor = nextLive.lastOrNull()
+                if (survivor != null) {
+                    // X is gone but Y is still up. Publishing X's teardown here
+                    // would assert "no tunnel" while a working one keeps
+                    // running — the "do not clobber Y" the audit forbids — so Y
+                    // is republished from its OWN recorded identity.
+                    VpnStackReconciliation(
+                        live = nextLive,
+                        publish = GlobalVpnState(
+                            status = VpnConnectionStatus.CONNECTED,
+                            protocol = survivor.protocol,
+                            serverHost = survivor.serverHost,
+                            serverIp = survivor.serverIp,
+                            assignedIp = survivor.assignedIp,
+                            errorMessage = null,
+                        ),
+                    )
+                } else if (current.protocol == key) {
+                    // Nothing else is live and the stack that went away is the
+                    // one the UI is showing, so the teardown is published:
+                    // identity preserved for ERROR, blanked for DISCONNECTED —
+                    // exactly the pre-A-3 result for the single-stack case.
+                    val blank = event.status == VpnConnectionStatus.DISCONNECTED
+                    VpnStackReconciliation(
+                        live = nextLive,
+                        publish = GlobalVpnState(
+                            status = event.status,
+                            protocol = if (blank) null else current.protocol,
+                            serverHost = if (blank) null else current.serverHost,
+                            serverIp = if (blank) null else current.serverIp,
+                            assignedIp = if (blank) null else current.assignedIp,
+                            errorMessage = event.errorMessage,
+                        ),
+                    )
+                } else {
+                    // A teardown from a stack that neither owns the published
+                    // state nor left a survivor is stale by construction: the
+                    // event is accounted for (X leaves the ledger) and the
+                    // published state is left alone. Dropping the *publication*
+                    // — not the bookkeeping — is the reconciliation.
+                    VpnStackReconciliation(nextLive, null)
+                }
+            }
+        }
+    }
+}
+
 /**
  * App-wide centralized tracker for VPN connection states across
  * SoftEther, OpenVPN, and SSTP protocols.
@@ -67,6 +243,17 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
 
     private val _vpnState = MutableStateFlow(GlobalVpnState())
     val vpnState: StateFlow<GlobalVpnState> = _vpnState.asStateFlow()
+
+    /**
+     * A-3: the stacks currently believed to be up, oldest first.
+     *
+     * Written only from [updateState], which reads every producer's event on
+     * whichever thread that producer runs on (service callbacks, OpenVPN's
+     * listener, the SSTP preference listener). CopyOnWriteArrayList keeps the
+     * list itself consistent across those threads without a lock on the hot
+     * path; the read-modify-write window is the same as the pre-A-3 code's.
+     */
+    private val liveStacks = java.util.concurrent.CopyOnWriteArrayList<VpnStackReport>()
 
     val currentStatus: VpnConnectionStatus
         get() = _vpnState.value.status
@@ -252,6 +439,19 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                 override fun onLost(network: Network) {
                     Log.d("GlobalVpnTracker", "System VPN network lost: $network")
                     if (systemVpnNetwork == network) systemVpnNetwork = null
+                    // A-2 (§3.2): this re-check used to wait 500 ms, which meant a
+                    // lost system VPN stayed published as CONNECTED for half a
+                    // second — long enough for the UI to look healthy and for
+                    // Auto Mode's 1 s poll (Axis A-4, path B) to read a stale
+                    // "connected" and skip its own loss handling.
+                    //
+                    // The delay is deliberately NOT removed: during a handover
+                    // (Wi-Fi → mobile) `onLost` for the old network fires before
+                    // `onAvailable` for the new one, so an immediate check would
+                    // see no VPN transport at all and issue a spurious
+                    // ACTION_DISCONNECT that tears down a tunnel that is merely
+                    // being re-parented. A short grace period keeps that case
+                    // safe while shrinking the stale-CONNECTED window 10x.
                     mainHandler.postDelayed({
                         val hasVpnTransport = cm.allNetworks.any { net ->
                             runCatching {
@@ -270,7 +470,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                                 ctx.startService(seIntent)
                             }
                         }
-                    }, 500)
+                    }, VPN_LOST_RECHECK_MS)
                 }
             }
             vpnNetworkCallback = callback
@@ -280,6 +480,17 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         }
     }
 
+    /**
+     * Publishes a state transition from any producer.
+     *
+     * A-3 (§3.3): instead of letting each terminal caller guard itself with
+     * "is the published protocol mine?", every event is folded into the
+     * live-stack ledger by [VpnStackLedger.reconcile], which decides both the
+     * new ledger and what (if anything) should be published. A stack that goes
+     * away no longer depends on still owning the shared slot to be recorded,
+     * and a surviving stack is republished instead of being clobbered by the
+     * other stack's teardown.
+     */
     fun updateState(
         status: VpnConnectionStatus,
         protocol: String? = _vpnState.value.protocol,
@@ -288,14 +499,21 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         assignedIp: String? = _vpnState.value.assignedIp,
         errorMessage: String? = null
     ) {
-        _vpnState.value = GlobalVpnState(
-            status = status,
-            protocol = if (status == VpnConnectionStatus.DISCONNECTED) null else protocol,
-            serverHost = if (status == VpnConnectionStatus.DISCONNECTED) null else serverHost,
-            serverIp = if (status == VpnConnectionStatus.DISCONNECTED) null else serverIp,
-            assignedIp = if (status == VpnConnectionStatus.DISCONNECTED) null else assignedIp,
-            errorMessage = errorMessage
+        val verdict = VpnStackLedger.reconcile(
+            live = liveStacks.toList(),
+            current = _vpnState.value,
+            event = VpnStackEvent(
+                status = status,
+                protocol = protocol,
+                serverHost = serverHost,
+                serverIp = serverIp,
+                assignedIp = assignedIp,
+                errorMessage = errorMessage,
+            ),
         )
+        liveStacks.clear()
+        liveStacks.addAll(verdict.live)
+        verdict.publish?.let { _vpnState.value = it }
     }
 
     /**
@@ -348,14 +566,21 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                 )
             }
             SoftEtherVpnService.STATE_DISCONNECTED -> {
-                if (_vpnState.value.protocol == "SoftEther") {
-                    updateState(VpnConnectionStatus.DISCONNECTED)
-                }
+                // A-3: attributed to the SoftEther stack rather than dropped
+                // when another protocol happens to own the published slot. The
+                // ledger decides whether that clears the slot, republishes a
+                // surviving stack, or is a stale no-op.
+                updateState(
+                    VpnConnectionStatus.DISCONNECTED,
+                    protocol = "SoftEther",
+                )
             }
             SoftEtherVpnService.STATE_ERROR -> {
-                if (_vpnState.value.protocol == "SoftEther") {
-                    updateState(VpnConnectionStatus.ERROR, errorMessage = "SoftEther error")
-                }
+                updateState(
+                    VpnConnectionStatus.ERROR,
+                    protocol = "SoftEther",
+                    errorMessage = "SoftEther error",
+                )
             }
         }
     }
@@ -386,14 +611,18 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                 )
             }
             ConnectionStatus.LEVEL_NOTCONNECTED -> {
-                if (_vpnState.value.protocol == "OpenVPN") {
-                    updateState(VpnConnectionStatus.DISCONNECTED)
-                }
+                // A-3: same attribution fix as the SoftEther branch above.
+                updateState(
+                    VpnConnectionStatus.DISCONNECTED,
+                    protocol = "OpenVPN",
+                )
             }
             ConnectionStatus.LEVEL_AUTH_FAILED -> {
-                if (_vpnState.value.protocol == "OpenVPN") {
-                    updateState(VpnConnectionStatus.ERROR, errorMessage = "Auth failed")
-                }
+                updateState(
+                    VpnConnectionStatus.ERROR,
+                    protocol = "OpenVPN",
+                    errorMessage = "Auth failed",
+                )
             }
             else -> Unit
         }
@@ -408,3 +637,20 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
  * `object` and cannot carry one.
  */
 internal const val PREF_ALWAYS_PREFER_VPN = "vpn_always_prefer_vpn"
+
+/**
+ * A-2 (§3.2): grace period before `GlobalVpnTracker`'s system-VPN watcher
+ * re-checks whether any VPN transport survives.
+ *
+ * Was `500` ms, which kept a dead tunnel published as CONNECTED for half a
+ * second. Now 50 ms: long enough to absorb a network handover (the new
+ * network's `onAvailable` lands in that window), short enough that a genuine
+ * loss is published inside a single frame budget. See the comment on the
+ * `onLost` callback for why the delay is reduced rather than removed.
+ *
+ * `internal const` (not `private`) so unit tests can pin the bound without
+ * class-loading the Android-dependent `GlobalVpnTracker` object: a `const val`
+ * is inlined at the call site by the Kotlin compiler, so referencing it from a
+ * JVM test costs nothing and initializes nothing.
+ */
+internal const val VPN_LOST_RECHECK_MS = 50L
