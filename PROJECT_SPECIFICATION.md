@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `6cffd1eb63220b1bc5aaf7fb321b7e701205bfc3`
-**Document version:** 1.0.14
+**HEAD:** `23816cb85c7fc68fcadfccbbd01fb9e38ca2bb2a`
+**Document version:** 1.0.15
 **Last updated:** 2026-10-15
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -91,15 +91,16 @@ that stack on the physical device; and then pushed the whole local chain to the 
 
 #### 1.6.1 Commit chain
 
-Forty-two commits constitute the chain now on `origin/main`, forming the contiguous
-range `0714628` → `6cffd1e` (oldest first). (The §1.6 preamble's "17 local commits" records the
+Forty-seven commits constitute the chain now on `origin/main`, forming the contiguous
+range `0714628` → `23816cb` (oldest first). (The §1.6 preamble's "17 local commits" records the
 v1.0.8-era push snapshot; the chain has since grown by the v1.0.8/v1.0.9 docs commits, the
 v1.0.10 AutoConnect bundle, the v1.0.10/v1.0.11 spec-update commits, the v1.0.11 native-hardening
 bundle, the R1–R6 / R4a / R4b source work, the R4b report, the FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12
-test fixes and spec update, the FIX-HANGING-SKIP-TEST report commit, and the v1.0.13 docs-hygiene
-commit — see the appended rows below.) The count is the size of the **inclusive** range
-`0714628` → `6cffd1e`; the range-exclusive form `git log --oneline 0714628..HEAD | wc -l` reports
-**41**, because it omits the range's own first commit, `0714628`.
+test fixes and spec update, the FIX-HANGING-SKIP-TEST report commit, the v1.0.13 docs-hygiene
+commit, the v1.0.14 security audit + spec commits, and the FIX-NATIVE-SECURITY-SMALL native/security
+fixes and report commit — see the appended rows below.) The count is the size of the **inclusive**
+range `0714628` → `23816cb`; the range-exclusive form `git log --oneline 0714628..HEAD | wc -l`
+reports **46**, because it omits the range's own first commit, `0714628`.
 
 | Commit | Subject |
 |--------|---------|
@@ -145,6 +146,11 @@ commit — see the appended rows below.) The count is the size of the **inclusiv
 | `81163e4` | docs: report for FIX-TEST-FLAKINESS-AND-DOCS-v1.0.12 |
 | `b38efa7` | docs: commit FIX-HANGING-SKIP-TEST report (was left untracked) |
 | `6cffd1e` | docs: update PROJECT_SPECIFICATION to v1.0.13 (canonical repo path + §1.6.1 sanity) |
+| `65b25f8` | docs(audit): security (SEC-01/SEC-02/N-09/N-11) + RISK-B design |
+| `a60681f` | docs: update PROJECT_SPECIFICATION to v1.0.14 (security design) |
+| `f66f464` | fix(native): use RAND_bytes for RUDP keys/IVs/cookies (N-09); strict Content-Length parse (N-11) |
+| `1bbf8a6` | fix(security): remove dead SoftEtherClient.disconnect(); scope cleartext to explicit hosts (RISK-B, SEC-02) |
+| `23816cb` | docs: report for FIX-NATIVE-SECURITY-SMALL |
 
 > **Correction (v1.0.8) — the `0714628` off-by-one.** Earlier handoffs (the v1.0.7 text and the push
 > handoff) described `0714628` as the "base of the chain". That was an off-by-one: `0714628^` is
@@ -178,6 +184,11 @@ commit — see the appended rows below.) The count is the size of the **inclusiv
 > (security design)` — bringing the chain to **44** commits (43 range-exclusive). Per this document's
 > convention, a revision's own commits are listed by hash only once they exist, so the two are named
 > by subject here.
+>
+> **Push state (v1.0.15).** The two commits named in the v1.0.14 note above (`65b25f8`, `a60681f`) and
+> the three FIX-NATIVE-SECURITY-SMALL commits (`f66f464`, `1bbf8a6`, `23816cb`) are now listed by hash
+> in the table, which is why the chain reads **47** through `23816cb` (46 range-exclusive). This
+> revision's own commit will be recorded by hash in a future revision, per the same convention.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -469,6 +480,76 @@ designs live in `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Each bullet carries its 
   store, so SEC-01 is confined to the native tunnel; the metadata-fetch path is unaffected.
   Evidence: SOURCE CODE.
 - **Methodology lessons:** No new methodology lessons in v1.0.14.
+
+#### 1.6.8 Security Fixes Landed + Device-Verified (v1.0.15)
+
+This subsection records the **FIX-NATIVE-SECURITY-SMALL** implementation phase (three commits:
+`f66f464`, `1bbf8a6`, `23816cb`) and the **DEVICE-VERIFY-SECURITY-SMALL** physical-device verification
+of the four low-risk security fixes designed in v1.0.14 (§1.6.7). No source, test, native, build,
+manifest or XML file was modified in *this* documentation revision. Each bullet carries its evidence
+label.
+
+1. **N-09 FIXED — CSPRNG for RUDP key/IV/cookie material.** Every `rand()` site cited in §1.6.7 was
+   migrated to the existing `generate_random_bytes()` / `RAND_bytes` wrapper (`aes_wrapper.c:337`) in
+   `softether_rudp.c` and `rudp_transport.c`. The key/IV generation in `rudp_create` now issues one
+   `generate_random_bytes()` call per key/IV, and cookies / jitter / pad / ICMP-DNS ids use a 32-bit
+   CSPRNG helper (`rudp_rand_u32` / `rt_rand_u32`). `srand()` (old `rudp_transport.c:1026`) was
+   removed. Commit `f66f464`. Evidence: SOURCE CODE + TEST.
+
+2. **N-11 FIXED — strict `Content-Length` parse.** `atoi()` was replaced at three sites
+   (`softether_protocol.c:854`, `:4116`, `:4252`) by a static `parse_content_length()` that returns
+   `0` for an empty value, `-1` for a malformed value (leading sign, non-digit, trailing junk, or
+   overflow) and the parsed value otherwise, bounded by `N11_MAX_CONTENT_LENGTH` (**64 MiB**). Callers
+   treat `-1` as a parse failure, reject the response, and (at the two `additional_connect` sites)
+   clean up the SSL/fd state before returning. The value can never wrap to `0xFFFFFFFF`. Commit
+   `f66f464`. Evidence: SOURCE CODE + TEST.
+
+3. **RISK-B CLOSED — dead `SoftEtherClient.disconnect()` deleted.** The legacy method was removed in
+   full (no stub, no `@Deprecated`, no commented block). It was already unreachable (its guard
+   required `isConnected == true`, never set, and `nativeHandle != 0`, never assigned) and had zero
+   production/test callers (§1.6.7). Commit `1bbf8a6`. Evidence: SOURCE CODE.
+
+4. **SEC-02 FIXED — cleartext scoping.** `AndroidManifest.xml` now sets
+   `android:usesCleartextTraffic="false"`; `network_security_config.xml` sets
+   `<base-config cleartextTrafficPermitted="false"/>` plus a single
+   `<domain-config cleartextTrafficPermitted="true">` listing **exactly the six** VPN Gate bootstrap
+   IP mirrors (`150.40.105.19`, `150.40.105.6`, `150.40.105.11`, `150.40.105.23`, `194.156.89.134`,
+   `121.186.186.97`); and `VpnGateSources.kt` dropped the HTTP canonical URLs (`MAIN_HTTP_URL`,
+   `API_HTTP_URL`, `MIRRORS_HTTP_URL`) so the canonical HTML/API/directory lists are HTTPS-only.
+   Commit `1bbf8a6`. Evidence: SOURCE CODE.
+
+5. **SEC-02 DEVICE-VERIFIED — active enforcement observed.** On device `5585fecc` Android logged
+   **36×** `CLEARTEXT communication to <ip> not permitted by network security policy` for **10
+   distinct** non-allow-listed hosts, while the six allow-listed bootstrap hosts were permitted — five
+   observed succeeding over HTTP (`Accepted mirror_…` for `150.40.105.6`, `.11`, `.19`, `.23`,
+   `121.186.186.97`). `intersection(blocked, allow-list) = ∅`. The packaged manifest reports
+   `usesCleartextTraffic=false` and `networkSecurityConfig=@0x7f14000a`. Evidence: PHYSICAL DEVICE.
+
+6. **Collector still works over HTTPS.** A fresh Refresh on device emitted all three
+   `[collector] path=open source=mirror|api|html` lines; `100` servers were collected
+   (`HTML servers: 100`, `Collected 100 servers`) and the existing list of `104` was preserved
+   (`DEGRADED_DATASET` — graceful; no empty list, no crash). Evidence: PHYSICAL DEVICE.
+
+7. **AutoConnect still works end-to-end.** 3 + 1 AutoConnect cycles all reached
+   `[AUTO] Connected successfully` with real tunnels (`Japan[59.138.182.93][TCP:1378]`, `tun0`); the
+   stress cycle's second tap was absorbed by the re-entrancy guard
+   (`[AUTO] start ignored: already running`). Observed: 4× `[AUTO] Started`, 4×
+   `[AUTO] Connected successfully`, 3× `[TEARDOWN-REENTRY]`. Evidence: PHYSICAL DEVICE.
+
+8. **No crash / tombstone / process death.** The device run produced an **EMPTY** crash buffer and
+   **0** FATAL / SIGSEGV / tombstone / ANR / process-death events (the 29 `AndroidRuntime` lines were
+   all `uiautomator` / `monkey` tooling, not the app process). Evidence: PHYSICAL DEVICE.
+
+9. **In-place update confirmed.** `firstInstallTime` was unchanged across `adb install -r`
+   (`2026-09-28 16:05:05`), and app settings remained at their defaults (Auto-Mode timeout 5 s, max
+   connections 8, protocol priority `SOFTETHER_TCP,SOFTETHER_UDP,MS_SSTP`, locale `en`).
+   Evidence: PHYSICAL DEVICE.
+
+10. **SEC-01 remains OPEN.** Native TLS certificate verification is still disabled
+    (`SSL_CTX_set_verify(..., SSL_VERIFY_NONE, ...)` at `aes_wrapper.c:110`); the TOFU fingerprint
+    pinning design from §1.6.7 is **deferred** to its own phase. Evidence: SOURCE CODE.
+
+- **Methodology lessons:** No new methodology lessons in v1.0.15.
 
 ---
 
@@ -1789,17 +1870,17 @@ The following items are planned for the source-and-path architecture described i
 | 1 | **FIX-NATIVE-LIFETIME-SYNC (N-15 + N-16)** | N-15: `rudp_destroy` (`rudp_destroy:181`) destroys `ctx->lock` and frees `ctx` with no guarantee a concurrent `rudp_poll` (`rudp_poll:693`) has returned — a poll in flight during destroy is a use-after-free. N-16: `nativeConnect` (`softether_jni.c:54`) is **not** serialised by `conn->connect_mutex` while `nativeConnectWithHub` (`softether_jni.c:139–145`) is — two concurrent native connects on the same `conn` can interleave. | **P1_HIGH** | **CLOSED for N-15 + N-16 — device-verified** (tests 37–41 PASS; commits `3a2f442`, `b0418cc`). See §1.6.1 for the commits. The **FINDING T5-SLOT** driver (§12.4) remains OPEN as a separate item (row 8) |
 | 2 | **DEEP-REVIEW P0 set** | JNI bounds (N-01…N-05, N-08), RUDP lock release, reconnect terminal routing (G-1), teardown log identity (G-2) | — | **CLOSED — device-verified.** RESUME-BATCH-DEVICE-VERIFY: 6/6 native tests PASS, T2–T8 clean. Evidence: PHYSICAL DEVICE EVIDENCE |
 | 3 | `proRelease` build/test path | The release variant has never been built or tested locally (only `proDebug`). Blocked by the RISK-A signing fallback (§12.4) and the absence of local release signing material. | Priority to be assessed | OPEN — see RISK-A |
-| 4 | **N-06 / SEC-01** TLS certificate verification | `aes_wrapper.c:110` `ssl_configure_client_ctx` sets `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)`; no trust store, no hostname binding, no pin; SNI is the resolved **IP** (`:424–428`). Deliberate for self-signed VPNGate certs, but a genuine MITM exposure. | P2_MEDIUM | **OPEN — design proposed (TOFU fingerprint pinning), implementation deferred.** See §1.6.7 and `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Evidence: SOURCE CODE |
-| 5 | **N-09** non-cryptographic `rand()` | `softether_rudp.c:251–268` derives RC4 keys / `next_iv` / cookies from `rand()` (also `:838`, `:1018`, `:1048` for jitter/pad); `rudp_transport.c:316,370,402,731,760,777,840,850,1074,1151,1152,1183,1225` derive IV positioning / pad / ICMP-DNS ids / jitter, with `srand()` at `:1026`. The generator is not cryptographically secure. (The pre-v1.0.14 line refs were stale and are corrected here.) | P2_MEDIUM | **OPEN — migration design (route through `generate_random_bytes()` / `RAND_bytes`), deferred.** See §1.6.7. Evidence: SOURCE CODE |
+| 4 | **N-06 / SEC-01** TLS certificate verification | `aes_wrapper.c:110` `ssl_configure_client_ctx` sets `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)`; no trust store, no hostname binding, no pin; SNI is the resolved **IP** (`:424–428`). Deliberate for self-signed VPNGate certs, but a genuine MITM exposure. | P2_MEDIUM | **OPEN — design proposed (TOFU fingerprint pinning), implementation deferred.** See §1.6.7, §1.6.8 (bullet 10) and `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Evidence: SOURCE CODE |
+| 5 | **N-09** non-cryptographic `rand()` | `softether_rudp.c:251–268` derives RC4 keys / `next_iv` / cookies from `rand()` (also `:838`, `:1018`, `:1048` for jitter/pad); `rudp_transport.c:316,370,402,731,760,777,840,850,1074,1151,1152,1183,1225` derive IV positioning / pad / ICMP-DNS ids / jitter, with `srand()` at `:1026`. The generator is not cryptographically secure. (The pre-v1.0.14 line refs were stale and are corrected here.) | P2_MEDIUM | **FIXED (v1.0.15) — device-non-observable; see §1.6.8 bullet 1. Commit `f66f464`.** Evidence: SOURCE CODE + TEST |
 | 6 | **RISK-A** conditional release signing | See §12.4. | Priority to be assessed | OPEN — `CONFIRMED BY SOURCE AND OBSERVED IN PRACTICE` |
-| 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | — | **CLOSED (v1.0.14)** — exhaustive call-graph audit: dead code (unreachable body — `isConnected` never set true, `nativeHandle` never assigned non-zero — plus zero production/test callers and no reflection); recommend deletion. See §1.6.7. Evidence: SOURCE CODE + TEST |
+| 7 | **RISK-B** legacy `SoftEtherClient.disconnect()` bypass | See §12.4. | — | **CLOSED (v1.0.15)** — dead code deleted (v1.0.14 call-graph audit: unreachable body — `isConnected` never set true, `nativeHandle` never assigned non-zero — plus zero production/test callers and no reflection); see §1.6.8 bullet 3. Commit `1bbf8a6`. Evidence: SOURCE CODE + TEST |
 | 8 | **FINDING T5-SLOT (holder-identity capture)** | Instrumentation landed in commit `5e51e37`; awaiting the next contention occurrence to capture the holder identity. | P2_MEDIUM (opportunistic; not blocking) | OPEN — instrumentation armed on device; holder **UNKNOWN** |
 | 9 | **FINDING T5-SLOT-TEARDOWN residual (attempt=N stuck in TEARDOWN after success)** | Observed in the v1.0.10 device run: a holder logged `attempt=2 phase=TEARDOWN, reporting deadline expired (still blocked)` and blocked later attempts (`Start refused: native slot still held`) for ~1 min; FIX-2 fired 3× but no `FORCED_RELEASE_AFTER_TIMEOUT` fired. Capture the exact timing window in a future device run; confirm whether the 90 s TEARDOWN bound is reached before Auto Mode stops. See §1.6.4. | P2_MEDIUM (opportunistic) | **OPEN — scope narrowed by v1.0.11** (§1.6.5): the residual fired **7×** in the hardening device run and **self-healed in 7/7** (`Native cleanup confirmed … structure destroyed and slot released` within ~1 s, next attempt proceeded normally). The mechanism is now understood from source (a `NOOP_REENTRANT` completion for the same attempt id satisfies `TunnelStateWatcher`'s exact-attempt-id wait before the real `CONFIRMED` arrives — `AndroidConnectionAdapter.kt:226`, `SoftEtherVpnService.kt:1081–1106`, `ConnectionController.kt:937`). Still **UNKNOWN**: the upstream trigger for the re-entrant teardown call, and why the same log line corresponded to a ~1 s window in v1.0.11 but a ~1 min window in v1.0.10. Classification in `AUDIT_AXES_A_B_C_v1.0.11.md` §2 |
 | 10 | **Axis A / B / C audit findings (v1.0.11, read-only)** | Three read-only axes audited; no source change authorised. **Axis A** (tunnel state / UI sync): two concurrent state models with no designated UI owner — `GlobalVpnTracker` vs `AutoModeController._state`/`AutoModeEngine.stateFlow`, both consumed in one composable (`HomeScreen.kt:125–126`); the 500 ms `onLost` delayed re-check; protocol egating in `GlobalVpnTracker.updateState` (a disconnect of one protocol cannot clear another protocol's state); three loss paths at different latencies in `startConnectedWatcher`. **Axis B** (server list network binding): no binding in the retrieval path (`HttpFetcher.kt` plain `OkHttpClient`; single instance at `VpnServerRepository.kt:40`); the `Network` captured in `GlobalVpnTracker.onAvailable` is discarded; and `isTunnelUsable()` is **not implementable** because `GlobalVpnTracker` has **no RX counter and no TUN-EIO counter** — a hard blocker on the already-decided bind design (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1–Q3, USER-DIRECTED REQUIREMENT: per-request `Network.getSocketFactory()`, never `bindProcessToNetwork()`; open → VPN fallback → emergency → manual). **Axis C** (SoftEther UDP / TUN `EIO`): `udp_only` servers run a parallel race with a structurally ~0% success rate per `RUDP_IMPLEMENTATION_PLAN.md` (measured: full 5000 ms deadline consumed; OpenVPN fallback is Open Item #1, unstarted); TUN `EIO` has **no branch** in `TunTerminal.readLoop()` (only `EBADF` is special-cased) so a revoked interface funnels into `triggerReconnect()`; `MAX_PACKET_SIZE = 32767` is a dead constant while the read buffer is 8192 (not a live defect — TUN MTU is 1500). | P2_MEDIUM (opportunistic; not blocking) | **OPEN** — full register (A-1..C-4, cross-axis matrix, dependency-ordered recommendations) in `AUDIT_AXES_A_B_C_v1.0.11.md` §7–§8 |
 | 11 | **OPEN-1 — `VpnServerRepositoryR4bTest.logs` unsynchronized under concurrent fetch** | The test's `pathLog` collector was a plain `ArrayList`, written by **two concurrent `async` coroutines** (`VpnServerRepository.refresh` runs the api and html fetches in parallel, §8.1). A concurrent `add` can drop a line, so the `vpn path is chosen when every input holds` assertion could see a short list and fail intermittently (the observed symptom was a missing `[collector] path=vpn source=html`). **Test-only defect** — no production code was involved. | P2_MEDIUM | **CLOSED (v1.0.12)** — collector changed to `CopyOnWriteArrayList` (assertion logic unchanged); deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` added (50 concurrent runs, exact per-line counts). See §1.6.6. Evidence: SOURCE CODE + TEST |
 | 12 | **OPEN-2 — `AutoModeControllerTest.awaitTerminal()` unbounded wait** | The helper looped `while (true)` until a terminal state with `!isRunning`, with no bound. A controller that never settled stalled the whole `:app:testProDebugUnitTest` suite rather than failing one test — the same failure mode already fixed in `awaitNextTerminalAfterChange` (commit `3c656a4`). The success predicate was correct; only the wait was unbounded. | P2_MEDIUM | **CLOSED (v1.0.12)** — bounded with `withTimeoutOrNull(10_000)` and a 25 ms poll; on timeout it fails loudly, naming the last state, `isRunning`, and the last 12 adapter log lines. Predicate unchanged; all call sites unchanged (timeout defaulted). See §1.6.6. Evidence: SOURCE CODE + TEST |
-| 13 | **SEC-02 / APP-1** cleartext HTTP permitted globally | `AndroidManifest.xml:28` `usesCleartextTraffic="true"` plus the blanket `network_security_config.xml:3` (`<base-config cleartextTrafficPermitted="true"/>`); HTTP fallback/bootstrap URLs in `VpnGateSources.kt`. HTTPS-first ordering and `ResilientDns` are existing mitigations, but the policy permits cleartext to any host. | P2_MEDIUM | **OPEN — migration design (scope cleartext to named hosts), deferred.** See §1.6.7 and `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Evidence: SOURCE CODE |
-| 14 | **N-11** `atoi()` parses `Content-Length` | `softether_protocol.c:818, 4075, 4202` cast `atoi()` to `uint32_t`; a negative/malformed value becomes `0xFFFFFFFF`, but every site is bounded downstream (`:838–839`, `:4078`, `:4207`), so this is robustness/defence-in-depth rather than a demonstrated exploit. | P3_LOW | **OPEN — strict bounded-parse design, deferred.** See §1.6.7. Evidence: SOURCE CODE + INFERENCE |
+| 13 | **SEC-02 / APP-1** cleartext HTTP permitted globally | `AndroidManifest.xml:28` `usesCleartextTraffic="true"` plus the blanket `network_security_config.xml:3` (`<base-config cleartextTrafficPermitted="true"/>`); HTTP fallback/bootstrap URLs in `VpnGateSources.kt`. HTTPS-first ordering and `ResilientDns` are existing mitigations, but the policy permits cleartext to any host. | P2_MEDIUM | **FIXED (v1.0.15) — device-verified active enforcement; see §1.6.8 bullets 4–5. Commit `1bbf8a6`.** Evidence: SOURCE CODE + PHYSICAL DEVICE |
+| 14 | **N-11** `atoi()` parses `Content-Length` | `softether_protocol.c:818, 4075, 4202` cast `atoi()` to `uint32_t`; a negative/malformed value becomes `0xFFFFFFFF`, but every site is bounded downstream (`:838–839`, `:4078`, `:4207`), so this is robustness/defence-in-depth rather than a demonstrated exploit. | P3_LOW | **FIXED (v1.0.15) — see §1.6.8 bullet 2. Commit `f66f464`.** Evidence: SOURCE CODE + TEST |
 
 #### 12.5.2 Dynamic Server-Source Access roadmap
 
@@ -2136,6 +2217,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.12 | 2026-10-14 | DOCS-UPDATE + TEST FIX | closed the two open test-suite defects carried over from FIX-HANGING-SKIP-TEST in a new **§1.6.6**. **OPEN-1** — `VpnServerRepositoryR4bTest`'s `[collector] path=...` collector was a plain `ArrayList` written by two concurrent `async` coroutines in `VpnServerRepository.refresh`, so a lost `add` could drop the `path=vpn source=html` line; the collector is now a `CopyOnWriteArrayList` (assertions unchanged) and a deterministic regression test `vpn-path-logs-are-never-lost-under-concurrent-fetch` (50 concurrent runs, exact per-line counts; 0.78 s / 0.76 s) was added. **OPEN-2** — `AutoModeControllerTest.awaitTerminal()` was an unbounded `while (true)`; it is now bounded with `withTimeoutOrNull(10_000)` (25 ms poll) and fails loudly, naming the last state, `isRunning` and the last 12 adapter logs; the success predicate and all call sites are unchanged. Extended **§1.6.1** to the 37-commit chain (`0714628` → `3dfb0f3`, 9 new rows: `68758ae`, `0e011e3`, `0e3f9ca`, `607c651`, `2841dc5`, `7b4adba`, `a9e16fd`, `3c656a4`, `3dfb0f3`). Added **§12.5.1 rows 11 and 12** (OPEN-1 / OPEN-2, both CLOSED). Verified JVM-only: `:SoftEtherClient:test` **160/0/0/0**; `:app:testProDebugUnitTest` run twice, **647/0/0/1** both times (the single skip is the pre-existing legitimate `AssumptionViolatedException` in `HtmlParserOracleTest`). **No APK was built and no device was touched.** Refreshed the header HEAD field to `3dfb0f3`. No new methodology lessons in v1.0.12. **This revision made no production-code change**; the only non-documentation edits are the two test files |
 | 1.0.13 | 2026-10-15 | DOCS-HYGIENE | header path clarified — the canonical `**Repository:**` line is **retained unchanged** and a new **§2.6 Local Mirrors / Working Copies** documents the D: → C: move, its cause (D: I/O slowness: `gradlew help` ~22 min vs ~7 s on a healthy SSD) and the rule that filesystem paths are machine-specific while the repository identity (`SoftEthergai`) is not; a one-line canonical-name note was added under the header. Committed the previously-untracked `FIX_HANGING_SKIP_TEST_REPORT.md` **unchanged** (commit `b38efa7`). Verified **§1.6.1** chain sanity: `git log --oneline 0714628^..HEAD` = **41** and the table = **41 rows** (delta 0) after adding the four missing rows (`6360228`, `203addf`, `81163e4`, `b38efa7`); the phase-start delta was **3**. Refreshed the header HEAD field to `b38efa7` and `Last updated` to 2026-10-15. **No source / test / native / build / device change.** §22 untouched. No new methodology lessons in v1.0.13 |
 | 1.0.14 | 2026-10-15 | AUDIT-DESIGN-SECURITY-AND-RISK-B (read-only + design) | records the security audit and the RISK-B closure in a new **§1.6.7**. **SEC-01** (== §12.5.1 row 4 / N-06): the single production verification site `aes_wrapper.c:110` sets `SSL_VERIFY_NONE`, with no trust store, no hostname binding and no pin, and SNI set to the resolved IP; three candidate designs were compared and **TOFU fingerprint pinning** is recommended, implementation deferred. **SEC-02 / APP-1**: global `usesCleartextTraffic` + blanket `network_security_config.xml`; migration design (scope cleartext to named hosts), deferred. **N-09**: `rand()` feeds RC4 keys/IV/cookies in `softether_rudp.c:251–268` and 13 `rudp_transport.c` sites (with `srand()` at `:1026`); migration onto the existing `generate_random_bytes()` / `RAND_bytes` wrapper designed, deferred; §12.5.1 row 5's stale line refs corrected. **N-11**: `atoi()` parses `Content-Length` at `softether_protocol.c:818,4075,4202` (bounded downstream); strict-parse design, deferred. **RISK-B CLOSED** — an exhaustive call-graph audit proves the legacy `SoftEtherClient.disconnect()` is dead code (unreachable body + zero production/test callers + no reflection); deletion recommended, deferred. Extended **§1.6.1** to the 42-commit chain (`0714628` → `6cffd1e`, adding the v1.0.13 spec commit) and added **§12.5.1 rows 13/14**. New artifact `AUDIT_SECURITY_AND_RISK_B_v1.0.14.md`. Refreshed the header HEAD field to `6cffd1e`. No new methodology lessons in v1.0.14. **This revision made no source / test / native / build / manifest / XML change and ran no build, test, or device command** |
+| 1.0.15 | 2026-10-15 | DOCS-UPDATE: recorded the four implemented + device-verified security fixes (N-09, N-11, RISK-B, SEC-02) in §1.6.8; updated §12.5.1 rows 4/5/7/13/14 to reflect their fixed/closed status; advanced the §1.6.1 chain through `23816cb`. SEC-01 remains OPEN (design deferred). No source/test/build/device change. |
 
 ### Verification Status
 
@@ -2175,6 +2257,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Build and Verification Methodology (§22) | HISTORICAL — each lesson attributed to the incident that produced it; §21 intentionally unassigned |
 | Test Flakiness and Docs Bundle (§1.6.6) | HISTORICAL + TEST — the OPEN-1 / OPEN-2 root causes are attributed to direct source inspection of `VpnServerRepository.refresh` (§8.1) and `AutoModeControllerTest`; the fixes and the regression test are TEST evidence, as are the three green JVM runs (`:SoftEtherClient:test` 160/0/0/0; `:app:testProDebugUnitTest` 647/0/0/1 twice). The "no APK / no device" statement is verified from the phase's own command log. Not independently re-verified here beyond the recorded runs |
 | Security Audit and RISK-B Closure (§1.6.7) | HISTORICAL + SOURCE CODE — the SEC-01 / SEC-02 / N-09 / N-11 characterisations are direct source inspection at the stated file/line; the RISK-B closure is SOURCE CODE (exhaustive call-graph) plus TEST (no test pins the method). All designs are DEFERRED and no fix was applied; the findings are not independently re-verified here |
+| Security Fixes Landed + Device-Verified (§1.6.8) | HISTORICAL — the four fixes are attributed to the FIX-NATIVE-SECURITY-SMALL implementation phase (commits `f66f464`, `1bbf8a6`; SOURCE CODE + TEST) and the device statements to DEVICE-VERIFY-SECURITY-SMALL (PHYSICAL DEVICE), not re-verified in this revision. SEC-01 remains OPEN — design deferred |
 
 ### Legend
 
