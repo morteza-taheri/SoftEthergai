@@ -12,8 +12,40 @@ import vn.unlimit.vpngate.data.model.VpnUtil
  * §17 api > html > mirror, §38 visible conflicts).
  */
 object VpnServerMerger {
-    /** Lower number == higher authority. api > html > mirror_*. */
-    private val SOURCE_PRIORITY = mapOf("api" to 0, "html" to 10)
+    /**
+     * Lower number == higher authority. api > html > mirror_*.
+     *
+     * Z1-IMPL-D (Roadmap §12.5.2 item D) adds `manual` as the *lowest*
+     * authority of all, which is the frozen policy, not a new one:
+     * `SERVER_SOURCE_ARCHITECTURE.md` §3.3 says "Across sources: canonical
+     * (api/html) always wins over emergency over manual", §4.2 says manual
+     * records "get the lowest merge priority … never promoted above
+     * canonical", and spec §11.11 says a manual record must not be
+     * *silently* overwritten by a refresh.
+     *
+     * Read together those three are consistent, and the number 30 is what
+     * encodes it. Preservation is not the same as precedence:
+     *
+     *  - **Preservation is absolute.** A manual record is never deleted.
+     *    `mergeRecords` dedupes by identity and merges; it has no path that
+     *    drops a record for being low-priority, and the production write
+     *    boundary re-emits the user's own rows on every accepted refresh
+     *    (`ServerListUpdates`). A manual server the feeds do not mention
+     *    survives untouched and keeps every one of its fields.
+     *  - **Precedence applies only to a value both sides claim.** When a
+     *    manual entry and a collected record describe the same server and
+     *    disagree on a scalar, the collected value wins, because the feed is
+     *    evidence about the outside world and a typed string is a belief
+     *    about it. The user's value is not discarded: [recordConflict]
+     *    writes it into the record's `conflicts` list, which §38 requires —
+     *    a disagreement is auditable, never silent.
+     *
+     * The entry for `manual` is inert until a manual record reaches this
+     * object; it exists so the priority table is complete and correct
+     * rather than defaulting a user's own server to the same authority as
+     * an unidentified mirror.
+     */
+    private val SOURCE_PRIORITY = mapOf("api" to 0, "html" to 10, "manual" to 30)
 
     fun deepCopy(value: Any?): Any? = when (value) {
         is Map<*, *> -> {
