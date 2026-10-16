@@ -13,14 +13,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import vn.unlimit.vpngate.App
+import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfig
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
+import vn.unlimit.vpngate.data.remote.ManualServer
+import vn.unlimit.vpngate.data.remote.ManualServerDao
 import vn.unlimit.vpngate.data.remote.SourceKind
 import vn.unlimit.vpngate.data.remote.SourceUrl
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.models.VPNGateItem
+import vn.unlimit.vpngate.repository.ManualServerStore
 import vn.unlimit.vpngate.repository.ServerListUpdates
 import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
 import vn.unlimit.vpngate.repository.ServerListUpdater
@@ -126,6 +130,72 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                     existing.copy(enabled = enabled, updatedAt = System.currentTimeMillis()),
                 )
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Z1-IMPL-D: manually entered servers (Roadmap §12.5.2 item D).
+    //
+    // Unlike an emergency source, a manual server is not a URL and is never
+    // fetched: it is user-authored data that must survive every refresh
+    // (spec §11.11). These members only persist and observe the list; the
+    // merge that keeps the rows in the server list lives in
+    // `ServerListUpdates.withManualRows`.
+    // ---------------------------------------------------------------------
+
+    private val manualServerDao: ManualServerDao?
+        get() = App.instance?.manualServerDao
+
+    private val manualServerStore: ManualServerStore?
+        get() = manualServerDao?.let { ManualServerStore(it) }
+
+    val manualServers: StateFlow<List<ManualServer>> =
+        manualServerDao?.observeAll()
+            ?.map { entities -> entities.map { ManualServer.fromEntity(it) } }
+            ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+            ?: MutableStateFlow(emptyList())
+
+    /**
+     * Stores one manually entered server. Returns false when the input is
+     * not a dialable server — not an IPv4 address, a port outside
+     * 1..65535, or a protocol the record layer does not know — so the caller
+     * can refuse it at the boundary instead of it vanishing silently.
+     *
+     * The published [manualServers] flow is the confirmation, exactly like
+     * the emergency-source list.
+     */
+    fun addManualServer(
+        host: String,
+        portText: String,
+        protocol: String,
+        label: String?,
+        notes: String?,
+    ): Boolean {
+        val store = manualServerStore ?: return false
+        val port = VpnUtil.clean(portText).toIntOrNull()
+        val accepted = ManualServer.isValidHost(host) &&
+            port != null && ManualServer.isValidPort(port) &&
+            ManualServer.isValidProtocol(protocol)
+        if (!accepted) return false
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                store.add(host, portText, protocol, label, notes)
+            }
+        }
+        return true
+    }
+
+    fun removeManualServer(id: Long) {
+        val store = manualServerStore ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { store.remove(id) }
+        }
+    }
+
+    fun toggleManualServer(id: Long, enabled: Boolean) {
+        val store = manualServerStore ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { store.setEnabled(id, enabled) }
         }
     }
 

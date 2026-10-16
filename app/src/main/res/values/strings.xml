@@ -399,11 +399,28 @@
     <string name="setting_server_update_interval_24h">Every day</string>
     <!-- Emergency Server Sources (Z1-IMPL-B, Roadmap §12.5.2 item B). Config-only for now: retrieval wiring is item C. -->
     <string name="emergency_source_title">Emergency Server Sources</string>
-    <string name="emergency_source_summary">Extra server-list sources kept for when the official sources cannot be reached. Nothing is fetched from them yet.</string>
+    <string name="emergency_source_summary">Extra server-list sources kept for when the official sources cannot be reached. They are fetched only when every built-in source has answered "nothing", and only if you add one here.</string>
     <string name="emergency_source_empty">No emergency sources configured</string>
     <string name="emergency_source_url_label">Source URL</string>
     <string name="emergency_source_label_label">Label (optional)</string>
     <string name="emergency_source_add">Add source</string>
     <string name="emergency_source_remove">Remove source</string>
     <string name="emergency_source_invalid_url">Enter a valid http(s) URL</string>
+
+    <!-- Manual Servers (Z1-IMPL-D, Roadmap §12.5.2 item D). -->
+    <string name="manual_server_title">Manual Servers</string>
+    <string name="manual_server_summary">Servers you added by hand. They are written back into the server list on every update, so a refresh can never drop them.</string>
+    <string name="manual_server_empty">No manual servers added</string>
+    <string name="manual_server_host_label">IPv4 address</string>
+    <string name="manual_server_port_label">Port</string>
+    <string name="manual_server_protocol_label">Protocol</string>
+    <string name="manual_server_label_label">Label (optional)</string>
+    <string name="manual_server_notes_label">Notes (optional)</string>
+    <string name="manual_server_add">Add server</string>
+    <string name="manual_server_remove">Remove server</string>
+    <string name="manual_server_invalid">Enter an IPv4 address, a port from 1 to 65535, and a protocol</string>
+    <string name="manual_server_protocol_openvpn">OpenVPN</string>
+    <string name="manual_server_protocol_softether">SoftEther</string>
+    <string name="manual_server_protocol_l2tpipsec">L2TP/IPsec</string>
+    <string name="manual_server_protocol_sstp">MS-SSTP</string>
 </resources>

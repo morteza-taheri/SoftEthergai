@@ -51,6 +51,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
@@ -93,6 +94,7 @@ import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.data.model.CollectorLog
+import vn.unlimit.vpngate.data.model.VpnProtocolNames
 import vn.unlimit.vpngate.provider.BaseProvider
 import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
 import vn.unlimit.vpngate.utils.AppConfig
@@ -133,6 +135,16 @@ fun SettingsScreen(
     val emergencySources by connectionListViewModel.emergencySources.collectAsState()
     var emergencyUrlInput by remember { mutableStateOf("") }
     var emergencyLabelInput by remember { mutableStateOf("") }
+
+    // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers. Unlike an
+    // emergency source these are never fetched — they are the user's own rows,
+    // re-emitted into the server list on every accepted update.
+    val manualServers by connectionListViewModel.manualServers.collectAsState()
+    var manualHostInput by remember { mutableStateOf("") }
+    var manualPortInput by remember { mutableStateOf("") }
+    var manualProtocolInput by remember { mutableStateOf(VpnProtocolNames.SSTP) }
+    var manualLabelInput by remember { mutableStateOf("") }
+    var manualNotesInput by remember { mutableStateOf("") }
 
     // ---- Setting states
     var notifySpeed by remember {
@@ -705,6 +717,177 @@ fun SettingsScreen(
                 }
             }
 
+            // ---------------- Manual Servers (Z1-IMPL-D, §12.5.2 item D)
+            item {
+                SettingsSection(title = stringResource(R.string.manual_server_title)) {
+                    Text(
+                        text = stringResource(R.string.manual_server_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                    if (manualServers.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.manual_server_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    } else {
+                        manualServers.forEachIndexed { index, server ->
+                            if (index > 0) {
+                                SettingDivider()
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = server.label?.takeIf { it.isNotBlank() }
+                                            ?: "${server.host}:${server.port}",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append(server.host)
+                                            append(":")
+                                            append(server.port)
+                                            append(" · ")
+                                            append(manualProtocolLabel(server.protocol))
+                                            if (!server.label.isNullOrBlank()) {
+                                                append(" · ")
+                                                append(server.label)
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Switch(
+                                    checked = server.enabled,
+                                    onCheckedChange = {
+                                        connectionListViewModel.toggleManualServer(server.id, it)
+                                    },
+                                )
+                                IconButton(
+                                    onClick = {
+                                        connectionListViewModel.removeManualServer(server.id)
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.DeleteOutline,
+                                        contentDescription = stringResource(R.string.manual_server_remove),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    SettingDivider()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = manualHostInput,
+                            onValueChange = { manualHostInput = it },
+                            label = { Text(stringResource(R.string.manual_server_host_label)) },
+                            placeholder = { Text("203.0.113.7") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        )
+                        OutlinedTextField(
+                            value = manualPortInput,
+                            onValueChange = { manualPortInput = it },
+                            label = { Text(stringResource(R.string.manual_server_port_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        Text(
+                            text = stringResource(R.string.manual_server_protocol_label),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // One chip per record-layer protocol, in the same
+                            // order the filter sheet uses.
+                            listOf(
+                                VpnProtocolNames.OPENVPN,
+                                VpnProtocolNames.SOFTETHER,
+                                VpnProtocolNames.L2TP_IPSEC,
+                                VpnProtocolNames.SSTP,
+                            ).forEach { protocol ->
+                                FilterChip(
+                                    selected = manualProtocolInput == protocol,
+                                    onClick = { manualProtocolInput = protocol },
+                                    label = { Text(manualProtocolLabel(protocol)) },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = manualLabelInput,
+                            onValueChange = { manualLabelInput = it },
+                            label = { Text(stringResource(R.string.manual_server_label_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        OutlinedTextField(
+                            value = manualNotesInput,
+                            onValueChange = { manualNotesInput = it },
+                            label = { Text(stringResource(R.string.manual_server_notes_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        Button(
+                            onClick = {
+                                val added = connectionListViewModel.addManualServer(
+                                    host = manualHostInput,
+                                    portText = manualPortInput,
+                                    protocol = manualProtocolInput,
+                                    label = manualLabelInput,
+                                    notes = manualNotesInput,
+                                )
+                                if (added) {
+                                    manualHostInput = ""
+                                    manualPortInput = ""
+                                    manualLabelInput = ""
+                                    manualNotesInput = ""
+                                } else {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            context.getString(R.string.manual_server_invalid),
+                                        )
+                                    }
+                                }
+                            },
+                            enabled = manualHostInput.isNotBlank() && manualPortInput.isNotBlank(),
+                            modifier = Modifier.align(Alignment.End),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text(stringResource(R.string.manual_server_add))
+                        }
+                    }
+                }
+            }
+
             // ---------------- Startup + Appearance
             item {
                 SettingsSection(title = stringResource(R.string.setting_theme_label)) {
@@ -895,9 +1078,25 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * Z1-IMPL-D: the display name of a record-layer protocol key.
+ *
+ * The stored value is the collector's own vocabulary
+ * ([VpnProtocolNames]) so a manual row and a collected row name the same
+ * protocol identically; only the label is translated.
+ */
 @Composable
-private fun cacheTimeLabels(): List<String> = listOf(
-    stringResource(R.string.cache_time_15m),
+private fun manualProtocolLabel(protocol: String): String = stringResource(
+    when (protocol) {
+        VpnProtocolNames.SOFTETHER -> R.string.manual_server_protocol_softether
+        VpnProtocolNames.OPENVPN -> R.string.manual_server_protocol_openvpn
+        VpnProtocolNames.L2TP_IPSEC -> R.string.manual_server_protocol_l2tpipsec
+        else -> R.string.manual_server_protocol_sstp
+    },
+)
+
+@Composable
+private fun cacheTimeLabels(): List<String> = listOf(    stringResource(R.string.cache_time_15m),
     stringResource(R.string.cache_time_30m),
     stringResource(R.string.cache_time_1h),
     stringResource(R.string.cache_time_2h),
