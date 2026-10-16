@@ -45,6 +45,13 @@ import vn.unlimit.vpngate.models.VPNGateItem
  *     but it is not a new observation, so it never replaces the
  *     last-known-good snapshot and never counts as a successful refresh.
  *
+ *  6. **The emergency rung is last and is not a bypass.** It runs only when
+ *     [fetch] produced nothing at all, it is injected (so a caller with no
+ *     configured source cannot reach it), and a dataset it supplies goes
+ *     through the identical acceptance sequence — including
+ *     `DatasetIntegrity`, which is what refuses an emergency file too small
+ *     to be a server list when a healthy list is already stored.
+ *
  * Pure JVM: [fetch] and [store] are injected, so the whole contract is
  * unit-testable without Android, Room or the network.
  */
@@ -67,6 +74,26 @@ class ServerListUpdater(
      * is what every caller that has no fallback path means.
      */
     private val fetchedFromCache: suspend () -> Boolean = { false },
+    /**
+     * The emergency rung (`SERVER_SOURCE_ARCHITECTURE.md` §2.5 path 3).
+     *
+     * Tried only when [fetch] returned `null` — no dataset at all. [fetch]
+     * already covers the open and VPN rungs and the repository's own
+     * snapshot / stored / bundled-seed fallbacks, so this really is the last
+     * rung before the update gives up and keeps what is stored.
+     *
+     * Injected rather than looked up so this class stays the pure-JVM
+     * orchestrator it has always been, and so a caller with no emergency
+     * sources supplies `{ null }` and the rung cannot run at all. The
+     * production wiring builds this in `ServerListUpdates`.
+     *
+     * `null` (or an empty list) means "nothing to say" and falls through to
+     * the unchanged `Outcome.Preserved(NETWORK_FAILURE, …)`. A non-empty
+     * result is judged by exactly the same acceptance sequence as a network
+     * dataset — `DatasetIntegrity` included, which is what stops a small
+     * emergency file from replacing a healthy stored list (§2.7).
+     */
+    private val emergencyFetch: suspend () -> List<VPNGateItem>? = { null },
 ) {
 
     /**
@@ -226,7 +253,7 @@ class ServerListUpdater(
         if (!gate.tryLock()) return Outcome.SkippedConcurrent
         running = true
         try {
-            val downloaded = try {
+            var downloaded = try {
                 fetch()
             } catch (e: Exception) {
                 return Outcome.Preserved(classify(e), store.currentCount())
@@ -242,7 +269,21 @@ class ServerListUpdater(
             }
 
             if (downloaded == null) {
-                return Outcome.Preserved(Reason.NETWORK_FAILURE, store.currentCount())
+                // Emergency rung. Every failure is contained here: a source
+                // that yields nothing, a body that is refused or oversized,
+                // or a lambda that throws all leave `emergency` null, and the
+                // outcome is exactly what it was before this rung existed.
+                val emergency = try {
+                    emergencyFetch()
+                } catch (e: Exception) {
+                    CollectorLog.d("Emergency fetch threw: ${e.message}")
+                    null
+                }
+                if (emergency.isNullOrEmpty()) {
+                    return Outcome.Preserved(Reason.NETWORK_FAILURE, store.currentCount())
+                }
+                CollectorLog.d("Emergency rung supplied ${emergency.size} server(s); using it")
+                downloaded = emergency
             }
             if (downloaded.isEmpty()) {
                 return Outcome.Preserved(Reason.EMPTY_RESPONSE, store.currentCount())
