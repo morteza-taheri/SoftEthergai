@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `abc8bd1f84bb7dcf08edd082f3d7e65dcae0183d`
-**Document version:** 1.0.19
+**HEAD:** `631f38fbf3dbb0be886396ca26d55678ab4516b3`
+**Document version:** 1.0.20
 **Last updated:** 2026-10-16
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -239,6 +239,15 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`); local unchanged at 5. HEAD == origin/main ==
 > `abc8bd1f84bb7dcf08edd082f3d7e65dcae0183d`. Chain arithmetic per §1.6.12 bullet 2 (delta 1,
 > one-own-commit convention). No tag operation other than the authorized push was performed.
+
+> **Push state (v1.0.20).** Z1-IMPL-B (emergency source foundation) landed — Roadmap §12.5.2 item B.
+> Three commits make up this revision: `feat(sources)` (source), `test(sources)` (tests) and `docs`
+> (this spec update plus `Z1_IMPL_B_REPORT.md`). Items C/D and Cumulative Server Retention (§9 of
+> `SERVER_SOURCE_ARCHITECTURE.md`) remain future work. The **HEAD** field above is the
+> source-and-tests commit at the time this text was written — a spec file cannot name its own
+> commit — so this revision's own docs commit is named by subject here and is listed by hash in a
+> future revision, per the one-own-commit convention. Chain arithmetic per §1.6.13 bullet 9. No tag
+> operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -879,6 +888,73 @@ below are recorded *here* precisely so that the text of §1.6.2–§1.6.11 can s
 6. **Methodology lessons:** No new methodology lessons in v1.0.19.
 
 ---
+
+#### 1.6.13 Z1-IMPL-B — Emergency Source Foundation (v1.0.20)
+
+This subsection records the **Z1-IMPL-B** revision — Roadmap §12.5.2 **item B only**. It is a real
+implementation phase (source + test + build) and it is **device-free**: no device command was run and
+no device verification was performed. What landed, what deliberately did not, and the evidence for
+each claim are listed below.
+
+1. **Roadmap §12.5.2 item B landed.** Scope: the emergency-source configuration model, the Room
+   entity + DAO, the 5 → 6 migration, and a Settings entry point. New files:
+   `data/remote/EmergencySourceConfigEntity.kt` (`@Entity(tableName = "emergency_source_config")`,
+   autoGenerate id; fields url, label, enabled, createdAt, updatedAt; `enabled` carries
+   `@ColumnInfo(defaultValue = "1")` so the SQL default matches the migration DDL),
+   `data/remote/EmergencySourceConfigDao.kt` (observeAll / listEnabled / getByUrl / upsert /
+   deleteByUrl) and `data/remote/EmergencySourceConfig.kt` (domain model with `fromEntity` /
+   `toEntity`). `SourceKind` gained `EMERGENCY_CSV` and `MANUAL` (appended at the end, ordinals
+   preserved, no existing entry touched). `AppDatabase` is at **version 6** with the entity
+   registered and `emergencySourceConfigDao()` declared. `App.kt` registers `MIGRATION_5_6` and
+   exposes the new DAO next to the two existing ones — both changes there were **authorized after
+   discovery** showed that the Room builder and the DAO registry live in that file and nowhere else.
+   `ConnectionListViewModel` exposes `emergencySources: StateFlow<List<EmergencySourceConfig>>` plus
+   `addEmergencySource` / `removeEmergencySource` / `toggleEmergencySource`.
+   `SettingsScreen` gained an "Emergency Server Sources" section: URL + optional label inputs, a
+   per-row enable switch and remove affordance, and a validity gate that reuses `SourceUrl.parse`
+   so a malformed URL can never reach the database. **Retrieval is not wired — nothing fetches.**
+   Evidence: SOURCE CODE.
+
+2. **Roadmap §12.5.2 item A was already implemented — NO-OP this phase.** The dynamic network-path
+   selection for server-list retrieval landed in PART B (`a9e16fd`) through
+   `VpnServerRepository`'s three-input decision and `HttpFetcher`'s
+   `boundToSocketFactory`/`boundToNetwork`. No file was changed for it here; the entry is recorded so
+   item A is not double-counted. Evidence: SOURCE CODE + PRIOR REPORT.
+
+3. **§11.9.3 updated — arch doc §10 approved as the design basis.** The historical
+   "DEFERRED / NOT YET DEFINED" wording is retained verbatim and annotated as superseded; the
+   approval note names the CSV parser as a later phase (item C). §11.9.1 and §11.9.2 are untouched.
+   Evidence: SOURCE CODE.
+
+4. **Everything else in §12.5.2 remains NOT IMPLEMENTED.** Items C (CSV parser), D (manual server
+   entry), E (server-list UI entry point), F (text/file/share import), G (safe merge and
+   persistence) and H (tests), plus Cumulative Server Retention (arch doc §9). `SourceKind.MANUAL`
+   exists as a type only — no UI, parser or merge consumes it. Evidence: SOURCE CODE.
+
+5. **JVM tests.** `:app:testProDebugUnitTest` = **678 / 0 / 0 / 1** (baseline 671 / 0 / 0 / 1;
+   **+7**, all from the new `Migration5to6Test`, zero failures and errors, ignored count unchanged).
+   `:SoftEtherClient:test` = **173 / 0 / 0 / 0** — identical to baseline. Evidence: TEST.
+
+6. **Build.** `CI=true ./gradlew :app:assembleProDebug --rerun-tasks --no-build-cache` SUCCESSFUL
+   (114 tasks); APK SHA-256
+   `9ba16f9ffddb17b8d7e46c36e0e647ca8e2ebf6f08bbd45d14031b7621a5094c` (63,678,518 bytes). The prior
+   `713b1014…` differs, as expected for new code. Evidence: TEST.
+
+7. **The Room migration is verified on the JVM only.** `Migration5to6Test` exercises `MIGRATION_5_6`
+   against a recording `SupportSQLiteDatabase` (the established `SstpMigration4To5Test` pattern) and
+   compares the DDL with the KSP-generated `app/schemas/vn.unlimit.vpngate.db.AppDatabase/6.json`;
+   a real 5 → 6 upgrade on a physical device remains **UNKNOWN** until a device reconnects.
+   Evidence: TEST + UNKNOWN.
+
+8. **Device verification: NONE.** The device is DETACHED; no `adb` command was issued at any point.
+   Evidence: PHYSICAL DEVICE (not performed).
+
+9. **Chain arithmetic and methodology lessons.** `git log --oneline 0714628^..HEAD | wc -l` = **62**
+   at the start of this revision against a §1.6.1 table of **60** rows (delta 2: the v1.0.18 docs
+   commit `abc8bd1` and the v1.0.19 spec commit `8ab9381`, both still unlisted); this revision adds
+   three commits, so the chain reads **65** through its docs commit while the table stays at 60 until
+   a future revision lists them. No new methodology lessons. Evidence: SOURCE CODE.
+
 
 ## 2. Architecture Overview
 
@@ -1896,7 +1972,7 @@ A failed emergency source must not erase existing server data.
 
 Do not assume every URL points to CSV; format support must be explicit and validated. The initial planned emergency-source format is a standardized project CSV format, but its exact schema has **NOT** been defined yet.
 
-**CSV schema status: DEFERRED / NOT YET DEFINED.**
+**CSV schema status: DEFERRED / NOT YET DEFINED.** *(Superseded (v1.0.20): the schema is now defined by `SERVER_SOURCE_ARCHITECTURE.md` §10 and approved as the design basis — see the approval note at the end of this section. The wording above is retained verbatim as historical record.)*
 
 Do not invent, in this document or otherwise, any of the following for the emergency CSV schema until a separate design task decides them:
 - Column names
@@ -1911,6 +1987,7 @@ Do not invent, in this document or otherwise, any of the following for the emerg
 
 A future design task must define and document the canonical CSV schema **before** implementing CSV import. The eventual design should consider schema versioning and safe validation, but the exact format is not decided by this documentation task.
 > **Design reference (F.28AL-Z):** The deferred CSV-schema design task is now captured in **`SERVER_SOURCE_ARCHITECTURE.md`** (canonical design document). It defines the emergency CSV schema (v1.0 start), validation, provenance, integrity rules, and the mandatory RUDP port-semantics warning, alongside the dynamic/VPN-aware server-list retrieval path design (open network → VPN tunnel → emergency → manual), manual-import design, extensibility/trust model, a three-condition physical test plan, and an implementation-phase outline. It additionally defines **Section 9 — Cumulative Server Database Retention** (cumulative-add updates that never auto-remove healthy servers, a configurable max-server cap defaulting to 1000 with retention priority *health → protocol-completeness → connection-history*, proposed Room retention fields/migration, a Settings UI proposal, and new `DatasetIntegrity` outcomes `ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`). It further defines **Section 10 — Extended Server CSV Schema for the Emergency Source `servers.csv`** (all 15 VPN Gate iPhone-API base columns, unrenamed, plus HTML-derived protocol/port/SSTP columns; per-column semantics and validation; IPv4-`IP` identity with completeness-merge dedup; `api_iphone`/`html_parse`/`merged` provenance; UTF-8-no-BOM/LF pure-CSV structure; `DatasetIntegrity` accept/merge/reject compatibility; and the verbatim RUDP port-semantics warning). This remains a **design document only** — no schema, code, or behavior is implemented by it. §11.9.3 stays DEFERRED for implementation; consult the design doc when that implementation phase is authorized.
+> **Schema approval (v1.0.20 — Z1-IMPL-B):** the emergency CSV schema of **`SERVER_SOURCE_ARCHITECTURE.md` §10** is **APPROVED as the design basis** for the emergency-source format. This supersedes the "DEFERRED / NOT YET DEFINED" status above and, in substance, the "Explicitly NOT YET DEFINED" description of §12.5.2 item C — that description is left verbatim as historical text and is not edited by this revision. The CSV parser itself remains a **later phase** (roadmap item C); §12.5.2 item B landed configuration-only in v1.0.20 and fetches nothing. Evidence: SOURCE CODE. See §1.6.13 bullet 3.
 
 
 ---
@@ -2552,6 +2629,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.17 | 2026-10-15 | DOCS-UPDATE + PART A COMMIT | records the landing of **PART A** (Axis A: tunnel state / UI sync) in a new **§1.6.10** — A-2 the `onLost` re-check budget 500 ms → 50 ms via the named constant `VPN_LOST_RECHECK_MS` (**reduced, not removed**, because `onLost` precedes `onAvailable` and the re-check is what absorbs a network handover); A-3 four protocol-name "egates" in `GlobalVpnTracker` replaced by the pure stateless fold `VpnStackLedger.reconcile(live, current, event)` (on losing X with a surviving protocol Y, Y is republished as CONNECTED **from Y's own identity** and is never clobbered by X's teardown; the `sstpListener:280` egate is deliberately left in place as provably equivalent and test-pinned); A-4 the three armed-tunnel loss paths in `startConnectedWatcher` funnelled through one `reportArmedTunnelLoss()` with the detection latencies deliberately **not** unified; A-5 `AutoModeState.Disconnected` published only **after** the OQ-7/OQ-6/OQ-1 decision rather than as the first statement of `onUnexpectedDisconnect`. Adds 24 JVM tests (13 new `VpnStackLedgerTest`, +5 `GlobalVpnTrackerTest`, +6 `AutoModeControllerTest`). Records the verification status as **PARTIAL** with an explicit **ANR caveat**: one ANR at 16:06:01 (pid 23115 → 25247, Skipped 35 → 1311 → 1821 frames, tunnel healthy) that is **UNATTRIBUTED** and **NOT REPRODUCED**, with the negative assurance that the Axis A paths did not run (`GlobalVpnTracker` logged only "network available"; no service state change; no `[AUTO]` lines) and two clean controls (baseline-control run, re-test of the same APK); the blocked frame is **UNKNOWN** because `/data/anr` is unreadable without root. Records **PARTs B, C and D as already landed** (`a9e16fd`, `607c651`, `c572050`) and **not re-landed**, including PART D's live probe (`:app:assembleProRelease` exits 1 with the intended `GradleException` at `app/build.gradle:109`, so the RISK-A fail-closed guard fires and `assembleProDebug` still succeeds). Advances **§1.6.1** to **57** commits through `a7c449f` (delta 0 at `HEAD = a7c449f`, adding `8edaee8`, `71edd67`, `067d4a3`, `a7c449f`). Adds **§12.5.1 row 16** (the ANR finding, OPEN — UNKNOWN) and notes rows 6 (RISK-A partially mitigated, guard verified firing) and 10 (Axis A/B/C PARTIALLY CLOSED). New artifact `COMMIT_PART_A_REPORT.md` (commit `a7c449f`). Refreshes the header HEAD field to `a7c449f`. **This revision made no source, test, native, build, manifest or XML change and ran no build, test, or device command**; §22 untouched. No new methodology lessons in v1.0.17. |
 | 1.0.18 | 2026-10-15 | DOCS-HYGIENE + CLOSE-OUT | a **documentation-only, device-free** close-out. Commits the previously-untracked **`IMPLEMENT_P1_REMAINING_REPORT.md`** (the Phase 12 implementation report, left untracked when that phase ended on a STOP condition) unmodified — 606 lines / 30,431 bytes, verified. Adds a new **§1.6.11** — "Line-Reference Corrections and Tag Decision (v1.0.18)" — with four evidence-labelled bullets: (1) the `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)` call is at **`aes_wrapper.c:111`**, not the `:110` cited by §1.6.7 and §1.6.8 (one-line drift from commit `b652198`'s added include); those frozen sections are **not** retro-edited, so the correction is recorded here, and §1.6.9 already cites `:111`; (2) the **tag `p2.4.10` decision — leave it local-only**: it exists only locally, has never been pushed, resolves to `0714628` (a UI/cleanup commit, not a release cut), carries no semantic release value, and keeping it local costs nothing — **no tag operation was performed**; (3) the Phase 12 report commit; (4) no new methodology lessons. Updates **§12.5.1**: row 16 (the ANR) gains a "**Carried forward from Phase 13** — opportunistic re-capture when a future AutoConnect run hits the same stall" note, and a new **row 17** records **PART A device verification as OPEN — PARTIAL** (JVM/build green and reproducible, device layer incomplete, the ANR tracked separately as row 16 rather than counted against PART A). Advances **§1.6.1** to **60** commits through `0c5754e` (delta 0 at `HEAD = 0c5754e`, adding `a3a6434`, `94e02b7`, `0c5754e`). Refreshes the header HEAD field to `0c5754e`. **No source / test / native / build / manifest / XML change; no build, test, or device command; no tag operation**; §22 untouched. No new methodology lessons in v1.0.18 |
 | 1.0.19 | 2026-10-16 | SPEC-HYGIENE | a **documentation-only, device-free** hygiene revision responding to BLOCK 1 / BLOCK 2 forensics. Adds a new **§1.6.12** — "Documentation Corrections (v1.0.19)" — with six evidence-labelled bullets: (1) the §1.6.1 preamble's *"Fifty-three commits … `0714628` → `e6b9eef`"* is marked **superseded** (a v1.0.16-era snapshot; the authoritative count is the latest §1.6.1 push-state note, 60 rows at v1.0.18); (2) the v1.0.18 push-state note's *"this revision's own **two** commits"* is corrected — Phase 14 landed the spec update **and** `CLOSE_OUT_v1.0.18_REPORT.md` in a **single** commit (`abc8bd1`, 2 files), so the chain delta of 1 is explained by one own-commit, and chain arithmetic is unaffected; (3) the **`p2.4.10` rationale correction** — forensic review of the **tag body** refuted the earlier "not a release cut" finding: target `0714628` carries `versionCode 143` / `versionName "2.4.10"` in `app/build.gradle`, `p2.4.9^{commit}` carries 142/"2.4.9", `rev-list --count p2.4.9..p2.4.10` = 1, and the annotated tag body contains 2.4.10 release notes ending **"Version: Bump to 2.4.10 (versionCode 143)."** — the earlier §1.6.3 note, §1.6.11 bullet 2 and `DOCS_UPDATE_v1.0.17_REPORT.md` §7 remain frozen as historical record; (4) an explicit note that `DOCS_UPDATE_v1.0.17_REPORT.md` §7 cannot be retro-edited; (5) a forward note that HEAD (`abc8bd1`) **shares** `versionName "2.4.10"` / `versionCode 143` with tag `p2.4.10` while sitting 60 commits ahead, so a future release phase should bump the version past 2.4.10; (6) no new methodology lessons. **Records the p2.4.10 tag decision as executed — PUSHED** (operator-authorized in BLOCK 3): remote unique tag set is now **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`), local unchanged at 5, published tag object `c1013806…` byte-identical to the local one; a **§1.6.1 v1.0.19 push-state note** records the same. **§12.5.1 unchanged** (no row touched). Refreshes the header HEAD field to `abc8bd1`. **No source / test / native / build / manifest / XML change; no build, test, or device command; the only tag operation was the operator-authorized push of `p2.4.10` — no other tag was created, deleted, moved or force-pushed**; §22 untouched. No new methodology lessons in v1.0.19 |
+| 1.0.20 | 2026-10-16 | Z1-IMPL-B (implementation, device-free) | **Roadmap §12.5.2 item B landed** — the emergency server sources foundation. New `SourceKind.EMERGENCY_CSV` and `SourceKind.MANUAL` (appended, ordinals preserved); new `data/remote/EmergencySourceConfigEntity.kt` (`@Entity(tableName = "emergency_source_config")`: autoGenerate id, url/label/enabled/createdAt/updatedAt, `enabled` with `@ColumnInfo(defaultValue = "1")`), `EmergencySourceConfigDao.kt` (observeAll / listEnabled / getByUrl / upsert / deleteByUrl) and `EmergencySourceConfig.kt` (domain model with `fromEntity`/`toEntity`); `AppDatabase` registered at **version 6** with the entity and `emergencySourceConfigDao()`, plus **MIGRATION_5_6** (single additive `CREATE TABLE`, no foreign keys, non-destructive) registered in `App.kt` together with the new DAO accessor — both `App.kt` changes were authorized after discovery showed the Room builder and the DAO registry live there; `ConnectionListViewModel` exposes `emergencySources: StateFlow<…>` plus add/remove/toggle; `SettingsScreen` gained an "Emergency Server Sources" section (URL + optional label, per-row enable switch and remove, validity gate reusing `SourceUrl.parse`); KSP schema export `6.json` committed. Retrieval is **not** wired (item C) and nothing fetches. Records item B in a new **§1.6.13** (9 evidence-labelled bullets); **§11.9.3** updated — `SERVER_SOURCE_ARCHITECTURE.md` §10 **approved as the design basis** for the emergency CSV schema, historical DEFERRED wording retained verbatim and annotated superseded, parser deferred to item C; item A confirmed already implemented (PART B / `a9e16fd`), NO-OP this phase; items C–H and retention (§9) remain open. JVM: `:app` **678/0/0/1** (baseline 671/0/0/1; +7 from `Migration5to6Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `9ba16f9f…`. Device verification: **NONE** (DETACHED). Environment note: the build disables all debug variants unless the `CI` environment variable is set, so every Gradle invocation in this revision ran with `CI=true`. §1.6.2–§1.6.12 and §22 untouched. No tag operation. No new methodology lessons in v1.0.20 |
 
 ### Verification Status
 
@@ -2570,7 +2648,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Auto Mode Engine (§10) | VERIFIED — source inspection |
 | Binding Design Decisions (§11) | VERIFIED — native code contract confirmed at `softether_protocol.c:1098` |
 | Dynamic Server-Source Access (§11.8) | DESIGN — product requirement stated; current implementation observation preserved separately |
-| Emergency Server Sources (§11.9) | DESIGN — settings requirement stated; CSV schema explicitly deferred |
+| Emergency Server Sources (§11.9) | DESIGN — settings requirement stated; CSV schema explicitly deferred *(v1.0.20: **superseded — §11.9.3 now records arch doc §10 as the approved design basis**; parser deferred to roadmap item C; see §1.6.13 bullet 3)* |
 | Manual Server Entry (§11.10) | DESIGN — product requirement stated; input formats not decided |
 | Persistence/Merge/Retention (§11.11) | DESIGN — principles stated; database schema not designed |
 | Future Extensibility (§11.12) | DESIGN — goal stated; no interfaces mandated |
@@ -2596,6 +2674,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | PART A (Axis A) Landed, with an Explicit ANR Caveat (§1.6.10) | HISTORICAL + PARTIAL — the four Axis A changes are attributed to commit `067d4a3` (SOURCE CODE) and to the 24 added JVM tests (TEST); PARTs B/C/D are attributed to their already-landed commits (`a9e16fd`, `607c651`, `c572050`) and PART D's guard probe to the IMPLEMENT-AND-VERIFY-P1-REMAINING phase (TEST). The JVM/build figures are carried forward as **PRIOR REPORT** — this revision re-ran nothing. The **ANR finding** is PHYSICAL DEVICE evidence (logcat) for the device run in which it occurred, with an explicit **negative assurance** (the Axis A paths did not run), two clean controls, **NOT REPRODUCED**, and the blocked frame recorded as **UNKNOWN** because `/data/anr` is unreadable without root; the most probable remaining explanation is labelled **INFERENCE**, not fact. This revision ran no build, test, or device command |
 | Line-Reference Corrections and Tag Decision (§1.6.11) | HISTORICAL — the `SSL_CTX_set_verify` location is **SOURCE CODE** (verified at `aes_wrapper.c:111` by direct inspection at HEAD; the `:110` citations in the frozen §1.6.7/§1.6.8 are left unmodified and the drift is attributed to commit `b652198`'s added include); the `p2.4.10` tag state is **SOURCE CODE** (local `git tag -l` lists it; `git ls-remote --tags origin` does not, and it resolves to `0714628`), with the decision and its rationale recorded and **no tag operation performed**; the Phase 12 report commit is **SOURCE CODE** (git). This revision ran no build, test, or device command |
 | Documentation Corrections (§1.6.12) | HISTORICAL — all six bullets are **SOURCE CODE** (git history and direct inspection of `app/build.gradle` at `0714628` and `5c13603`, the annotated tag body of `p2.4.10` object `c1013806…`, and `git rev-list --count p2.4.9..p2.4.10` = 1); bullet 4 additionally carries **INFERENCE** for the judgment that a committed report must not be retro-edited. The `p2.4.10` push is **SOURCE CODE** (`git ls-remote --tags origin` now lists it; remote unique tag set 4 → 5; tag object byte-identical to the local one). The superseded v1.0.18-era texts (the §1.6.1 preamble, the v1.0.18 push-state note's "two own commits", and the §1.6.3 / §1.6.11 / `DOCS_UPDATE_v1.0.17_REPORT.md` §7 `p2.4.10` rationale) are explicitly **not** re-verified and are recorded as frozen historical artifacts. This revision ran no build, test, or device command |
+| Z1-IMPL-B — Emergency Source Foundation (§1.6.13) | HISTORICAL — the item B landing is **SOURCE CODE** (the files listed in §1.6.13 bullet 1, inspected at this revision's commits); the JVM counts and the successful build are **TEST**; the migration verification is JVM-only (**TEST**) and a real device 5→6 upgrade is **UNKNOWN**; device verification is **PHYSICAL DEVICE (not performed)**; item A's already-implemented status is **SOURCE CODE + PRIOR REPORT** (§1.6.10 bullet 8, commit `a9e16fd`) |
 
 ### Legend
 
