@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `68bbbfb5ecf3d3b6d24de97ed53ea1e00b6b2cb4`
-**Document version:** 1.0.21
+**HEAD:** `e4daa7b35ac44e427d3cd9928b11aff13a9d1d00`
+**Document version:** 1.0.22
 **Last updated:** 2026-10-16
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -257,6 +257,18 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > source-and-tests commit at the time this text was written — a spec file cannot name its own
 > commit — so this revision's own docs commit is named by subject here and is listed by hash in a
 > future revision, per the one-own-commit convention. Chain arithmetic per §1.6.14 bullet 9. No tag
+> operation of any kind was performed.
+
+> **Push state (v1.0.22).** Z1-IMPL-D (manual server entry + MANUAL-preservation merge) landed — Roadmap
+> §12.5.2 **item D**. Four commits make up this revision: `feat(sources)` (model + Room entity/DAO +
+> migration 6→7 + `App.kt`), `feat(sources)` (the MANUAL-preservation invariant in `VpnServerMerger` and
+> the write-boundary merge in `ServerListUpdates`), `feat(ui)` (Settings section + ViewModel + tests) and
+> `docs` (this spec update plus `Z1_IMPL_D_REPORT.md`). Item D is complete and the preservation part of
+> item **G** is satisfied; items **E/F/H**, the full `DatasetIntegrity` outcomes and Cumulative Server
+> Retention (§9 of `SERVER_SOURCE_ARCHITECTURE.md`) remain future work. The **HEAD** field above is the
+> last source-and-tests commit at the time this text was written — a spec file cannot name its own
+> commit — so this revision's own docs commit is named by subject here and is listed by hash in a
+> future revision, per the one-own-commit convention. Chain arithmetic per §1.6.15 bullet 9. No tag
 > operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
@@ -1050,6 +1062,103 @@ each claim are listed below.
    0714628^..HEAD | wc -l` = **65** at the start of this revision; this revision adds three commits,
    so the chain reads **68** through its docs commit while the §1.6.1 table stays at 60. No new
    methodology lessons. Evidence: TEST + PHYSICAL DEVICE (not performed) + SOURCE CODE.
+
+
+#### 1.6.15 Z1-IMPL-D — Manual Server Entry + MANUAL-Preservation (v1.0.22)
+
+This subsection records the **Z1-IMPL-D** revision — Roadmap §12.5.2 **item D**. It is a real
+implementation phase (source + test + build) and it is **device-free**: no device command was run and
+no device verification was performed.
+
+0. **The field set comes from the requirement, not from invention.** Spec §11.11 defines the
+   *rules* for manual servers and explicitly declines to define a schema ("Do not design or
+   implement a new database schema here"); `SERVER_SOURCE_ARCHITECTURE.md` §4.1 fixes the minimum
+   as "a single server record (host/IP + at least one protocol+port)". The landed model is exactly
+   that plus what the feature needs to be usable — an address, one protocol with its port, a label,
+   notes, and an enable switch. Nothing else was added. Evidence: SOURCE CODE + PRIOR REPORT.
+
+1. **Model, entity, DAO and migration 6→7 landed.** New `data/remote/ManualServer.kt` (domain),
+   `ManualServerEntity.kt` (`@Entity(tableName = "manual_server")` with a **unique** index on
+   `(host, port, protocol)`), `ManualServerDao.kt` (`observeAll` / `listAll` / `listEnabled` /
+   `findByKey` / `upsert` / `deleteById`, mirroring `EmergencySourceConfigDao`), and
+   `repository/ManualServerStore.kt` (the injected-DAO wrapper; no network). `AppDatabase.kt`
+   registers the entity, moves to **version 7** and adds `MIGRATION_6_7`, which is two additive
+   statements — the table and that unique index — with no `DROP`/`DELETE`/`TRUNCATE` and no
+   recreation of `VPNGateItem`, `excluded_apps` or `emergency_source_config`. `App.kt` registers
+   the migration and exposes `manualServerDao`. `app/schemas/…/7.json` is the KSP export and is
+   compared against the migration DDL by `Migration6to7Test`. Evidence: SOURCE CODE + TEST.
+
+2. **MANUAL is the lowest merge authority, and that is the frozen policy rather than a new one.**
+   `VpnServerMerger.SOURCE_PRIORITY` gains `"manual" to 30`, completing the table as
+   api 0 > html 10 > (mirror 20) > manual 30 — `SERVER_SOURCE_ARCHITECTURE.md` §3.3 ("canonical
+   (api/html) always wins over emergency over manual"), §4.2 ("never promoted above canonical"),
+   spec §11.11. Preserved as authoritative, with the reasoning recorded in the code. Evidence:
+   SOURCE CODE.
+
+3. **Preservation and precedence are different promises, and both are tested.**
+   *Preservation* is absolute: a manual record is never deleted. `mergeRecords` dedupes by identity
+   and merges and has no path that drops a record for being low-priority, and the production write
+   boundary re-emits the user's rows on every accepted write, so a manual server the feeds do not
+   mention survives untouched and keeps every one of its fields. *Precedence* applies only to a
+   value both sides claim: when a manual entry and a collected record describe the same server and
+   disagree on a scalar, the collected value wins and the disagreement is written into the record's
+   `conflicts` list (§38) — a manual record is never *silently* overwritten (§11.11). Evidence:
+   SOURCE CODE + TEST.
+
+4. **The merge happens at the single write, which is why it holds for every rung.**
+   `ServerListUpdates.withManualRows` runs inside `Store.replaceAll`, so the manual rows are
+   re-emitted whichever rung supplied the network dataset — the primary fetch, the repository's
+   snapshot/stored/bundled-seed fallbacks, or the emergency rung added in item C. An empty manual
+   list returns the caller's own list **by identity**, so a caller with no manual servers observes
+   byte-identical behaviour. When a host is already served by the network the manual row is not
+   appended as a duplicate (canonical outranks manual); the entry itself is untouched in
+   `manual_server` and is re-emitted on the next refresh in which the feeds stop listing that host.
+   Evidence: SOURCE CODE + TEST.
+
+5. **UI and ViewModel landed.** `ConnectionListViewModel` exposes
+   `manualServers: StateFlow<List<ManualServer>>` plus `addManualServer` / `removeManualServer` /
+   `toggleManualServer`; `SettingsScreen` gains a "Manual Servers" section (list with enable toggle
+   and remove, plus an add form: IPv4 address, port, protocol picker, optional label and notes)
+   reusing the existing components and the `manual_server_` string prefix. Evidence: SOURCE CODE.
+
+6. **A manual address must be an IPv4 literal, and that is a boundary rule, not an oversight.**
+   The record layer keys a server on a valid IPv4 — `VpnServerMerger.normalizeServer` rejects
+   anything else and `VpnConnectionMapper.toConnection` returns null without one — so a bare DNS
+   name would be accepted by the form and then silently dropped by the merge. Refusing it at the
+   `ManualServerStore.add` boundary keeps the Settings UI honest; DNS resolution for manual entries
+   is a later phase's problem. Evidence: INFERENCE, from the two rejection points above.
+
+7. **JVM tests.** `:app` = **747 / 0 / 0 / 1** against a baseline of **724 / 0 / 0 / 1**
+   (**+23**: 16 in `ManualServerPreservationTest`, 7 in `Migration6to7Test`), zero failures and
+   errors, ignored count unchanged. All 724 pre-existing tests pass unchanged, which is the
+   regression evidence that the merge changes nothing when no manual server is configured.
+   `:SoftEtherClient:test` = **173 / 0 / 0 / 0** — identical to baseline. Evidence: TEST.
+
+8. **Build and device state.** `CI=true ./gradlew :app:assembleProDebug` SUCCESSFUL; APK SHA-256
+   `f1d768c9aa1b56fb29ddaea0d773e0f8dfdf0841790dd8bf0e4bd0f8c19a4e33` (65,978,641 bytes), which
+   differs from the prior `b85a7aba…` as expected for new code. **No device verification was
+   performed** — the device is DETACHED, so the full path (adding a manual server, a live refresh
+   that must not drop it, migration 6→7 on a real database) remains **UNKNOWN**. `git log
+   --oneline 0714628^..HEAD | wc -l` = **68** at the start of this revision; this revision adds
+   four commits, so the chain reads **72** through its docs commit while the §1.6.1 table stays at
+   60. No new methodology lessons. Evidence: TEST + PHYSICAL DEVICE (not performed) + SOURCE CODE.
+
+9. **What did NOT land, and the two limitations that were accepted deliberately.**
+   (a) The full `DatasetIntegrity` outcomes (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` /
+   `REJECT_DEGRADED`) are **not** implemented — item G remaining. Evidence: SOURCE CODE.
+   (b) Cumulative Server Retention (arch doc §9) is **not** implemented: an update still replaces
+   rather than merges. Evidence: SOURCE CODE. (c) `SourceIdentity.kt` is **not** in this phase's
+   authorized list, so `SourceKind.MANUAL` still falls through to `mirror_unnumbered` for its
+   `sourceTag`; the merger's manual authority is keyed on the literal `"manual"` instead, which is
+   correct for every record the merger can actually see in this phase. Evidence: SOURCE CODE.
+   (d) Two manual entries on the *same* IPv4 (different ports or protocols) both persist, but the
+   stored table's primary key is the host name alone, so `VPNGateItem.dedupeForStorage` collapses
+   them to one row by its existing Stage 2F-A "most connectable, then first inserted" order. Both
+   entries remain in `manual_server` and in Settings; only one can occupy a row. Modifying that
+   ordering is out of this phase's authorized files. Evidence: SOURCE CODE. (e) An OpenVPN manual
+   entry stores its port but no profile, and the app dials OpenVPN from `openVpnConfigData`, so
+   such a row is not connectable until a profile is supplied — which is items E/F. Evidence:
+   INFERENCE, from `VPNGateItem.connectOptions`.
 
 
 ## 2. Architecture Overview
@@ -2158,6 +2267,21 @@ The following principles govern how built-in, mirror, emergency, and manual sour
 - **Do not weaken existing protections for healthy historical servers.**
 - **Removal/retirement policy must follow the existing documented priorities and evidence requirements; do not invent a new policy that conflicts with them.**
 
+> **Implementation status (v1.0.22 — Z1-IMPL-D):** manual server entry has now **landed**, so the
+> "Database schema: do not design or implement a new database schema here" note above is
+> superseded for the `manual_server` table only. Manual servers persist in their own table (migration
+> 6→7, unique on `(host, port, protocol)`) and are **re-emitted on every accepted write** of the
+> server list, which is what makes the first bullet above true — an update replaces the whole list,
+> so without that re-emission a manual record would be deleted by the very refresh that succeeded.
+> Provenance is distinct and retrievable: the record layer keys a manual record's authority under the
+> `manual` tag, which is the **lowest** of all (`api > html > mirror > manual`, arch doc §3.3/§4.2).
+> A manual record is never deleted, and a value both a manual entry and a collected record claim goes
+> to the collected source with the disagreement recorded in the record's `conflicts` list rather than
+> discarded (§38). Two limits of this phase are recorded in §1.6.15 bullet 9: `SourceIdentity.kt` was
+> outside the authorized file set so `SourceKind.MANUAL`'s `sourceTag` still reads
+> `mirror_unnumbered`, and two manual entries on one IPv4 collapse to one stored row because the
+> table's primary key is the host name alone. See §1.6.15 for the full evidence set.
+
 **Source provenance vs. server identity:** source provenance and server identity may need separate representations. The same logical server may be observed through multiple sources; a single manually entered record must remain user-managed and must not be silently overwritten by any source refresh.
 
 **Database schema:** Do not design or implement a new database schema here. Schema and migration work required to support §11.8–§11.10 is a future implementation/design task.
@@ -2750,6 +2874,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.19 | 2026-10-16 | SPEC-HYGIENE | a **documentation-only, device-free** hygiene revision responding to BLOCK 1 / BLOCK 2 forensics. Adds a new **§1.6.12** — "Documentation Corrections (v1.0.19)" — with six evidence-labelled bullets: (1) the §1.6.1 preamble's *"Fifty-three commits … `0714628` → `e6b9eef`"* is marked **superseded** (a v1.0.16-era snapshot; the authoritative count is the latest §1.6.1 push-state note, 60 rows at v1.0.18); (2) the v1.0.18 push-state note's *"this revision's own **two** commits"* is corrected — Phase 14 landed the spec update **and** `CLOSE_OUT_v1.0.18_REPORT.md` in a **single** commit (`abc8bd1`, 2 files), so the chain delta of 1 is explained by one own-commit, and chain arithmetic is unaffected; (3) the **`p2.4.10` rationale correction** — forensic review of the **tag body** refuted the earlier "not a release cut" finding: target `0714628` carries `versionCode 143` / `versionName "2.4.10"` in `app/build.gradle`, `p2.4.9^{commit}` carries 142/"2.4.9", `rev-list --count p2.4.9..p2.4.10` = 1, and the annotated tag body contains 2.4.10 release notes ending **"Version: Bump to 2.4.10 (versionCode 143)."** — the earlier §1.6.3 note, §1.6.11 bullet 2 and `DOCS_UPDATE_v1.0.17_REPORT.md` §7 remain frozen as historical record; (4) an explicit note that `DOCS_UPDATE_v1.0.17_REPORT.md` §7 cannot be retro-edited; (5) a forward note that HEAD (`abc8bd1`) **shares** `versionName "2.4.10"` / `versionCode 143` with tag `p2.4.10` while sitting 60 commits ahead, so a future release phase should bump the version past 2.4.10; (6) no new methodology lessons. **Records the p2.4.10 tag decision as executed — PUSHED** (operator-authorized in BLOCK 3): remote unique tag set is now **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`), local unchanged at 5, published tag object `c1013806…` byte-identical to the local one; a **§1.6.1 v1.0.19 push-state note** records the same. **§12.5.1 unchanged** (no row touched). Refreshes the header HEAD field to `abc8bd1`. **No source / test / native / build / manifest / XML change; no build, test, or device command; the only tag operation was the operator-authorized push of `p2.4.10` — no other tag was created, deleted, moved or force-pushed**; §22 untouched. No new methodology lessons in v1.0.19 |
 | 1.0.20 | 2026-10-16 | Z1-IMPL-B (implementation, device-free) | **Roadmap §12.5.2 item B landed** — the emergency server sources foundation. New `SourceKind.EMERGENCY_CSV` and `SourceKind.MANUAL` (appended, ordinals preserved); new `data/remote/EmergencySourceConfigEntity.kt` (`@Entity(tableName = "emergency_source_config")`: autoGenerate id, url/label/enabled/createdAt/updatedAt, `enabled` with `@ColumnInfo(defaultValue = "1")`), `EmergencySourceConfigDao.kt` (observeAll / listEnabled / getByUrl / upsert / deleteByUrl) and `EmergencySourceConfig.kt` (domain model with `fromEntity`/`toEntity`); `AppDatabase` registered at **version 6** with the entity and `emergencySourceConfigDao()`, plus **MIGRATION_5_6** (single additive `CREATE TABLE`, no foreign keys, non-destructive) registered in `App.kt` together with the new DAO accessor — both `App.kt` changes were authorized after discovery showed the Room builder and the DAO registry live there; `ConnectionListViewModel` exposes `emergencySources: StateFlow<…>` plus add/remove/toggle; `SettingsScreen` gained an "Emergency Server Sources" section (URL + optional label, per-row enable switch and remove, validity gate reusing `SourceUrl.parse`); KSP schema export `6.json` committed. Retrieval is **not** wired (item C) and nothing fetches. Records item B in a new **§1.6.13** (9 evidence-labelled bullets); **§11.9.3** updated — `SERVER_SOURCE_ARCHITECTURE.md` §10 **approved as the design basis** for the emergency CSV schema, historical DEFERRED wording retained verbatim and annotated superseded, parser deferred to item C; item A confirmed already implemented (PART B / `a9e16fd`), NO-OP this phase; items C–H and retention (§9) remain open. JVM: `:app` **678/0/0/1** (baseline 671/0/0/1; +7 from `Migration5to6Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `9ba16f9f…`. Device verification: **NONE** (DETACHED). Environment note: the build disables all debug variants unless the `CI` environment variable is set, so every Gradle invocation in this revision ran with `CI=true`. §1.6.2–§1.6.12 and §22 untouched. No tag operation. No new methodology lessons in v1.0.20 |
 | 1.0.21 | 2026-10-16 | Z1-IMPL-C (implementation, device-free) | **Roadmap §12.5.2 item C landed** — the emergency CSV parser and its opt-in wire-in. New `parser/EmergencyCsvParser.kt` implements `SERVER_SOURCE_ARCHITECTURE.md` §10 (29 columns; required `HostName`/`IP`/`schema_version`/`SourceTag`; header-driven so column order stays open per §10.9 Q2; `schema_version` fail-closed on anything but `1.0`, checked on **every** row; RFC-4180 quoting; BOM and non-UTF-8 bodies rejected; §18 unit normalisation identical to the canonical parser). Records are ordinary `VpnServerRecord`s built with the existing `VpnRecords` helpers — no parallel record type (§3.12). Required-field failures reject the row and are counted; optional-decode failures keep the row and mark the capability unsupported (Base64 that will not decode keeps the record and drops OpenVPN); a valid header with zero surviving rows is **Malformed**, not an empty import (§3.10). `SE_UDP_Port` is never turned into a transport on its own — the RUDP warning at §10.3 is honoured literally, so SoftEther UDP support comes only from `SE_UDP_Supported`; `0` is accepted as the documented "not present" token and no port is ever fabricated. Identity and dedup are delegated to `VpnServerMerger` (§10.5), and a merged record's file-level `SourceTag` becomes `merged`, carried on the record in an `emergency` provenance map. New `data/remote/EmergencySourceFetcher.kt` is fetch-only and reuses the project's one `HttpFetcher`/`collectorClientBuilder()` (10 s connect / 15 s read, `ResilientDns`, manual per-hop redirects) so no second HTTP stack is introduced; it follows no redirect outside the source's own authority, re-checks the reported final URL, refuses a body over 1 MiB rather than truncating it, retries each source once under a 40 s deadline (§2.6), and never parses or persists. A recorded limitation: `HttpFetcher` returns a decoded `String`, so the cap bounds parsing/retention rather than bytes on the wire. `SourceIdentity.kt` routes `SourceKind.EMERGENCY_CSV` to a new `EMERGENCY_TAG = "emergency"` instead of the mirror branch, so an emergency record forms its own provenance group and can never speak with canonical authority. The wire-in adds one injected parameter, `ServerListUpdater.emergencyFetch`, defaulted to `{ null }` and tried **only** when the primary fetch returned `null` — that fetch already covers the open and VPN rungs plus the repository's snapshot/stored/bundled-seed fallbacks, so this is §2.5 path 3. `ServerListUpdates.kt` builds the production lambda from the enabled sources and runs the live pipeline unchanged (fetch → parse → merge → validate → score → map); it returns `null` rather than an empty list on every failure, so a refused, oversized, undecodable or empty source falls through and leaves the stored list untouched. Zero behaviour change when no source is configured is evidenced by all 678 pre-existing tests — including every `ServerListUpdater` case — passing unchanged. Records item C in a new **§1.6.14** (9 evidence-labelled bullets); **§11.9.2** annotated with the safety-set status (historical text retained); **§12.5.1** unchanged (no row tracks item C); a status note added under the **§12.5.2** table (row C's description left verbatim, per the v1.0.20 direction). JVM: `:app` **724/0/0/1** (baseline 678/0/0/1; **+46** from `EmergencyCsvParserTest` and `EmergencySourceFetcherTest`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `b85a7aba…`. Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20. §1.6.1–§1.6.13 and §22 untouched. No tag operation. No new methodology lessons in v1.0.21 |
+| 1.0.22 | 2026-10-16 | Z1-IMPL-D (implementation, device-free) | **Roadmap §12.5.2 item D landed** — manual server entry plus the MANUAL-preservation merge, which is the preservation half of item G. The field set is the one the requirement asks for and nothing more: spec §11.11 defines the *rules* and explicitly declines to define a schema ("Do not design or implement a new database schema here"), and `SERVER_SOURCE_ARCHITECTURE.md` §4.1 fixes the minimum as "a single server record (host/IP + at least one protocol+port)". New `data/remote/ManualServer.kt` (domain), `ManualServerEntity.kt` (`@Entity(tableName = "manual_server")` with a **unique** index on `(host, port, protocol)` so re-entering a server updates the row instead of adding a duplicate the user then has to find), `ManualServerDao.kt` (`observeAll`/`listAll`/`listEnabled`/`findByKey`/`upsert`/`deleteById`, mirroring `EmergencySourceConfigDao`), `repository/ManualServerStore.kt` (injected-DAO wrapper, no network) and `repository/ManualServerStore.toItem`, which maps each protocol to only the columns that protocol owns — never another protocol's port — and writes **no** telemetry for a server that was never crawled. `AppDatabase.kt` registers the entity, moves to **version 7** and adds `MIGRATION_6_7`: two additive statements (the table, then that unique index), no `DROP`/`DELETE`/`TRUNCATE`, and no recreation of `VPNGateItem`, `excluded_apps` or `emergency_source_config`; `App.kt` registers the migration and exposes `manualServerDao`; `app/schemas/…/7.json` is the KSP export and is compared against the migration DDL by `Migration6to7Test`. **The merge policy decision.** `VpnServerMerger.SOURCE_PRIORITY` gains `"manual" to 30`, completing the frozen table as api 0 > html 10 > mirror 20 > manual 30 — `SERVER_SOURCE_ARCHITECTURE.md` §3.3 ("canonical (api/html) always wins over emergency over manual"), §4.2 ("never promoted above canonical") and §11.11. Preservation and precedence are kept as two separate promises: preservation is **absolute** (a manual record is never deleted, and `mergeRecords` has no path that drops one for being low-priority), while precedence applies only to a value **both** sides claim, where the collected source wins and the disagreement is written into the record's `conflicts` list (§38) so a manual record is never *silently* overwritten (§11.11). This was put to the operator as an explicit choice because the phase brief's wording ("MANUAL wins on collision") contradicts the frozen arch doc; the arch-doc reading was confirmed. **Where the merge runs.** `ServerListUpdates.withManualRows` executes inside `Store.replaceAll`, so the user's rows are re-emitted whichever rung supplied the network dataset — the primary fetch, the repository's snapshot/stored/bundled-seed fallbacks, or the emergency rung from item C — and an empty manual list returns the caller's own list **by identity**, so a caller with no manual servers observes byte-identical behaviour. A host the network already serves does not get a duplicate manual row; the entry itself is untouched and is re-emitted the next time the feeds stop listing that host (§4.3, "re-emitted as long as they remain valid"). **A manual address must be an IPv4 literal**, because the record layer keys a server on one (`normalizeServer` rejects anything else and `toConnection` returns null without one) — a bare DNS name would be accepted by the form and then silently dropped, so it is refused at the `ManualServerStore.add` boundary instead. UI: `ConnectionListViewModel` exposes `manualServers` plus add/remove/toggle, and `SettingsScreen` gains a "Manual Servers" section reusing existing components and the `manual_server_` string prefix; the stale `emergency_source_summary` (which still said nothing was fetched) was corrected in the same authorized file. Zero behaviour change when no manual server is configured is evidenced by all 724 pre-existing tests — including every `ServerListUpdater` case — passing unchanged. Records item D in a new **§1.6.15**; **§11.11** annotated with the implementation status (historical text retained, including its own "do not implement a schema here" note, now superseded for this table only); **§12.5.1** unchanged (no row tracks item D) and **§12.5.2** untouched, since this phase's permitted spec hunks are §11.11, §1.6.1, §1.6.15 and §20 only. Three limitations are recorded rather than hidden: `SourceIdentity.kt` was outside the authorized file set, so `SourceKind.MANUAL`'s `sourceTag` still reads `mirror_unnumbered`; two manual entries on one IPv4 collapse to a single stored row because the table's primary key is the host name alone; and an OpenVPN manual entry stores a port but no profile, so it is not connectable until items E/F supply one. JVM: `:app` **747/0/0/1** (baseline 724/0/0/1; **+23** from `ManualServerPreservationTest` and `Migration6to7Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `f1d768c9…` (65,978,641 bytes). Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20 and v1.0.21. §1.6.2–§1.6.14 and §22 untouched. No tag operation. No new methodology lessons in v1.0.22 |
 
 ### Verification Status
 
@@ -2780,8 +2905,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Rules for Future AI Agents (§16) | POLICY — derived from architecture and constraints |
 | Constants Summary (§17) | VERIFIED — line-anchored |
 | File Index (§18) | VERIFIED — glob-verified paths |
-| References (§19) | VERIFIED — paths and artifact names cross-checked |
-| Document Status (§20) | VERIFIED — changelog and verification tables maintained each revision |
+| References (§19) | VERIFIED — paths and artifact names cross-checked || Document Status (§20) | VERIFIED — changelog and verification tables maintained each revision |
 | Session Completion Summary (§1.6) | HISTORICAL — commit chain and session outcome compiled from `git log` and the phase reports; the device-verification statement is attributed to RESUME-BATCH-DEVICE-VERIFY (PHYSICAL DEVICE EVIDENCE), not re-verified here |
 | Post-v1.0.7 Additions (§1.6.3) | HISTORICAL — each bullet attributed to its commit or phase report (SOURCE CODE / PHYSICAL DEVICE / PRIOR REPORT); the push state and the `p2.4.10` tag observation were re-read from `git` at HEAD `5e51e37` |
 | AutoConnect Root-Cause Resolution (§1.6.4) | HISTORICAL — attributed to the v1.0.10 docs phase (this phase). The audit, native fix (`eb21e56`), Kotlin bundle (`4df7e79`), test repair (`a87c523`), device evidence, and residual finding are compiled from the phase reports and the FINALIZE device log; not independently re-verified here. The residual T5-SLOT-TEARDOWN finding is recorded OPEN — UNKNOWN |
@@ -2797,6 +2921,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Z1-IMPL-B — Emergency Source Foundation (§1.6.13) | HISTORICAL — the item B landing is **SOURCE CODE** (the files listed in §1.6.13 bullet 1, inspected at this revision's commits); the JVM counts and the successful build are **TEST**; the migration verification is JVM-only (**TEST**) and a real device 5→6 upgrade is **UNKNOWN**; device verification is **PHYSICAL DEVICE (not performed)**; item A's already-implemented status is **SOURCE CODE + PRIOR REPORT** (§1.6.10 bullet 8, commit `a9e16fd`) |
 | Z1-IMPL-C — Emergency CSV Parser + Wire-In (§1.6.14) | HISTORICAL — the item C landing is **SOURCE CODE** (the parser, the fetcher, the `SourceIdentity` tag route, the `emergencyFetch` parameter and the `ServerListUpdates` lambda, inspected at this revision's commits); the JVM counts, the successful build and the 46 new test cases are **TEST**; the zero-behaviour-change invariant is **TEST** (all 678 pre-existing tests pass unchanged, including every `ServerListUpdater` case); the §10 column mapping, the fail-closed schema check and the RUDP rule are **SOURCE CODE + TEST**; device verification is **PHYSICAL DEVICE (not performed)**, so a configured URL → live fetch → stored dataset → migration 5→6 on a real database is **UNKNOWN**; the 1 MiB cap bounding parsing rather than bytes on the wire is a recorded **SOURCE CODE** limitation, not a verified bound |
 
+| Z1-IMPL-D — Manual Server Entry + MANUAL-Preservation (§1.6.15) | HISTORICAL — the item D landing is **SOURCE CODE** (the model, entity, DAO, store, migration 6→7, the `manual` priority entry, the `withManualRows` merge, the ViewModel surface and the Settings section, inspected at this revision's commits); the JVM counts, the successful build and the 23 new test cases are **TEST**; the zero-behaviour-change invariant is **TEST** two ways — `withManualRows` returns the caller's own list **by identity** for an empty manual set, and all 724 pre-existing tests pass unchanged including every `ServerListUpdater` case; the preserved-versus-precedence split (a manual record is never deleted, but a value both sides claim goes to the collected source with the disagreement written into `conflicts`) is **SOURCE CODE + TEST** and its policy is **PRIOR REPORT** — `SERVER_SOURCE_ARCHITECTURE.md` §3.3/§4.2, confirmed by the operator against the phase brief's opposite wording; the IPv4-only manual address is **INFERENCE** from the two rejection points (`normalizeServer`, `toConnection`), not a verified device behaviour; device verification is **PHYSICAL DEVICE (not performed)**, so adding a manual server → a live refresh that must keep it → migration 6→7 on a real database is **UNKNOWN**; the three recorded limits (the untouched `SourceIdentity.kt` `sourceTag` fall-through, the same-IPv4 row collapse, the connectable-less OpenVPN entry) are recorded **SOURCE CODE** limitations, not verified bounds |
 ### Legend
 
 - **VERIFIED** — Fact confirmed by direct source code inspection at the stated file/line
