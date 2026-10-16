@@ -6,13 +6,16 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.models.VPNGateItem
 
-@Database(entities = [VPNGateItem::class, ExcludedApp::class], version = 5)
+@Database(entities = [VPNGateItem::class, ExcludedApp::class, EmergencySourceConfigEntity::class], version = 6)
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
     abstract fun excludedAppDao(): ExcludedAppDao
+    abstract fun emergencySourceConfigDao(): EmergencySourceConfigDao
     
     companion object {
         // Migration from version 2 to 3 - adding seTcpPort and seUdpPort fields
@@ -67,6 +70,27 @@ abstract class AppDatabase: RoomDatabase() {
                 database.execSQL(
                     "UPDATE VPNGateItem SET sstpPort = ${VpnProtocolDefaults.SSTP_PORT}, " +
                         "sstpPortSource = '${VpnPortSource.DEFAULT}' WHERE isSSTPSupport = 1"
+                )
+            }
+        }
+
+        // Migration from version 5 to 6 — Z1-IMPL-B (Roadmap §12.5.2 item B):
+        // user-configured emergency server sources. Purely additive: the new
+        // table is self-contained (no foreign keys), so every stored server
+        // and excluded app survives the upgrade untouched. The DDL matches
+        // EmergencySourceConfigEntity exactly, including the SQL DEFAULT of 1
+        // on `enabled`, so Room's schema check passes and a row that predates
+        // any toggle is enabled rather than ambiguous.
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `emergency_source_config` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`url` TEXT NOT NULL, " +
+                            "`label` TEXT, " +
+                            "`enabled` INTEGER NOT NULL DEFAULT 1, " +
+                            "`createdAt` INTEGER NOT NULL, " +
+                            "`updatedAt` INTEGER NOT NULL)"
                 )
             }
         }

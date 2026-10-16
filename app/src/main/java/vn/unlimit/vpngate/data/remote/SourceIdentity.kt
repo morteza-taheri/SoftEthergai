@@ -24,6 +24,18 @@ enum class SourceKind {
 
     /** Mirror restored from the persisted mirror cache. */
     CACHED_MIRROR,
+
+    /**
+     * Z1-IMPL-B (Roadmap §12.5.2 item B): a user-configured emergency CSV
+     * source. Configuration only for now — no fetch is wired yet (item C).
+     */
+    EMERGENCY_CSV,
+
+    /**
+     * Z1-IMPL-B (Roadmap §12.5.2 item B): a manually entered server.
+     * Configuration only for now — no merge is wired yet (item D).
+     */
+    MANUAL,
 }
 
 /** Where a mirror was learned from — carried for diagnostics/provenance. */

@@ -7,7 +7,17 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import vn.unlimit.vpngate.App
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfig
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
+import vn.unlimit.vpngate.data.remote.SourceKind
+import vn.unlimit.vpngate.data.remote.SourceUrl
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.models.VPNGateItem
@@ -47,6 +57,77 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         repository = vpnServerRepository,
         dao = App.instance?.vpnGateItemDao,
     )
+
+    // ---------------------------------------------------------------------
+    // Z1-IMPL-B: emergency server sources (Roadmap §12.5.2 item B).
+    //
+    // Configuration only: nothing here fetches anything. The retrieval
+    // wiring (item C) and the manual-entry merge (item D) are later phases,
+    // so these members only persist and observe the user's list.
+    // ---------------------------------------------------------------------
+
+    private val emergencySourceDao: EmergencySourceConfigDao?
+        get() = App.instance?.emergencySourceConfigDao
+
+    val emergencySources: StateFlow<List<EmergencySourceConfig>> =
+        emergencySourceDao?.observeAll()
+            ?.map { entities -> entities.map { EmergencySourceConfig.fromEntity(it) } }
+            ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+            ?: MutableStateFlow(emptyList())
+
+    /**
+     * Adds — or refreshes — one emergency source. Returns false when the URL
+     * is not an absolute http(s) URL with a usable host: the same parse rule
+     * every other source identity must pass ([SourceUrl.parse]), so a typo
+     * can never reach the database.
+     *
+     * The database write is asynchronous; the published [emergencySources]
+     * flow is the confirmation, exactly like the rest of this screen.
+     */
+    fun addEmergencySource(url: String, label: String?): Boolean {
+        val identity = SourceUrl.parse(url.trim(), SourceKind.EMERGENCY_CSV) ?: return false
+        val now = System.currentTimeMillis()
+        viewModelScope.launch {
+            val dao = emergencySourceDao ?: return@launch
+            withContext(Dispatchers.IO) {
+                val normalizedLabel = label?.trim()?.ifEmpty { null }
+                val existing = dao.getByUrl(identity.url)
+                if (existing == null) {
+                    dao.upsert(
+                        EmergencySourceConfigEntity(
+                            url = identity.url,
+                            label = normalizedLabel,
+                            enabled = true,
+                            createdAt = now,
+                            updatedAt = now,
+                        ),
+                    )
+                } else {
+                    dao.upsert(existing.copy(label = normalizedLabel, updatedAt = now))
+                }
+            }
+        }
+        return true
+    }
+
+    fun removeEmergencySource(url: String) {
+        viewModelScope.launch {
+            val dao = emergencySourceDao ?: return@launch
+            withContext(Dispatchers.IO) { dao.deleteByUrl(url) }
+        }
+    }
+
+    fun toggleEmergencySource(url: String, enabled: Boolean) {
+        viewModelScope.launch {
+            val dao = emergencySourceDao ?: return@launch
+            withContext(Dispatchers.IO) {
+                val existing = dao.getByUrl(url) ?: return@withContext
+                dao.upsert(
+                    existing.copy(enabled = enabled, updatedAt = System.currentTimeMillis()),
+                )
+            }
+        }
+    }
 
     /** §33: provenance dump + raw sources for the debug panel. */
     fun debugPayload(conn: VPNGateConnection): VpnServerRepository.DebugPayload? =

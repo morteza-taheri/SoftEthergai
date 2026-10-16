@@ -61,10 +61,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +79,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.preference.PreferenceManager
 import de.blinkt.openvpn.core.OpenVPNService
 import vn.unlimit.vpngate.utils.DateTimeFormatterUtil
@@ -96,6 +99,7 @@ import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.utils.DnsPresets
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
+import vn.unlimit.vpngate.viewmodels.ConnectionListViewModel
 import java.text.DateFormat
 
 /**
@@ -122,6 +126,13 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val excludeAppsManager = remember { ExcludeAppsManager(context) }
+
+    // Z1-IMPL-B (Roadmap §12.5.2 item B): emergency server sources. The list
+    // is config-only — nothing is fetched from these URLs yet (item C).
+    val connectionListViewModel: ConnectionListViewModel = viewModel()
+    val emergencySources by connectionListViewModel.emergencySources.collectAsState()
+    var emergencyUrlInput by remember { mutableStateOf("") }
+    var emergencyLabelInput by remember { mutableStateOf("") }
 
     // ---- Setting states
     var notifySpeed by remember {
@@ -568,6 +579,129 @@ fun SettingsScreen(
                         icon = Icons.Outlined.Schedule,
                         onClick = { showServerUpdateIntervalPicker = true },
                     )
+                }
+            }
+
+            // ---------------- Emergency Server Sources (Z1-IMPL-B, §12.5.2 item B)
+            item {
+                SettingsSection(title = stringResource(R.string.emergency_source_title)) {
+                    Text(
+                        text = stringResource(R.string.emergency_source_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                    if (emergencySources.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.emergency_source_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    } else {
+                        emergencySources.forEachIndexed { index, source ->
+                            if (index > 0) {
+                                SettingDivider()
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = source.label?.takeIf { it.isNotBlank() }
+                                            ?: source.url,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    if (!source.label.isNullOrBlank()) {
+                                        Text(
+                                            text = source.url,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Switch(
+                                    checked = source.enabled,
+                                    onCheckedChange = {
+                                        connectionListViewModel.toggleEmergencySource(
+                                            source.url,
+                                            it,
+                                        )
+                                    },
+                                )
+                                IconButton(
+                                    onClick = {
+                                        connectionListViewModel.removeEmergencySource(source.url)
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.DeleteOutline,
+                                        contentDescription = stringResource(R.string.emergency_source_remove),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    SettingDivider()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = emergencyUrlInput,
+                            onValueChange = { emergencyUrlInput = it },
+                            label = { Text(stringResource(R.string.emergency_source_url_label)) },
+                            placeholder = { Text("https://") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        )
+                        OutlinedTextField(
+                            value = emergencyLabelInput,
+                            onValueChange = { emergencyLabelInput = it },
+                            label = { Text(stringResource(R.string.emergency_source_label_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        Button(
+                            onClick = {
+                                val added = connectionListViewModel.addEmergencySource(
+                                    emergencyUrlInput,
+                                    emergencyLabelInput,
+                                )
+                                if (added) {
+                                    emergencyUrlInput = ""
+                                    emergencyLabelInput = ""
+                                } else {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            context.getString(R.string.emergency_source_invalid_url),
+                                        )
+                                    }
+                                }
+                            },
+                            enabled = emergencyUrlInput.isNotBlank(),
+                            modifier = Modifier.align(Alignment.End),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text(stringResource(R.string.emergency_source_add))
+                        }
+                    }
                 }
             }
 
