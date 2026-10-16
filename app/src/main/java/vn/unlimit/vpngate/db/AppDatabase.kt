@@ -8,14 +8,27 @@ import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
+import vn.unlimit.vpngate.data.remote.ManualServerDao
+import vn.unlimit.vpngate.data.remote.ManualServerEntity
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.models.VPNGateItem
 
-@Database(entities = [VPNGateItem::class, ExcludedApp::class, EmergencySourceConfigEntity::class], version = 6)
+@Database(
+    entities = [
+        VPNGateItem::class,
+        ExcludedApp::class,
+        EmergencySourceConfigEntity::class,
+        ManualServerEntity::class,
+    ],
+    version = 7,
+)
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
     abstract fun excludedAppDao(): ExcludedAppDao
     abstract fun emergencySourceConfigDao(): EmergencySourceConfigDao
+
+    // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
+    abstract fun manualServerDao(): ManualServerDao
     
     companion object {
         // Migration from version 2 to 3 - adding seTcpPort and seUdpPort fields
@@ -91,6 +104,42 @@ abstract class AppDatabase: RoomDatabase() {
                             "`enabled` INTEGER NOT NULL DEFAULT 1, " +
                             "`createdAt` INTEGER NOT NULL, " +
                             "`updatedAt` INTEGER NOT NULL)"
+                )
+            }
+        }
+
+        // Migration from version 6 to 7 — Z1-IMPL-D (Roadmap §12.5.2 item D):
+        // manually entered servers. Same shape as 5 -> 6 and for the same
+        // reason: the new table is self-contained (no foreign keys), so every
+        // stored server, excluded app and emergency source survives the
+        // upgrade untouched. The DDL matches ManualServerEntity column for
+        // column, including the SQL DEFAULT of 1 on `enabled`, so Room's
+        // schema check passes and a manual row that predates any toggle is
+        // enabled rather than ambiguous.
+        //
+        // The unique index is the second statement and is as much a part of
+        // the schema as the table: it is what makes `(host, port, protocol)`
+        // a set of user decisions instead of a log of taps, and
+        // ManualServerStore.add relies on it to update an existing entry
+        // rather than silently fail on a duplicate.
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `manual_server` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`host` TEXT NOT NULL, " +
+                            "`port` INTEGER NOT NULL, " +
+                            "`protocol` TEXT NOT NULL, " +
+                            "`label` TEXT, " +
+                            "`notes` TEXT, " +
+                            "`enabled` INTEGER NOT NULL DEFAULT 1, " +
+                            "`createdAt` INTEGER NOT NULL, " +
+                            "`updatedAt` INTEGER NOT NULL)"
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                            "`index_manual_server_host_port_protocol` " +
+                            "ON `manual_server` (`host`, `port`, `protocol`)"
                 )
             }
         }

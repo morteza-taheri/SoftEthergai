@@ -11,6 +11,7 @@ import de.blinkt.openvpn.core.OpenVPNService
 import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
+import vn.unlimit.vpngate.data.remote.ManualServerDao
 import vn.unlimit.vpngate.db.AppDatabase
 import vn.unlimit.vpngate.db.ExcludedAppDao
 import vn.unlimit.vpngate.db.VPNGateItemDao
@@ -25,6 +26,9 @@ class App : Application() {
     lateinit var vpnGateItemDao: VPNGateItemDao
     lateinit var excludedAppDao: ExcludedAppDao
     lateinit var emergencySourceConfigDao: EmergencySourceConfigDao
+
+    // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
+    lateinit var manualServerDao: ManualServerDao
 
     override fun onCreate() {
         super.onCreate()
@@ -45,11 +49,14 @@ class App : Application() {
             .addMigrations(AppDatabase.MIGRATION_4_5)
             // Z1-IMPL-B (Roadmap §12.5.2 item B): emergency server sources.
             .addMigrations(AppDatabase.MIGRATION_5_6)
+            // Z1-IMPL-D (Roadmap §12.5.2 item D): manual server entry.
+            .addMigrations(AppDatabase.MIGRATION_6_7)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()
         excludedAppDao = appDatabase.excludedAppDao()
         emergencySourceConfigDao = appDatabase.emergencySourceConfigDao()
+        manualServerDao = appDatabase.manualServerDao()
 
         // Initialize default excluded apps
         initializeDefaultExcludedApps()
