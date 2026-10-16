@@ -88,6 +88,16 @@ data class SourceIdentity(
         get() = when (kind) {
             SourceKind.CANONICAL_HTML -> HTML_TAG
             SourceKind.CANONICAL_API -> API_TAG
+
+            // Z1-IMPL-C: an emergency source gets its own tag rather than
+            // falling through to the mirror branch. Before this it would
+            // have been reported as `mirror_unnumbered`, which both
+            // mislabels it and lets an emergency record sit in the mirror
+            // provenance group. `SERVER_SOURCE_ARCHITECTURE.md` §3 requires
+            // a dedicated, non-canonical tag that never reads as `api` or
+            // `html`, so an emergency record can never speak with canonical
+            // authority in the merger's `api > html > …` policy.
+            SourceKind.EMERGENCY_CSV -> EMERGENCY_TAG
             else -> mirrorId ?: UNNUMBERED_MIRROR_TAG
         }
 
@@ -108,6 +118,12 @@ data class SourceIdentity(
         /** Provenance tags owned by the canonical sources. */
         const val HTML_TAG = "html"
         const val API_TAG = "api"
+
+        /**
+         * Z1-IMPL-C: the record-layer tag of a user-configured emergency CSV
+         * source. Same rule as a mirror — never `html`, never `api`.
+         */
+        const val EMERGENCY_TAG = "emergency"
 
         /** A mirror that has not been numbered yet is still NOT canonical. */
         const val UNNUMBERED_MIRROR_TAG = "mirror_unnumbered"
