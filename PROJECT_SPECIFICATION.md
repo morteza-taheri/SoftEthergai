@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `0c5754e6e9a2c86e7df3b2e7bd966848f68a3210`
-**Document version:** 1.0.18
-**Last updated:** 2026-10-15
+**HEAD:** `abc8bd1f84bb7dcf08edd082f3d7e65dcae0183d`
+**Document version:** 1.0.19
+**Last updated:** 2026-10-16
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -234,6 +234,11 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > will be listed by hash in a future revision, per the same convention. At the time this text was written the
 > remote is at `94e02b7`; after the push the three commits above plus this revision's own two form one
 > fast-forward, with no force and **no tag** — `p2.4.10` deliberately remains local-only (see §1.6.11 bullet 2).
+
+> **Push state (v1.0.19).** p2.4.10 tag decision executed — **PUSHED**. Remote unique tag set is now
+> **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`); local unchanged at 5. HEAD == origin/main ==
+> `abc8bd1f84bb7dcf08edd082f3d7e65dcae0183d`. Chain arithmetic per §1.6.12 bullet 2 (delta 1,
+> one-own-commit convention). No tag operation other than the authorized push was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -812,6 +817,66 @@ Each bullet carries its evidence label.
    Phase 12 record. Evidence: SOURCE CODE.
 
 4. **Methodology lessons:** No new methodology lessons in v1.0.18.
+
+#### 1.6.12 Documentation Corrections (v1.0.19)
+
+This subsection records the **SPEC-HYGIENE-v1.0.19** revision — a documentation-only, device-free
+phase that corrects three documentation defects surfaced by BLOCK 1 forensics and records the
+corrected `p2.4.10` rationale established by BLOCK 2. It ran **no build, no test, and no device
+command**, and it touched **no source, test, native, build, manifest or XML file**. The corrections
+below are recorded *here* precisely so that the text of §1.6.2–§1.6.11 can stay frozen.
+
+1. **§1.6.1 preamble is a v1.0.16-era snapshot — superseded.** The preamble still reads *"Fifty-three
+   commits constitute the chain … `0714628` → `e6b9eef`"*. The authoritative count is the latest
+   push-state note in §1.6.1 — **60 rows** at v1.0.18, and the v1.0.19 note appended above. No content
+   change is made to §1.6.2–§1.6.11; this bullet marks the preamble as superseded rather than
+   retro-editing it. Evidence: SOURCE CODE.
+
+2. **The v1.0.18 push-state note's "two own commits" is wrong — there was one.** The note states:
+   *"This revision's own two commits — the spec update to v1.0.18 and the `CLOSE_OUT-v1.0.18` report —
+   are named by subject here."* In fact Phase 14 landed the spec update **and** the
+   `CLOSE_OUT_v1.0.18_REPORT.md` report in a **single** commit — `abc8bd1`, two files
+   (`PROJECT_SPECIFICATION.md` + `CLOSE_OUT_v1.0.18_REPORT.md`). Chain arithmetic is **unaffected**:
+   the delta of 1 is explained by **one** own-commit, not two. The original note remains frozen; the
+   wording correction lives here. Evidence: SOURCE CODE.
+
+3. **`p2.4.10` rationale correction — it IS a release cut.** Earlier spec text (the §1.6.3 note and
+   §1.6.11 bullet 2) and `DOCS_UPDATE_v1.0.17_REPORT.md` §7 all asserted that `p2.4.10` is *"not a
+   release cut — a UI/cleanup commit"*. Forensic review of the **tag body** (not only the target
+   commit's subject) refuted this. `p2.4.10` is a **genuine 2.4.10 release**:
+
+   - Target commit `0714628` carries `versionCode 143` / `versionName "2.4.10"` in
+     `app/build.gradle` (lines 64–65).
+   - Its predecessor `p2.4.9^{commit}` (`5c13603`) carries `versionCode 142` / `versionName "2.4.9"`.
+   - `git rev-list --count p2.4.9^{commit}..p2.4.10^{commit}` = **1** — the tag marks exactly the
+     commit that bumped the version, which is textbook release-cut behaviour.
+   - The annotated tag body (`c101380672e353321cd2c2bf820a49e8e71cba6a`) contains full 2.4.10 release
+     notes and the explicit line **"Version: Bump to 2.4.10 (versionCode 143)."**, plus a validation
+     line (`assembleProRelease`, `checkProReleaseAarMetadata`, `testProDebugUnitTest` — 111 tests).
+
+   The commit *subject* (`feat(ui): add DNS presets, app exception icons and Auto Mode cleanup`) is
+   simply the last feature commit before the cut; the release provenance lives on the tag, not in the
+   commit message. Both §1.6.3 and §1.6.11 are frozen; this bullet records the superseding evidence.
+   Evidence: SOURCE CODE.
+
+   **Tag action taken this revision (v1.0.19): PUSHED to origin.** Remote unique tag set is now
+   **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`); local unchanged at 5. The published tag
+   object is byte-identical to the local one. See the §1.6.1 v1.0.19 push-state note above.
+
+4. **Note (no edit possible) — `DOCS_UPDATE_v1.0.17_REPORT.md` §7 stands.** That report is a committed
+   historical artifact and **MUST NOT** be retro-edited under this document's frozen-report rule. Its
+   incorrect `p2.4.10` rationale therefore stands as historical record; the correction lives in this
+   §1.6.12 bullet 3. Evidence: SOURCE CODE + INFERENCE.
+
+5. **Forward note — HEAD and `p2.4.10` share a version identity.** At the time of writing, HEAD
+   (`abc8bd1`) carries `versionName "2.4.10"` / `versionCode 143` — the **same** identity as tag
+   `p2.4.10` — while sitting **60 commits** ahead of it. A future release phase **SHOULD** bump
+   `versionCode`/`versionName` past 2.4.10 before the next cut, so that the tag and HEAD stop sharing
+   an identity. Related and unchanged: the 2.4.10 release artifact was distributed **debug-signed**
+   (RISK-A, §12.4), because the fail-closed release-signing guard (`c572050`, v1.0.7) did not yet
+   exist at `0714628`. Publishing the tag does not publish an APK. Evidence: SOURCE CODE.
+
+6. **Methodology lessons:** No new methodology lessons in v1.0.19.
 
 ---
 
@@ -2486,6 +2551,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.16 | 2026-10-15 | DOCS-UPDATE: recorded SEC-01 TOFU fingerprint pinning in a new **§1.6.9** — Design B landed (`b652198` native peer-fingerprint exposure, `9954c03` Kotlin store + primary-handshake wiring + 11 pure-JVM tests), primary handshake **device-verified** (Phase 9/10 on `5585fecc`: `[TOFU] match` × 3, 0 mismatch, pin store persisted through install/upgrade), and the **reconnect path fixed** (`ff78116`) so `verifyTofuAfterHandshake()` runs at both handshake-completing sites — with an explicit **PARTIAL** caveat (reconnect not device-reproduced; covered by SOURCE CODE + 2 source-shape tests; library suite **173/0/0/0**, app suite **647/0/0/1**). Updated **§12.5.1 row 4** to **CLOSED (v1.0.16)** and added **row 15** for the opportunistic reconnect re-capture. Advanced **§1.6.1** to **53** commits through `e6b9eef` (adding the previously deferred `df94a81` plus the five SEC-01 commits; inclusive-count vs table-row delta 0). Refreshed the header HEAD field to `e6b9eef`. **No source / test / native / build / device change**; §22 untouched. No new methodology lessons in v1.0.16. |
 | 1.0.17 | 2026-10-15 | DOCS-UPDATE + PART A COMMIT | records the landing of **PART A** (Axis A: tunnel state / UI sync) in a new **§1.6.10** — A-2 the `onLost` re-check budget 500 ms → 50 ms via the named constant `VPN_LOST_RECHECK_MS` (**reduced, not removed**, because `onLost` precedes `onAvailable` and the re-check is what absorbs a network handover); A-3 four protocol-name "egates" in `GlobalVpnTracker` replaced by the pure stateless fold `VpnStackLedger.reconcile(live, current, event)` (on losing X with a surviving protocol Y, Y is republished as CONNECTED **from Y's own identity** and is never clobbered by X's teardown; the `sstpListener:280` egate is deliberately left in place as provably equivalent and test-pinned); A-4 the three armed-tunnel loss paths in `startConnectedWatcher` funnelled through one `reportArmedTunnelLoss()` with the detection latencies deliberately **not** unified; A-5 `AutoModeState.Disconnected` published only **after** the OQ-7/OQ-6/OQ-1 decision rather than as the first statement of `onUnexpectedDisconnect`. Adds 24 JVM tests (13 new `VpnStackLedgerTest`, +5 `GlobalVpnTrackerTest`, +6 `AutoModeControllerTest`). Records the verification status as **PARTIAL** with an explicit **ANR caveat**: one ANR at 16:06:01 (pid 23115 → 25247, Skipped 35 → 1311 → 1821 frames, tunnel healthy) that is **UNATTRIBUTED** and **NOT REPRODUCED**, with the negative assurance that the Axis A paths did not run (`GlobalVpnTracker` logged only "network available"; no service state change; no `[AUTO]` lines) and two clean controls (baseline-control run, re-test of the same APK); the blocked frame is **UNKNOWN** because `/data/anr` is unreadable without root. Records **PARTs B, C and D as already landed** (`a9e16fd`, `607c651`, `c572050`) and **not re-landed**, including PART D's live probe (`:app:assembleProRelease` exits 1 with the intended `GradleException` at `app/build.gradle:109`, so the RISK-A fail-closed guard fires and `assembleProDebug` still succeeds). Advances **§1.6.1** to **57** commits through `a7c449f` (delta 0 at `HEAD = a7c449f`, adding `8edaee8`, `71edd67`, `067d4a3`, `a7c449f`). Adds **§12.5.1 row 16** (the ANR finding, OPEN — UNKNOWN) and notes rows 6 (RISK-A partially mitigated, guard verified firing) and 10 (Axis A/B/C PARTIALLY CLOSED). New artifact `COMMIT_PART_A_REPORT.md` (commit `a7c449f`). Refreshes the header HEAD field to `a7c449f`. **This revision made no source, test, native, build, manifest or XML change and ran no build, test, or device command**; §22 untouched. No new methodology lessons in v1.0.17. |
 | 1.0.18 | 2026-10-15 | DOCS-HYGIENE + CLOSE-OUT | a **documentation-only, device-free** close-out. Commits the previously-untracked **`IMPLEMENT_P1_REMAINING_REPORT.md`** (the Phase 12 implementation report, left untracked when that phase ended on a STOP condition) unmodified — 606 lines / 30,431 bytes, verified. Adds a new **§1.6.11** — "Line-Reference Corrections and Tag Decision (v1.0.18)" — with four evidence-labelled bullets: (1) the `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)` call is at **`aes_wrapper.c:111`**, not the `:110` cited by §1.6.7 and §1.6.8 (one-line drift from commit `b652198`'s added include); those frozen sections are **not** retro-edited, so the correction is recorded here, and §1.6.9 already cites `:111`; (2) the **tag `p2.4.10` decision — leave it local-only**: it exists only locally, has never been pushed, resolves to `0714628` (a UI/cleanup commit, not a release cut), carries no semantic release value, and keeping it local costs nothing — **no tag operation was performed**; (3) the Phase 12 report commit; (4) no new methodology lessons. Updates **§12.5.1**: row 16 (the ANR) gains a "**Carried forward from Phase 13** — opportunistic re-capture when a future AutoConnect run hits the same stall" note, and a new **row 17** records **PART A device verification as OPEN — PARTIAL** (JVM/build green and reproducible, device layer incomplete, the ANR tracked separately as row 16 rather than counted against PART A). Advances **§1.6.1** to **60** commits through `0c5754e` (delta 0 at `HEAD = 0c5754e`, adding `a3a6434`, `94e02b7`, `0c5754e`). Refreshes the header HEAD field to `0c5754e`. **No source / test / native / build / manifest / XML change; no build, test, or device command; no tag operation**; §22 untouched. No new methodology lessons in v1.0.18 |
+| 1.0.19 | 2026-10-16 | SPEC-HYGIENE | a **documentation-only, device-free** hygiene revision responding to BLOCK 1 / BLOCK 2 forensics. Adds a new **§1.6.12** — "Documentation Corrections (v1.0.19)" — with six evidence-labelled bullets: (1) the §1.6.1 preamble's *"Fifty-three commits … `0714628` → `e6b9eef`"* is marked **superseded** (a v1.0.16-era snapshot; the authoritative count is the latest §1.6.1 push-state note, 60 rows at v1.0.18); (2) the v1.0.18 push-state note's *"this revision's own **two** commits"* is corrected — Phase 14 landed the spec update **and** `CLOSE_OUT_v1.0.18_REPORT.md` in a **single** commit (`abc8bd1`, 2 files), so the chain delta of 1 is explained by one own-commit, and chain arithmetic is unaffected; (3) the **`p2.4.10` rationale correction** — forensic review of the **tag body** refuted the earlier "not a release cut" finding: target `0714628` carries `versionCode 143` / `versionName "2.4.10"` in `app/build.gradle`, `p2.4.9^{commit}` carries 142/"2.4.9", `rev-list --count p2.4.9..p2.4.10` = 1, and the annotated tag body contains 2.4.10 release notes ending **"Version: Bump to 2.4.10 (versionCode 143)."** — the earlier §1.6.3 note, §1.6.11 bullet 2 and `DOCS_UPDATE_v1.0.17_REPORT.md` §7 remain frozen as historical record; (4) an explicit note that `DOCS_UPDATE_v1.0.17_REPORT.md` §7 cannot be retro-edited; (5) a forward note that HEAD (`abc8bd1`) **shares** `versionName "2.4.10"` / `versionCode 143` with tag `p2.4.10` while sitting 60 commits ahead, so a future release phase should bump the version past 2.4.10; (6) no new methodology lessons. **Records the p2.4.10 tag decision as executed — PUSHED** (operator-authorized in BLOCK 3): remote unique tag set is now **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`), local unchanged at 5, published tag object `c1013806…` byte-identical to the local one; a **§1.6.1 v1.0.19 push-state note** records the same. **§12.5.1 unchanged** (no row touched). Refreshes the header HEAD field to `abc8bd1`. **No source / test / native / build / manifest / XML change; no build, test, or device command; the only tag operation was the operator-authorized push of `p2.4.10` — no other tag was created, deleted, moved or force-pushed**; §22 untouched. No new methodology lessons in v1.0.19 |
 
 ### Verification Status
 
@@ -2529,6 +2595,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | SEC-01 TOFU Fingerprint Pinning (§1.6.9) | HISTORICAL + PARTIAL — attributed to the FIX-SEC01-TOFU-PINNING-IMPL phase (commits `b652198`, `9954c03`; SOURCE CODE + TEST) and its FIX-SEC01-RECONNECT follow-up (`ff78116`; SOURCE CODE + TEST); the **primary-handshake** device statements are PHYSICAL DEVICE evidence from Phase 9 (FIX-SEC01-TOFU-PINNING) and Phase 10 (VERIFY-AND-FIX-SEC01-RECONNECT), not re-verified in this revision. The **reconnect** handshake is recorded explicitly as **UNKNOWN — not device-reproduced** (coverage is SOURCE CODE + 2 source-shape tests only). This revision ran no build, test, or device command |
 | PART A (Axis A) Landed, with an Explicit ANR Caveat (§1.6.10) | HISTORICAL + PARTIAL — the four Axis A changes are attributed to commit `067d4a3` (SOURCE CODE) and to the 24 added JVM tests (TEST); PARTs B/C/D are attributed to their already-landed commits (`a9e16fd`, `607c651`, `c572050`) and PART D's guard probe to the IMPLEMENT-AND-VERIFY-P1-REMAINING phase (TEST). The JVM/build figures are carried forward as **PRIOR REPORT** — this revision re-ran nothing. The **ANR finding** is PHYSICAL DEVICE evidence (logcat) for the device run in which it occurred, with an explicit **negative assurance** (the Axis A paths did not run), two clean controls, **NOT REPRODUCED**, and the blocked frame recorded as **UNKNOWN** because `/data/anr` is unreadable without root; the most probable remaining explanation is labelled **INFERENCE**, not fact. This revision ran no build, test, or device command |
 | Line-Reference Corrections and Tag Decision (§1.6.11) | HISTORICAL — the `SSL_CTX_set_verify` location is **SOURCE CODE** (verified at `aes_wrapper.c:111` by direct inspection at HEAD; the `:110` citations in the frozen §1.6.7/§1.6.8 are left unmodified and the drift is attributed to commit `b652198`'s added include); the `p2.4.10` tag state is **SOURCE CODE** (local `git tag -l` lists it; `git ls-remote --tags origin` does not, and it resolves to `0714628`), with the decision and its rationale recorded and **no tag operation performed**; the Phase 12 report commit is **SOURCE CODE** (git). This revision ran no build, test, or device command |
+| Documentation Corrections (§1.6.12) | HISTORICAL — all six bullets are **SOURCE CODE** (git history and direct inspection of `app/build.gradle` at `0714628` and `5c13603`, the annotated tag body of `p2.4.10` object `c1013806…`, and `git rev-list --count p2.4.9..p2.4.10` = 1); bullet 4 additionally carries **INFERENCE** for the judgment that a committed report must not be retro-edited. The `p2.4.10` push is **SOURCE CODE** (`git ls-remote --tags origin` now lists it; remote unique tag set 4 → 5; tag object byte-identical to the local one). The superseded v1.0.18-era texts (the §1.6.1 preamble, the v1.0.18 push-state note's "two own commits", and the §1.6.3 / §1.6.11 / `DOCS_UPDATE_v1.0.17_REPORT.md` §7 `p2.4.10` rationale) are explicitly **not** re-verified and are recorded as frozen historical artifacts. This revision ran no build, test, or device command |
 
 ### Legend
 
