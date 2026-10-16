@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `631f38fbf3dbb0be886396ca26d55678ab4516b3`
-**Document version:** 1.0.20
+**HEAD:** `68bbbfb5ecf3d3b6d24de97ed53ea1e00b6b2cb4`
+**Document version:** 1.0.21
 **Last updated:** 2026-10-16
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -247,6 +247,16 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > source-and-tests commit at the time this text was written — a spec file cannot name its own
 > commit — so this revision's own docs commit is named by subject here and is listed by hash in a
 > future revision, per the one-own-commit convention. Chain arithmetic per §1.6.13 bullet 9. No tag
+> operation of any kind was performed.
+
+> **Push state (v1.0.21).** Z1-IMPL-C (emergency CSV parser + wire-in) landed — Roadmap §12.5.2
+> **item C**. Three commits make up this revision: `feat(emergency)` (parser + fetcher + tests),
+> `feat(emergency)` (opt-in wire-in) and `docs` (this spec update plus `Z1_IMPL_C_REPORT.md`). Items
+> D (manual server entry), E/F/G/H and Cumulative Server Retention (§9 of
+> `SERVER_SOURCE_ARCHITECTURE.md`) remain future work. The **HEAD** field above is the last
+> source-and-tests commit at the time this text was written — a spec file cannot name its own
+> commit — so this revision's own docs commit is named by subject here and is listed by hash in a
+> future revision, per the one-own-commit convention. Chain arithmetic per §1.6.14 bullet 9. No tag
 > operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
@@ -954,6 +964,92 @@ each claim are listed below.
    commit `abc8bd1` and the v1.0.19 spec commit `8ab9381`, both still unlisted); this revision adds
    three commits, so the chain reads **65** through its docs commit while the table stays at 60 until
    a future revision lists them. No new methodology lessons. Evidence: SOURCE CODE.
+
+
+#### 1.6.14 Z1-IMPL-C — Emergency CSV Parser + Wire-In (v1.0.21)
+
+This subsection records the **Z1-IMPL-C** revision — Roadmap §12.5.2 **item C**. It is a real
+implementation phase (source + test + build) and it is **device-free**: no device command was run and
+no device verification was performed. What landed, what deliberately did not, and the evidence for
+each claim are listed below.
+
+1. **Roadmap §12.5.2 item C landed.** Scope: the emergency CSV parser, the HTTP boundary for
+   user-configured sources, and an opt-in wire-in into the updater. New files:
+   `parser/EmergencyCsvParser.kt` (the §10 schema, 29 columns) and
+   `data/remote/EmergencySourceFetcher.kt` (fetch-only boundary), plus two JVM test files.
+   `SourceIdentity.kt` gained `EMERGENCY_TAG = "emergency"` and now routes `SourceKind.EMERGENCY_CSV`
+   to it instead of the mirror branch — before this an emergency source was reported as
+   `mirror_unnumbered` and sat in the mirror provenance group. `ServerListUpdater.kt` gained one
+   injected parameter, `emergencyFetch`, defaulted to `{ null }`. `ServerListUpdates.kt` builds the
+   production lambda from the enabled emergency sources. Evidence: SOURCE CODE.
+
+2. **The parser implements `SERVER_SOURCE_ARCHITECTURE.md` §10 as approved.** Records are ordinary
+   `VpnServerRecord` values built with the existing `VpnRecords` helpers — there is no parallel
+   record type (§3.12). Parsing is **header-driven rather than positional**, because §10.9 Q2 leaves
+   column order open, and only the four required columns (`HostName`, `IP`, `schema_version`,
+   `SourceTag`) are demanded. `schema_version` is fail-closed: any value other than `1.0` rejects the
+   whole body, and **every** row is checked, so a single non-conforming row cannot be parsed on a
+   guess. §18 unit normalisation is byte-identical to the canonical parser (bps→Mbps, ms→days,
+   bytes→GB). Evidence: SOURCE CODE + TEST.
+
+3. **Partial import is the normal good outcome, and the two §10.4 outcomes are kept distinct.** A
+   record failing a *required* rule (empty `HostName`, invalid IPv4) is rejected and counted; a record
+   failing an *optional-decode* rule is retained with the affected capability marked unsupported
+   (Base64 that does not decode keeps the row and drops OpenVPN). The result type carries
+   `rejectedCount` and a per-issue reason map (§3.11). A file with a valid header and zero surviving
+   rows is **Malformed**, not an empty import — §3.10 requires at least one record to pass
+   required-field validation. Evidence: SOURCE CODE + TEST.
+
+4. **`SE_UDP_Port` is never turned into a transport on its own.** The RUDP warning at §10.3 (verbatim
+   from `RUDP_IMPLEMENTATION_PLAN.md`) is honoured literally: SoftEther UDP support is read only from
+   `SE_UDP_Supported`, and a published `SE_UDP_Port` without it is recorded as a note and written
+   nowhere. `0` is accepted as the documented "not present" token and is never reported as a defect.
+   No port is ever fabricated; `OpenVPN_UDP_Port = 0` leaves the UDP port `null` rather than guessing
+   1194. Evidence: SOURCE CODE + TEST.
+
+5. **Identity and dedup are the live path's, not a second implementation.** The parser delegates to
+   `VpnServerMerger` (§10.5: IPv4 `IP` primary key, normalised `HostName` secondary key,
+   more-complete-record-wins merge), so `servers.csv` collapses duplicates exactly as the collector
+   does. The one rule the record model has no opinion about — a merged record's file-level
+   `SourceTag` becoming `merged` — is applied after the merge and is carried on the record under an
+   `emergency` provenance map, so the §33 debug dump can show it. Evidence: SOURCE CODE + TEST.
+
+6. **The fetcher reuses the one HTTP stack and introduces no second one.** `EmergencySourceFetcher`
+   injects the same `HttpFetcher`/`collectorClientBuilder()` the canonical collector uses, so the
+   `ResilientDns` provider, the 10 s connect / 15 s read pair and manual per-hop redirect handling are
+   inherited rather than duplicated (§2.6: "Emergency: existing pair; retry each enabled source
+   once"). It follows no redirect outside the source's own authority, re-checks the reported final URL
+   against that authority, refuses a body over 1 MiB **rather than truncating it** (a silently cut CSV
+   would parse as a valid, smaller dataset), and never parses and never persists. Known limitation,
+   recorded: `HttpFetcher` returns a fully decoded `String`, so the 1 MiB cap bounds parsing and
+   retention, not the bytes on the wire; the download itself is bounded by the shared client's read
+   timeout. Evidence: SOURCE CODE.
+
+7. **The wire-in is opt-in and provably cannot change zero-source behaviour.** `emergencyFetch`
+   defaults to `{ null }`, is tried **only** when the primary fetch returned `null` (that fetch
+   already covers the open and VPN rungs and the repository's snapshot / stored / bundled-seed
+   fallbacks, so this really is §2.5 path 3), and a `null` or empty result falls through to the
+   byte-identical `Outcome.Preserved(NETWORK_FAILURE, …)` that existed before. A dataset it does
+   supply goes through the **identical** acceptance sequence — `isUsable`, Room-identity dedup, the
+   OpenVPN-profile guard, `DatasetIntegrity` and the single atomic replace — so nothing is written
+   outside the existing `Store` boundary. `DatasetIntegrity` is what refuses an emergency file too
+   small to be a server list when a healthy list is already stored (§2.7), which is the reason an
+   emergency dataset is not given a special write path. Evidence: SOURCE CODE + TEST.
+
+8. **JVM tests.** `:app:testProDebugUnitTest` = **724 / 0 / 0 / 1** (baseline 678 / 0 / 0 / 1;
+   **+46** from the two new test files, zero failures and errors, ignored count unchanged). The 678
+   pre-existing tests — including every `ServerListUpdater` case — pass unchanged, which is the
+   regression evidence that the wire-in changes nothing when no emergency source is configured.
+   `:SoftEtherClient:test` = **173 / 0 / 0 / 0** — identical to baseline. Evidence: TEST.
+
+9. **Build and device state.** `CI=true ./gradlew :app:assembleProDebug` SUCCESSFUL; APK SHA-256
+   `b85a7aba4ecfdea4a237b2ffae77be27241638a62d92e8313d6e6c292d53b6fd` (63,821,179 bytes), which
+   differs from the prior `9ba16f9f…` as expected for new code. **No device verification was
+   performed** — the device is DETACHED, so the full path (a configured URL, a live fetch, a stored
+   dataset, migration 5→6 on a real database) remains **UNKNOWN**. `git log --oneline
+   0714628^..HEAD | wc -l` = **65** at the start of this revision; this revision adds three commits,
+   so the chain reads **68** through its docs commit while the §1.6.1 table stays at 60. No new
+   methodology lessons. Evidence: TEST + PHYSICAL DEVICE (not performed) + SOURCE CODE.
 
 
 ## 2. Architecture Overview
@@ -1968,6 +2064,16 @@ The application must handle the following safely:
 
 A failed emergency source must not erase existing server data.
 
+> **Safety-set status (v1.0.21 — Z1-IMPL-C):** the five items above now have an implementation for
+> the emergency path specifically, and the closing sentence is enforced rather than intended. Invalid
+> URLs are refused by `SourceUrl.parse` before any request is made; failed downloads and unsupported
+> formats are mapped to a fall-through that leaves the stored list untouched; malformed data is the
+> parser's `Malformed` / `Partial` split; duplicate records are collapsed by `VpnServerMerger`. The
+> no-erasure guarantee is carried by `ServerListUpdater`'s single write path and by `DatasetIntegrity`,
+> which refuses a dataset that regresses against the stored one. This note records the status of the
+> requirements above; it does not alter them. Items D–H of §12.5.2 extend the same rules to manual
+> entry and remain future work. Evidence: SOURCE CODE + TEST. See §1.6.14 bullets 3 and 7.
+
 ### 11.9.3 Format rules
 
 Do not assume every URL points to CSV; format support must be explicit and validated. The initial planned emergency-source format is a standardized project CSV format, but its exact schema has **NOT** been defined yet.
@@ -2302,6 +2408,19 @@ The following items are planned for the source-and-path architecture described i
 | G | **Safe merge and persistence** | Preserve manual entries, source provenance, deduplication, and existing historical records. See §11.11. |
 | H | **Tests** | Unit, integration, and Android runtime tests for source/path combinations, fallback, filtering/unreachable sources, malformed input, duplicate handling, and preservation of manual records. See §12.6. |
 
+> **Item status (v1.0.21 — Z1-IMPL-C):** item **C has landed**. The emergency CSV parser
+> (`parser/EmergencyCsvParser.kt`) and its HTTP boundary
+> (`data/remote/EmergencySourceFetcher.kt`) are implemented against
+> `SERVER_SOURCE_ARCHITECTURE.md` §10, and an opt-in wire-in runs them as the last rung of
+> `ServerListUpdater` when at least one enabled emergency source is configured. Row C's description
+> above is retained verbatim as historical text, exactly as the v1.0.20 approval note in §11.9.3
+> directed; it is superseded in substance by that note and by this one, and is not edited here.
+> Item **C's tests** land with it: 46 new JVM tests in `EmergencyCsvParserTest` and
+> `EmergencySourceFetcherTest`. Items **D**, **E**, **F**, **G** and the test item **H** — which
+> also requires Android runtime and device coverage — remain **NOT IMPLEMENTED**, as does Cumulative
+> Server Retention (`SERVER_SOURCE_ARCHITECTURE.md` §9), which would change the update from
+> replace-to-merge. Evidence: SOURCE CODE + TEST. See §1.6.14.
+
 ### 12.6 Test Requirements for Source/Path Architecture
 
 Tests must cover at minimum:
@@ -2630,6 +2749,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.18 | 2026-10-15 | DOCS-HYGIENE + CLOSE-OUT | a **documentation-only, device-free** close-out. Commits the previously-untracked **`IMPLEMENT_P1_REMAINING_REPORT.md`** (the Phase 12 implementation report, left untracked when that phase ended on a STOP condition) unmodified — 606 lines / 30,431 bytes, verified. Adds a new **§1.6.11** — "Line-Reference Corrections and Tag Decision (v1.0.18)" — with four evidence-labelled bullets: (1) the `SSL_CTX_set_verify(c, SSL_VERIFY_NONE, NULL)` call is at **`aes_wrapper.c:111`**, not the `:110` cited by §1.6.7 and §1.6.8 (one-line drift from commit `b652198`'s added include); those frozen sections are **not** retro-edited, so the correction is recorded here, and §1.6.9 already cites `:111`; (2) the **tag `p2.4.10` decision — leave it local-only**: it exists only locally, has never been pushed, resolves to `0714628` (a UI/cleanup commit, not a release cut), carries no semantic release value, and keeping it local costs nothing — **no tag operation was performed**; (3) the Phase 12 report commit; (4) no new methodology lessons. Updates **§12.5.1**: row 16 (the ANR) gains a "**Carried forward from Phase 13** — opportunistic re-capture when a future AutoConnect run hits the same stall" note, and a new **row 17** records **PART A device verification as OPEN — PARTIAL** (JVM/build green and reproducible, device layer incomplete, the ANR tracked separately as row 16 rather than counted against PART A). Advances **§1.6.1** to **60** commits through `0c5754e` (delta 0 at `HEAD = 0c5754e`, adding `a3a6434`, `94e02b7`, `0c5754e`). Refreshes the header HEAD field to `0c5754e`. **No source / test / native / build / manifest / XML change; no build, test, or device command; no tag operation**; §22 untouched. No new methodology lessons in v1.0.18 |
 | 1.0.19 | 2026-10-16 | SPEC-HYGIENE | a **documentation-only, device-free** hygiene revision responding to BLOCK 1 / BLOCK 2 forensics. Adds a new **§1.6.12** — "Documentation Corrections (v1.0.19)" — with six evidence-labelled bullets: (1) the §1.6.1 preamble's *"Fifty-three commits … `0714628` → `e6b9eef`"* is marked **superseded** (a v1.0.16-era snapshot; the authoritative count is the latest §1.6.1 push-state note, 60 rows at v1.0.18); (2) the v1.0.18 push-state note's *"this revision's own **two** commits"* is corrected — Phase 14 landed the spec update **and** `CLOSE_OUT_v1.0.18_REPORT.md` in a **single** commit (`abc8bd1`, 2 files), so the chain delta of 1 is explained by one own-commit, and chain arithmetic is unaffected; (3) the **`p2.4.10` rationale correction** — forensic review of the **tag body** refuted the earlier "not a release cut" finding: target `0714628` carries `versionCode 143` / `versionName "2.4.10"` in `app/build.gradle`, `p2.4.9^{commit}` carries 142/"2.4.9", `rev-list --count p2.4.9..p2.4.10` = 1, and the annotated tag body contains 2.4.10 release notes ending **"Version: Bump to 2.4.10 (versionCode 143)."** — the earlier §1.6.3 note, §1.6.11 bullet 2 and `DOCS_UPDATE_v1.0.17_REPORT.md` §7 remain frozen as historical record; (4) an explicit note that `DOCS_UPDATE_v1.0.17_REPORT.md` §7 cannot be retro-edited; (5) a forward note that HEAD (`abc8bd1`) **shares** `versionName "2.4.10"` / `versionCode 143` with tag `p2.4.10` while sitting 60 commits ahead, so a future release phase should bump the version past 2.4.10; (6) no new methodology lessons. **Records the p2.4.10 tag decision as executed — PUSHED** (operator-authorized in BLOCK 3): remote unique tag set is now **5** (`p2.4.5`/`p2.4.7`/`p2.4.8`/`p2.4.9`/`p2.4.10`), local unchanged at 5, published tag object `c1013806…` byte-identical to the local one; a **§1.6.1 v1.0.19 push-state note** records the same. **§12.5.1 unchanged** (no row touched). Refreshes the header HEAD field to `abc8bd1`. **No source / test / native / build / manifest / XML change; no build, test, or device command; the only tag operation was the operator-authorized push of `p2.4.10` — no other tag was created, deleted, moved or force-pushed**; §22 untouched. No new methodology lessons in v1.0.19 |
 | 1.0.20 | 2026-10-16 | Z1-IMPL-B (implementation, device-free) | **Roadmap §12.5.2 item B landed** — the emergency server sources foundation. New `SourceKind.EMERGENCY_CSV` and `SourceKind.MANUAL` (appended, ordinals preserved); new `data/remote/EmergencySourceConfigEntity.kt` (`@Entity(tableName = "emergency_source_config")`: autoGenerate id, url/label/enabled/createdAt/updatedAt, `enabled` with `@ColumnInfo(defaultValue = "1")`), `EmergencySourceConfigDao.kt` (observeAll / listEnabled / getByUrl / upsert / deleteByUrl) and `EmergencySourceConfig.kt` (domain model with `fromEntity`/`toEntity`); `AppDatabase` registered at **version 6** with the entity and `emergencySourceConfigDao()`, plus **MIGRATION_5_6** (single additive `CREATE TABLE`, no foreign keys, non-destructive) registered in `App.kt` together with the new DAO accessor — both `App.kt` changes were authorized after discovery showed the Room builder and the DAO registry live there; `ConnectionListViewModel` exposes `emergencySources: StateFlow<…>` plus add/remove/toggle; `SettingsScreen` gained an "Emergency Server Sources" section (URL + optional label, per-row enable switch and remove, validity gate reusing `SourceUrl.parse`); KSP schema export `6.json` committed. Retrieval is **not** wired (item C) and nothing fetches. Records item B in a new **§1.6.13** (9 evidence-labelled bullets); **§11.9.3** updated — `SERVER_SOURCE_ARCHITECTURE.md` §10 **approved as the design basis** for the emergency CSV schema, historical DEFERRED wording retained verbatim and annotated superseded, parser deferred to item C; item A confirmed already implemented (PART B / `a9e16fd`), NO-OP this phase; items C–H and retention (§9) remain open. JVM: `:app` **678/0/0/1** (baseline 671/0/0/1; +7 from `Migration5to6Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `9ba16f9f…`. Device verification: **NONE** (DETACHED). Environment note: the build disables all debug variants unless the `CI` environment variable is set, so every Gradle invocation in this revision ran with `CI=true`. §1.6.2–§1.6.12 and §22 untouched. No tag operation. No new methodology lessons in v1.0.20 |
+| 1.0.21 | 2026-10-16 | Z1-IMPL-C (implementation, device-free) | **Roadmap §12.5.2 item C landed** — the emergency CSV parser and its opt-in wire-in. New `parser/EmergencyCsvParser.kt` implements `SERVER_SOURCE_ARCHITECTURE.md` §10 (29 columns; required `HostName`/`IP`/`schema_version`/`SourceTag`; header-driven so column order stays open per §10.9 Q2; `schema_version` fail-closed on anything but `1.0`, checked on **every** row; RFC-4180 quoting; BOM and non-UTF-8 bodies rejected; §18 unit normalisation identical to the canonical parser). Records are ordinary `VpnServerRecord`s built with the existing `VpnRecords` helpers — no parallel record type (§3.12). Required-field failures reject the row and are counted; optional-decode failures keep the row and mark the capability unsupported (Base64 that will not decode keeps the record and drops OpenVPN); a valid header with zero surviving rows is **Malformed**, not an empty import (§3.10). `SE_UDP_Port` is never turned into a transport on its own — the RUDP warning at §10.3 is honoured literally, so SoftEther UDP support comes only from `SE_UDP_Supported`; `0` is accepted as the documented "not present" token and no port is ever fabricated. Identity and dedup are delegated to `VpnServerMerger` (§10.5), and a merged record's file-level `SourceTag` becomes `merged`, carried on the record in an `emergency` provenance map. New `data/remote/EmergencySourceFetcher.kt` is fetch-only and reuses the project's one `HttpFetcher`/`collectorClientBuilder()` (10 s connect / 15 s read, `ResilientDns`, manual per-hop redirects) so no second HTTP stack is introduced; it follows no redirect outside the source's own authority, re-checks the reported final URL, refuses a body over 1 MiB rather than truncating it, retries each source once under a 40 s deadline (§2.6), and never parses or persists. A recorded limitation: `HttpFetcher` returns a decoded `String`, so the cap bounds parsing/retention rather than bytes on the wire. `SourceIdentity.kt` routes `SourceKind.EMERGENCY_CSV` to a new `EMERGENCY_TAG = "emergency"` instead of the mirror branch, so an emergency record forms its own provenance group and can never speak with canonical authority. The wire-in adds one injected parameter, `ServerListUpdater.emergencyFetch`, defaulted to `{ null }` and tried **only** when the primary fetch returned `null` — that fetch already covers the open and VPN rungs plus the repository's snapshot/stored/bundled-seed fallbacks, so this is §2.5 path 3. `ServerListUpdates.kt` builds the production lambda from the enabled sources and runs the live pipeline unchanged (fetch → parse → merge → validate → score → map); it returns `null` rather than an empty list on every failure, so a refused, oversized, undecodable or empty source falls through and leaves the stored list untouched. Zero behaviour change when no source is configured is evidenced by all 678 pre-existing tests — including every `ServerListUpdater` case — passing unchanged. Records item C in a new **§1.6.14** (9 evidence-labelled bullets); **§11.9.2** annotated with the safety-set status (historical text retained); **§12.5.1** unchanged (no row tracks item C); a status note added under the **§12.5.2** table (row C's description left verbatim, per the v1.0.20 direction). JVM: `:app` **724/0/0/1** (baseline 678/0/0/1; **+46** from `EmergencyCsvParserTest` and `EmergencySourceFetcherTest`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `b85a7aba…`. Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20. §1.6.1–§1.6.13 and §22 untouched. No tag operation. No new methodology lessons in v1.0.21 |
 
 ### Verification Status
 
@@ -2648,7 +2768,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Auto Mode Engine (§10) | VERIFIED — source inspection |
 | Binding Design Decisions (§11) | VERIFIED — native code contract confirmed at `softether_protocol.c:1098` |
 | Dynamic Server-Source Access (§11.8) | DESIGN — product requirement stated; current implementation observation preserved separately |
-| Emergency Server Sources (§11.9) | DESIGN — settings requirement stated; CSV schema explicitly deferred *(v1.0.20: **superseded — §11.9.3 now records arch doc §10 as the approved design basis**; parser deferred to roadmap item C; see §1.6.13 bullet 3)* |
+| Emergency Server Sources (§11.9) | DESIGN — settings requirement stated; CSV schema explicitly deferred *(v1.0.20: **superseded — §11.9.3 now records arch doc §10 as the approved design basis**; parser deferred to roadmap item C; see §1.6.13 bullet 3; v1.0.21: **§11.9.2 annotated with the implemented safety set — parser and fetch boundary landed, items D–H and retention still open**; see §1.6.14 bullets 3 and 7)* |
 | Manual Server Entry (§11.10) | DESIGN — product requirement stated; input formats not decided |
 | Persistence/Merge/Retention (§11.11) | DESIGN — principles stated; database schema not designed |
 | Future Extensibility (§11.12) | DESIGN — goal stated; no interfaces mandated |
@@ -2675,6 +2795,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Line-Reference Corrections and Tag Decision (§1.6.11) | HISTORICAL — the `SSL_CTX_set_verify` location is **SOURCE CODE** (verified at `aes_wrapper.c:111` by direct inspection at HEAD; the `:110` citations in the frozen §1.6.7/§1.6.8 are left unmodified and the drift is attributed to commit `b652198`'s added include); the `p2.4.10` tag state is **SOURCE CODE** (local `git tag -l` lists it; `git ls-remote --tags origin` does not, and it resolves to `0714628`), with the decision and its rationale recorded and **no tag operation performed**; the Phase 12 report commit is **SOURCE CODE** (git). This revision ran no build, test, or device command |
 | Documentation Corrections (§1.6.12) | HISTORICAL — all six bullets are **SOURCE CODE** (git history and direct inspection of `app/build.gradle` at `0714628` and `5c13603`, the annotated tag body of `p2.4.10` object `c1013806…`, and `git rev-list --count p2.4.9..p2.4.10` = 1); bullet 4 additionally carries **INFERENCE** for the judgment that a committed report must not be retro-edited. The `p2.4.10` push is **SOURCE CODE** (`git ls-remote --tags origin` now lists it; remote unique tag set 4 → 5; tag object byte-identical to the local one). The superseded v1.0.18-era texts (the §1.6.1 preamble, the v1.0.18 push-state note's "two own commits", and the §1.6.3 / §1.6.11 / `DOCS_UPDATE_v1.0.17_REPORT.md` §7 `p2.4.10` rationale) are explicitly **not** re-verified and are recorded as frozen historical artifacts. This revision ran no build, test, or device command |
 | Z1-IMPL-B — Emergency Source Foundation (§1.6.13) | HISTORICAL — the item B landing is **SOURCE CODE** (the files listed in §1.6.13 bullet 1, inspected at this revision's commits); the JVM counts and the successful build are **TEST**; the migration verification is JVM-only (**TEST**) and a real device 5→6 upgrade is **UNKNOWN**; device verification is **PHYSICAL DEVICE (not performed)**; item A's already-implemented status is **SOURCE CODE + PRIOR REPORT** (§1.6.10 bullet 8, commit `a9e16fd`) |
+| Z1-IMPL-C — Emergency CSV Parser + Wire-In (§1.6.14) | HISTORICAL — the item C landing is **SOURCE CODE** (the parser, the fetcher, the `SourceIdentity` tag route, the `emergencyFetch` parameter and the `ServerListUpdates` lambda, inspected at this revision's commits); the JVM counts, the successful build and the 46 new test cases are **TEST**; the zero-behaviour-change invariant is **TEST** (all 678 pre-existing tests pass unchanged, including every `ServerListUpdater` case); the §10 column mapping, the fail-closed schema check and the RUDP rule are **SOURCE CODE + TEST**; device verification is **PHYSICAL DEVICE (not performed)**, so a configured URL → live fetch → stored dataset → migration 5→6 on a real database is **UNKNOWN**; the 1 MiB cap bounding parsing rather than bytes on the wire is a recorded **SOURCE CODE** limitation, not a verified bound |
 
 ### Legend
 
