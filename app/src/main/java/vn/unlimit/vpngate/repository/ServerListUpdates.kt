@@ -38,6 +38,13 @@ import vn.unlimit.vpngate.ranking.ServerQualityCalculator
  * that replaced their row (spec §11.11, `SERVER_SOURCE_ARCHITECTURE.md` §4.3).
  * That merge lives in [withManualRows] and is wired in [daoStore].
  *
+ * Z1-IMPL-G (Roadmap §12.5.2 item G) adds one thing that is *not* a decision:
+ * the write reports which of the three acceptance outcomes of
+ * `SERVER_SOURCE_ARCHITECTURE.md` §9.6 / §10.8 it is ([DatasetOutcome]). The
+ * outcome is recorded, never branched on, and it changes nothing about which
+ * datasets are stored — see the `DatasetOutcome` KDoc for why the names and
+ * their behaviour are deliberately separated.
+ *
  * Nothing here persists a dataset by itself: the DAO is reached exclusively
  * from inside [ServerListUpdater.Store].
  */
@@ -103,7 +110,7 @@ object ServerListUpdates {
             },
             fetchCapability = { capability.value },
             fetchedFromCache = { origin.value },
-            store = daoStore(repository, dao, manual),
+            store = daoStore(repository, dao, manual, capability),
             emergencyFetch = {
                 // Re-read at this rung too: the emergency fetch can take
                 // seconds, and the rows written at the end of this run must be
@@ -210,11 +217,16 @@ object ServerListUpdates {
     /**
      * The one persistence boundary. [ServerListUpdater] decides when this runs;
      * nothing else may call [VPNGateItemDao.replaceAll].
+     *
+     * @param capability the run's source capability, the same instance the
+     *   fetch lambda writes and the updater reads, so the outcome logged here
+     *   is judged with the capability the run actually had.
      */
     private fun daoStore(
         repository: VpnServerRepository,
         dao: VPNGateItemDao?,
         manual: LastManualRows,
+        capability: LastFetchCapability,
     ): ServerListUpdater.Store = object : ServerListUpdater.Store {
         override fun currentCount(): Int = dao?.count() ?: 0
 
@@ -229,6 +241,30 @@ object ServerListUpdates {
         // it holds whichever rung supplied the network dataset — the primary
         // fetch, the snapshot/stored/seed fallbacks, or the emergency rung.
         override fun replaceAll(items: List<VPNGateItem>) {
+            // Z1-IMPL-G (Roadmap §12.5.2 item G): report which of the three
+            // acceptance outcomes of `SERVER_SOURCE_ARCHITECTURE.md` §9.6 /
+            // §10.8 this write is.
+            //
+            // This cannot *branch* on the outcome, because the decision lives
+            // in `ServerListUpdater` and that file is not in this phase's
+            // authorized set — so it records it. `DatasetIntegrity.evaluate`
+            // is pure and deterministic, so re-running it on the same inputs
+            // reproduces the verdict the updater already reached rather than
+            // forming a second opinion; if the two ever disagreed, that would
+            // be worth seeing in the log, which is the point of doing it here
+            // instead of assuming the verdict.
+            //
+            // Note what the outcome does and does not claim: REJECT_DEGRADED
+            // is enforced upstream (a refused dataset never reaches this
+            // method), while MERGE_WITH_EXISTING is a *name* — the accepted
+            // dataset is still replaced, not added to. The cumulative-add
+            // reading is Cumulative Server Retention (§9.1).
+            val stored = currentDataset()
+            val verdict = DatasetIntegrity.evaluate(items, stored, capability.value)
+            CollectorLog.d(
+                "Dataset outcome ${DatasetIntegrity.outcome(verdict, stored)}: " +
+                    "${items.size} incoming vs ${stored.size} stored (${verdict.detail})",
+            )
             dao?.replaceAll(withManualRows(items, manual.rows))
         }
 

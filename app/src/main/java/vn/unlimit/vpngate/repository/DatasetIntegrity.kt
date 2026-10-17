@@ -94,6 +94,61 @@ data class DatasetVerdict(
 )
 
 /**
+ * Z1-IMPL-G (Roadmap §12.5.2 item G): the three acceptance outcomes named by
+ * `SERVER_SOURCE_ARCHITECTURE.md` §9.6 and §10.8.
+ *
+ * **Read this before extending it — the vocabulary and the behaviour are two
+ * different things here.**
+ *
+ * The names are taken verbatim from the architecture document. What this
+ * revision adds is the *classification*, not a new decision: §9.6 says the
+ * outcomes "layer on top of the existing `DatasetIntegrity` threshold logic
+ * rather than replacing it", and that is exactly what [DatasetIntegrity.outcome]
+ * does. Every threshold in [DatasetIntegrity.evaluate] is untouched, so which
+ * datasets are accepted has not moved.
+ *
+ * What the names mean in the document, and how much of it exists today:
+ *
+ *  - [REJECT_DEGRADED] is implemented **in substance**. It is the existing
+ *    rejection path: a dataset that fails a threshold, or is corrupt, empty or
+ *    below the floor, is refused and the stored dataset is left untouched. §9.6
+ *    — "a degraded dataset must never replace or prune a known-good one" — is
+ *    what this class has always enforced, now with the name it was given.
+ *  - [ACCEPT_NEW] and [MERGE_WITH_EXISTING] are **names only**. In the document
+ *    both mean *cumulative addition*: §9.6 says "add all new records" and "add
+ *    new records only; never drop existing healthy servers", and §9.1 says "the
+ *    database grows across updates rather than being replaced by the latest
+ *    snapshot". That behaviour is **Cumulative Server Retention** (§9.2's
+ *    `firstSeenAt` / `lastSeenAt` / `healthScore` fields, a new Room migration,
+ *    the §9.3 priority algorithm and the §9.4 settings), which is a separate
+ *    phase and is explicitly **not** implemented here. Until it is, an accepted
+ *    dataset is still *replaced*, so classifying a write as
+ *    `MERGE_WITH_EXISTING` says "the stored list is being superseded by a
+ *    comparable one", not "the two were added together".
+ *
+ * The distinction is kept explicit in the code rather than papered over,
+ * because a future reader who sees `MERGE_WITH_EXISTING` and assumes merging
+ * would be reading a promise the implementation has not made yet.
+ */
+enum class DatasetOutcome {
+    /** No comparable stored dataset, so this is the first list the app holds. */
+    ACCEPT_NEW,
+
+    /**
+     * A comparable stored dataset exists and the candidate was accepted, so
+     * the stored list is superseded. **Not** an add-only merge — see the type
+     * KDoc; that semantics is Cumulative Server Retention (§9.1).
+     */
+    MERGE_WITH_EXISTING,
+
+    /**
+     * The candidate is degraded: it failed a threshold, or it is corrupt,
+     * empty or below the absolute floor. The stored dataset is left untouched.
+     */
+    REJECT_DEGRADED,
+}
+
+/**
  * The dataset quality model.
  *
  * Thresholds and the evidence behind each of them (see the Stage 2C-B
@@ -210,7 +265,7 @@ object DatasetIntegrity {
 
         // No stored dataset means no baseline to compare against: the
         // absolute floor and the structural checks are all that apply.
-        if (stored.size < MIN_ACCEPTABLE_DATASET_SIZE) {
+        if (!hasComparableBaseline(stored)) {
             return DatasetVerdict(
                 accepted = true,
                 detail = "no comparable stored dataset (${stored.size} server(s))",
@@ -271,5 +326,34 @@ object DatasetIntegrity {
             accepted = true,
             detail = "candidate ${candidate.size} server(s) vs stored ${stored.size}",
         )
+    }
+
+    /**
+     * Whether [stored] is large enough for the relative checks to mean
+     * anything. Below the absolute floor a stored list is a remnant, not a
+     * baseline, so nothing is compared against it.
+     */
+    private fun hasComparableBaseline(stored: List<VPNGateItem>): Boolean =
+        stored.size >= MIN_ACCEPTABLE_DATASET_SIZE
+
+    /**
+     * Z1-IMPL-G: classify an already-decided [verdict] against what was
+     * stored when it was produced.
+     *
+     * A pure relabelling — it can never contradict [verdict], and a caller
+     * that ignores it behaves exactly as before. It exists so the three names
+     * the architecture document gives these acceptance results (§9.6, §10.8)
+     * are visible in logs and reasoning instead of being an absent
+     * [DatasetDefect] and a `Preserved` reason.
+     *
+     * The one piece of state the verdict does **not** carry is whether there
+     * was a comparable stored dataset, because `evaluate` returns the same
+     * "accepted, nothing to compare against" shape either way. Pass the same
+     * `stored` list here that was passed to [evaluate].
+     */
+    fun outcome(verdict: DatasetVerdict, stored: List<VPNGateItem>): DatasetOutcome = when {
+        !verdict.accepted -> DatasetOutcome.REJECT_DEGRADED
+        !hasComparableBaseline(stored) -> DatasetOutcome.ACCEPT_NEW
+        else -> DatasetOutcome.MERGE_WITH_EXISTING
     }
 }
