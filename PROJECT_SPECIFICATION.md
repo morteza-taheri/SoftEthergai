@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `e4daa7b35ac44e427d3cd9928b11aff13a9d1d00`
-**Document version:** 1.0.22
-**Last updated:** 2026-10-16
+**HEAD:** `40decde35c2fc0213785662a5f899f2996f0587c`
+**Document version:** 1.0.23
+**Last updated:** 2026-10-17
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -269,6 +269,20 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > last source-and-tests commit at the time this text was written — a spec file cannot name its own
 > commit — so this revision's own docs commit is named by subject here and is listed by hash in a
 > future revision, per the one-own-commit convention. Chain arithmetic per §1.6.15 bullet 9. No tag
+> operation of any kind was performed.
+
+> **Push state (v1.0.23).** Z1-IMPL-G landed — Roadmap §12.5.2 **item G**, in the two parts the
+> operator approved: the MANUAL provenance fix (the debt recorded as limitation (c) of §1.6.15
+> bullet 9), and the three `DatasetIntegrity` outcomes as a **classification layered on the existing
+> verdict** rather than as a new decision. Three commits make up this revision: `feat(sources)` (the
+> `SourceIdentity.kt` provenance fix and its tests), `feat(repository)` (the outcome names, the
+> outcome log in `ServerListUpdates.replaceAll`, and the outcome tests) and `docs` (this spec update
+> plus `Z1_IMPL_G_REPORT.md`). Items **E/F/H** and Cumulative Server Retention (§9 of
+> `SERVER_SOURCE_ARCHITECTURE.md`) remain future work — and Retention is the structural reason the
+> outcome names do not change any behaviour this revision, see §1.6.16 bullet 6. The **HEAD** field
+> above is the last code commit at the time this text was written — a spec file cannot name its own
+> commit — so this revision's own docs commit is named by subject here and is listed by hash in a
+> future revision, per the one-own-commit convention. Chain arithmetic per §1.6.16 bullet 9. No tag
 > operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
@@ -1159,6 +1173,110 @@ no device verification was performed.
    entry stores its port but no profile, and the app dials OpenVPN from `openVpnConfigData`, so
    such a row is not connectable until a profile is supplied — which is items E/F. Evidence:
    INFERENCE, from `VPNGateItem.connectOptions`.
+
+
+#### 1.6.16 Z1-IMPL-G — Dataset-Integrity Outcomes + MANUAL Provenance Fix (v1.0.23)
+
+This subsection records the **Z1-IMPL-G** revision — Roadmap §12.5.2 **item G**. It is a real
+implementation phase (source + test + build) and it is **device-free**: no device command was run and
+no device verification was performed.
+
+0. **The citation correction, recorded before anything else.** The phase brief named
+   `SERVER_SOURCE_ARCHITECTURE.md` **§3.12** as the home of the three outcomes
+   (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`). §3.12 does not define them; the
+   vocabulary lives in **§9.6** and **§10.8**, and §9.1 is the section that fixes what the first two
+   *mean*. The brief's own stop condition ("arch doc §3.12 conflicts with the STEP 4 decision logic →
+   STOP; do NOT choose silently") was triggered by two further contradictions (bullets 5 and 6
+   below), so the whole reading was put to the operator instead of being resolved by assumption.
+   Evidence: SOURCE CODE (arch-doc read) + PRIOR REPORT (operator decision).
+
+1. **The MANUAL provenance debt is paid.** `SourceIdentity.sourceTag` reached the mirror kinds
+   through an `else -> mirrorId ?: UNNUMBERED_MIRROR_TAG` branch, and `SourceKind.MANUAL` has no
+   mirror id, so a user's own entry was reported as `mirror_unnumbered` for two revisions — recorded
+   as limitation (c) of §1.6.15 bullet 9, because that file was outside item D's authorized set. The
+   `when` is now **exhaustive with no `else`**, listing every `SourceKind` by name, and
+   `MANUAL_TAG = "manual"` is a companion constant. The absence of an `else` is a compile-time
+   guard, not a style choice: adding a kind to the enum without giving it a tag used to compile
+   clean and mislabel records at runtime, and now fails to build instead. Evidence: SOURCE CODE +
+   TEST (the former defect), INFERENCE (the future-kind guarantee is a compile-time property, not an
+   observed one).
+
+2. **A mirror tag was a real authority defect, not a cosmetic one.** `Provenance.sourceGroup`
+   collapses `mirror_<n>` into the single group `mirror`, which is **not** in
+   `VpnServerMerger.SOURCE_PRIORITY` and therefore falls through to the default **20**;
+   `mirror_unnumbered` does not match `^mirror_\d+$`, so it stays a group of its own — also absent
+   from the table, also **20**. Either spelling handed a manual record mirror-level authority and
+   hid its provenance, which is why `VpnServerMerger`'s `"manual" to 30` entry (landed in item D and
+   documented as "inert until a manual record reaches this object") was dead code rather than a live
+   policy: no record labelled `manual` was ever produced. With the fix, a manual record is grouped
+   as `manual` and resolves to **30**. Evidence: SOURCE CODE + TEST.
+
+3. **Every other kind's tag is pinned, and the two groups are provably disjoint.**
+   `ManualProvenanceTest` asserts the baseline tag of all seven other kinds (`html`, `api`,
+   `emergency`, `mirror_7` and `mirror_unnumbered` for each of `BOOTSTRAP_MIRROR`,
+   `DISCOVERED_MIRROR` and `CACHED_MIRROR`) so that adding the manual branch cannot silently
+   re-route one of them, and asserts `MIRROR_TAG_PREFIX + (index + 1)` never equals `MANUAL_TAG` for
+   a range of indices — ids are prefixed at the point of assignment
+   (`VpnGateSourceCandidates.MIRROR_TAG_PREFIX`), so a mirror can never share the manual provenance
+   group. A manual identity carrying a *stray* mirror id (reachable through the public
+   `withMirrorId` copy) still reads `manual`. Evidence: SOURCE CODE + TEST.
+
+4. **The three outcomes landed as a classification, not as a decision.** `DatasetOutcome`
+   (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`) and
+   `outcome(verdict, stored): DatasetOutcome` are new; `DatasetIntegrity.evaluate`'s **signature and
+   all seven thresholds are byte-for-byte unchanged**, so no decision moved. The rule is a pure
+   function of data `evaluate` already produced: a refused verdict is `REJECT_DEGRADED`; an accepted
+   one is `ACCEPT_NEW` when `stored.size < MIN_ACCEPTABLE_DATASET_SIZE` (nothing to compare
+   against) and `MERGE_WITH_EXISTING` otherwise. Evidence: SOURCE CODE + TEST.
+
+5. **`REJECT_DEGRADED` is implemented in substance; `ACCEPT_NEW` and `MERGE_WITH_EXISTING` are
+   names only in this phase.** The first is exactly `verdict.accepted == false`, which is what
+   `ServerListUpdater` already acted on. The other two have no add-only behaviour behind them,
+   because arch doc §9.1 defines them as cumulative **addition** — "the database **grows** across
+   updates rather than being **replaced**" — and Cumulative Server Retention is **not** implemented
+   and is outside this phase's authorized file set. Saying otherwise would be a claim the code does
+   not make, so the KDoc states the limitation plainly and §11.11 keeps recording the gap. Evidence:
+   SOURCE CODE.
+
+6. **The brief's decision table contradicts the arch doc on two rows and was not adopted.** The
+   brief classifies a **strict subset** and a **disjoint** candidate as `REJECT_DEGRADED`. Arch doc
+   §9.1 says the opposite for a shrunken response: "Do not lose healthy servers when a source
+   returns a smaller set. A shrunken response is treated as `MERGE_WITH_EXISTING` (§9.6), **never**
+   as a signal to prune previously-seen healthy records", and §9.6's own closing sentence is that
+   the outcomes "layer on top of the existing `DatasetIntegrity` threshold logic **rather than
+   replacing it**". The operator chose the arch-doc reading, so a viable-but-smaller dataset (25 of
+   40, above the 0.5 size floor) and a viable-but-disjoint one both classify
+   `MERGE_WITH_EXISTING`, and the existing thresholds decide acceptance exactly as before — a
+   dataset that collapses to half the stored size or below the ten-row floor is still
+   `REJECT_DEGRADED`. Evidence: PRIOR REPORT (operator decision) + SOURCE CODE + TEST.
+
+7. **The wire-in records the classification; it does not branch on it.** `ServerListUpdates`'
+   `replaceAll` re-runs `DatasetIntegrity.evaluate` (pure and deterministic, so it reproduces the
+   updater's verdict) and logs the outcome, both sizes and `verdict.detail`, then performs the write
+   it always performed. The component that *owns* the decision, `ServerListUpdater.kt`, is **not**
+   in this phase's authorized file set, which is precisely why the write boundary logs rather than
+   branches: any future divergence between the two verdicts becomes visible in the log instead of
+   silently changing behaviour, and the classified value is never persisted. Evidence: SOURCE CODE.
+
+8. **JVM tests.** `:app` = **768 / 0 / 0 / 1** against a baseline of **747 / 0 / 0 / 1**
+   (**+21**: 11 in `DatasetIntegrityOutcomeTest`, 10 in `ManualProvenanceTest`), zero failures and
+   errors, ignored count unchanged. All 747 pre-existing tests pass unchanged — including every
+   `ServerListUpdater` case, which is the regression evidence that the write path is untouched.
+   `:SoftEtherClient:test` = **173 / 0 / 0 / 0**, identical to baseline. Two tests pin the
+   classification rule itself rather than individual cases: an outcome never contradicts its verdict,
+   and `ACCEPT_NEW` is exactly the no-comparable-baseline case at the 9/10 stored-row boundary.
+   Evidence: TEST.
+
+9. **Build, device state, and what did NOT land.** `CI=true ./gradlew :app:assembleProDebug`
+   SUCCESSFUL; APK SHA-256 `f42f78e87f3dce51f7c800a9b109077330e5f08adbd713f7762c3433729e4cba`
+   (63,738,546 bytes), which differs from item D's `f1d768c9…` (65,978,641 bytes) as expected for
+   changed code. **No device verification was performed** — the device is DETACHED. Not landed:
+   (a) Cumulative Server Retention (arch doc §9), still the structural gap and the reason the
+   outcome names carry no add-only behaviour; (b) any change in `ServerListUpdater.kt`, the
+   component that decides; (c) the two item-D limitations that interact with this one — two manual
+   entries on one IPv4 collapse to one stored row, and an OpenVPN manual entry is not connectable
+   without a profile; (d) a row-level policy for those two entries, which remains proposed-only.
+   Evidence: SOURCE CODE + TEST (build) + PHYSICAL DEVICE (not performed).
 
 
 ## 2. Architecture Overview
@@ -2281,6 +2399,24 @@ The following principles govern how built-in, mirror, emergency, and manual sour
 > outside the authorized file set so `SourceKind.MANUAL`'s `sourceTag` still reads
 > `mirror_unnumbered`, and two manual entries on one IPv4 collapse to one stored row because the
 > table's primary key is the host name alone. See §1.6.15 for the full evidence set.
+>
+> **Implementation status (v1.0.23 — Z1-IMPL-G):** the first of those two limits is now **closed**.
+> `SourceIdentity.sourceTag`'s `when` is exhaustive with no `else` branch, so `SourceKind.MANUAL`
+> yields `MANUAL_TAG = "manual"` instead of falling through to `mirror_unnumbered` — and adding a
+> future `SourceKind` without a tag now fails to compile rather than mislabelling records at
+> runtime. That is what makes the `"manual" to 30` priority entry a live policy rather than dead
+> code, and it satisfies this section's "Preserve source provenance" and "must carry distinct,
+> retrievable provenance" bullets for the manual case end-to-end. The same revision adds the three
+> `DatasetIntegrity` outcomes (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`) as a
+> **classification layered on the existing verdict**, with `evaluate`'s signature and every
+> threshold unchanged — so *no acceptance or rejection decision moved in this revision*. The two
+> cumulative outcomes are **names only** until Cumulative Server Retention (arch doc §9.1) is
+> implemented, because that section requires the database to **grow** across updates while an update
+> still replaces. Two limits remain from §1.6.15 bullet 9, both unchanged: two manual entries on one
+> IPv4 collapse to one stored row, and an OpenVPN manual entry is not connectable without a profile.
+> See §1.6.16 for the full evidence set, including the citation correction (the outcomes are defined
+> in arch doc §9.6/§10.8, **not** §3.12) and the operator decision that overrode the phase brief's
+> decision table.
 
 **Source provenance vs. server identity:** source provenance and server identity may need separate representations. The same logical server may be observed through multiple sources; a single manually entered record must remain user-managed and must not be silently overwritten by any source refresh.
 
@@ -2875,6 +3011,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.20 | 2026-10-16 | Z1-IMPL-B (implementation, device-free) | **Roadmap §12.5.2 item B landed** — the emergency server sources foundation. New `SourceKind.EMERGENCY_CSV` and `SourceKind.MANUAL` (appended, ordinals preserved); new `data/remote/EmergencySourceConfigEntity.kt` (`@Entity(tableName = "emergency_source_config")`: autoGenerate id, url/label/enabled/createdAt/updatedAt, `enabled` with `@ColumnInfo(defaultValue = "1")`), `EmergencySourceConfigDao.kt` (observeAll / listEnabled / getByUrl / upsert / deleteByUrl) and `EmergencySourceConfig.kt` (domain model with `fromEntity`/`toEntity`); `AppDatabase` registered at **version 6** with the entity and `emergencySourceConfigDao()`, plus **MIGRATION_5_6** (single additive `CREATE TABLE`, no foreign keys, non-destructive) registered in `App.kt` together with the new DAO accessor — both `App.kt` changes were authorized after discovery showed the Room builder and the DAO registry live there; `ConnectionListViewModel` exposes `emergencySources: StateFlow<…>` plus add/remove/toggle; `SettingsScreen` gained an "Emergency Server Sources" section (URL + optional label, per-row enable switch and remove, validity gate reusing `SourceUrl.parse`); KSP schema export `6.json` committed. Retrieval is **not** wired (item C) and nothing fetches. Records item B in a new **§1.6.13** (9 evidence-labelled bullets); **§11.9.3** updated — `SERVER_SOURCE_ARCHITECTURE.md` §10 **approved as the design basis** for the emergency CSV schema, historical DEFERRED wording retained verbatim and annotated superseded, parser deferred to item C; item A confirmed already implemented (PART B / `a9e16fd`), NO-OP this phase; items C–H and retention (§9) remain open. JVM: `:app` **678/0/0/1** (baseline 671/0/0/1; +7 from `Migration5to6Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `9ba16f9f…`. Device verification: **NONE** (DETACHED). Environment note: the build disables all debug variants unless the `CI` environment variable is set, so every Gradle invocation in this revision ran with `CI=true`. §1.6.2–§1.6.12 and §22 untouched. No tag operation. No new methodology lessons in v1.0.20 |
 | 1.0.21 | 2026-10-16 | Z1-IMPL-C (implementation, device-free) | **Roadmap §12.5.2 item C landed** — the emergency CSV parser and its opt-in wire-in. New `parser/EmergencyCsvParser.kt` implements `SERVER_SOURCE_ARCHITECTURE.md` §10 (29 columns; required `HostName`/`IP`/`schema_version`/`SourceTag`; header-driven so column order stays open per §10.9 Q2; `schema_version` fail-closed on anything but `1.0`, checked on **every** row; RFC-4180 quoting; BOM and non-UTF-8 bodies rejected; §18 unit normalisation identical to the canonical parser). Records are ordinary `VpnServerRecord`s built with the existing `VpnRecords` helpers — no parallel record type (§3.12). Required-field failures reject the row and are counted; optional-decode failures keep the row and mark the capability unsupported (Base64 that will not decode keeps the record and drops OpenVPN); a valid header with zero surviving rows is **Malformed**, not an empty import (§3.10). `SE_UDP_Port` is never turned into a transport on its own — the RUDP warning at §10.3 is honoured literally, so SoftEther UDP support comes only from `SE_UDP_Supported`; `0` is accepted as the documented "not present" token and no port is ever fabricated. Identity and dedup are delegated to `VpnServerMerger` (§10.5), and a merged record's file-level `SourceTag` becomes `merged`, carried on the record in an `emergency` provenance map. New `data/remote/EmergencySourceFetcher.kt` is fetch-only and reuses the project's one `HttpFetcher`/`collectorClientBuilder()` (10 s connect / 15 s read, `ResilientDns`, manual per-hop redirects) so no second HTTP stack is introduced; it follows no redirect outside the source's own authority, re-checks the reported final URL, refuses a body over 1 MiB rather than truncating it, retries each source once under a 40 s deadline (§2.6), and never parses or persists. A recorded limitation: `HttpFetcher` returns a decoded `String`, so the cap bounds parsing/retention rather than bytes on the wire. `SourceIdentity.kt` routes `SourceKind.EMERGENCY_CSV` to a new `EMERGENCY_TAG = "emergency"` instead of the mirror branch, so an emergency record forms its own provenance group and can never speak with canonical authority. The wire-in adds one injected parameter, `ServerListUpdater.emergencyFetch`, defaulted to `{ null }` and tried **only** when the primary fetch returned `null` — that fetch already covers the open and VPN rungs plus the repository's snapshot/stored/bundled-seed fallbacks, so this is §2.5 path 3. `ServerListUpdates.kt` builds the production lambda from the enabled sources and runs the live pipeline unchanged (fetch → parse → merge → validate → score → map); it returns `null` rather than an empty list on every failure, so a refused, oversized, undecodable or empty source falls through and leaves the stored list untouched. Zero behaviour change when no source is configured is evidenced by all 678 pre-existing tests — including every `ServerListUpdater` case — passing unchanged. Records item C in a new **§1.6.14** (9 evidence-labelled bullets); **§11.9.2** annotated with the safety-set status (historical text retained); **§12.5.1** unchanged (no row tracks item C); a status note added under the **§12.5.2** table (row C's description left verbatim, per the v1.0.20 direction). JVM: `:app` **724/0/0/1** (baseline 678/0/0/1; **+46** from `EmergencyCsvParserTest` and `EmergencySourceFetcherTest`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `b85a7aba…`. Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20. §1.6.1–§1.6.13 and §22 untouched. No tag operation. No new methodology lessons in v1.0.21 |
 | 1.0.22 | 2026-10-16 | Z1-IMPL-D (implementation, device-free) | **Roadmap §12.5.2 item D landed** — manual server entry plus the MANUAL-preservation merge, which is the preservation half of item G. The field set is the one the requirement asks for and nothing more: spec §11.11 defines the *rules* and explicitly declines to define a schema ("Do not design or implement a new database schema here"), and `SERVER_SOURCE_ARCHITECTURE.md` §4.1 fixes the minimum as "a single server record (host/IP + at least one protocol+port)". New `data/remote/ManualServer.kt` (domain), `ManualServerEntity.kt` (`@Entity(tableName = "manual_server")` with a **unique** index on `(host, port, protocol)` so re-entering a server updates the row instead of adding a duplicate the user then has to find), `ManualServerDao.kt` (`observeAll`/`listAll`/`listEnabled`/`findByKey`/`upsert`/`deleteById`, mirroring `EmergencySourceConfigDao`), `repository/ManualServerStore.kt` (injected-DAO wrapper, no network) and `repository/ManualServerStore.toItem`, which maps each protocol to only the columns that protocol owns — never another protocol's port — and writes **no** telemetry for a server that was never crawled. `AppDatabase.kt` registers the entity, moves to **version 7** and adds `MIGRATION_6_7`: two additive statements (the table, then that unique index), no `DROP`/`DELETE`/`TRUNCATE`, and no recreation of `VPNGateItem`, `excluded_apps` or `emergency_source_config`; `App.kt` registers the migration and exposes `manualServerDao`; `app/schemas/…/7.json` is the KSP export and is compared against the migration DDL by `Migration6to7Test`. **The merge policy decision.** `VpnServerMerger.SOURCE_PRIORITY` gains `"manual" to 30`, completing the frozen table as api 0 > html 10 > mirror 20 > manual 30 — `SERVER_SOURCE_ARCHITECTURE.md` §3.3 ("canonical (api/html) always wins over emergency over manual"), §4.2 ("never promoted above canonical") and §11.11. Preservation and precedence are kept as two separate promises: preservation is **absolute** (a manual record is never deleted, and `mergeRecords` has no path that drops one for being low-priority), while precedence applies only to a value **both** sides claim, where the collected source wins and the disagreement is written into the record's `conflicts` list (§38) so a manual record is never *silently* overwritten (§11.11). This was put to the operator as an explicit choice because the phase brief's wording ("MANUAL wins on collision") contradicts the frozen arch doc; the arch-doc reading was confirmed. **Where the merge runs.** `ServerListUpdates.withManualRows` executes inside `Store.replaceAll`, so the user's rows are re-emitted whichever rung supplied the network dataset — the primary fetch, the repository's snapshot/stored/bundled-seed fallbacks, or the emergency rung from item C — and an empty manual list returns the caller's own list **by identity**, so a caller with no manual servers observes byte-identical behaviour. A host the network already serves does not get a duplicate manual row; the entry itself is untouched and is re-emitted the next time the feeds stop listing that host (§4.3, "re-emitted as long as they remain valid"). **A manual address must be an IPv4 literal**, because the record layer keys a server on one (`normalizeServer` rejects anything else and `toConnection` returns null without one) — a bare DNS name would be accepted by the form and then silently dropped, so it is refused at the `ManualServerStore.add` boundary instead. UI: `ConnectionListViewModel` exposes `manualServers` plus add/remove/toggle, and `SettingsScreen` gains a "Manual Servers" section reusing existing components and the `manual_server_` string prefix; the stale `emergency_source_summary` (which still said nothing was fetched) was corrected in the same authorized file. Zero behaviour change when no manual server is configured is evidenced by all 724 pre-existing tests — including every `ServerListUpdater` case — passing unchanged. Records item D in a new **§1.6.15**; **§11.11** annotated with the implementation status (historical text retained, including its own "do not implement a schema here" note, now superseded for this table only); **§12.5.1** unchanged (no row tracks item D) and **§12.5.2** untouched, since this phase's permitted spec hunks are §11.11, §1.6.1, §1.6.15 and §20 only. Three limitations are recorded rather than hidden: `SourceIdentity.kt` was outside the authorized file set, so `SourceKind.MANUAL`'s `sourceTag` still reads `mirror_unnumbered`; two manual entries on one IPv4 collapse to a single stored row because the table's primary key is the host name alone; and an OpenVPN manual entry stores a port but no profile, so it is not connectable until items E/F supply one. JVM: `:app` **747/0/0/1** (baseline 724/0/0/1; **+23** from `ManualServerPreservationTest` and `Migration6to7Test`), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `f1d768c9…` (65,978,641 bytes). Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20 and v1.0.21. §1.6.2–§1.6.14 and §22 untouched. No tag operation. No new methodology lessons in v1.0.22 |
+| 1.0.23 | 2026-10-17 | Z1-IMPL-G (implementation, device-free) | **Roadmap §12.5.2 item G landed** in the two parts the operator approved. **Citation correction first:** the phase brief named `SERVER_SOURCE_ARCHITECTURE.md` **§3.12** as the home of the three outcomes, but §3.12 does not define them — the vocabulary lives in **§9.6**/**§10.8** and §9.1 fixes what the first two *mean*. That correction, plus two further conflicts between the brief's decision table and §9.1/§9.6, were surfaced to the operator rather than resolved silently; the arch-doc reading was confirmed. **Part (i) — the MANUAL provenance fix.** `SourceIdentity.sourceTag` reached the mirror kinds through `else -> mirrorId ?: UNNUMBERED_MIRROR_TAG`, and `SourceKind.MANUAL` has no mirror id, so a user's own entry was reported as an unidentified mirror for two revisions (limitation (c) of §1.6.15 bullet 9). The `when` is now **exhaustive with no `else`**, `MANUAL_TAG = "manual"` is a companion constant, and adding a future `SourceKind` without a tag now fails to compile instead of mislabelling records at runtime. This was not cosmetic: `Provenance.sourceGroup` maps `mirror_<n>` to the group `mirror` and leaves `mirror_unnumbered` as its own group, and **neither** is in `VpnServerMerger.SOURCE_PRIORITY` — so both fall through to the default 20, meaning a manual record silently carried mirror-level authority and the `"manual" to 30` entry landed in item D was **dead code**, never reached by any record. A manual identity carrying a stray mirror id (reachable through `withMirrorId`) still reads `manual`, and real mirror ids (`mirror_<n>`, prefixed at assignment) can never collide with the manual tag, so the two provenance groups are provably disjoint. **Part (ii) — the three outcomes as a classification, not a decision.** New `DatasetOutcome` (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`) and `outcome(verdict, stored)`; `DatasetIntegrity.evaluate`'s **signature and all seven thresholds are unchanged**, so no acceptance or rejection decision moved. `REJECT_DEGRADED` is implemented in substance (it is `verdict.accepted == false`); `ACCEPT_NEW` and `MERGE_WITH_EXISTING` are **names only** in this phase, because arch doc §9.1 defines them as cumulative **addition** ("the database **grows** across updates rather than being **replaced**"), and Cumulative Server Retention is not implemented and is outside this phase's authorized files — an update still replaces. The brief's decision table classified a strict subset and a disjoint candidate as `REJECT_DEGRADED`; §9.1 says a shrunken response is `MERGE_WITH_EXISTING`, "**never** as a signal to prune previously-seen healthy records", and §9.6's closing sentence says the outcomes "layer on top of the existing `DatasetIntegrity` threshold logic **rather than replacing it**", so the operator-confirmed reading keeps a viable-but-smaller (25 of 40) and a viable-but-disjoint dataset as `MERGE_WITH_EXISTING` while the existing thresholds still decide acceptance exactly as before. **The wire-in records rather than branches.** `ServerListUpdates.replaceAll` re-runs `evaluate` (pure and deterministic, so it reproduces the updater's verdict) and logs the outcome, both sizes and `verdict.detail` before the unchanged write; `ServerListUpdater.kt`, which *owns* the decision, is not an authorized file this phase, which is exactly why the boundary logs instead of deciding — any future divergence becomes visible rather than silent, and the classified value is never persisted. **No `build.gradle` change, no new dependency, no migration, no schema change and no Room version bump.** Records item G in a new **§1.6.16** (10 evidence-labelled bullets); **§11.11** annotated with the provenance closure and the classification-only nature of the outcomes; **§12.5.1** unchanged (no row tracks item G) and **§12.5.2** untouched, since this phase's permitted spec hunks are §11.11, §1.6.1, §1.6.16 and §20 only. JVM: `:app` **768/0/0/1** (baseline 747/0/0/1; **+21** from `ManualProvenanceTest` 10 and `DatasetIntegrityOutcomeTest` 11), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `f42f78e8…` (63,738,546 bytes). Device verification: **NONE** (DETACHED). Environment note: every Gradle invocation ran with `CI=true`, as in v1.0.20–v1.0.22. §1.6.2–§1.6.15 and §22 untouched. No tag operation. No new methodology lessons in v1.0.23 |
 
 ### Verification Status
 
@@ -2922,6 +3059,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Z1-IMPL-C — Emergency CSV Parser + Wire-In (§1.6.14) | HISTORICAL — the item C landing is **SOURCE CODE** (the parser, the fetcher, the `SourceIdentity` tag route, the `emergencyFetch` parameter and the `ServerListUpdates` lambda, inspected at this revision's commits); the JVM counts, the successful build and the 46 new test cases are **TEST**; the zero-behaviour-change invariant is **TEST** (all 678 pre-existing tests pass unchanged, including every `ServerListUpdater` case); the §10 column mapping, the fail-closed schema check and the RUDP rule are **SOURCE CODE + TEST**; device verification is **PHYSICAL DEVICE (not performed)**, so a configured URL → live fetch → stored dataset → migration 5→6 on a real database is **UNKNOWN**; the 1 MiB cap bounding parsing rather than bytes on the wire is a recorded **SOURCE CODE** limitation, not a verified bound |
 
 | Z1-IMPL-D — Manual Server Entry + MANUAL-Preservation (§1.6.15) | HISTORICAL — the item D landing is **SOURCE CODE** (the model, entity, DAO, store, migration 6→7, the `manual` priority entry, the `withManualRows` merge, the ViewModel surface and the Settings section, inspected at this revision's commits); the JVM counts, the successful build and the 23 new test cases are **TEST**; the zero-behaviour-change invariant is **TEST** two ways — `withManualRows` returns the caller's own list **by identity** for an empty manual set, and all 724 pre-existing tests pass unchanged including every `ServerListUpdater` case; the preserved-versus-precedence split (a manual record is never deleted, but a value both sides claim goes to the collected source with the disagreement written into `conflicts`) is **SOURCE CODE + TEST** and its policy is **PRIOR REPORT** — `SERVER_SOURCE_ARCHITECTURE.md` §3.3/§4.2, confirmed by the operator against the phase brief's opposite wording; the IPv4-only manual address is **INFERENCE** from the two rejection points (`normalizeServer`, `toConnection`), not a verified device behaviour; device verification is **PHYSICAL DEVICE (not performed)**, so adding a manual server → a live refresh that must keep it → migration 6→7 on a real database is **UNKNOWN**; the three recorded limits (the untouched `SourceIdentity.kt` `sourceTag` fall-through, the same-IPv4 row collapse, the connectable-less OpenVPN entry) are recorded **SOURCE CODE** limitations, not verified bounds |
+| Z1-IMPL-G — Dataset-Integrity Outcomes + MANUAL Provenance Fix (§1.6.16) | HISTORICAL + PARTIAL — the provenance fix is **SOURCE CODE + TEST** (the exhaustive `sourceTag` `when` with no `else`, `MANUAL_TAG`, the pinned baseline tags of the seven other kinds, the mirror-id-disjointness check and the stray-mirror-id isolation, inspected at this revision's commits); the "mirror tag granted mirror-level authority (20, not 30) and left item D's priority entry dead" claim is **SOURCE CODE + TEST** (`Provenance.sourceGroup` leaves both mirror spellings outside `SOURCE_PRIORITY`); the **compile-time** benefit for a *future* `SourceKind` is **INFERENCE** — it is a language property, not an observed one; the JVM counts and the successful build are **TEST**; the **classification-only** nature of the outcomes is **SOURCE CODE + TEST** (`evaluate`'s signature and all seven thresholds unchanged, `outcome` a pure function of the existing verdict plus `stored.size >= MIN_ACCEPTABLE_DATASET_SIZE`, and two tests pinning "an outcome never contradicts its verdict" and the 9/10 stored-row boundary); that `ACCEPT_NEW` / `MERGE_WITH_EXISTING` carry **no add-only behaviour** is **SOURCE CODE**, because Cumulative Server Retention (arch doc §9.1) is not implemented and is outside this phase's authorized file set; the operator decision that kept a viable-but-smaller and a viable-but-disjoint dataset as `MERGE_WITH_EXISTING` (against the phase brief's `REJECT_DEGRADED`) is **PRIOR REPORT**; the §3.12 → §9.6/§10.8 citation correction is **SOURCE CODE** (arch-doc read); device verification is **PHYSICAL DEVICE (not performed)**, so a live outcome classification over a real refresh is **UNKNOWN** |
 ### Legend
 
 - **VERIFIED** — Fact confirmed by direct source code inspection at the stated file/line
