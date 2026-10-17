@@ -32,8 +32,10 @@ enum class SourceKind {
     EMERGENCY_CSV,
 
     /**
-     * Z1-IMPL-B (Roadmap §12.5.2 item B): a manually entered server.
-     * Configuration only for now — no merge is wired yet (item D).
+     * Z1-IMPL-D (Roadmap §12.5.2 item D): a manually entered server.
+     * Persisted in its own table and re-emitted on every accepted write, so
+     * it is the one entry in the server list that is not an observation of a
+     * feed.
      */
     MANUAL,
 }
@@ -83,6 +85,19 @@ data class SourceIdentity(
      * The record-layer provenance tag. A mirror NEVER yields `"html"` or
      * `"api"`: it yields its own mirror id, or a clearly-marked unknown
      * mirror tag when it has not been numbered yet.
+     *
+     * Z1-IMPL-G (Roadmap §12.5.2 item G): the `when` below is deliberately
+     * **exhaustive with no `else` branch**, listing every [SourceKind] by
+     * name. That is a compile-time guard, not a style choice. Before this
+     * revision the mirror kinds were reached through an `else`, which is how
+     * `SourceKind.MANUAL` silently fell through to
+     * [UNNUMBERED_MIRROR_TAG] and was reported as a mirror for two whole
+     * revisions (Z1-IMPL-D report, "recorded limitations" item 1). Adding a
+     * kind to the enum without giving it a tag used to compile clean and
+     * mislabel records at runtime; now it fails to compile instead.
+     *
+     * `manual` is the tag, matching the source naming of §3.3 and the merge
+     * priority table in `VpnServerMerger` (`api > html > mirror > manual`).
      */
     val sourceTag: String
         get() = when (kind) {
@@ -98,7 +113,25 @@ data class SourceIdentity(
             // `html`, so an emergency record can never speak with canonical
             // authority in the merger's `api > html > …` policy.
             SourceKind.EMERGENCY_CSV -> EMERGENCY_TAG
-            else -> mirrorId ?: UNNUMBERED_MIRROR_TAG
+
+            // Z1-IMPL-G: the same rule, now applied to manual servers. The
+            // debt is recorded in the Z1-IMPL-D report — `SourceIdentity.kt`
+            // was outside that phase's authorized file set, so
+            // `SourceKind.MANUAL` kept reading `mirror_unnumbered` and a
+            // user's own entry was reported as an unidentified mirror.
+            // `SERVER_SOURCE_ARCHITECTURE.md` §3.3 requires a distinct,
+            // non-canonical tag; §4.2 requires that a manual record be
+            // "never promoted above canonical", which a mirror tag actively
+            // works against, because mirrors are numbered by the official
+            // directory and a user entry is not.
+            SourceKind.MANUAL -> MANUAL_TAG
+
+            // The three mirror kinds share one branch: they are told apart
+            // by [mirrorId], not by their tag.
+            SourceKind.BOOTSTRAP_MIRROR,
+            SourceKind.DISCOVERED_MIRROR,
+            SourceKind.CACHED_MIRROR,
+            -> mirrorId ?: UNNUMBERED_MIRROR_TAG
         }
 
     fun withMirrorId(id: String): SourceIdentity = copy(mirrorId = id)
@@ -124,6 +157,18 @@ data class SourceIdentity(
          * source. Same rule as a mirror — never `html`, never `api`.
          */
         const val EMERGENCY_TAG = "emergency"
+
+        /**
+         * Z1-IMPL-G: the record-layer tag of a manually entered server.
+         *
+         * Same rule again — never `html`, never `api`, and not a mirror tag
+         * either. Before this existed, `SourceKind.MANUAL` fell through the
+         * `else` of `sourceTag` and was reported as `mirror_unnumbered`,
+         * which put a user's own entry in the mirror provenance group and
+         * gave it the mirror merge authority (`VpnServerMerger.SOURCE_PRIORITY`,
+         * default 20) instead of the manual one (30).
+         */
+        const val MANUAL_TAG = "manual"
 
         /** A mirror that has not been numbered yet is still NOT canonical. */
         const val UNNUMBERED_MIRROR_TAG = "mirror_unnumbered"
