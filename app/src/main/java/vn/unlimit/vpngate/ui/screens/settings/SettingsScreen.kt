@@ -14,6 +14,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -824,15 +825,17 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // One chip per record-layer protocol, in the same
-                            // order the filter sheet uses.
-                            listOf(
-                                VpnProtocolNames.OPENVPN,
-                                VpnProtocolNames.SOFTETHER,
-                                VpnProtocolNames.L2TP_IPSEC,
-                                VpnProtocolNames.SSTP,
-                            ).forEach { protocol ->
+                        // FlowRow, not Row. Four chips ("OpenVPN", "SoftEther",
+                        // "L2TP/IPsec", "MS-SSTP") do not fit on one line at
+                        // phone width (~360dp available), and the Row had no
+                        // scroll, so the trailing chip was laid out past the
+                        // right edge and clipped — unreachable. Because SSTP is
+                        // also this form's default, the *selected* chip was the
+                        // invisible one, which is what made the protocol look
+                        // absent from the picker. Wrapping keeps every protocol
+                        // reachable at any width.
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MANUAL_SERVER_PROTOCOL_CHOICES.forEach { protocol ->
                                 FilterChip(
                                     selected = manualProtocolInput == protocol,
                                     onClick = { manualProtocolInput = protocol },
@@ -1077,6 +1080,28 @@ fun SettingsScreen(
         )
     }
 }
+
+/**
+ * The protocols the manual-server form offers, in the order the filter sheet
+ * uses.
+ *
+ * Hoisted out of the composable for two reasons. It is pinned against
+ * [VpnProtocolNames.ALL] by `ManualServerProtocolChoicesTest`, so a protocol
+ * added to the record layer can never be silently missing from this form —
+ * which is exactly the class of bug that made SSTP look absent. And the form
+ * renders it in a `FlowRow` rather than a plain `Row`, because four chips do
+ * not fit on one line at phone width and the un-scrolled `Row` clipped the
+ * trailing one off-screen.
+ *
+ * The order is deliberately not [VpnProtocolNames.ALL]'s: it matches the
+ * filter sheet so the two surfaces read the same.
+ */
+internal val MANUAL_SERVER_PROTOCOL_CHOICES = listOf(
+    VpnProtocolNames.OPENVPN,
+    VpnProtocolNames.SOFTETHER,
+    VpnProtocolNames.L2TP_IPSEC,
+    VpnProtocolNames.SSTP,
+)
 
 /**
  * Z1-IMPL-D: the display name of a record-layer protocol key.
