@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import vn.unlimit.vpngate.App
+import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfig
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
@@ -46,6 +47,28 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     }
     private var isRetried = false
     var isError: MutableLiveData<Boolean> = MutableLiveData(false)
+
+    /**
+     * v1.0.26: a one-shot, user-facing message about the refresh that just
+     * finished, as a string resource id — or null when there is nothing to say.
+     *
+     * It exists because a *rejected* refresh was completely silent: the stored
+     * list is correctly kept (`Outcome.Preserved`), so the screen looked
+     * unchanged and the user had no way to tell "nothing to update" from "the
+     * update failed and your list is stale". [isError] cannot carry this,
+     * because it means "there is nothing to show" and would blank the screen —
+     * here there is very much something to show, it is just not fresh.
+     *
+     * Deliberately one-shot: the observer clears it after showing it, so a
+     * configuration change cannot replay a message about a refresh that
+     * finished minutes ago.
+     */
+    var refreshNotice: MutableLiveData<Int?> = MutableLiveData(null)
+
+    /** Clears [refreshNotice] once it has been shown. */
+    fun clearRefreshNotice() {
+        refreshNotice.value = null
+    }
 
     private val vpnServerRepository =
         VpnServerRepository(cacheDir = application.filesDir)
@@ -178,8 +201,35 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
             ManualServer.isValidProtocol(protocol)
         if (!accepted) return false
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                store.add(host, portText, protocol, label, notes)
+            // v1.0.26: write-through. Storing the manual server is not enough
+            // for it to be visible — the main list is built from VPNGateItem,
+            // and before this the only writer of that table was an *accepted*
+            // refresh. So the user added a server, saw it in Settings, and saw
+            // nothing in the list until some later refresh happened to be
+            // accepted (a restart only looked like the fix because it triggers
+            // one). Materialising here makes the add visible immediately.
+            //
+            // The merge is `store.materialize`, which delegates to the same
+            // `withManualRows` the refresh path uses, so the preservation
+            // invariant is identical on both paths: an address the network
+            // already serves is not duplicated, and no other row is dropped —
+            // `replaceAll` is given the current table plus the manual rows.
+            val published = withContext(Dispatchers.IO) {
+                if (!store.add(host, portText, protocol, label, notes)) {
+                    return@withContext null
+                }
+                val itemDao = App.instance?.vpnGateItemDao ?: return@withContext null
+                val merged = store.materialize(itemDao.getAll())
+                // `replaceAll` refuses an empty list, and an empty merge would
+                // mean the row we just stored did not survive validation — in
+                // which case writing nothing is the correct outcome.
+                if (merged.isEmpty()) return@withContext null
+                itemDao.replaceAll(merged)
+                merged
+            }
+            if (published != null) {
+                vpnGateConnectionList.value =
+                    VPNGateConnectionList().fromVPNGateItems(published)
             }
         }
         return true
@@ -295,6 +345,16 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                             )
                             val existing = dataUtil.connectionCacheUpdatedAt
                             if (existing > 0L) lastUpdatedTime.postValue(existing)
+                            // v1.0.26: a rejected refresh used to be entirely
+                            // silent — the stored list is kept, so the screen
+                            // looked exactly like "nothing to update". Only a
+                            // DEGRADED_DATASET means "we fetched a list and
+                            // deliberately threw it away", which is the case a
+                            // user cannot infer from the screen. Rejection
+                            // semantics are untouched; this only reports them.
+                            if (outcome.reason == ServerListUpdater.Reason.DEGRADED_DATASET) {
+                                refreshNotice.postValue(R.string.server_list_update_preserved)
+                            }
                         } else {
                             Log.e(TAG, "Update failed (${outcome.reason}) and no list is stored")
                             isError.postValue(true)

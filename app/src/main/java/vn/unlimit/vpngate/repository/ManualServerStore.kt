@@ -122,6 +122,29 @@ class ManualServerStore(private val dao: ManualServerDao) {
     fun toItems(servers: List<ManualServer>): List<VPNGateItem> =
         servers.map { toItem(it) }
 
+    /**
+     * v1.0.26: the stored dataset with every enabled manual server written
+     * into it — the write-through used when the user adds a server.
+     *
+     * Before this existed, a manual row reached the server list only through
+     * `ServerListUpdates.withManualRows`, i.e. only inside an *accepted*
+     * refresh. A user could add a server, see it in Settings, and not see it
+     * in the list until some later refresh happened to be accepted — which is
+     * why a restart appeared to "fix" it. This closes that gap by running the
+     * same merge at add time.
+     *
+     * It is deliberately [withManualRows] and not a second merge: that
+     * function already encodes the preservation invariant (a host the network
+     * already serves is not duplicated, no other row is dropped, the result is
+     * collapsed by Room identity). Reimplementing it here would create a
+     * second policy that could drift from the refresh path's.
+     *
+     * Returns the caller's list unchanged when no manual server is enabled,
+     * by identity — the same no-op guarantee [withManualRows] gives.
+     */
+    suspend fun materialize(current: List<VPNGateItem>): List<VPNGateItem> =
+        withManualRows(current, toItems(listEnabled()))
+
     fun toItem(server: ManualServer): VPNGateItem {
         val host = VpnUtil.normalizeHost(server.host)
         val base = VPNGateItem(

@@ -423,4 +423,10 @@
     <string name="manual_server_protocol_softether">SoftEther</string>
     <string name="manual_server_protocol_l2tpipsec">L2TP/IPsec</string>
     <string name="manual_server_protocol_sstp">MS-SSTP</string>
+    <!-- v1.0.26: shown when a refresh fetched a server list but it was
+         rejected as degraded (it lost the OpenVPN profiles / protocols the
+         stored list has). The stored list is kept, so the screen looks
+         unchanged — without this message the user cannot tell a failed
+         update from a no-op. -->
+    <string name="server_list_update_preserved">Server list could not be updated — stored list preserved</string>
 </resources>

@@ -1104,21 +1104,52 @@ internal val MANUAL_SERVER_PROTOCOL_CHOICES = listOf(
 )
 
 /**
+ * The string resource that names a record-layer protocol key, or null when the
+ * key is not one this form knows.
+ *
+ * v1.0.26: this replaces a `when` whose fallback was `else -> MS-SSTP`. That
+ * fallback was a silent lie — a protocol added to [VpnProtocolNames.ALL] later
+ * would have been *offered* correctly (the picker list is pinned to `ALL` by
+ * `ManualServerProtocolChoicesTest`) but *rendered* as "MS-SSTP", and nothing
+ * would have failed.
+ *
+ * **A compile-time guard is not achievable here, and the reason is structural:**
+ * [VpnProtocolNames] is an `object` of `const val` Strings, and Kotlin has no
+ * exhaustive `when` over a `String` subject — the compiler always requires an
+ * `else`. Making this exhaustive would mean converting the protocol keys to an
+ * enum or sealed type, which changes the record layer and every call site, so
+ * it is out of scope for this phase. The guard is therefore a **test**:
+ * `ManualProtocolLabelExhaustiveTest` walks [VpnProtocolNames.ALL] and fails if
+ * any member lacks a branch here, or if two members share one. That is a
+ * test-time failure rather than a compile-time one — weaker, but it does fail,
+ * and it fails in CI on the change that introduces the gap.
+ *
+ * Returning null (and letting the caller fall back to the raw key) means an
+ * unknown protocol reads as visibly odd instead of confidently wrong.
+ */
+internal fun manualProtocolLabelRes(protocol: String): Int? = when (protocol) {
+    VpnProtocolNames.SOFTETHER -> R.string.manual_server_protocol_softether
+    VpnProtocolNames.OPENVPN -> R.string.manual_server_protocol_openvpn
+    VpnProtocolNames.L2TP_IPSEC -> R.string.manual_server_protocol_l2tpipsec
+    VpnProtocolNames.SSTP -> R.string.manual_server_protocol_sstp
+    else -> null
+}
+
+/**
  * Z1-IMPL-D: the display name of a record-layer protocol key.
  *
  * The stored value is the collector's own vocabulary
  * ([VpnProtocolNames]) so a manual row and a collected row name the same
  * protocol identically; only the label is translated.
+ *
+ * An unrecognised key falls back to the key itself rather than to another
+ * protocol's name — see [manualProtocolLabelRes].
  */
 @Composable
-private fun manualProtocolLabel(protocol: String): String = stringResource(
-    when (protocol) {
-        VpnProtocolNames.SOFTETHER -> R.string.manual_server_protocol_softether
-        VpnProtocolNames.OPENVPN -> R.string.manual_server_protocol_openvpn
-        VpnProtocolNames.L2TP_IPSEC -> R.string.manual_server_protocol_l2tpipsec
-        else -> R.string.manual_server_protocol_sstp
-    },
-)
+private fun manualProtocolLabel(protocol: String): String {
+    val res = manualProtocolLabelRes(protocol)
+    return if (res != null) stringResource(res) else protocol
+}
 
 @Composable
 private fun cacheTimeLabels(): List<String> = listOf(    stringResource(R.string.cache_time_15m),

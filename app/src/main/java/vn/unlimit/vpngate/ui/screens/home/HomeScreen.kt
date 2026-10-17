@@ -210,6 +210,21 @@ fun HomeScreen(
             }
         }
     }
+    // v1.0.26: a refresh that was fetched but rejected as degraded keeps the
+    // stored list, so every visible thing stays exactly as it was. This is the
+    // only signal that an update was attempted and refused — `isError` cannot
+    // carry it, because it means "nothing to show" and would blank a list that
+    // is present and correct, just stale. Shown as a Toast, which is the
+    // mechanism the other Compose screens already use (AutoModeScreen,
+    // CopyDebugSheets); no new snackbar host is introduced.
+    val refreshNotice by connectionListViewModel.refreshNotice.observeAsState()
+    LaunchedEffect(refreshNotice) {
+        val message = refreshNotice ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        // One-shot: without this, a rotation would replay a message about a
+        // refresh that finished minutes ago.
+        connectionListViewModel.clearRefreshNotice()
+    }
     // Initial load: show what is stored. Opening the screen is not a request
     // to refresh it — a populated list is displayed as-is, and freshness stays
     // with the Update button and ServerListUpdateScheduler, which downloads
