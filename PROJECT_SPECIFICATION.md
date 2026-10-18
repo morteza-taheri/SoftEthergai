@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `9d9e43effa5b8adabd006520393aaa2dfedd7a0a`
-**Document version:** 1.0.32
+**HEAD:** `248d06dd67c2dd75038da249d474e368413a21ac`
+**Document version:** 1.0.33
 **Last updated:** 2026-10-18
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -366,6 +366,15 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > §7) after the v1.0.31 JVM suite had gone green; §1.6.24 records the reconciliation. The header
 > **HEAD** field is the pre-docs commit `9d9e43effa5b8adabd006520393aaa2dfedd7a0a`. No tag operation
 > of any kind was performed.
+
+> **Push state (v1.0.33).** AUTOCONNECT-FIX-3. Instrumented the **NATIVE_BUSY slot-wait site** with
+> the same `SLOT_UNRELEASED_DIAG` body as the post-attempt site, which the device run of v1.0.32
+> proved was the wrong one of the two (it never fired; the NATIVE_BUSY site terminated the run three
+> times). Raised the slot-wait budget **floor to 30 s** — with the device's 5 s preference the
+> derived budget was 25 s, leaving only a 4.1 s margin over the largest observed release latency
+> (20.9 s), and one release landed 292 ms after that cutoff. Device re-verification of `SLOT_DIAG`
+> is **PENDING**. The header **HEAD** field is the pre-docs commit
+> `248d06dd67c2dd75038da249d474e368413a21ac`. No tag operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -1976,6 +1985,66 @@ remains unknown.
 > and the two fixes are verified only by SOURCE CODE plus the pre-fix device evidence. Whether they
 > behave as intended on 5585fecc is **UNKNOWN** until a re-verification phase runs.
 
+#### 1.6.25 AUTOCONNECT-FIX-3 — Instrumentation and Budget Floor (v1.0.33)
+
+The device verification that followed v1.0.32 (DEVICE-VERIFY-AUTOCONNECT-FIX-2,
+`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md`) confirmed both shipped bug fixes on hardware and found
+two further defects — one in the instrumentation itself, one in the time budget it measures. Both
+are closed here. Spec v1.0.32 → v1.0.33. Device-free: **no device, no adb, no C5, no tag**.
+
+1. **Device findings that drive this revision.** S1 (BUG-A refusal), S2 (OP-R6 continuation) and S3
+   (BUG-B wedge + rotation + exclusion) all **PASSED** on 5585fecc and are untouched here. S4 (D-2
+   exception → next protocol) was **UNTESTABLE**: no `connect()` threw during ~25 minutes of real
+   runs. `SLOT_DIAG` was **NOT EXERCISED**, and the reason is the subject of bullet 2.
+   Evidence: PHYSICAL DEVICE + SOURCE CODE (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §4–§7).
+2. **Fix 1 — the diagnostic was attached to the wrong site.** `AutoModeController.kt` contains
+   **two** places that can terminate a whole run because the process-wide native slot stayed held:
+   the NATIVE_BUSY branch (formerly `:1695`, carrying no diagnostic) and the post-attempt branch
+   (`~:1834`, carrying `SLOT_UNRELEASED_DIAG`). All three on-device terminations came from the
+   **NATIVE_BUSY** site — its message carries no `after <OUTCOME> on <PROTOCOL>` clause, and
+   `(attempt=N phase=P)` is `NativeLifetimeRegistry.describe()`'s own format — so the diagnostics
+   added in v1.0.32 never ran. The `SLOT_UNRELEASED_DIAG` body is now emitted from **both** sites
+   (`AutoModeController.kt:1689-1719` and `:1836-1858`). At the NATIVE_BUSY site `outcome` is not
+   in scope, so `outcome=${AttemptOutcome.NATIVE_BUSY.name}` is used — the branch can produce
+   nothing else. The wait condition, the terminal order and every branch are unchanged; the only
+   additions are `slotWaitStartedAt`, `waitedMs` and the log call, mirroring the existing site so
+   the two terminals are comparable line for line. Evidence: SOURCE CODE.
+3. **Fix 2 — the slot-wait budget gained an absolute floor.** `nativeSlotAwaitMs` was derived as
+   `5 × T` and capped at `NATIVE_SLOT_AWAIT_MAX_MS` (60 s). With the device preference persisted at
+   `T = 5 s` that yielded **25 s**, while the release latencies measured in the same session were
+   6.0 / 6.2 / 7.5 / 13.3 / 13.7 / 17.0 / 20.9 s — a 4.1 s margin — and one release landed
+   **292 ms after** the cutoff, ending the run while the slot was about to free itself. The
+   derivation is now `.coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS).coerceAtMost(…)`
+   (`AutoModeEngine.kt:90-93`): the floor is **30 s** and the pre-existing cap still applies on top.
+   The rationale is that release latency belongs to the *previous native operation's own duration*,
+   not to the attempt timeout: a user who selects a small `T` is choosing how long to wait for a
+   **server**, and that choice must not also shorten the budget for our own stuck operation.
+   Evidence: SOURCE CODE + PHYSICAL DEVICE (the latencies and the persisted preference).
+4. **Test added.** `AutoModeControllerTest.nativeSlotAwaitHasAThirtySecondFloor` pins both halves:
+   that `AutoModeEngine.kt` derives the value through `coerceAtLeast` referencing
+   `AutoModeController.NATIVE_SLOT_AWAIT_MS`, and that the constant itself is `>= 30_000L`. It is a
+   source-and-constant assertion, not a timing test, because the JVM seam that would otherwise cover
+   this is the derivation itself. No existing test was modified or deleted. Evidence: TEST.
+5. **JVM tests.** `:app` **801 / 0 / 0 / 1** (baseline 800 / 0 / 0 / 1 — the delta is the one new
+   test, skip unchanged); `:SoftEtherClient` **173 / 0 / 0 / 0** (unchanged). Evidence: TEST.
+6. **Build.** `:app:assembleProDebug --rerun-tasks --no-build-cache` under `CI=true` →
+   BUILD SUCCESSFUL. APK SHA-256
+   `42D90C3889ABF4ECF31A7E1487A9B05C795CDFD38D1FE136D50309AECAB9D14E` (63,749,658 bytes),
+   which **differs** from v1.0.32's `946CA968…AA347` as expected: the code changed. Evidence: TEST.
+7. **Device re-verification is PENDING.** Whether `SLOT_UNRELEASED_DIAG` now fires with its full
+   payload (`tracker`, `ownTunnel`, `registry`) on 5585fecc, and whether the 30 s floor prevents the
+   292 ms-late termination, are **UNKNOWN** in this revision. The root cause of the slot-non-release
+   itself remains **UNKNOWN** and was **not** attempted here — this revision instruments and widens
+   the budget only. Evidence: UNKNOWN.
+8. **No new methodology lessons.** The defect in bullet 2 is an instance of the lesson already
+   recorded in §1.6.24 bullet 8 — a change verified through a seam rather than through the path that
+   actually executes — this time in instrumentation rather than in a guard. It is not restated.
+   Evidence: SOURCE CODE.
+
+> **Device status of this revision.** v1.0.33 is **device-free**. The fixes are verified by SOURCE
+> CODE and the JVM suite only; the hardware evidence that motivated them is pre-fix
+> (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md`). No claim is made here about on-device behaviour.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2723,6 +2792,16 @@ and a `NATIVE_BUSY` refusal can additionally spend up to `min(5T, 60 s)` waiting
 The slot wait returns **immediately** when the slot is already free, so the healthy path pays nothing and the nominal bound holds in every normal run. §6.7 R7's "attempts all N" is about **count**, not elapsed time.
 
 > **Not device-verified.** The wall-clock behaviour of these bounds on hardware is **UNKNOWN** in this revision: the JVM adapter doubles return an outcome immediately, so no test measures elapsed time. Device verification is proposed in `AUTOCONNECT_FIX_REPORT.md` §12.
+
+**Slot-wait budget floor (v1.0.33).** `nativeSlotAwaitMs` is derived as `max(5 × T, 30 s)` and then
+capped at 60 s. The floor exists because the release latency of a previous native operation is a
+function of *that operation's own duration*, not of the user-selected attempt timeout; with
+`T = 5 s` the derived value was 25 s, while device data
+(`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §7) recorded release latencies up to **20.9 s** — a
+4.1 s margin — and one release arrived **292 ms after** the cutoff, terminating the run while the
+slot was about to free itself. The floor therefore changes the `min(5T, 60 s)` term above to
+`min(max(5T, 30 s), 60 s)`; for every `T >= 6 s` the figure is identical to before (`5T`), so the
+table above is unchanged at the 12 s default. Evidence: SOURCE CODE + PHYSICAL DEVICE.
 
 ---
 
@@ -3965,6 +4044,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.30 | 2026-10-18 | SPEC-INTEGRITY-AUDIT (read-only audit + path repair; one doc-comment-only source commit) | **Restored spec integrity after the `docs/reports/` reorganization (`a76bdc6`).** A read-only audit resolved all `*.md` tokens: 38 moved-only under `docs/reports/`, 4 at root, 2 under `SoftEtherClient/`. **19 bare path references updated** to `docs/reports/…` in the authorized regions (§1.6.2–§1.6.21: 14; §12.5.1: 5); the other 46 bare occurrences (in §1.6.1's existing notes, §3.1, §6.7, §12.4, the existing §20 rows, and one `RUDP_IMPLEMENTATION_PLAN.md` in §12.5.1) are recorded in §1.6.22 rather than edited (out of scope) and still resolve via their documented location. Recorded the **concurrent-worktree contamination** event (`82cb64f` + `82476bf`) as a process lesson in §1.6.22 (a working tree must be single-owner; a second session needs a separate clone). **`HttpFetcher.kt` doc-comment change committed** (`9d569c3`) — comment-only, no API change — removing the last tracked dirty file. **The 1 skipped `:app` test identified:** `HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, an `AssumptionViolatedException` (data-dependent, not a failure). `:app` **790/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.21 otherwise untouched. |
 | 1.0.31 | 2026-10-18 | AUTOCONNECT-FIX (device-free; two AutoConnect audits closed) | **Closes four audit gaps plus OP-R6.** D-1: default attempt timeout unified to **12 s** (Settings key `SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped **5–60 s**; `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` `25_000L` → `12_000L`, spec §6.7 R5 / §6.8). D-2: exception in `connect()` advances to the **next protocol** (not next server) — `break` → `continue` at `AutoModeController.kt:1446` (D-2 / OP-R4). D-4: `isTunnelBusy()` guard wired to the production button path — `Disconnected`/`Error` press refused with `[AUTO] start refused: a tunnel is already active` at `AutoModeController.kt:1010`. D-5 (OP-R6): pressing while `Connected` continues from the next server via `resumeFromIndex = currentServerIndex + 1` (`AutoModeController.kt:532`, consumed at `:1026`, reset at `:1773`). D-6: four terminal conditions documented in §6.7 R7; native connect budget is **80 % of `T`** (`NATIVE_TIMEOUT_FRACTION_NUM/DEN = 4/5`, `AndroidConnectionAdapter.kt:74-75`; `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` at `:84`). D-7: new **§6.8** Per-Attempt Timeout and Rotation Contract. D-8: six new tests in `AutoModeControllerTest.kt` (T-NEW-1..T-NEW-6) plus the `DEFAULT_ATTEMPT_TIMEOUT_MS` assertion corrected to `12_000L` in `AutoModeNativeBusyTest.kt:511`. JVM: `:app` **~796/0/0/1** (one skip = `HtmlParserOracleTest`, unchanged), `:SoftEtherClient` **173/0/0/0**. Standalone `:app:assembleProDebug` build gate passed under `CI=true`; APK SHA-256 recorded in `AUTOCONNECT_FIX_REPORT.md`. §22 byte-identical; §1.6.2–§1.6.22 untouched. No device, no tag, no force, no `git add -A`. |
 | 1.0.32 | 2026-10-18 | AUTOCONNECT-FIX-2 (device-free; two bugs found on hardware) | **Closes the two defects the v1.0.31 device verification found, and instruments a third.** BUG-A: the D-4 refusal guard was blind to `CONNECTED` — v1.0.31 wired `isTunnelBusy` to `GlobalVpnTracker.isBusy` (`CONNECTING \|\| DISCONNECTING`), so a cleanly established manual tunnel was invisible, the run started anyway and tore the user's manual session down (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5). New `VpnConnectionStatus.isActiveOrBusy` (`CONNECTED \|\| CONNECTING \|\| DISCONNECTING`) + `GlobalVpnTracker.isActiveOrBusy`; `AutoModeEngine.kt` now supplies it. `isBusy` semantics unchanged. BUG-B: `recordWedge` was reachable only from `TIMED_OUT`, so a server refused on every protocol could never be excluded — `vpn131251792` was re-selected in four consecutive runs and each ended `Native slot not released within 25000ms … stopping` (§7). `AutoModeController` now counts `NATIVE_BUSY` per server per run and records one wedge at `NATIVE_BUSY_WEDGE_THRESHOLD = 2`; `WedgeTracker.EXCLUSION_THRESHOLD` unchanged. Slot-non-release **instrumented only** (log-only, no control-flow change): a line when `isOwnTunnelEstablished()` answers `false` while the tracker says `CONNECTED`, and a `SLOT_UNRELEASED_DIAG` line carrying the measured wait, outcome, protocol, server, tracker status, ownership answer and registry descriptor — fed by a new read-only `ConnectionAdapter.tunnelTrackerStatus()`. Root cause **UNKNOWN**; no fix attempted. S1 recorded as a **device-state deviation** (`SETTING_AUTO_MODE_TIMEOUT_SECONDS = 5` stored on 5585fecc), not a code defect. Four new tests (T-NEW-7..T-NEW-10); `:app` **800/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §6.8.3/§6.8.6 updated (wedge rule; predicate table). §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.23 untouched. Device re-verification of S3/S5 **PENDING**. No device command, no tag, no force, no `git add -A`. |
+| 1.0.33 | 2026-10-18 | AUTOCONNECT-FIX-3 (device-free; two defects found by the v1.0.32 device run) | **Closes the instrumentation defect and the budget defect that the v1.0.32 device verification exposed, and nothing else.** Fix 1 — the diagnostic was on the wrong site: `AutoModeController.kt` has **two** whole-run terminals for a held native slot, and every on-device termination came from the NATIVE_BUSY branch (formerly `:1695`, no diagnostic) rather than the post-attempt branch (`~:1834`, which carried `SLOT_UNRELEASED_DIAG`), so `SLOT_DIAG` was **NOT EXERCISED** despite three slot-based stops (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §7). Both sites now emit the same body; at the NATIVE_BUSY site `outcome=${AttemptOutcome.NATIVE_BUSY.name}` is hard-coded because `outcome` is not in scope and the branch can produce nothing else. Wait condition, terminal order and all branches unchanged — additions are `slotWaitStartedAt`, `waitedMs` and the log call only. Fix 2 — budget floor: `nativeSlotAwaitMs` was `5 × T` capped at 60 s, which the device's persisted `T = 5 s` turned into **25 s** against measured release latencies of 6.0/6.2/7.5/13.3/13.7/17.0/**20.9 s**, one release landing **292 ms after** the cutoff; the derivation is now `.coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS)` (**30 s**) beneath the unchanged `.coerceAtMost(NATIVE_SLOT_AWAIT_MAX_MS)`. Rationale: release latency belongs to the previous operation's own duration, not to the user's server-attempt timeout. One new test (`nativeSlotAwaitHasAThirtySecondFloor`) pins the constant and the derivation seam; no existing test modified or deleted. `:app` **801/0/0/1** (+1, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `42D90C38…CAB9D14E` (differs from v1.0.32 as expected). §6.8.7 updated (floor term). New §1.6.25. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.24, §12.5.1, §12.5.2 untouched. Device re-verification of `SLOT_DIAG` and of the floor's efficacy **PENDING**; slot-non-release root cause still **UNKNOWN** and deliberately not attempted. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 
 ### Verification Status
 
@@ -4022,6 +4102,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | Spec Integrity + Concurrent Worktree Lesson (§1.6.22) | HISTORICAL (audit) + SOURCE CODE (path repairs) + TEST (skip identity) — the `docs/reports/` relocation is **SOURCE CODE** (commit `a76bdc6`; 38 moved-only, 4 root, 2 under `SoftEtherClient/`); the 19 path updates are **SOURCE CODE** (`git diff --stat` = 17/17, confined to §1.6.2–§1.6.21 + §12.5.1); the 46 remaining bare occurrences are **SOURCE CODE** (recorded, not edited, all resolvable); the concurrent-worktree contamination (`82cb64f` sweeping partial v1.0.29 content later superseded by `82476bf`) is **SOURCE CODE** (`git diff 0f5f307..82cb64f`), documentation-only; the single-owner working-tree rule is **INFERENCE**; the `HttpFetcher.kt` commit (`9d569c3`, comment-only) is **SOURCE CODE**; the skip identity is **TEST** (`HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, `AssumptionViolatedException`); §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.21 are otherwise untouched |
 | AutoConnect Audit Reconciliation (§1.6.23) | HISTORICAL — records the AUTOCONNECT-FIX revision (D-1..D-8, OP-R6) that closes four gaps from the two independent AutoConnect audits plus OP-R6; all claims attributed to their phase report and to the direct source/test inspection recorded in §1.6.23. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 | AutoConnect Fix 2 — Two Device Bugs (§1.6.24) | HISTORICAL — records the AUTOCONNECT-FIX-2 revision closing BUG-A (D-4 predicate now includes `CONNECTED` via `GlobalVpnTracker.isActiveOrBusy`) and BUG-B (repeated `NATIVE_BUSY` on the same server records a wedge at threshold 2), plus slot-non-release instrumentation. The bugs are **PHYSICAL DEVICE** findings attributed to `DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5 and §7; the fixes are **SOURCE CODE** (`GlobalVpnTracker.kt`, `AutoModeEngine.kt`, `AutoModeController.kt`); the four new tests are **TEST**; the slot-non-release root cause is **UNKNOWN** (instrumented only, no fix attempted); device re-verification is **PENDING**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
+| AutoConnect Fix 3 — Instrumentation + Budget Floor (§1.6.25) | HISTORICAL — records the AUTOCONNECT-FIX-3 revision closing the two defects the v1.0.32 **device** verification produced: the `SLOT_UNRELEASED_DIAG` line sat on the post-attempt slot-wait site while every on-device terminal came from the NATIVE_BUSY site, so it never fired; and the `5 × T` slot-wait budget fell to 25 s under the device's persisted 5 s preference against observed release latencies up to 20.9 s, with one release 292 ms late. Both sites now emit the diagnostic, and the derivation is floored at `NATIVE_SLOT_AWAIT_MS` (30 s) beneath the existing 60 s cap. Diagnostic-absence and latencies are **PHYSICAL DEVICE** (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §7); both fixes are **SOURCE CODE** (`AutoModeController.kt:1689-1719`, `AutoModeEngine.kt:90-93`); the floor test is **TEST** (`nativeSlotAwaitHasAThirtySecondFloor`); device re-verification and the slot-non-release root cause remain **UNKNOWN**/**PENDING**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 
 ### Legend
 
