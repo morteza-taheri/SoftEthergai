@@ -276,10 +276,23 @@ unmodified (SOURCE CODE).
 |---|---|---|---|
 | §22 | 99 lines / 6,504 bytes | 99 lines / 6,504 bytes | **IDENTICAL** (`diff -q` clean) |
 | §1.6.2–§1.6.24 | 1,609 lines / 127,760 bytes | 1,609 lines / 127,760 bytes | **IDENTICAL** |
-| §12.5.1 + §12.5.2 block | 43 lines | 43 lines | **IDENTICAL** |
+| §12.5.1 + §12.5.2 block | 65 lines | 65 lines | **IDENTICAL** |
 
 The extracted regions were non-empty and their sizes asserted before `diff` was trusted — an empty
-extraction would otherwise report a vacuous "identical". **SOURCE CODE.**
+extraction would otherwise report a vacuous "identical". Confirmed twice: once on the working tree
+and once on the **committed blob** (`git show 1f930f2:PROJECT_SPECIFICATION.md`), so the guarantee
+holds for what was pushed, not merely for what sat on disk.
+
+SHA-256 of the extracted regions (pre vs post, identical in both cases):
+
+| Region | Bytes | SHA-256 |
+|---|---|---|
+| §22 | 6,504 | `adf12858b72ed13742252c512a8728e9141e415cc55d09c6409af4e8e622020e` |
+| §1.6.2–§1.6.24 | 127,760 | `d5f652b3c8e39ba3c074e932398f9d0fc4817447a1e16f828363226b2f49174f` |
+| §12.5.1 + §12.5.2 | — | `74204ebdd11d78efa76257fd9ac792d69a446f4e093947caa3b2504e6d9ce000` |
+
+The committed spec diff is exactly **six hunks**, and its only two removed lines are the two header
+lines that were *replaced* (`**HEAD:**` and `**Document version:**`). **SOURCE CODE.**
 
 ---
 
@@ -301,6 +314,12 @@ extraction would otherwise report a vacuous "identical". **SOURCE CODE.**
 
 ## §13 — Device re-verification plan (proposed only; **NOT begun**)
 
+> **Note on provenance.** This section was written *before* the commits landed, so it quotes the
+> repo-build hash `42D90C38…CAB9D14E`. The post-push gate later produced
+> `265B84B5…118F53A74` from `git archive` of `origin/main`; §14 explains why those two differ.
+> Neither hash should be used as an identity check in the field — compare `versionCode 143` plus the
+> 1,172-entry / 34-dex content comparison instead.
+
 1. Install the v1.0.33 APK (`-r`, no data loss) and confirm the SHA-256 pulled back from
    `/data/app/.../base.apk` matches `42D90C38…CAB9D14E`.
 2. Reproduce the NATIVE_BUSY contention path (a run immediately after a Connected→press
@@ -315,6 +334,65 @@ extraction would otherwise report a vacuous "identical". **SOURCE CODE.**
    whether that alone removes the 292 ms-late termination.
 6. Only after that data exists should a root-cause phase be scoped. Nothing about the root cause is
    claimed here.
+
+---
+
+## §14 — Commit, push and post-push standalone gate
+
+| Item | Value |
+|---|---|
+| Commit 1 | `9b712c7` — `fix(automode): instrument NATIVE_BUSY slot-wait site + raise budget floor to 30s` — 3 files, **64 insertions(+), 0 deletions** |
+| Commit 2 | `1f930f2` — `docs: spec v1.0.33 — §1.6.25 instrumentation + budget floor` — 2 files, 404 insertions(+), 2 deletions(−) |
+| Range `248d06d..HEAD` | 5 files, **468 insertions(+), 2 deletions(−)** |
+| Pre-push FF check | `origin/main..HEAD` = exactly 2 commits; `HEAD..origin/main` = 0; `merge-base --is-ancestor` **FF OK** |
+| Push | `248d06d..1f930f2  main -> main` — **fast-forward, no force** |
+| Post-push HEAD | `1f930f2330972d2575edfce90cb2c968f3f45066` |
+| Post-push `origin/main` | `1f930f2330972d2575edfce90cb2c968f3f45066` — **identical** |
+| `git status -sb` | `## main...origin/main` (no ahead/behind marker; untracked files unchanged) |
+| Tags | local **5**, remote **5** (`ls-remote` shows 10 refs = 5 tags + 5 peeled `^{}`) — unchanged |
+
+**Standalone build gate** (`git archive origin/main` → `D:\temp\autoconnect-fix3-verify-1f930f2`,
+`local.properties` copied, `CI=true`):
+
+```
+BUILD SUCCESSFUL in 9m 6s
+114 actionable tasks: 114 executed
+GRADLE_EXIT=0
+```
+
+The export contained **847 files** and no `.git` directory — a tree that could not have borrowed
+anything from the working copy.
+
+**APK reproducibility — resolved, and explicitly *not* claimed.** The gate APK hashes
+`265b84b54675202699b95e998b1540b4a6945d83cc9a1d165263f3b118f53a74` (63,749,666 bytes) against the
+repo build's `42d90c3889abf4ecf31a7e1487a9b05c795cdfd38d1fe136d50309aecab9d14e` (63,749,658 bytes).
+Entry-by-entry comparison:
+
+- 1,200 ZIP entries on both sides, **identical name set**;
+- **1,172 of 1,172 non-`.so` entries byte-identical**, including all **34 dex** files;
+- the 8 native `.so` entries differ at exactly **20 bytes each**, all inside the ELF build-id note
+  (offsets **736–755**), e.g. `arm64-v8a/libsoftether.so`: `CEFB68AA…B932FE` vs `7C5219F0…8AFDF0`.
+
+That is the same signature recorded in the previous phase. Conclusion unchanged and stated as a
+convention: **APK SHA-256 is not a reproducibility check on this project** — the ELF build-id is
+regenerated per link. Content identity, not APK hash identity, is the gate. **TEST / INFERENCE.**
+
+---
+
+## §15 — Correction made after the push (disclosed, not hidden)
+
+§11 of this report originally stated the `§12.5.1 + §12.5.2` frozen block as **43 lines**. On
+re-measurement the correct figure is **65 lines** (the heading at `3637` through the last line
+before `### 12.6` at `3702`). The verdict — **IDENTICAL** — was correct both before and after: the
+pre- and post-change extractions were equal in line count and byte content, and their SHA-256
+matched. Only the *reported count* was wrong, and it was wrong in the direction of under-reporting
+a frozen region, i.e. it understated the coverage of the check.
+
+The corrected text in §11 and the new §14 material were written **after** commit `1f930f2` was
+pushed. They therefore live in the working tree as an uncommitted modification to this file
+(`git status` shows ` M AUTOCONNECT_FIX_3_REPORT.md`, 63 insertions / 2 deletions against the
+committed blob). Nothing was amended, force-pushed or rewritten; the two published commits stand
+exactly as reported in §14. **SOURCE CODE / TEST.**
 
 ---
 
