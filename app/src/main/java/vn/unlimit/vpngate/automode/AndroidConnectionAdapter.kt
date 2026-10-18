@@ -513,6 +513,18 @@ class AndroidConnectionAdapter(
             }
         }
 
+    /**
+     * v1.0.32 (AUTOCONNECT-FIX-2): diagnostic read of the Global Tunnel State.
+     *
+     * Used only to print the tracker's opinion next to
+     * [isOwnTunnelEstablished]'s when the two disagree, so a device run can place
+     * the slot-non-release race. Never a decision input — see the interface KDoc
+     * for why ownership must not come from this tracker.
+     */
+    override fun tunnelTrackerStatus(): String =
+        runCatching { vn.unlimit.vpngate.state.GlobalVpnTracker.currentStatus.name }
+            .getOrDefault("UNKNOWN")
+
     override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         activeTunnelWait = deferred

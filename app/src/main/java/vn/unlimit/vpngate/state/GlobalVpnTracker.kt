@@ -43,8 +43,34 @@ enum class VpnConnectionStatus {
     /**
      * True while a connection attempt is in flight. Auto Connect uses this to
      * refuse a duplicate connection instead of dialling a second server.
+     *
+     * Deliberately EXCLUDES [CONNECTED]: this property answers "is a
+     * transition in progress", which is a narrower question than "is a tunnel
+     * up". Callers that must also refuse an already-established tunnel need
+     * [isActiveOrBusy]. See v1.0.32 BUG-A below.
      */
     val isBusy: Boolean get() = this == CONNECTING || this == DISCONNECTING
+
+    /**
+     * True when a tunnel is up **or** a transition is in flight — i.e. this
+     * process already owns (or is acquiring/releasing) a VPN session.
+     *
+     * v1.0.32 (AUTOCONNECT-FIX-2, BUG-A): [isBusy] answers only the second
+     * half of that question. The v1.0.31 D-4 refusal guard was wired to
+     * [isBusy], so a manual tunnel that had *finished* connecting —
+     * status [CONNECTED], the single most common shape of the hazard it was
+     * written for — was invisible to it. Device evidence
+     * (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §5): with a manual OpenVPN
+     * tunnel up and Auto Mode `Disconnected`, pressing the button started a
+     * full run (`[AUTO] Started`, `[AUTO] Trying #1`) instead of logging
+     * `start refused`, and the run then tore the manual tunnel down.
+     *
+     * [DISCONNECTING] is included because a half-closed tunnel is not free to
+     * take over either: a new native attempt would race the teardown.
+     * [ERROR] and [DISCONNECTED] are excluded — nothing is owned in either.
+     */
+    val isActiveOrBusy: Boolean
+        get() = this == CONNECTED || this == CONNECTING || this == DISCONNECTING
 }
 
 /**
@@ -547,6 +573,12 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
 
     /** Convenience for callers that only need the boolean. */
     val isBusy: Boolean get() = currentStatus.isBusy
+
+    /**
+     * v1.0.32 (BUG-A): "this process owns a tunnel, or is acquiring/releasing
+     * one". This is the predicate the Auto Connect D-4 refusal guard needs.
+     */
+    val isActiveOrBusy: Boolean get() = currentStatus.isActiveOrBusy
 
     override fun onSoftEtherStateChanged(state: String, assignedIp: String) {
         when (state) {

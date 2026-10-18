@@ -208,6 +208,22 @@ class AutoModeController(
         suspend fun isOwnTunnelEstablished(): Boolean = false
 
         /**
+         * v1.0.32 (AUTOCONNECT-FIX-2): the Global Tunnel State's current status, as a
+         * read-only diagnostic string (`DISCONNECTED` / `CONNECTING` / `CONNECTED` /
+         * `DISCONNECTING` / `ERROR`).
+         *
+         * Exists **only** for the slot-non-release instrumentation: when
+         * [isOwnTunnelEstablished] disagrees with the tracker, both values have to
+         * appear in one log line to place the race. It is never consulted for a
+         * decision — ownership deliberately does not come from the tracker, which is
+         * itself driven by the same listener chain that can be late
+         * (see `AndroidConnectionAdapter.isOwnTunnelEstablished`).
+         *
+         * Default `"UNKNOWN"` keeps existing test doubles compiling.
+         */
+        fun tunnelTrackerStatus(): String = "UNKNOWN"
+
+        /**
          * Stage 2F-F.28 Fix E: request teardown *synchronously*.
          *
          * `disconnect()` is a suspending function, so a caller that must not
@@ -345,6 +361,24 @@ enum class AttemptOutcome {
          * construction (tests, library callers).
          */
         const val DEFAULT_ATTEMPT_TIMEOUT_MS = 12_000L
+
+        /**
+         * v1.0.32 (AUTOCONNECT-FIX-2, BUG-B): how many `NATIVE_BUSY` refusals on the
+         * SAME server, within ONE run, are evidence about that server rather than about
+         * our own leftover native operation.
+         *
+         * Two, matching [WedgeTracker.EXCLUSION_THRESHOLD]'s reasoning: the first
+         * refusal is routinely caused by the previous server's still-running native
+         * operation, so one strike is not evidence about *this* endpoint. The second
+         * refusal on the same server inside the same run cannot be explained that way —
+         * the slot was reported released in between — so it is recorded as a wedge.
+         *
+         * This does NOT change the exclusion threshold; it only makes a refusal
+         * countable at all. Before v1.0.32 `NATIVE_BUSY` never reached [recordWedge],
+         * so a server that was refused on every protocol could never be excluded and
+         * was re-selected indefinitely (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §7).
+         */
+        const val NATIVE_BUSY_WEDGE_THRESHOLD = 2
 
         /**
          * Protocol order used when no provider is supplied at all (library
@@ -1017,6 +1051,18 @@ enum class AttemptOutcome {
                 // the button dialled a second, competing tunnel while the first
                 // was live. Refusing is the fail-closed choice: the user can
                 // disconnect and press again. Spec §6.7 R2 / §6.8.
+                //
+                // v1.0.32 (AUTOCONNECT-FIX-2, BUG-A): this branch was already
+                // correct; the predicate it received was not. Production wired
+                // [isTunnelBusy] to `GlobalVpnTracker.isBusy`, which is
+                // CONNECTING||DISCONNECTING and therefore blind to CONNECTED —
+                // i.e. blind to a manual tunnel that had finished connecting,
+                // the exact hazard this guard exists for. Device evidence
+                // (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §5) showed the run
+                // starting anyway and tearing the manual tunnel down. The
+                // engine now supplies `GlobalVpnTracker.isActiveOrBusy`.
+                // Note this guard covers ONLY the Disconnected/Error branch:
+                // the Connected branch below (OP-R6) is deliberately not gated.
                 if (isTunnelBusy()) {
                     adapter.log("[AUTO] start refused: a tunnel is already active")
                     return
@@ -1504,6 +1550,10 @@ enum class AttemptOutcome {
             // counts "runs in which this server produced no tunnel", so trying a second
             // protocol on the same server must not count as a second strike.
             var wedgedThisServer = false
+            // v1.0.32 (AUTOCONNECT-FIX-2, BUG-B): how many NATIVE_BUSY refusals this
+            // server produced in THIS run. See the NATIVE_BUSY branch for why a refusal
+            // is not always innocent, and [NATIVE_BUSY_WEDGE_THRESHOLD].
+            var nativeBusyThisServer = 0
             for (protocol in supported) {
                 if (!currentCoroutineContext().isActive) return
 
@@ -1587,6 +1637,37 @@ enum class AttemptOutcome {
                     // this application's OWN previous native operation is still running, so
                     // the selected server was never contacted.
                     //
+                    // v1.0.32 (AUTOCONNECT-FIX-2, BUG-B): that reasoning holds for the
+                    // FIRST refusal on a server, and stops holding when the same server
+                    // produces refusal after refusal inside one run. A server whose every
+                    // protocol is refused was never contacted by any of them, yet it keeps
+                    // winning the re-selection because nothing records it — so the run
+                    // spends a full native-slot budget on it and terminates without ever
+                    // reaching the next server. Device evidence
+                    // (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §7): vpn131251792 was
+                    // selected in four consecutive runs (`attempt=12/13/14/15`), each
+                    // ending in `Native slot not released within 25000ms … stopping`, and
+                    // no `Skipping …: excluded for this session` line was ever emitted.
+                    //
+                    // The count is per server per run and is consumed once: a single
+                    // refusal still says nothing about the server (a leftover operation
+                    // from the previous server is the common cause), so one strike must
+                    // not exclude anything. Reaching [NATIVE_BUSY_WEDGE_THRESHOLD] in the
+                    // same run is evidence about THIS endpoint, and is recorded through
+                    // the same one-wedge-per-server-per-run path as TIMED_OUT.
+                    nativeBusyThisServer++
+                    if (!wedgedThisServer &&
+                        nativeBusyThisServer >= NATIVE_BUSY_WEDGE_THRESHOLD
+                    ) {
+                        adapter.log(
+                            "[AUTO] NATIVE_BUSY x$nativeBusyThisServer on " +
+                                    "${server.hostname ?: server.ip}; recording a wedge " +
+                                    "(the endpoint never accepted a native attempt)",
+                        )
+                        recordWedge(server, key)
+                        wedgedThisServer = true
+                    }
+                    //
                     // The release of the process-wide slot is directly observable, so wait
                     // for the real event instead of paying a fixed number of blind retries
                     // and then abandoning the run.
@@ -1669,10 +1750,27 @@ enum class AttemptOutcome {
                 //
                 // Ownership is verified by the adapter, so a third-party VPN is
                 // never adopted as this app's success.
-                if (adapter.isOwnTunnelEstablished()) {
+                // v1.0.32 (AUTOCONNECT-FIX-2, INSTRUMENTATION ONLY — no behaviour
+                // change): the ownership re-check stays exactly where it was. What is
+                // new is a log line for the case where ownership answers `false` even
+                // though the tracker says a tunnel is CONNECTED — the contradiction
+                // suspected in the device run of 2026-10-18, where `DHCP success` was
+                // reported and yet the attempt was classified as failed
+                // (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §7). Root cause STILL
+                // UNKNOWN; these lines exist so the next device run can place it.
+                val ownTunnelUp = adapter.isOwnTunnelEstablished()
+                if (ownTunnelUp) {
                     adapter.log("[AUTO] Tunnel is established (notification missed); treating attempt as connected")
                     connectedProtocol = protocol
                     break
+                }
+                if (adapter.tunnelTrackerStatus() == "CONNECTED") {
+                    adapter.log(
+                        "[AUTO] isOwnTunnelEstablished returned false despite native " +
+                                "state CONNECTED (server=${server.hostname ?: server.ip}, " +
+                                "protocol=${protocol.id}, outcome=${outcome.name}); " +
+                                "investigation instrumentation, see v1.0.32",
+                    )
                 }
 
                 // Stage 2F-F.28AL-Y-IMPL (§8.1/§8.8): TIMED_OUT is terminal for THIS
@@ -1720,13 +1818,34 @@ enum class AttemptOutcome {
                 // process-wide slot to actually be free. It returns immediately when the
                 // slot is already free, so the healthy path pays nothing. An operation
                 // that never releases is the one genuine terminal.
-                if (outcome != AttemptOutcome.NATIVE_ERROR &&
-                    !adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
-                ) {
+                //
+                // v1.0.32 (AUTOCONNECT-FIX-2, INSTRUMENTATION ONLY): the loop's
+                // control flow here is unchanged. `waitedMs` and the extra diagnostic
+                // line exist because the device run of 2026-10-18 left this branch as
+                // the whole-run terminal without any record of what the app believed
+                // about the tunnel it had just given up on. Root cause STILL UNKNOWN.
+                val slotWaitStartedAt = System.currentTimeMillis()
+                val slotReleased =
+                    outcome == AttemptOutcome.NATIVE_ERROR ||
+                            adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
+                if (!slotReleased) {
+                    val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
                     adapter.log(
                         "[AUTO] Native slot not released within ${nativeSlotAwaitMs}ms " +
                                 "after ${outcome.name} on ${protocol.id} " +
                                 "(${NativeLifetimeRegistry.process.describe()}); stopping",
+                    )
+                    // v1.0.32 diagnostics: everything needed to place the race is on
+                    // one line, so a single device log is enough to decide whether the
+                    // tunnel was in fact up (ownership) while the slot stayed held.
+                    adapter.log(
+                        "[AUTO] SLOT_UNRELEASED_DIAG waited=${waitedMs}ms " +
+                                "budget=${nativeSlotAwaitMs}ms outcome=${outcome.name} " +
+                                "protocol=${protocol.id} " +
+                                "server=${server.hostname ?: server.ip} " +
+                                "tracker=${adapter.tunnelTrackerStatus()} " +
+                                "ownTunnel=${adapter.isOwnTunnelEstablished()} " +
+                                "registry=${NativeLifetimeRegistry.process.describe()}",
                     )
                     giveUpWithUnresolvedNativeOperation()
                     setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
@@ -1839,14 +1958,17 @@ enum class AttemptOutcome {
     }
 
     /**
-     * FIX-3 (rewritten by AUTOCONNECT-AUDIT D-5): record a wedge against [server] and, at
-     * [WedgeTracker.EXCLUSION_THRESHOLD], exclude it from the rest of the session.
+     * FIX-3 (rewritten by AUTOCONNECT-AUDIT D-5; extended by v1.0.32 BUG-B): record a
+     * wedge against [server] and, at [WedgeTracker.EXCLUSION_THRESHOLD], exclude it from
+     * the rest of the session.
      *
-     * Called only for an attempt that actually reached the server and did not come up
-     * ([AttemptOutcome.TIMED_OUT]). A refusal (`NATIVE_BUSY`, the server was never
-     * contacted) and a fast native failure (`NATIVE_ERROR`, the endpoint answered but is
-     * not usable) are deliberately not wedges: the first says nothing about the server, and
-     * the second is already cheap to recover from.
+     * Called for an attempt that actually reached the server and did not come up
+     * ([AttemptOutcome.TIMED_OUT]), and — since v1.0.32 — for a server that refused
+     * [NATIVE_BUSY_WEDGE_THRESHOLD] times in the same run. A single refusal
+     * (`NATIVE_BUSY`, the server was never contacted) and a fast native failure
+     * (`NATIVE_ERROR`, the endpoint answered but is not usable) remain deliberately
+     * not wedges: the first says nothing about the server on its own, and the second is
+     * already cheap to recover from.
      */
     private fun recordWedge(server: AutoModeCandidate, key: String) {
         val wedges = wedgeTracker.record(key)

@@ -111,9 +111,18 @@ object AutoModeEngine {
                 // stack/OS signals cannot do for a quietly dead tunnel.
                 livenessProbeFactory = { probeScope -> TunnelLivenessProbe(probeScope) },
                 // Global Tunnel State is the app's single source of truth, so a
-                // manual connection that is still coming up must block Auto
-                // Connect from dialling a second, competing tunnel.
-                isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isBusy },
+                // manual connection must block Auto Connect from dialling a
+                // second, competing tunnel.
+                //
+                // v1.0.32 (AUTOCONNECT-FIX-2, BUG-A): this used to read
+                // `GlobalVpnTracker.isBusy`, which is CONNECTING||DISCONNECTING
+                // only. A manual tunnel that had finished connecting (CONNECTED)
+                // therefore did not count as busy, so the v1.0.31 D-4 guard in
+                // AutoModeController never fired for it and the run dialled a
+                // competing tunnel that destroyed the user's manual session
+                // (device evidence: DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §5).
+                // `isActiveOrBusy` adds CONNECTED.
+                isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isActiveOrBusy },
                 // R8 (§11.13.2): the Auto-Reconnect setting, read live so a
                 // toggle takes effect at the next unexpected disconnect.
                 autoReconnectEnabled = { du.getAutoReconnectInAutoMode() },

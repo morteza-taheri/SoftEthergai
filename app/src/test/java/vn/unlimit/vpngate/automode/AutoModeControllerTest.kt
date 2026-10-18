@@ -2783,6 +2783,172 @@ val sstp = AutoModeCandidate(
         assertEquals("s1", (restarted as AutoModeState.Connected).hostname)
     }
 
+    // --- v1.0.32 (AUTOCONNECT-FIX-2): BUG-A / BUG-B ---
+
+    /**
+     * T-NEW-7 (BUG-A): the production predicate the D-4 guard receives treats a
+     * CONNECTED tunnel as busy.
+     *
+     * The v1.0.31 guard was unit-tested only through an injected `isTunnelBusy`
+     * lambda (T-NEW-2), so it proved the guard was *wired* while the production
+     * predicate it was wired to — `GlobalVpnTracker.isBusy`, which is
+     * CONNECTING||DISCONNECTING — stayed blind to CONNECTED. Device evidence
+     * (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §5) showed the exact failure: a
+     * manual OpenVPN tunnel up, Auto Mode `Disconnected`, press → `[AUTO] Started`
+     * instead of `start refused`, and the run then destroyed the manual tunnel.
+     *
+     * This pins the enum-level predicate itself, so it fails if `isActiveOrBusy`
+     * loses CONNECTED or is re-pointed at `isBusy`.
+     */
+    @Test
+    fun productionBusyPredicateIncludesAConnectedTunnel() {
+        val connected = vn.unlimit.vpngate.state.VpnConnectionStatus.CONNECTED
+        val connecting = vn.unlimit.vpngate.state.VpnConnectionStatus.CONNECTING
+        val disconnecting = vn.unlimit.vpngate.state.VpnConnectionStatus.DISCONNECTING
+        val disconnected = vn.unlimit.vpngate.state.VpnConnectionStatus.DISCONNECTED
+        val error = vn.unlimit.vpngate.state.VpnConnectionStatus.ERROR
+
+        assertFalse(
+            "isBusy must keep EXCLUDING CONNECTED — the v1.0.31 bug was using it as " +
+                "the D-4 predicate",
+            connected.isBusy,
+        )
+        assertTrue(
+            "v1.0.32 BUG-A: the D-4 predicate must see a CONNECTED tunnel",
+            connected.isActiveOrBusy,
+        )
+        assertTrue("an in-flight connect is still busy", connecting.isActiveOrBusy)
+        assertTrue("an in-flight disconnect is still busy", disconnecting.isActiveOrBusy)
+        assertFalse("nothing is owned when disconnected", disconnected.isActiveOrBusy)
+        assertFalse("nothing is owned after an error", error.isActiveOrBusy)
+    }
+
+    /**
+     * T-NEW-8 (BUG-A): the engine supplies `isActiveOrBusy`, and the OP-R6 path
+     * is NOT gated by it.
+     *
+     * Two halves, because the BUG-A fix must not overshoot: (1) production wiring
+     * reads `GlobalVpnTracker.isActiveOrBusy` — a regression to `isBusy` silently
+     * re-opens the device failure, and nothing else in the suite would notice;
+     * (2) pressing while Auto Mode is `Connected` still resumes from the next
+     * server, i.e. the guard stays confined to the Disconnected/Error branch.
+     */
+    @Test
+    fun engineUsesTheActiveOrBusyPredicateAndOpR6IsNotGated() = runBlocking {
+        val engine = sourceOf(
+            "app/src/main/java/vn/unlimit/vpngate/automode/AutoModeEngine.kt",
+        )
+        assertTrue(
+            "v1.0.32 BUG-A: AutoModeEngine must wire isTunnelBusy to isActiveOrBusy",
+            engine.contains("isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isActiveOrBusy }"),
+        )
+        assertFalse(
+            "the engine must not fall back to the CONNECTED-blind isBusy",
+            engine.contains("isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isBusy }"),
+        )
+
+        // (2) OP-R6 still works: connected on s2, press → continue at s3.
+        adapter.failing += "s1"
+        val c = controller(
+            servers = listOf(server("s1"), server("s2"), server("s3")),
+            timeout = 300,
+        )
+        c.onButtonPressed()
+        val first = c.awaitTerminal()
+        assertTrue("expected the first run to connect, got $first", first is AutoModeState.Connected)
+        assertEquals("s2", (first as AutoModeState.Connected).hostname)
+
+        adapter.connects.clear()
+        adapter.failing.clear()
+        c.onButtonPressed() // Connected press → must resume at s3, not be refused
+        val second = c.awaitTerminal()
+
+        assertFalse(
+            "the OP-R6 path must never be refused by the D-4 guard: ${adapter.logs}",
+            adapter.logs.any { it.contains("start refused") },
+        )
+        assertEquals(
+            "the continued run must dial s3 first",
+            "s3" to AutoModeProtocol.SOFTETHER_UDP,
+            adapter.connects.first(),
+        )
+        assertTrue("expected the continued run to connect, got $second", second is AutoModeState.Connected)
+    }
+
+    /**
+     * T-NEW-9 (BUG-B): repeated NATIVE_BUSY on the SAME server records a wedge,
+     * and the run rotates to the next server.
+     *
+     * "always-busy" is refused on both of its protocols inside one run. Before
+     * v1.0.32 no refusal path reached `recordWedge`, so such a server could never
+     * be excluded and was re-selected indefinitely — device evidence
+     * (DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §7): vpn131251792 was selected in
+     * four consecutive runs and no `excluded for this session` line was ever
+     * emitted. The slot here is reported released, which models the device case
+     * where the wait succeeds and the attempt still does not come up.
+     */
+    @Test
+    fun repeatedNativeBusyRecordsAWedgeAndRotates() = runBlocking {
+        adapter.scriptBusy("always-busy", false, false, false, false)
+        val c = controller(
+            servers = listOf(server("always-busy"), server("good")),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue(
+            "the run must escape the refusing server and connect on the next one, got $s",
+            s is AutoModeState.Connected,
+        )
+        assertEquals("good", (s as AutoModeState.Connected).hostname)
+        assertTrue(
+            "v1.0.32 BUG-B: the second refusal on the same server must record a wedge: " +
+                "${adapter.logs}",
+            adapter.logs.any { it.contains("NATIVE_BUSY x2") && it.contains("recording a wedge") },
+        )
+        assertEquals(
+            "each refused protocol is dialled once and retried once after the slot release, " +
+                "then the refusing server is abandoned for the healthy one",
+            listOf(
+                "always-busy" to AutoModeProtocol.SOFTETHER_TCP,
+                "always-busy" to AutoModeProtocol.SOFTETHER_TCP,
+                "always-busy" to AutoModeProtocol.SOFTETHER_UDP,
+                "always-busy" to AutoModeProtocol.SOFTETHER_UDP,
+                "good" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+    }
+
+    /**
+     * T-NEW-10 (BUG-B edge): a SINGLE NATIVE_BUSY on a server is not a wedge.
+     *
+     * The first refusal is routinely caused by the previous server's still-running
+     * native operation, so it says nothing about this endpoint. Only the second
+     * refusal inside the same run is evidence. This guards the fix against
+     * over-counting, which would exclude healthy servers.
+     */
+    @Test
+    fun aSingleNativeBusyDoesNotRecordAWedge() = runBlocking {
+        // One refusal, then the retry after the slot release succeeds.
+        adapter.scriptBusy("busy-then-up", false, true)
+        val c = controller(
+            servers = listOf(server("busy-then-up")),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        assertFalse(
+            "a single refusal must never be recorded as a wedge: ${adapter.logs}",
+            adapter.logs.any { it.contains("recording a wedge") },
+        )
+    }
+
     /** Reads a production source file, relative to the module directory. */
     private fun sourceOf(relativePath: String): String {
         for (path in listOf(relativePath, "../$relativePath", "app/$relativePath")) {
