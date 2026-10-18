@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `c4c0311c067fe37c392cd2ee2c3843b16d932b6d`
-**Document version:** 1.0.27
+**HEAD:** `df7b49cf1b91078622cc72774dd1b4fbba73b20a`
+**Document version:** 1.0.28
 **Last updated:** 2026-10-18
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -41,13 +41,14 @@ The SoftEthergai project is a multi-protocol Android VPN client built around a *
 
 ### 1.3 Flavors and Build Targets
 
+Only one flavor exists: `pro` (`flavorDimensions = ["tier"]`, `app/build.gradle`). There is **no** `free` flavor — the tasks `assembleFreeDebug` and `bundleFreeRelease` do not exist (SOURCE VERIFIED at HEAD `df7b49c`; corrected in v1.0.29 — this table previously listed Free variants).
+
 | Variant | Description |
 |---------|-------------|
-| `assembleFreeDebug` | Free flavor, debug build |
-| `assembleProDebug` | Pro flavor, debug build |
-| `bundleFreeRelease` | Free flavor, release AAB |
+| `CI=true ./gradlew assembleProDebug` | Pro flavor, debug build. Debug variants are disabled on machines without the `CI` env var (`app/build.gradle`, `androidComponents.beforeVariants`), so local builds must set `CI=true`. |
+| `./gradlew bundleProRelease` | Pro flavor, release AAB. Requires the release signing configuration (see below); otherwise the build **fails closed**. |
 
-The release keystore is blackbox-encrypted and only deployed on CI; builds without it fall back to the debug keystore. Passwords resolve from the `SIGN_KEY_PASSWORD` environment variable (CI) or `local.properties` (developer machines, never committed).
+The release keystore (`keyStore/release.jks`) is blackbox-encrypted and only deployed on CI. Passwords resolve from the `SIGN_KEY_PASSWORD` environment variable (CI) or `signKeyPassword` in `local.properties` (developer machines, never committed). When the keystore or password is absent, the **debug-keystore fallback applies to debug variants only**; release assembly/bundle/package tasks are blocked by a fail-closed task-graph guard (`app/build.gradle`) that throws `GradleException` naming the missing pieces. (Corrected in v1.0.29 — this paragraph previously claimed all builds fall back to the debug keystore, which was true before the fail-closed guard landed in v1.0.16, §12.5.1 row 6.)
 
 ### 1.4 External Dependencies
 
@@ -316,6 +317,20 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > three fixes plus their regression tests) and `docs` (this spec update plus
 > `MANUAL_IMMEDIATE_VISIBILITY_REPORT.md`). Chain arithmetic per §1.6.19 bullet 8. No tag operation
 > was performed.
+
+> **Push state (v1.0.28).** RECONCILE-DIRTY-FILES landed — restoring HEAD buildability by committing the
+> AUTOCONNECT-AUDIT D-1b closure that had been left in the working tree at v1.0.27. Two commits make up
+> this revision: `fix(automode)` (the 7-file D-1b closure — `AutoModeController.kt`,
+> `AndroidConnectionAdapter.kt`, `AutoModeProtocol.kt`, `TunnelStateWatcher.kt`, and the three test
+> companions `AutoModeControllerTest.kt` / `AutoModeNativeBusyTest.kt` / `VpnM24x10TaskTest.kt`) and `docs`
+> (this spec update plus `DEVICE_VERIFY_AUTOCONNECT_REPORT.md` and `RECONCILE_REPORT.md`). The header
+> **HEAD** field is the source commit `df7b49cf1b91078622cc72774dd1b4fbba73b20a` — the pre-docs-commit
+> hash, per the one-own-commit convention. The device-verify report documents that HEAD `b68ac2a` did
+> **not** compile standalone (PART A discovery), which the D-1b commit fixes. `HttpFetcher.kt` remains
+> deliberately dirty (doc-comment-only OPEN→VPN routing wording, category-(c) UNRELATED-IN-FLIGHT,
+> outside the closure). Chain arithmetic per this revision. No tag operation of any kind was performed.
+> After the push, `origin/main` is **2 ahead** of `b68ac2a` (`df7b49c` source + `0f5f307` docs),
+> fast-forward, no force, no tag.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -1659,6 +1674,83 @@ reconciliation only — **no production behavioural change was introduced.**
    tag operation of any kind). §22 is untouched and byte-identical (99 lines /
    6,504 bytes); §1.6.2–§1.6.19 are untouched. Evidence: SOURCE CODE.
 
+#### 1.6.21 RECONCILE-DIRTY-FILES — Restore HEAD Buildability by Committing the D-1b Closure (v1.0.28)
+
+This subsection records the **RECONCILE-DIRTY-FILES** revision, which restores the
+standalone buildability of `HEAD` by committing the coherent **AUTOCONNECT-AUDIT
+D-1b** closure that had been left in the working tree at v1.0.27. It is a
+buildability-reconciliation only — **no new behavioural change was introduced**;
+every committed symbol already existed in the working tree and is exercised by the
+committed tests.
+
+1. **Defect discovered (device-verify PART A).** `HEAD = b68ac2a` (the v1.0.27
+   source commit) does **not** compile standalone. `AutoModeEngine.kt:82-83`
+   (committed) references `nativeSlotAwaitMs` (a constructor parameter) and
+   `NATIVE_SLOT_AWAIT_MAX_MS` (a constant) that existed **only** in the dirty
+   working-tree `AutoModeController.kt`, not in the committed one. The
+   working-tree APK (`f09e949d…`, built during the v1.0.27 phase) therefore ran
+   code that `HEAD` could not reproduce. Per the BLOCK's STOP condition, on-device
+   verification should have halted at PART A; PART B/C had already run on the
+   working-tree APK in parallel and further device work (PART D/E) was
+   deliberately not attempted. Evidence: SOURCE CODE + TEST (PART A build log).
+2. **Classification and closure.** All 8 dirty files were read. Seven form a
+   coherent D-1b closure (AUTOCONNECT-AUDIT D-1 / D-2 / D-4 / D-5 / D-7): the
+   missing symbols (`nativeSlotAwaitMs`, `NATIVE_SLOT_AWAIT_MS`,
+   `NATIVE_SLOT_AWAIT_MAX_MS`, `awaitNativeSlotRelease`, `AttemptOutcome.NATIVE_ERROR`),
+   the `WedgeTracker` class (defined *inside* `AutoModeController.kt:1858`, not a
+   missing new file), and the nullable `AutoModeProtocol.fromId` (git grep:
+   **zero** callers repo-wide, so the signature change breaks nothing). The
+   eighth file, `HttpFetcher.kt`, is a **doc-comment-only** OPEN→VPN routing
+   wording change — cleanly separable, **outside** the build/test closure — and
+   was classified category-(c) UNRELATED-IN-FLIGHT and **left dirty by design**.
+   No ambiguity, so no STOP. Evidence: SOURCE CODE + TEST.
+3. **Pre-commit baseline.** The full dirty tree compiled green with
+   `CI=true :app:compileProDebugKotlin` (`COMPILE_EXIT=0`), confirming the dirty
+   tree was the clean baseline before the closure was committed. Evidence: TEST.
+4. **Committed closure (commit `df7b49c`, 7 files, +667 / −332).** The seven
+   closure files: `AutoModeController.kt` (adds the missing symbols +
+   `WedgeTracker`), `AndroidConnectionAdapter.kt` (`awaitNativeSlotRelease`
+   implementation + `onAttemptFailed` wiring), `AutoModeProtocol.kt` (nullable
+   `fromId`), `TunnelStateWatcher.kt` (`onAttemptFailed` relay on
+   `STATE_ERROR` / `LEVEL_AUTH_FAILED`), `VpnM24x10TaskTest.kt` (`wedgeTracker =
+   WedgeTracker()`), `AutoModeControllerTest.kt` (`WedgeTracker()` +
+   `NATIVE_ERROR` assertion), `AutoModeNativeBusyTest.kt` (replaced
+   `NATIVE_BUSY_RETRY_DELAY_MS` usages with `nativeSlotAwaitMs = 200L`;
+   updated assertions). `HttpFetcher.kt` correctly remained unstaged. Evidence:
+   SOURCE CODE + TEST.
+5. **Standalone build gate (STEP 5).** `git archive HEAD | gradlew
+   :app:assembleProDebug` was run **on C:** (a D:-drive run failed with an
+   unrelated NDK/CMake metadata `Access is denied` on `.cxx/Debug/…/hash_key.txt`
+   — an environmental D: permission fault, **not** a closure defect: no `^e:`
+   Kotlin errors, `:SoftEtherClient:compileDebugKotlin` passed, the build aborted
+   before `:app:compileProDebugKotlin`). The C:-drive run **SUCCEEDED**
+   (`STANDALONE_BUILD_EXIT=0`), APK SHA-256
+   `6e289cb179eec411c5b6ed6b5d9b3d8bfe70ba18a9c3ed4ee5939eab869f3248` — so
+   `HEAD = df7b49c` is standalone-buildable, satisfying the BLOCK gate. Evidence:
+   TEST (build log + APK hash).
+6. **JVM tests (STEP 6).** `:app:testProDebugUnitTest` = **790 / 0 / 0 / 1** (60
+   classes; the D-1b tests `AutoModeControllerTest`, `AutoModeNativeBusyTest`, and
+   the `VpnM24x10TaskTest` `WedgeTracker` call sites are green);
+   `:SoftEtherClient:test` = **173 / 0 / 0 / 0** (unchanged from the v1.0.20
+   baseline; the D-1b closure touches only `:app`). Both modules `EXIT=0`.
+   Evidence: TEST.
+7. **Root-cause lesson (closure discipline).** A committed file
+   (`AutoModeEngine.kt`) referenced symbols that existed only in a *dirty* file
+   (`AutoModeController.kt`) — a containment break where the buildable state of
+   `HEAD` depended on an uncommitted edit. The canonical repair is to commit the
+   coherent closure as one unit, **not** to patch the leaf (`AutoModeEngine.kt`)
+   or to silently amend history. Every future multi-file AUTOCONNECT change must
+   be verified with `git archive HEAD | gradlew :app:assembleProDebug` (or the
+   equivalent forced compile) **before** the device-verify step, so PART A can
+   never pass against a tree that `HEAD` cannot reproduce. Recorded here as a
+   candidate §22 lesson (see §22). Evidence: SOURCE CODE + INFERENCE.
+8. **Git discipline.** Two commits on `main`, fast-forward push to `origin/main`
+   (exactly 2 ahead of `b68ac2a`: `df7b49c` source + `0f5f307` docs; no force, no
+   reset / clean / stash / checkout / restore, no tag operation of any kind).
+   `HttpFetcher.kt` remains the only dirty tracked file (intentionally, by design).
+   §22 is untouched and byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.20 are
+   untouched. Evidence: SOURCE CODE.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2298,7 +2390,7 @@ A port's provenance is one of:
 
 ### 7.3 Room Entity: VPNGateItem
 
-**File:** `app/src/main/java/vn/unlimit/vpngate/models/VPNGiteItem.kt`
+**File:** `app/src/main/java/vn/unlimit/vpngate/models/VPNGateItem.kt`
 
 Room entity with primary key `hostName` (not IP, unlike the collector's merge key). Fields include all protocol ports and their SSTP port provenance.
 
@@ -2635,15 +2727,15 @@ The exact path-selection algorithm, ordering, concurrency model, timeouts, retry
 
 The system should retain useful source/path outcome information where appropriate, so future attempts can make informed decisions. Do not assume that one failure proves a source is blocked or permanently unavailable.
 
-### 11.8.2 Current implementation observation
+### 11.8.2 Implementation status
 
-Source audit of the existing server-list HTTP path (`HttpFetcher.kt`, `VpnServerRepository.kt`) found no explicit VPN-network binding — no `ConnectivityManager.bindProcessToNetwork`, no `VpnService.protect()` in the update path, and no explicit `Network` selection on the OkHttp client. The `ResilientDns` class (`HttpFetcher.kt:53`) provides DNS-resilience fallbacks for the vpngate.net domain common in censored environments, but does not bind the HTTP client to the VPN tunnel.
+> **HISTORICAL — superseded (annotated in v1.0.29).** The observation below was true when written (pre-v1.0.12). It no longer describes the current code: per-request VPN-network binding landed in `a9e16fd` (PART B, recorded v1.0.12–v1.0.13, §1.6.10 bullet 8, §1.6.13 bullet 2), and the OPEN-first / VPN-fallback routing order landed in `c4c0311` (v1.0.27, §1.6.20) on top of the dynamic path selection recorded in §1.6.13. Current state at HEAD `df7b49c`: `VpnServerRepository.productionRouting()` / `resolvePrimary()` choose the primary rung (OPEN by default; VPN only when the `vpn_always_prefer_vpn` opt-in is set), `fetchOnChosenPath()` falls back to the other rung when reachable, and `HttpFetcher.kt` binds per-request via `Network.getSocketFactory()` (`boundToSocketFactory`) — never `bindProcessToNetwork()`. The original observation is preserved verbatim below for traceability.
 
-This is recorded as a **current implementation observation**, not as the desired product behavior. The desired product behavior is dynamic evaluation of both direct and VPN-tunnel paths, subject to actual Android platform capabilities and safe implementation.
+*Original observation (historical):* Source audit of the existing server-list HTTP path (`HttpFetcher.kt`, `VpnServerRepository.kt`) found no explicit VPN-network binding — no `ConnectivityManager.bindProcessToNetwork`, no `VpnService.protect()` in the update path, and no explicit `Network` selection on the OkHttp client. The `ResilientDns` class (`HttpFetcher.kt:53`) provides DNS-resilience fallbacks for the vpngate.net domain common in censored environments, but does not bind the HTTP client to the VPN tunnel.
 
 ### 11.8.3 Existing path statements in this document
 
-The existing server-collector description in §8 (especially §8.1) documents the current behavior where collection requests run on the default Android network path. No statement in this document currently asserts that server-list requests must permanently use only the direct path or only the VPN tunnel. Any such future observation must be preserved as current behavior and reconciled with the dynamic-path requirement rather than removed.
+The existing server-collector description in §8 (especially §8.1) documents the original behavior where collection requests ran on the default Android network path; §8.1 is annotated accordingly (v1.0.29). No statement in this document currently asserts that server-list requests must permanently use only the direct path or only the VPN tunnel. Any such future observation must be preserved as current behavior and reconciled with the dynamic-path requirement rather than removed.
 
 ---
 
@@ -3232,23 +3324,24 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 
 ### 15.3 Release Variants
 
+Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`) — there is no `free` flavor (SOURCE VERIFIED at HEAD `df7b49c`; corrected in v1.0.29).
+
 | Variant | Build command | Notes |
 |---------|---------------|-------|
-| Free Debug | `./gradlew assembleFreeDebug` | |
-| Pro Debug | `./gradlew assembleProDebug` | |
-| Free Release | `./gradlew bundleFreeRelease` | AAB format |
+| Pro Debug | `CI=true ./gradlew assembleProDebug` | Debug variants are disabled unless the `CI` env var is set (`androidComponents.beforeVariants`) |
+| Pro Release | `./gradlew bundleProRelease` | AAB format; fails closed without release signing (§15.4) |
 
 ### 15.4 Release Keystore
 
 - Production keystore (`keyStore/release.jks`) is blackbox-encrypted, deployed only on CI
 - `SIGN_KEY_PASSWORD` env var (CI) or `signKeyPassword` in `local.properties` (developer machines)
-- Falls back to debug keystore when release keystore is absent
+- When the release keystore or password is absent, the debug-keystore fallback applies to **debug variants only**; release assembly/bundle/package tasks are blocked by a fail-closed task-graph guard in `app/build.gradle` (landed v1.0.16, §12.5.1 row 6). (Corrected in v1.0.29 — this section previously claimed a blanket debug-keystore fallback.)
 
 ### 15.5 AGP / Library Upgrade Notes
 
 - Upgrading AGP requires updating the Gradle wrapper version and the Kotlin plugin version together
 - Compose compiler is pinned to the Kotlin version (`$kotlin_version`)
-- KSP 2.3.2 is applied at the root level for Room schema generation
+- KSP **2.3.12** is applied at the root level for Room schema generation (`build.gradle`, `id "com.google.devtools.ksp" version '2.3.12'`, pinned to match Kotlin 2.4.0 per §3.1 FIX-U36-KSP-ALIGN; corrected in v1.0.29 — this line previously read "KSP 2.3.2")
 
 ---
 
@@ -3362,7 +3455,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | `ServerQualityCalculator` | `app/src/main/java/vn/unlimit/vpngate/ranking/ServerQualityCalculator.kt` |
 | `VpnGateSources` | `app/src/main/java/vn/unlimit/vpngate/data/remote/VpnGateSources.kt` |
 | `VPNGateItem` (Room) | `app/src/main/java/vn/unlimit/vpngate/models/VPNGateItem.kt` |
-| `VPNGateConnection` | `app/src/main/java/vn/unlimit/vpngate/models/VPNGatConnection.kt` |
+| `VPNGateConnection` | `app/src/main/java/vn/unlimit/vpngate/models/VPNGateConnection.kt` |
 | `VpnModels` (schema) | `app/src/main/java/vn/unlimit/vpngate/data/model/VpnModels.kt` |
 | `VpnConnectionMapper` | `app/src/main/java/vn/unlimit/vpngate/repository/VpnConnectionMapper.kt` |
 | `GlobalVpnTracker` | `app/src/main/java/vn/unlimit/vpngate/state/GlobalVpnTracker.kt` |
@@ -3439,6 +3532,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | 1.0.26 | 2026-10-17 | MANUAL-SERVER-IMMEDIATE-VISIBILITY (implementation + device verification) | **Three items from v1.0.25's own "recorded but not fixed" list are closed**, and this is the first revision to close such a list rather than add to it. **(B) A manual server is visible the moment it is added.** The only writer of `VPNGateItem` was `ServerListUpdates.replaceAll`, whose `withManualRows` re-emission runs *inside an accepted refresh*, so a newly added server stayed invisible until some later refresh was accepted — indefinitely, while refreshes were being rejected. `ConnectionListViewModel.addManualServer` now reads the table, merges, and writes it back through `ManualServerStore.materialize`, which **delegates to the same `withManualRows`** rather than reimplementing it: one preservation policy, not two that could drift. **(C) A degraded refresh is no longer silent.** `Outcome.Preserved` correctly keeps the stored list but left the screen identical to "nothing to update"; a one-shot `refreshNotice` is now set **only** for `Reason.DEGRADED_DATASET` and shown as a `Toast` by `HomeScreen`, the mechanism the other Compose screens already use. `isError` was deliberately not reused — it means "nothing to show" and would blank a list that is present and correct, merely stale. Rejection semantics are untouched. **(D) The protocol label no longer borrows `MS-SSTP`.** `manualProtocolLabel`'s `else -> R.string.manual_server_protocol_sstp` would have rendered a future protocol as MS-SSTP with nothing failing; it is now `manualProtocolLabelRes` with an explicit branch per protocol and `else -> null`, the caller falling back to the **raw key** (visibly odd rather than confidently wrong). **One brief requirement proved not literally implementable and was resolved by operator decision:** the requested compile-time guard is impossible because `VpnProtocolNames` is an `object` of `const val` Strings and Kotlin has no exhaustive `when` over `String` — a true compile-time guarantee needs an enum/sealed conversion of the record layer, outside the authorized files. The approved in-scope substitute is a **test** (`ManualProtocolLabelExhaustiveTest`) that walks `VpnProtocolNames.ALL` and fails on a missing or duplicated branch. **Device-verified on `5585fecc`:** `8.8.8.8:443` and `9.9.9.9:443` were added via the form and **no refresh was performed at any point** — the header stayed `Last updated: 17 Oct 2026 - 13:16` and the app logged no update line after install — yet the list went **107 → 108 → 109** and searching returned both as rendered rows (`Score: 0`, `SoftEther`). DB-side (main + `-wal` + `-shm` replayed, base64 with decoded-size assertion): `manual_server` 3 rows, `VPNGateItem` **109**, each test address exactly **once** with `operator` = its label and `seTcpPort = 443`, `user_version=7`, `integrity_check=ok`. **Fix (C) was NOT observed on device** — forcing a degraded fetch requires cutting the device's connectivity, which is the operator's network and not this phase's to toggle, so its evidence is SOURCE CODE and its live behaviour is **UNKNOWN**. **JVM:** `:app` **780/0/0/1** (baseline 772; **+8** from `ManualServerImmediateMaterializeTest` 5 + `ManualProtocolLabelExhaustiveTest` 3), `:SoftEtherClient` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `7619d1b0…` (63,739,346 B, +2,320 B), installed `-r` preserving all three operator rows. **Two build attempts were lost to the environment, not the code:** one "Gradle build daemon disappeared unexpectedly" and one 31-minute hang at "Reusing configuration cache" before executing any task, while the identical sources had already compiled green in the test run; the third attempt succeeded with a fresh daemon and `--no-configuration-cache` (16m 25s). **Two consequences recorded rather than claimed away:** materialising a row into the table `DatasetIntegrity` measures raises `sizeFloor` by 0.5 and can cross `hasComparableBaseline`'s floor of 10, so a borderline candidate could now be rejected where it was accepted — immaterial at the observed sizes (106–109 against a floor near 54) and convergent with what the next accepted refresh would produce anyway; and removing a manual server does **not** eagerly delete its materialised row (it goes at the next accepted refresh), matching §1.6.15's preservation invariant. New **§1.6.19** (8 bullets); **§11.11** annotated with the closure and the two remaining limits; **§1.6.1** push-state note added; **§1.6.2–§1.6.18** untouched; **§12.5.1/§12.5.2** untouched; **§22** untouched and byte-identical (99 lines / 6,504 bytes). No tag operation |
 
 | 1.0.27 | 2026-10-18 | FIX-D-2 — TRIAGE 10 FAILING TESTS + CLOSE OUT AUTOCONNECT-AUDIT (test + one-line diagnostic fix) | **Ten JVM failures reconciled (7 in VpnServerRepositoryR4bTest, 3 in VpnServerRepositoryRoutingTest) — all bucket A.** One-line source fix in `VpnServerRepository.fetchOnChosenPath` lowercases the `[fetch]` / `[collector]` rung diagnostics (`OPEN`/`VPN` → `open`/`vpn`) to match the OPEN-first contract; three OPEN-first behavioural assertions updated in `VpnServerRepositoryR4bTest` (open path now passes `boundFetcher = null`, empty-mirror asserts `null`, routing-re-read uses `any`). `:app:testProDebugUnitTest` **790/0/0/0**; `:SoftEtherClient:test` **173/0/0/0**; `CI=true :app:assembleProDebug` SUCCESSFUL (APK `f09e949d…`). Two commits, fast-forward push; §22 byte-identical; §1.6.2–§1.6.19 untouched. No source / test / build / device *behaviour* change. |
+| 1.0.28 | 2026-10-18 | RECONCILE-DIRTY-FILES — RESTORE HEAD BUILDABILITY BY COMMITTING THE D-1b CLOSURE (build reconciliation) | **`HEAD = b68ac2a` did not compile standalone (device-verify PART A): `AutoModeEngine.kt:82-83` referenced `nativeSlotAwaitMs` / `NATIVE_SLOT_AWAIT_MAX_MS` that existed only in the dirty working-tree `AutoModeController.kt`.** The 7-file AUTOCONNECT-AUDIT D-1b closure was committed (`df7b49c`, +667/−332): `AutoModeController.kt` (adds the missing symbols + `WedgeTracker`), `AndroidConnectionAdapter.kt` (`awaitNativeSlotRelease` + `onAttemptFailed`), `AutoModeProtocol.kt` (nullable `fromId`, zero callers), `TunnelStateWatcher.kt` (`onAttemptFailed` relay), and the three test companions `AutoModeControllerTest` / `AutoModeNativeBusyTest` / `VpnM24x10TaskTest`. `HttpFetcher.kt` left dirty by design (doc-comment-only OPEN→VPN routing wording, outside the closure). Standalone `:app:assembleProDebug` SUCCEEDED on C: (APK `6e289cb1…`); `:app:testProDebugUnitTest` **790/0/0/1**, `:SoftEtherClient:test` **173/0/0/0** (both EXIT=0). Two commits, fast-forward push (2 ahead of `b68ac2a`: `df7b49c` source + `0f5f307` docs); §22 byte-identical; §1.6.2–§1.6.20 untouched. No new behavioural change. |
 
 ### Verification Status
 
@@ -3451,7 +3545,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Current Native Lifetime Model (§4) | VERIFIED — `NativeLifetimeRegistry.kt`, `NativeAttemptCoordinator.kt`, `softether_protocol.c`, `ConnectionController.kt` |
 | Teardown Completion Identity (§5) | VERIFIED — `TeardownCompletion.kt`, `SoftEtherVpnService.kt` (lines 100–139, 434–807) |
 | Auto Connect / Auto Mode (§6) | VERIFIED — `AutoModeController.kt`, `AndroidConnectionAdapter.kt`, `AutoModeProtocol.kt`, `TunnelStateWatcher.kt`, `AutoModeModels.kt` |
-| Server Data Model (§7) | VERIFIED — `VpnModels.kt`, `VPNGateItem.kt`, `VPNGatConnection.kt` |
+| Server Data Model (§7) | VERIFIED — `VpnModels.kt`, `VPNGateItem.kt`, `VPNGateConnection.kt` |
 | Server Collector (§8) | VERIFIED — `VpnServerRepository.kt`, `VpnGateSources.kt`, `VpnServerMerger.kt`, `ServerQualityCalculator.kt` |
 | Connection Flow (§9) | VERIFIED — `SoftEtherVpnService.kt` (full start/teardown/destroy paths) |
 | Auto Mode Engine (§10) | VERIFIED — source inspection |
@@ -3491,6 +3585,7 @@ This project has **no submodules**. The `.gitmodules` file does not exist. (The 
 | Manual-Server Protocol Picker Overflow Fixed; Manual-Row Visibility Mechanism Proven (§1.6.18) | VERIFIED (Defect A) + PROVEN-MECHANISM (Defect B) — the pre-fix `Row` and the post-fix `FlowRow` are **SOURCE CODE** (diff inspected: 3 hunks, one file); the overflow itself is **INFERENCE** from **PHYSICAL DEVICE** measurements — chip widths 265/264/298/261 px and 22 px gaps were read from a live UI-hierarchy dump and the pre-fix off-screen coordinates are arithmetic from them, because the pre-fix build was not re-installed to observe the clipping directly; the fix being effective is **PHYSICAL DEVICE** (all four chips present, `clickable`/`enabled`/`checkable`, `MS-SSTP` wrapped to `[132–305]` and `checked='true'`); that `FlowRow`'s non-`overflow` overload is stable at foundation-layout 1.12.0 is **SOURCE CODE** (per-declaration annotation inspection of `FlowLayout.kt`), and "no `@OptIn` needed" is therefore a compile-verified fact rather than an inference, since the build succeeded without one; the 4 new tests and the 772/173 counts are **TEST**; the APK hash and the `-r` install are **PHYSICAL DEVICE**; the `user_version=7` / `integrity_check=ok` / both-rows-survived readings are **PHYSICAL DEVICE** (base64 transfer with decoded-size assertion, main + `-wal` + `-shm` replayed — a main-only read is a known **false negative** here, per §1.6.18 bullet 8); **Defect B's mechanism** is **PHYSICAL DEVICE + SOURCE CODE** (both the 12:20 `Preserved(DEGRADED_DATASET)` and the 13:16 `MERGE_WITH_EXISTING` / 107-row outcome, matched to the single `replaceAll` writer at `ServerListUpdates.kt:268`); the mapping of manual `label`→`operator` and `port`→`seTcpPort` is **PHYSICAL DEVICE** (the stored row was read); that a manual row therefore loses its protocol identity is **SOURCE CODE** (`VPNGateItem` has no `protocol`/`label` column); the correction of this revision's own STEP-2 claim is **PRIOR REPORT superseded by PHYSICAL DEVICE**; the `manualProtocolLabel` `else`-branch hazard is **SOURCE CODE** and **not fixed**; manual-row visibility remains **DEFERRED** by operator decision, so its end-state is **UNKNOWN** |
 | Manual Server Immediate Visibility (§1.6.19) | VERIFIED (B) + PARTIAL (C) + TEST-GUARDED (D) — the write-through is **SOURCE CODE** (`addManualServer` → `ManualServerStore.materialize` → the same `withManualRows`), its preservation behaviour is **TEST** (5 tests: immediate presence, empty-table case, collision without duplication, two adds in sequence, removal not deleting), and its effect on a device is **PHYSICAL DEVICE** (two adds produced 107 → 108 → 109 with `Last updated` unchanged at 13:16 and no update log line after install, and both addresses rendered in a main-list search with `Score: 0` / `SoftEther`); the DB-side claim that each address appears exactly once with `operator` = label and `seTcpPort = 443` is **PHYSICAL DEVICE** (main + `-wal` + `-shm` replayed, base64 with decoded-size assertion against `stat -c %s` — a main-only read is a known **false negative** here); that no refresh occurred is **PHYSICAL DEVICE** (unchanged header timestamp + absence of update log lines) and, for the "no update line after install" part, **INFERENCE** from an empty filtered logcat rather than a positive assertion; **fix (C) is SOURCE CODE only** — the one-shot `refreshNotice`, the `DEGRADED_DATASET` guard and the `Toast` wiring are inspected and compile, but the notice was **never observed on a device** because forcing a degraded fetch requires cutting connectivity, so its live behaviour is **UNKNOWN**; **fix (D)** is **SOURCE CODE + TEST** (explicit branch per protocol, `else -> null`, raw-key fallback, and 3 tests walking `VpnProtocolNames.ALL`), and the claim that a compile-time guard is impossible is **SOURCE CODE** — a language property of `when` over `String`, not an observation, which is why the substitute guard is a test; the JVM counts, the APK hash and the successful third build are **TEST**, and the two earlier failed attempts are **PHYSICAL DEVICE** environment faults explicitly **not** attributed to the code (identical sources compiled green in the test run); the `DatasetIntegrity` `sizeFloor`/`hasComparableBaseline` edge is **SOURCE CODE + INFERENCE** (thresholds read, effect computed, not reproduced with a borderline dataset); that removing a manual server leaves its materialised row until the next accepted refresh is **SOURCE CODE + TEST** |
 | FIX-D-2 — Triage 10 Failing Tests (§1.6.20) | VERIFIED (test reconciliation) + SOURCE CODE (one-line diagnostic fix) — the 10 failures are attributed to a lowercase log-format string in `fetchOnChosenPath` (inspected at VpnServerRepository.kt:362) and three OPEN-first behavioural assertions in `VpnServerRepositoryR4bTest.kt`, all classified bucket A; the `:app` suite is **TEST** 790/0/0/0 (R4bTest 10/0/0/0, RoutingTest 8/0/0/0), `:SoftEtherClient:test` **TEST** 173/0/0/0, and the APK SHA-256 is **TEST** (`f09e949d0af2cccf26d756af6c7b00ef7745c401857666228b25f8aa3c2c1279`); no bucket D (code bug) was found, so no production logic changed; §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.19 are untouched |
+| RECONCILE-DIRTY-FILES — Restore HEAD Buildability (§1.6.21) | VERIFIED (build reconciliation) + SOURCE CODE + TEST — the PART A defect is **SOURCE CODE** (`AutoModeEngine.kt:82-83` referencing `nativeSlotAwaitMs` / `NATIVE_SLOT_AWAIT_MAX_MS` absent from the committed `AutoModeController.kt`); the 7-file D-1b closure is **SOURCE CODE** (committed as `df7b49c`, +667/−332, `HttpFetcher.kt` deliberately excluded as category-(c) UNRELATED-IN-FLIGHT); the standalone build gate is **TEST** (`git archive HEAD | gradlew :app:assembleProDebug` SUCCEEDED on C:, APK SHA-256 `6e289cb179eec411c5b6ed6b5d9b3d8bfe70ba18a9c3ed4ee5939eab869f3248`; the D:-drive failure was an unrelated NDK/CMake `.cxx` metadata `Access is denied`, no `^e:` Kotlin errors); the JVM suites are **TEST** — `:app` **790/0/0/1** (60 classes), `:SoftEtherClient` **173/0/0/0**, both EXIT=0; the root-cause lesson (commit the coherent closure, never patch the leaf) is **INFERENCE** and is recorded as a candidate §22 lesson; §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.20 are untouched |
 
 ### Legend
 
