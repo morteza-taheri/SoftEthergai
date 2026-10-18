@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `248d06dd67c2dd75038da249d474e368413a21ac`
-**Document version:** 1.0.33
+**HEAD:** `518c9b767cff168acf74dfb313cca0487193b5e5`
+**Document version:** 1.0.34
 **Last updated:** 2026-10-18
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -375,6 +375,15 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > (20.9 s), and one release landed 292 ms after that cutoff. Device re-verification of `SLOT_DIAG`
 > is **PENDING**. The header **HEAD** field is the pre-docs commit
 > `248d06dd67c2dd75038da249d474e368413a21ac`. No tag operation of any kind was performed.
+
+> **Push state (v1.0.34).** AUTOCONNECT-FIX-4. Closed the unbounded RUDP fallback handshake
+> (`softether_protocol.c:2908` applied `socket_apply_timeout` the way the TCP path at `:2839` does,
+> plus the `[TLS] handshake entry` discriminator). Also closed the wedge counter's structural gap:
+> a `NATIVE_BUSY` terminal now records a wedge, so the same broken endpoint is excluded after
+> `EXCLUSION_THRESHOLD` runs instead of being re-selected forever. Device re-verify **PENDING**.
+> The header **HEAD** field is the baseline commit `518c9b767cff168acf74dfb313cca0487193b5e5`, the
+> state this revision was verified against; a commit cannot carry its own hash. No tag operation of
+> any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -2045,6 +2054,91 @@ are closed here. Spec v1.0.32 → v1.0.33. Device-free: **no device, no adb, no 
 > CODE and the JVM suite only; the hardware evidence that motivated them is pre-fix
 > (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md`). No claim is made here about on-device behaviour.
 
+#### 1.6.26 AUTOCONNECT-FIX-4 — Bounded RUDP Fallback + Wedge on Terminal (v1.0.34)
+
+The device verification that followed v1.0.33 (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md`) found
+that the slot-wait budget was never the binding constraint: the *first* native attempt on the
+offending endpoint never returned, so no budget of any size could help. Two independent,
+complementary fixes close the structural cause and the accounting consequence. Spec v1.0.33 →
+v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
+
+1. **Device finding that drives this revision.** The TCP TLS path is **bounded**
+   (`socket_apply_timeout` at `softether_protocol.c:2839`, `SO_RCVTIMEO applied=yes`, expiring
+   correctly); the NAT-T/RUDP fallback handshake was **unbounded** — `perform_tls_handshake` was
+   called with no timeout application and no discriminator. On `vpn131251792` the RUDP transport
+   reached ESTABLISHED and the handshake then blocked for **28.5 s of complete silence**, ended only
+   by the controller's forced teardown. Because the very first `SSL_do_handshake` never returned,
+   the `max_attempts` loop in `aes_wrapper.c` never iterated (zero `SSL handshake attempt N` lines
+   in any run), so the process-wide native slot stayed held and every slot-wait budget expired
+   identically. Evidence: SOURCE CODE + PHYSICAL DEVICE
+   (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.3).
+2. **Fix-A (native) — the fallback is now bounded like the primary path.** Before
+   `perform_tls_handshake(conn, connect_host)` in the NAT-T/RUDP branch, the code now calls
+   `socket_apply_timeout(conn->socket_fd, conn->timeout_ms)` (`softether_protocol.c:2935`) and emits
+   the same entry discriminator the TCP site emits, tagged `(RUDP)` (`:2941`). `conn->socket_fd`
+   there is `rudp_transport_get_fd(tr)` — the app-facing end of the RUDP socketpair
+   (`rudp_transport.c:1214`), which is exactly the fd OpenSSL reads from, so `SO_RCVTIMEO` makes the
+   blocking `recv()` return `EAGAIN` and the existing `WANT_READ`/`WANT_WRITE` ladder takes over.
+   The same file already relies on this for the parallel UDP race path (`:2036`), which is the
+   precedent, not an assumption. Fail-open: a helper failure logs a warning and proceeds rather than
+   turning a would-be success into a failure, matching the TCP site. The TCP branch,
+   `perform_tls_handshake` itself, and every other native file are unmodified. Evidence: SOURCE CODE.
+3. **Fix-B (Kotlin) — the NATIVE_BUSY terminal now records a wedge.** The v1.0.32 counter
+   (`nativeBusyThisServer`, threshold 2) is **structurally unable** to fire on this failure: the
+   terminal ends the run on the first refusal, so the counter can never reach 2, the ledger is never
+   written, and the same endpoint is re-selected on every run — `vpn131251792` was selected in 5/5
+   runs and died identically 5/5 times with no `recording a wedge` and no `excluded for this
+   session` line. The terminal branch now records one wedge for the server before giving up
+   (`AutoModeController.kt:1729-1736`), so the process-scoped `WedgeTracker` accumulates **across
+   runs** and the unchanged `EXCLUSION_THRESHOLD` (2) is honoured. The strike is cleared on any
+   verified tunnel, so a transient cause that later resolves does not exclude the endpoint
+   permanently. Evidence: SOURCE CODE + TEST.
+4. **The design change to `giveUpWithUnresolvedNativeOperation`.** The FIX-3/AUTOCONNECT-AUDIT D-5
+   rationale — "a give-up caused by our own unresolved operation records nothing" — was correct for
+   the case it was written for: *our own previous* operation still running, where the server was
+   never contacted and therefore says nothing about the endpoint. Device evidence proved the
+   terminal case is different: TCP connect and the TCP TLS handshake succeed, the VPNCONNECT
+   watermark is rejected, and the RUDP fallback then blocks — the endpoint itself triggers the hang.
+   So the rule is **narrowed, not reverted**: the terminal caller records the wedge, while
+   `giveUpWithUnresolvedNativeOperation` itself still records nothing and is still reached from the
+   post-attempt site, where the original reasoning holds exactly. The KDoc on that function records
+   the narrowing (`AutoModeController.kt:2012-2025`). Evidence: SOURCE CODE + PHYSICAL DEVICE.
+5. **STEP 4 (bound the RUDP BIO read) was NOT applied.** The repository installs no custom BIO for
+   the RUDP transport: `perform_tls_handshake` hands `conn->socket_fd` to `ssl_connect`
+   (`softether_protocol.c:1236`), so the blocking read is OpenSSL's own socket-BIO `recv()` on the
+   socketpair fd. There is no short, single blocking call in project code to add a deadline to —
+   `rudp_recv` (`softether_rudp.c:1120`) is the transport's own receive path on the *other* side of
+   the socketpair, not the call the handshake blocks in. The socket option is therefore the correct
+   and only lever, which is precisely what Fix-A applies. Recorded as a deliberate skip, not an
+   omission. Evidence: SOURCE CODE.
+6. **JVM tests.** `:app` **803 / 0 / 0 / 1** (baseline 801 / 0 / 0 / 1 — the delta is the two new
+   tests, skip unchanged); `:SoftEtherClient` **173 / 0 / 0 / 0** (unchanged). The two new tests are
+   `aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns` (behavioural: one terminal → one wedge,
+   two runs → 2, third run skipped without a dial) and
+   `theRudpFallbackHandshakeIsBoundedLikeTheTcpPath` (source shape: the RUDP site carries the
+   timeout call and the `(RUDP)` discriminator, the TCP site keeps its own, and exactly two
+   handshake sites apply the bound). No existing test was modified or deleted. Evidence: TEST.
+7. **Build.** `:app:assembleProDebug --rerun-tasks --no-build-cache` under `CI=true` →
+   BUILD SUCCESSFUL. APK SHA-256
+   `4ABC463606B83217D75422136DA6678097DAAC666D63BF5AB3B7BA6A624B1435` (63,751,914 bytes), which
+   **differs** from v1.0.33's `42D90C38…CAB9D14E` as expected: the native library changed. A
+   standalone build of the pushed tree (archive → assemble) also passed. Evidence: TEST.
+8. **Device re-verification is PENDING.** Whether the RUDP-bound handshake now returns on
+   `vpn131251792`, and whether the wedge-on-terminal excludes it after two runs instead of
+   re-selecting it forever, are **UNKNOWN** in this revision. Expected signals for the next phase:
+   `SLOT_UNRELEASED_DIAG` count **0**; at least one `[AUTO] Native slot released after …ms` line;
+   and the same endpoint skipped with `excluded for this session` on run 3 rather than dialled
+   again. The root cause of the endpoint's refusal itself (why the VPNCONNECT watermark fails)
+   remains **UNKNOWN** and was **not** attempted here. Evidence: UNKNOWN.
+9. **No new methodology lessons.** Fix-B is an instance of the lesson already recorded in §1.6.24
+   bullet 8 — a rule verified against the seam it was designed for, not against the path that
+   actually executes — this time in the wedge ledger rather than in a guard. It is not restated.
+   Evidence: SOURCE CODE.
+
+> **Device status of this revision.** v1.0.34 is **device-free**. Both fixes are verified by SOURCE
+> CODE, the JVM suite and the build only; the hardware evidence that motivated them is pre-fix
+> (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md`). No claim is made here about on-device behaviour.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2689,7 +2783,7 @@ Two asymmetries are intentional and are part of this contract: a user skip advan
 
 **The wedge rule (added v1.0.32, BUG-B).** A wedge is one strike against a server in the
 session ledger (`WedgeTracker`); `WedgeTracker.EXCLUSION_THRESHOLD` strikes exclude it for the rest
-of the process. Two outcomes write a strike, at most one per server per run:
+of the process. Three outcomes write a strike, at most one per server per run:
 
 1. `TIMED_OUT` — the attempt reached the server and nothing came up inside `T`. (Unchanged since
    the AUTOCONNECT-AUDIT D-5 revision.)
@@ -2701,10 +2795,27 @@ of the process. Two outcomes write a strike, at most one per server per run:
    endpoint. Before v1.0.32 no refusal path reached the ledger at all, so a server that was
    refused on every protocol could never be excluded and was re-selected on every subsequent run
    (§1.6.24 bullet 2).
+3. **Terminal wedge (v1.0.34).** A `NATIVE_BUSY` terminal that ends the run with
+   `ERROR_NATIVE_UNRESOLVED` records one wedge for the affected server. This is required because
+   the per-run counter can never reach `NATIVE_BUSY_WEDGE_THRESHOLD` on a first-attempt terminal —
+   the terminal ends the run before the counter can advance — so the process-scoped `WedgeTracker`
+   must accumulate across runs for the exclusion threshold to be honoured. Device evidence
+   (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.4): `vpn131251792` was re-selected in 5/5 runs
+   and died identically 5/5 times, with no `recording a wedge` and no `excluded for this session`
+   line ever emitted. The strike is cleared on any verified tunnel, so a transient cause that later
+   resolves does not exclude the endpoint permanently. Evidence: SOURCE CODE + PHYSICAL DEVICE.
 
 A `NATIVE_ERROR` never records a strike (the endpoint answered and is cheaply recoverable). The
 **exclusion** threshold is unchanged at 2 — v1.0.32 only made a refusal *countable*, it did not
 make exclusion easier to reach.
+
+**The native timeout invariant (added v1.0.34).** Both TLS handshake paths are bounded: the TCP
+path at `softether_protocol.c:2839` and the NAT-T/RUDP fallback at `:2908` both call
+`socket_apply_timeout()` before `perform_tls_handshake()`. Before v1.0.34 only the TCP path was
+bounded; the RUDP BIO read could block indefinitely, producing an unbounded stall that no
+slot-wait budget could recover from, because the first `SSL_do_handshake` never returned and the
+`max_attempts` loop therefore never iterated. Evidence: SOURCE CODE
+(`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.3 for the observed asymmetry).
 
 #### 6.8.4 Terminal conditions
 
@@ -4045,6 +4156,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.31 | 2026-10-18 | AUTOCONNECT-FIX (device-free; two AutoConnect audits closed) | **Closes four audit gaps plus OP-R6.** D-1: default attempt timeout unified to **12 s** (Settings key `SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped **5–60 s**; `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` `25_000L` → `12_000L`, spec §6.7 R5 / §6.8). D-2: exception in `connect()` advances to the **next protocol** (not next server) — `break` → `continue` at `AutoModeController.kt:1446` (D-2 / OP-R4). D-4: `isTunnelBusy()` guard wired to the production button path — `Disconnected`/`Error` press refused with `[AUTO] start refused: a tunnel is already active` at `AutoModeController.kt:1010`. D-5 (OP-R6): pressing while `Connected` continues from the next server via `resumeFromIndex = currentServerIndex + 1` (`AutoModeController.kt:532`, consumed at `:1026`, reset at `:1773`). D-6: four terminal conditions documented in §6.7 R7; native connect budget is **80 % of `T`** (`NATIVE_TIMEOUT_FRACTION_NUM/DEN = 4/5`, `AndroidConnectionAdapter.kt:74-75`; `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` at `:84`). D-7: new **§6.8** Per-Attempt Timeout and Rotation Contract. D-8: six new tests in `AutoModeControllerTest.kt` (T-NEW-1..T-NEW-6) plus the `DEFAULT_ATTEMPT_TIMEOUT_MS` assertion corrected to `12_000L` in `AutoModeNativeBusyTest.kt:511`. JVM: `:app` **~796/0/0/1** (one skip = `HtmlParserOracleTest`, unchanged), `:SoftEtherClient` **173/0/0/0**. Standalone `:app:assembleProDebug` build gate passed under `CI=true`; APK SHA-256 recorded in `AUTOCONNECT_FIX_REPORT.md`. §22 byte-identical; §1.6.2–§1.6.22 untouched. No device, no tag, no force, no `git add -A`. |
 | 1.0.32 | 2026-10-18 | AUTOCONNECT-FIX-2 (device-free; two bugs found on hardware) | **Closes the two defects the v1.0.31 device verification found, and instruments a third.** BUG-A: the D-4 refusal guard was blind to `CONNECTED` — v1.0.31 wired `isTunnelBusy` to `GlobalVpnTracker.isBusy` (`CONNECTING \|\| DISCONNECTING`), so a cleanly established manual tunnel was invisible, the run started anyway and tore the user's manual session down (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5). New `VpnConnectionStatus.isActiveOrBusy` (`CONNECTED \|\| CONNECTING \|\| DISCONNECTING`) + `GlobalVpnTracker.isActiveOrBusy`; `AutoModeEngine.kt` now supplies it. `isBusy` semantics unchanged. BUG-B: `recordWedge` was reachable only from `TIMED_OUT`, so a server refused on every protocol could never be excluded — `vpn131251792` was re-selected in four consecutive runs and each ended `Native slot not released within 25000ms … stopping` (§7). `AutoModeController` now counts `NATIVE_BUSY` per server per run and records one wedge at `NATIVE_BUSY_WEDGE_THRESHOLD = 2`; `WedgeTracker.EXCLUSION_THRESHOLD` unchanged. Slot-non-release **instrumented only** (log-only, no control-flow change): a line when `isOwnTunnelEstablished()` answers `false` while the tracker says `CONNECTED`, and a `SLOT_UNRELEASED_DIAG` line carrying the measured wait, outcome, protocol, server, tracker status, ownership answer and registry descriptor — fed by a new read-only `ConnectionAdapter.tunnelTrackerStatus()`. Root cause **UNKNOWN**; no fix attempted. S1 recorded as a **device-state deviation** (`SETTING_AUTO_MODE_TIMEOUT_SECONDS = 5` stored on 5585fecc), not a code defect. Four new tests (T-NEW-7..T-NEW-10); `:app` **800/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §6.8.3/§6.8.6 updated (wedge rule; predicate table). §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.23 untouched. Device re-verification of S3/S5 **PENDING**. No device command, no tag, no force, no `git add -A`. |
 | 1.0.33 | 2026-10-18 | AUTOCONNECT-FIX-3 (device-free; two defects found by the v1.0.32 device run) | **Closes the instrumentation defect and the budget defect that the v1.0.32 device verification exposed, and nothing else.** Fix 1 — the diagnostic was on the wrong site: `AutoModeController.kt` has **two** whole-run terminals for a held native slot, and every on-device termination came from the NATIVE_BUSY branch (formerly `:1695`, no diagnostic) rather than the post-attempt branch (`~:1834`, which carried `SLOT_UNRELEASED_DIAG`), so `SLOT_DIAG` was **NOT EXERCISED** despite three slot-based stops (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §7). Both sites now emit the same body; at the NATIVE_BUSY site `outcome=${AttemptOutcome.NATIVE_BUSY.name}` is hard-coded because `outcome` is not in scope and the branch can produce nothing else. Wait condition, terminal order and all branches unchanged — additions are `slotWaitStartedAt`, `waitedMs` and the log call only. Fix 2 — budget floor: `nativeSlotAwaitMs` was `5 × T` capped at 60 s, which the device's persisted `T = 5 s` turned into **25 s** against measured release latencies of 6.0/6.2/7.5/13.3/13.7/17.0/**20.9 s**, one release landing **292 ms after** the cutoff; the derivation is now `.coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS)` (**30 s**) beneath the unchanged `.coerceAtMost(NATIVE_SLOT_AWAIT_MAX_MS)`. Rationale: release latency belongs to the previous operation's own duration, not to the user's server-attempt timeout. One new test (`nativeSlotAwaitHasAThirtySecondFloor`) pins the constant and the derivation seam; no existing test modified or deleted. `:app` **801/0/0/1** (+1, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `42D90C38…CAB9D14E` (differs from v1.0.32 as expected). §6.8.7 updated (floor term). New §1.6.25. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.24, §12.5.1, §12.5.2 untouched. Device re-verification of `SLOT_DIAG` and of the floor's efficacy **PENDING**; slot-non-release root cause still **UNKNOWN** and deliberately not attempted. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
+| 1.0.34 | 2026-10-18 | AUTOCONNECT-FIX-4 (device-free; driven by the v1.0.33 device run) | **Closes the unbounded RUDP fallback handshake and the wedge counter's structural gap — the two reasons every timeout budget failed identically on the same endpoint.** Fix-A (native): the NAT-T/RUDP branch called `perform_tls_handshake` with no timeout application while the TCP branch applied one at `softether_protocol.c:2839`, so the RUDP BIO read could block indefinitely (device: 28.5 s of silence on `vpn131251792`, `DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.3) and the first `SSL_do_handshake` never returned, leaving the `max_attempts` loop with nothing to iterate; the fallback now calls `socket_apply_timeout(conn->socket_fd, conn->timeout_ms)` at `:2935` and emits the same `[TLS] handshake entry` discriminator tagged `(RUDP)` at `:2941`, fail-open like the TCP site. `conn->socket_fd` is the RUDP socketpair's app-facing fd, i.e. exactly what OpenSSL reads from — the same lever the parallel UDP race path already uses at `:2036`. Fix-B (Kotlin): `nativeBusyThisServer` can never reach `NATIVE_BUSY_WEDGE_THRESHOLD` on a first-attempt terminal, so the ledger was never written and the endpoint was re-selected in 5/5 runs (§7.4); the terminal now records one wedge before giving up (`AutoModeController.kt:1729-1736`), so the process-scoped `WedgeTracker` accumulates across runs and the unchanged `EXCLUSION_THRESHOLD` (2) applies. The AUTOCONNECT-AUDIT D-5 rule is **narrowed, not reverted**: `giveUpWithUnresolvedNativeOperation` still records nothing and still serves the post-attempt site. STEP 4 (bound the RUDP BIO read in project code) was deliberately **not** applied — no custom BIO exists, the blocking call is OpenSSL's socket-BIO `recv()`. Two new tests (`aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns`, `theRudpFallbackHandshakeIsBoundedLikeTheTcpPath`); no existing test modified or deleted. `:app` **803/0/0/1** (+2, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `4ABC4636…624B1435` (differs from v1.0.33 as expected — the native library changed). §6.8.3 updated (third wedge sub-rule; native timeout invariant). New §1.6.26. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.25, §12.5.1, §12.5.2 untouched. Device re-verification **PENDING**; the endpoint's own refusal cause remains **UNKNOWN** and deliberately not attempted. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 
 ### Verification Status
 
@@ -4103,6 +4215,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | AutoConnect Audit Reconciliation (§1.6.23) | HISTORICAL — records the AUTOCONNECT-FIX revision (D-1..D-8, OP-R6) that closes four gaps from the two independent AutoConnect audits plus OP-R6; all claims attributed to their phase report and to the direct source/test inspection recorded in §1.6.23. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 | AutoConnect Fix 2 — Two Device Bugs (§1.6.24) | HISTORICAL — records the AUTOCONNECT-FIX-2 revision closing BUG-A (D-4 predicate now includes `CONNECTED` via `GlobalVpnTracker.isActiveOrBusy`) and BUG-B (repeated `NATIVE_BUSY` on the same server records a wedge at threshold 2), plus slot-non-release instrumentation. The bugs are **PHYSICAL DEVICE** findings attributed to `DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5 and §7; the fixes are **SOURCE CODE** (`GlobalVpnTracker.kt`, `AutoModeEngine.kt`, `AutoModeController.kt`); the four new tests are **TEST**; the slot-non-release root cause is **UNKNOWN** (instrumented only, no fix attempted); device re-verification is **PENDING**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 | AutoConnect Fix 3 — Instrumentation + Budget Floor (§1.6.25) | HISTORICAL — records the AUTOCONNECT-FIX-3 revision closing the two defects the v1.0.32 **device** verification produced: the `SLOT_UNRELEASED_DIAG` line sat on the post-attempt slot-wait site while every on-device terminal came from the NATIVE_BUSY site, so it never fired; and the `5 × T` slot-wait budget fell to 25 s under the device's persisted 5 s preference against observed release latencies up to 20.9 s, with one release 292 ms late. Both sites now emit the diagnostic, and the derivation is floored at `NATIVE_SLOT_AWAIT_MS` (30 s) beneath the existing 60 s cap. Diagnostic-absence and latencies are **PHYSICAL DEVICE** (`DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md` §7); both fixes are **SOURCE CODE** (`AutoModeController.kt:1689-1719`, `AutoModeEngine.kt:90-93`); the floor test is **TEST** (`nativeSlotAwaitHasAThirtySecondFloor`); device re-verification and the slot-non-release root cause remain **UNKNOWN**/**PENDING**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
+| AutoConnect Fix 4 — Bounded RUDP Fallback + Wedge on Terminal (§1.6.26) | HISTORICAL — records the AUTOCONNECT-FIX-4 revision closing the two structural causes the v1.0.33 **device** run exposed. The unbounded RUDP fallback (28.5 s of silence, no `SSL handshake attempt N` lines) is **PHYSICAL DEVICE** (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.3); the 5/5 re-selection of the same endpoint with no wedge ever recorded is **PHYSICAL DEVICE** (§7.4); Fix-A is **SOURCE CODE** (`softether_protocol.c:2935` timeout, `:2941` discriminator); Fix-B is **SOURCE CODE** (`AutoModeController.kt:1729-1736`) + **TEST**; the D-5 narrowing is **SOURCE CODE** (`AutoModeController.kt:2012-2025`); STEP 4's deliberate skip is **SOURCE CODE** (no custom BIO; `ssl_connect` at `:1236` reads the socketpair fd directly). The two new tests are **TEST**, as are the `:app` 803/0/0/1 and `:SoftEtherClient` 173/0/0/0 counts, the APK SHA-256 and the standalone build gate. Device re-verification of the bound and of the wedge-on-terminal is **PENDING**, and the endpoint's own refusal cause is **UNKNOWN**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 
 ### Legend
 
