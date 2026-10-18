@@ -281,8 +281,10 @@ class OkHttpFetcher(
 // SERVER_SOURCE_ARCHITECTURE.md §7 Q2 requires per-request binding via
 // `Network.getSocketFactory()`, never `bindProcessToNetwork()`. §7 Q3's
 // "open → VPN fallback → emergency → manual" ordering is implemented only
-// in its first two rungs here: open stays the default, the VPN rung is an
-// opt-in, and emergency/manual sources are out of scope for this phase.
+// in its first two rungs here: open stays the default, the VPN rung is
+// auto-selected when a usable tunnel exists (see
+// `VpnServerRepository.productionRouting`) and falls back to open, and
+// emergency/manual sources are out of scope for this phase.
 //
 // The decision is a pure value + a pure function so it can be unit-tested
 // without Android, a Looper or a live tunnel: the caller gathers the three
