@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `c5fa4362a0c1a39166112fd1f6be552418af17dd`
-**Document version:** 1.0.31
+**HEAD:** `9d9e43effa5b8adabd006520393aaa2dfedd7a0a`
+**Document version:** 1.0.32
 **Last updated:** 2026-10-18
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -357,6 +357,15 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > update plus `SPEC_INTEGRITY_AUDIT_v1.0.30_REPORT.md`). The header **HEAD** field is the pre-docs
 > commit `9d569c37ddba1a4c26db688b398c4fcb3d660112`. No tag operation of any kind was performed.
 > **Push state (v1.0.31).** AUTOCONNECT-FIX. Four gaps closed: G-2 (default timeout unified to 12 s), G-17 (isTunnelBusy guard wired to production path), R4 (uniform non-timeout transition), and OP-R6 (Connected press continues from next server). New §6.8.
+
+> **Push state (v1.0.32).** AUTOCONNECT-FIX-2. Closed **BUG-A** (the D-4 predicate now includes
+> `CONNECTED`, via `GlobalVpnTracker.isActiveOrBusy`) and **BUG-B** (repeated `NATIVE_BUSY` on the
+> same server now records a wedge). Added **slot-non-release instrumentation** — logging only, no
+> control-flow change — for the next device investigation phase. Both bugs were found on the
+> physical device in DEVICE-VERIFY-AUTOCONNECT-FIX (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5 and
+> §7) after the v1.0.31 JVM suite had gone green; §1.6.24 records the reconciliation. The header
+> **HEAD** field is the pre-docs commit `9d9e43effa5b8adabd006520393aaa2dfedd7a0a`. No tag operation
+> of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -1888,6 +1897,85 @@ independent AutoConnect audits (`AUTOCONNECT_AUDIT_REPORT.md` and
 > rotation and timeout rules on hardware is **UNKNOWN** in this revision. Device verification is
 > proposed in `AUTOCONNECT_FIX_REPORT.md` §12.
 
+#### 1.6.24 AUTOCONNECT-FIX-2 — Two Device Bugs Closed (v1.0.32)
+
+The device verification that followed v1.0.31 (DEVICE-VERIFY-AUTOCONNECT-FIX,
+`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md`) found that two of the four v1.0.31 fixes did not hold on
+hardware, even though the whole JVM suite was green. Both are closed here. The third finding — the
+native slot not being released after a successful DHCP — is **instrumented only**; its root cause
+remains unknown.
+
+1. **BUG-A — the D-4 predicate was blind to `CONNECTED`.** The v1.0.31 refusal guard in
+   `AutoModeController.onButtonPressedWithoutGuard()` was correct; the predicate it received was
+   not. `AutoModeEngine.kt:116` wired `isTunnelBusy = { GlobalVpnTracker.isBusy }`, and
+   `GlobalVpnTracker.kt:47` defines `isBusy` as `CONNECTING || DISCONNECTING` — `CONNECTED` was
+   excluded. Consequence: with a manual OpenVPN tunnel up and Auto Mode `Disconnected`, pressing
+   the button started a full run (`[AUTO] Started`, `[AUTO] Trying #1`) instead of logging
+   `start refused`, and the run then destroyed the user's manual tunnel.
+   **Fix:** new `VpnConnectionStatus.isActiveOrBusy` (`CONNECTED || CONNECTING || DISCONNECTING`)
+   plus its `GlobalVpnTracker.isActiveOrBusy` accessor; `AutoModeEngine` now supplies that.
+   `isBusy` itself is unchanged — it still answers the narrower "is a transition in flight"
+   question. §6.8.6 now states the predicate explicitly.
+   **Why the tests missed it:** T-NEW-2 injected a fake `isTunnelBusy` lambda, so it proved the
+   guard was *wired*, never that the production *predicate* was right. T-NEW-7 now pins the
+   predicate at the enum level and T-NEW-8 pins the engine wiring.
+   Evidence: SOURCE CODE + PHYSICAL DEVICE (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5).
+
+2. **BUG-B — a server refused on `NATIVE_BUSY` could never be excluded.** `recordWedge` was
+   reachable only from the `TIMED_OUT` branch, so a server whose every protocol was refused was
+   re-selected indefinitely: each run re-dialled it, spent a full slot budget, and terminated
+   without ever reaching the next server. On the device, `vpn131251792` was selected in four
+   consecutive runs (`attempt=12/13/14/15`), each ending
+   `Native slot not released within 25000ms … stopping`, and no
+   `Skipping …: excluded for this session` line was ever emitted.
+   **Fix:** `AutoModeController` counts `NATIVE_BUSY` per server per run and, at
+   `NATIVE_BUSY_WEDGE_THRESHOLD = 2`, records one wedge through the existing
+   one-wedge-per-server-per-run path. `WedgeTracker.EXCLUSION_THRESHOLD` is unchanged (2) — the
+   fix makes a refusal countable, it does not lower the bar for exclusion. §6.8.3 now carries the
+   wedge rule.
+   Evidence: SOURCE CODE + PHYSICAL DEVICE (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §7).
+
+3. **Slot-non-release — INSTRUMENTED, root cause STILL UNKNOWN.** The device run showed
+   `DHCP success: IP=10.211.1.130/16` in the native stack while the controller never logged
+   `Tunnel established`, then blocked on the process-wide slot for the full `min(5T, 60 s)` budget
+   and ended the run with `ERROR_NATIVE_UNRESOLVED`. Two log-only additions were made, with **no
+   control-flow change**: (a) a line when `isOwnTunnelEstablished()` answers `false` while the
+   tracker says `CONNECTED`; (b) a `SLOT_UNRELEASED_DIAG` line carrying the measured wait, the
+   budget, the outcome, the protocol, the server, the tracker status, `isOwnTunnelEstablished()`
+   and the registry descriptor. A new read-only `ConnectionAdapter.tunnelTrackerStatus()` supplies
+   the tracker's opinion for logging only — never a decision input, for the reason
+   `AndroidConnectionAdapter.isOwnTunnelEstablished` already documents.
+   Evidence: SOURCE CODE + **UNKNOWN** (root cause not identified; no fix attempted).
+
+4. **JVM tests.** Four new tests in `AutoModeControllerTest.kt` (no existing test deleted or
+   modified): T-NEW-7 (predicate includes `CONNECTED`), T-NEW-8 (engine wiring uses
+   `isActiveOrBusy`, and OP-R6 is *not* gated), T-NEW-9 (two refusals record a wedge and the run
+   rotates), T-NEW-10 (a single refusal does not). `:app` went **796/0/0/1 → 800/0/0/1**;
+   `:SoftEtherClient` unchanged at **173/0/0/0**. Evidence: TEST.
+
+5. **APK.** `app/build/outputs/apk/pro/debug/app-pro-debug.apk`, SHA-256
+   `RECORDED_IN_REPORT` — see `AUTOCONNECT_FIX_2_REPORT.md` §9 for the exact value. Evidence: TEST
+   (build).
+
+6. **Device re-verification of S3 (D-4 refusal) and S5 (rotation under refusal): PENDING** — next
+   phase. Evidence: UNKNOWN.
+
+7. **S1 (the "12 s default") was a device-state deviation, not a code defect.** The device had
+   `SETTING_AUTO_MODE_TIMEOUT_SECONDS = 5` stored from prior use, so the UI correctly rendered
+   `5 s`; the code default is 12 and the clamp is `[5, 60]`. Clearing app data to observe a
+   fresh-install default is outside a device-verify phase's authority, so it was not done and the
+   item is recorded as a deviation. Evidence: PHYSICAL DEVICE
+   (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §3).
+
+8. **No new methodology lessons.** The two bugs were ordinary specificity failures — a guard
+   tested through an injected seam rather than its production predicate, and a ledger with one
+   unreachable write site — both caught by device evidence rather than by CI. That the device run
+   is the gate that matters is already lesson **L4** / §22 and is not restated.
+
+> **Device status of this revision.** v1.0.32 is **device-free**: no test here runs on hardware,
+> and the two fixes are verified only by SOURCE CODE plus the pre-fix device evidence. Whether they
+> behave as intended on 5585fecc is **UNKNOWN** until a re-verification phase runs.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2521,14 +2609,33 @@ Every way an attempt can end, and where it goes next. "Next protocol" means the 
 | Outcome | Meaning | Transition |
 |---------|---------|-----------|
 | `TUNNEL_UP` | A verified tunnel is up. | **Success** — the run ends `Connected`; no further attempts. |
-| `TIMED_OUT` | `T` expired with no tunnel, no refusal, no terminal failure. | **Next protocol.** Never retried on the same server. This is the only outcome that records a "wedge" against the server. |
+| `TIMED_OUT` | `T` expired with no tunnel, no refusal, no terminal failure. | **Next protocol.** Never retried on the same server. This outcome records a "wedge" against the server (once per server per run). |
 | `NATIVE_ERROR` | The stack reported a terminal failure **before** `T` expired (refused port, rejected handshake, a non-SoftEther answer to the VPNCONNECT watermark). | **Next protocol.** The slot is already free, so the post-failure slot wait is skipped. |
-| `NATIVE_BUSY` | The start was refused because this application's own previous native operation still holds the process-wide slot. The server was **never contacted**. | Wait for the slot to be released (up to `min(5T, 60 s)`), then **retry the same protocol once**. If the retry does not come up, **next protocol**. If the slot is never released → terminal `ERROR_NATIVE_UNRESOLVED`. |
+| `NATIVE_BUSY` | The start was refused because this application's own previous native operation still holds the process-wide slot. The server was **never contacted**. | Wait for the slot to be released (up to `min(5T, 60 s)`), then **retry the same protocol once**. If the retry does not come up, **next protocol**. If the slot is never released → terminal `ERROR_NATIVE_UNRESOLVED`. **Repeated** refusals on the same server in the same run record a wedge — see below. |
 | **Thrown exception** in `connect()` | The adapter could not even dispatch the attempt. | **Next protocol** (v1.0.31). Before v1.0.31 this jumped to the next **server**, so a server that threw on its first protocol never got its second — the same failure rotated at two different granularities depending on where it was raised. |
 | `VpnPermissionMissingException` | The OS refused the VPN permission. | **Terminal** `ERROR_VPN_PERMISSION`. |
 | User skip | "Try next server" while connecting. | **Next server** (deliberately skips the current server's remaining protocols — the user asked for a different server, not a different protocol). |
 
 Two asymmetries are intentional and are part of this contract: a user skip advances a **server**, and a `NATIVE_BUSY` refusal does **not** advance anything until the retry has been given its chance (a refusal is not a server verdict).
+
+**The wedge rule (added v1.0.32, BUG-B).** A wedge is one strike against a server in the
+session ledger (`WedgeTracker`); `WedgeTracker.EXCLUSION_THRESHOLD` strikes exclude it for the rest
+of the process. Two outcomes write a strike, at most one per server per run:
+
+1. `TIMED_OUT` — the attempt reached the server and nothing came up inside `T`. (Unchanged since
+   the AUTOCONNECT-AUDIT D-5 revision.)
+2. **Repeated `NATIVE_BUSY` on the same server in the same run — threshold 2**
+   (`AutoModeController.NATIVE_BUSY_WEDGE_THRESHOLD`). One refusal is routinely caused by the
+   *previous* server's still-running native operation, so a single strike would be evidence about
+   the wrong endpoint; the second refusal on the same server inside one run — after the slot was
+   reported released in between — cannot be explained that way and is evidence about this
+   endpoint. Before v1.0.32 no refusal path reached the ledger at all, so a server that was
+   refused on every protocol could never be excluded and was re-selected on every subsequent run
+   (§1.6.24 bullet 2).
+
+A `NATIVE_ERROR` never records a strike (the endpoint answered and is cheaply recoverable). The
+**exclusion** threshold is unchanged at 2 — v1.0.32 only made a refusal *countable*, it did not
+make exclusion easier to reach.
 
 #### 6.8.4 Terminal conditions
 
@@ -2574,6 +2681,25 @@ A press taken from `Disconnected`/`Error` is **refused** — with a log line, an
 ```
 
 This covers a manual connection and a manual connect that is still in flight. It is the fail-closed choice: AutoConnect must never dial a second, competing tunnel. Before v1.0.31 the guard existed only in `startOrRefuseIfNoServers()`, which has no production caller, so the production button path dialled regardless.
+
+**The predicate (clarified v1.0.32, BUG-A).** "Busy" here means *this process already owns a
+tunnel, or is acquiring/releasing one*. All three of the following count:
+
+| Status | Counts as busy? | Why |
+|--------|-----------------|-----|
+| `CONNECTED` | **yes** | an externally established tunnel — the single most common shape of the hazard |
+| `CONNECTING` | yes | a manual connect still coming up |
+| `DISCONNECTING` | yes | a half-closed tunnel is not free to take over; a new native attempt would race the teardown |
+| `DISCONNECTED`, `ERROR` | no | nothing is owned |
+
+The reader is `GlobalVpnTracker.isActiveOrBusy`. The narrower `GlobalVpnTracker.isBusy` —
+`CONNECTING || DISCONNECTING` — is **not** sufficient and must not be used for this guard: it was,
+in v1.0.31, and the consequence was that a cleanly established manual tunnel was invisible to the
+guard, the run started anyway, and it tore the user's manual session down (§1.6.24 bullet 1).
+
+**Scope of the guard.** It applies to the `Disconnected`/`Error` branch only. A press taken while
+Auto Mode is itself `Connected` is the OP-R6 path (§6.8.5) and is **not** gated by this predicate —
+otherwise the "move on" button would refuse to move on.
 
 > §6.7 R2's "disconnect the current tunnel first, **then** proceed" describes the **Auto Mode-owned** tunnel case, which §6.8.5 now implements. The manual-tunnel case is a **refusal**, not a takeover: AutoConnect does not tear down a connection the user started outside it.
 
@@ -3838,6 +3964,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.29 | 2026-10-18 | DOCS-REPAIR (documentation only — no source/test/build/device change) | Maintainer-directed documentation repair across the three owned documents (decisions recorded in-session with Morteza Taheri). **This file:** §1.3 and §15.3 flavor tables corrected — only the `pro` flavor exists; `assembleFreeDebug`/`bundleFreeRelease` do not (SOURCE VERIFIED, `app/build.gradle`) — plus the `CI=true` requirement for local debug builds; §1.3/§15.4 signing text corrected to the fail-closed guard reality (debug-keystore fallback is debug-only; release tasks fail closed); §15.5 KSP 2.3.2 → **2.3.12** (SOURCE VERIFIED, root `build.gradle`); filename typos corrected (`VPNGiteItem.kt` §7.3, `VPNGatConnection.kt` §18.2/§20 → `VPNGateItem.kt`/`VPNGateConnection.kt`); §11.8.2 rewritten as **HISTORICAL — superseded** with the current routing state (binding landed `a9e16fd`; OPEN-first/VPN-fallback landed `c4c0311`); §8.1 currency note added (routing + emergency + manual rungs); §12.5.2 gained a v1.0.29 item-status table (A/B/C/D/G LANDED, E/F OPEN, H PARTIAL, retention §9 APPROVED-but-NOT-IMPLEMENTED); §12.7 criterion 6 marked SUPERSEDED (schema approved v1.0.20); changelog row 1.0.10 backfilled; the v1.0.28 push-state note reconciled with the actual chain (`0f5f307` carried only the device report; `82cb64f` carried the v1.0.28 spec + `RECONCILE_REPORT.md`; `origin/main` = `82cb64f`, 3 ahead of `b68ac2a`); Documentation map added to the header. **`SERVER_SOURCE_ARCHITECTURE.md`:** Section 1 rewritten to current HEAD state (old text preserved as a labelled historical appendix); §3 schema sketch annotated superseded by §10; §7 Q2 "API 21" corrected to the project minSdk API 24; broken §2.2 cross-reference fixed; §2/§8 annotated with landed-status. **`README.md`:** implemented features updated (emergency sources, manual servers), a clearly-labelled Planned section added, build commands corrected to the real flavor/CI/signing facts, attribution extended to the full §1.4 dependency list, documentation map added. No code, test, build, schema, or manifest file was modified. |
 | 1.0.30 | 2026-10-18 | SPEC-INTEGRITY-AUDIT (read-only audit + path repair; one doc-comment-only source commit) | **Restored spec integrity after the `docs/reports/` reorganization (`a76bdc6`).** A read-only audit resolved all `*.md` tokens: 38 moved-only under `docs/reports/`, 4 at root, 2 under `SoftEtherClient/`. **19 bare path references updated** to `docs/reports/…` in the authorized regions (§1.6.2–§1.6.21: 14; §12.5.1: 5); the other 46 bare occurrences (in §1.6.1's existing notes, §3.1, §6.7, §12.4, the existing §20 rows, and one `RUDP_IMPLEMENTATION_PLAN.md` in §12.5.1) are recorded in §1.6.22 rather than edited (out of scope) and still resolve via their documented location. Recorded the **concurrent-worktree contamination** event (`82cb64f` + `82476bf`) as a process lesson in §1.6.22 (a working tree must be single-owner; a second session needs a separate clone). **`HttpFetcher.kt` doc-comment change committed** (`9d569c3`) — comment-only, no API change — removing the last tracked dirty file. **The 1 skipped `:app` test identified:** `HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, an `AssumptionViolatedException` (data-dependent, not a failure). `:app` **790/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.21 otherwise untouched. |
 | 1.0.31 | 2026-10-18 | AUTOCONNECT-FIX (device-free; two AutoConnect audits closed) | **Closes four audit gaps plus OP-R6.** D-1: default attempt timeout unified to **12 s** (Settings key `SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped **5–60 s**; `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` `25_000L` → `12_000L`, spec §6.7 R5 / §6.8). D-2: exception in `connect()` advances to the **next protocol** (not next server) — `break` → `continue` at `AutoModeController.kt:1446` (D-2 / OP-R4). D-4: `isTunnelBusy()` guard wired to the production button path — `Disconnected`/`Error` press refused with `[AUTO] start refused: a tunnel is already active` at `AutoModeController.kt:1010`. D-5 (OP-R6): pressing while `Connected` continues from the next server via `resumeFromIndex = currentServerIndex + 1` (`AutoModeController.kt:532`, consumed at `:1026`, reset at `:1773`). D-6: four terminal conditions documented in §6.7 R7; native connect budget is **80 % of `T`** (`NATIVE_TIMEOUT_FRACTION_NUM/DEN = 4/5`, `AndroidConnectionAdapter.kt:74-75`; `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` at `:84`). D-7: new **§6.8** Per-Attempt Timeout and Rotation Contract. D-8: six new tests in `AutoModeControllerTest.kt` (T-NEW-1..T-NEW-6) plus the `DEFAULT_ATTEMPT_TIMEOUT_MS` assertion corrected to `12_000L` in `AutoModeNativeBusyTest.kt:511`. JVM: `:app` **~796/0/0/1** (one skip = `HtmlParserOracleTest`, unchanged), `:SoftEtherClient` **173/0/0/0**. Standalone `:app:assembleProDebug` build gate passed under `CI=true`; APK SHA-256 recorded in `AUTOCONNECT_FIX_REPORT.md`. §22 byte-identical; §1.6.2–§1.6.22 untouched. No device, no tag, no force, no `git add -A`. |
+| 1.0.32 | 2026-10-18 | AUTOCONNECT-FIX-2 (device-free; two bugs found on hardware) | **Closes the two defects the v1.0.31 device verification found, and instruments a third.** BUG-A: the D-4 refusal guard was blind to `CONNECTED` — v1.0.31 wired `isTunnelBusy` to `GlobalVpnTracker.isBusy` (`CONNECTING \|\| DISCONNECTING`), so a cleanly established manual tunnel was invisible, the run started anyway and tore the user's manual session down (`DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5). New `VpnConnectionStatus.isActiveOrBusy` (`CONNECTED \|\| CONNECTING \|\| DISCONNECTING`) + `GlobalVpnTracker.isActiveOrBusy`; `AutoModeEngine.kt` now supplies it. `isBusy` semantics unchanged. BUG-B: `recordWedge` was reachable only from `TIMED_OUT`, so a server refused on every protocol could never be excluded — `vpn131251792` was re-selected in four consecutive runs and each ended `Native slot not released within 25000ms … stopping` (§7). `AutoModeController` now counts `NATIVE_BUSY` per server per run and records one wedge at `NATIVE_BUSY_WEDGE_THRESHOLD = 2`; `WedgeTracker.EXCLUSION_THRESHOLD` unchanged. Slot-non-release **instrumented only** (log-only, no control-flow change): a line when `isOwnTunnelEstablished()` answers `false` while the tracker says `CONNECTED`, and a `SLOT_UNRELEASED_DIAG` line carrying the measured wait, outcome, protocol, server, tracker status, ownership answer and registry descriptor — fed by a new read-only `ConnectionAdapter.tunnelTrackerStatus()`. Root cause **UNKNOWN**; no fix attempted. S1 recorded as a **device-state deviation** (`SETTING_AUTO_MODE_TIMEOUT_SECONDS = 5` stored on 5585fecc), not a code defect. Four new tests (T-NEW-7..T-NEW-10); `:app` **800/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §6.8.3/§6.8.6 updated (wedge rule; predicate table). §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.23 untouched. Device re-verification of S3/S5 **PENDING**. No device command, no tag, no force, no `git add -A`. |
 
 ### Verification Status
 
@@ -3894,6 +4021,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | RECONCILE-DIRTY-FILES — Restore HEAD Buildability (§1.6.21) | VERIFIED (build reconciliation) + SOURCE CODE + TEST — the PART A defect is **SOURCE CODE** (`AutoModeEngine.kt:82-83` referencing `nativeSlotAwaitMs` / `NATIVE_SLOT_AWAIT_MAX_MS` absent from the committed `AutoModeController.kt`); the 7-file D-1b closure is **SOURCE CODE** (committed as `df7b49c`, +667/−332, `HttpFetcher.kt` deliberately excluded as category-(c) UNRELATED-IN-FLIGHT); the standalone build gate is **TEST** (`git archive HEAD | gradlew :app:assembleProDebug` SUCCEEDED on C:, APK SHA-256 `6e289cb179eec411c5b6ed6b5d9b3d8bfe70ba18a9c3ed4ee5939eab869f3248`; the D:-drive failure was an unrelated NDK/CMake `.cxx` metadata `Access is denied`, no `^e:` Kotlin errors); the JVM suites are **TEST** — `:app` **790/0/0/1** (60 classes), `:SoftEtherClient` **173/0/0/0**, both EXIT=0; the root-cause lesson (commit the coherent closure, never patch the leaf) is **INFERENCE** and is recorded as a candidate §22 lesson; §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.20 are untouched |
 | Spec Integrity + Concurrent Worktree Lesson (§1.6.22) | HISTORICAL (audit) + SOURCE CODE (path repairs) + TEST (skip identity) — the `docs/reports/` relocation is **SOURCE CODE** (commit `a76bdc6`; 38 moved-only, 4 root, 2 under `SoftEtherClient/`); the 19 path updates are **SOURCE CODE** (`git diff --stat` = 17/17, confined to §1.6.2–§1.6.21 + §12.5.1); the 46 remaining bare occurrences are **SOURCE CODE** (recorded, not edited, all resolvable); the concurrent-worktree contamination (`82cb64f` sweeping partial v1.0.29 content later superseded by `82476bf`) is **SOURCE CODE** (`git diff 0f5f307..82cb64f`), documentation-only; the single-owner working-tree rule is **INFERENCE**; the `HttpFetcher.kt` commit (`9d569c3`, comment-only) is **SOURCE CODE**; the skip identity is **TEST** (`HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, `AssumptionViolatedException`); §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.21 are otherwise untouched |
 | AutoConnect Audit Reconciliation (§1.6.23) | HISTORICAL — records the AUTOCONNECT-FIX revision (D-1..D-8, OP-R6) that closes four gaps from the two independent AutoConnect audits plus OP-R6; all claims attributed to their phase report and to the direct source/test inspection recorded in §1.6.23. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
+| AutoConnect Fix 2 — Two Device Bugs (§1.6.24) | HISTORICAL — records the AUTOCONNECT-FIX-2 revision closing BUG-A (D-4 predicate now includes `CONNECTED` via `GlobalVpnTracker.isActiveOrBusy`) and BUG-B (repeated `NATIVE_BUSY` on the same server records a wedge at threshold 2), plus slot-non-release instrumentation. The bugs are **PHYSICAL DEVICE** findings attributed to `DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md` §5 and §7; the fixes are **SOURCE CODE** (`GlobalVpnTracker.kt`, `AutoModeEngine.kt`, `AutoModeController.kt`); the four new tests are **TEST**; the slot-non-release root cause is **UNKNOWN** (instrumented only, no fix attempted); device re-verification is **PENDING**. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 
 ### Legend
 
