@@ -2905,6 +2905,51 @@ static int softether_connect_with_hub_nolock(softether_connection_t* conn, const
         softether_disconnect(conn);
         result = softether_try_nat_t_connect(conn, host, resolved_ip, port);
         if (result == ERR_NONE) {
+            // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P1, RUDP) — v1.0.34 --------
+            // The TCP branch above bounds its handshake at
+            // socket_apply_timeout(conn->socket_fd, conn->timeout_ms); this
+            // fallback did not, and that asymmetry was a real defect, not a
+            // theoretical one.
+            //
+            // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md §7.3,
+            // 2026-10-18, 5/5 runs): an endpoint that completes TCP connect and
+            // the TCP TLS handshake but fails the VPNCONNECT watermark forces
+            // this fallback. The RUDP transport reached ESTABLISHED, the TLS
+            // handshake then blocked for 28.5 s with no output at all, and only
+            // the controller's forced teardown ended it. Because the very first
+            // SSL_do_handshake never returned, the max_attempts loop in
+            // aes_wrapper.c never iterated (zero "SSL handshake attempt N" and
+            // zero "did not complete after 100 attempts" lines in any run) —
+            // so the process-wide native slot stayed held and EVERY slot-wait
+            // budget expired, regardless of its size.
+            //
+            // conn->socket_fd here is rudp_transport_get_fd(tr) (set by
+            // softether_try_nat_t_connect), i.e. the app-facing end of the RUDP
+            // socketpair (rudp_transport.c: socketpair(AF_UNIX, SOCK_STREAM),
+            // fds[1]). That is a real socket and exactly the fd OpenSSL reads
+            // from, so SO_RCVTIMEO makes the blocking recv() return EAGAIN and
+            // the existing WANT_READ/WANT_WRITE ladder takes over. The parallel
+            // UDP race path in this same file already relies on that (see the
+            // AC-03 / STEP 5.1 block around line 2036).
+            int so_timeout_applied =
+                (socket_apply_timeout(conn->socket_fd, conn->timeout_ms) == 0);
+
+            // ---- NATIVE-FIX-HANDSHAKE-TIMEOUT (P5a, RUDP) — v1.0.34 --------
+            // Same discriminator as the TCP site, tagged "(RUDP)" so a single
+            // grep distinguishes the two paths in a device log. One line per
+            // handshake entry, deliberately outside any retry loop.
+            LOGD("[TLS] handshake entry (RUDP): conn->timeout_ms=%d, "
+                 "socket_fd=%d, SO_RCVTIMEO applied=%s",
+                 conn->timeout_ms, conn->socket_fd,
+                 so_timeout_applied ? "yes" : "no");
+
+            if (!so_timeout_applied) {
+                LOGW("TLS handshake over RUDP proceeding WITHOUT a socket "
+                     "timeout (fd=%d, timeout_ms=%d); a stalled handshake can "
+                     "still block indefinitely",
+                     conn->socket_fd, conn->timeout_ms);
+            }
+
             result = perform_tls_handshake(conn, connect_host);
             if (result != ERR_NONE) {
                 LOGE("TLS handshake failed over RUDP transport");

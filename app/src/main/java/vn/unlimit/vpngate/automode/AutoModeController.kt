@@ -1695,6 +1695,45 @@ enum class AttemptOutcome {
                     val slotWaitStartedAt = System.currentTimeMillis()
                     val released = adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
                     if (!released) {
+                        // v1.0.34 (AUTOCONNECT-FIX-4, FIX-B): record a wedge on the
+                        // NATIVE_BUSY terminal.
+                        //
+                        // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md
+                        // §7.4) shows that `nativeBusyThisServer` can never reach
+                        // NATIVE_BUSY_WEDGE_THRESHOLD in one run when the FIRST
+                        // NATIVE_BUSY terminal fires: the loop exits before the counter
+                        // reaches 2, so the WedgeTracker never sees the same broken
+                        // endpoint. The same endpoint (vpn131251792 in the device run)
+                        // was re-selected in 5/5 runs and died identically 5/5 times,
+                        // and no `recording a wedge` / `Excluding …` line was ever
+                        // emitted.
+                        //
+                        // The design intent of AUTOCONNECT-AUDIT D-5 ("a give-up caused
+                        // by our own unresolved operation records nothing") was correct
+                        // for the case where OUR OWN PREVIOUS operation was still
+                        // running — but device evidence proved this endpoint itself
+                        // triggers the hang: TCP connect and the TCP TLS handshake
+                        // succeed, the VPNCONNECT watermark fails, and the NAT-T/RUDP
+                        // fallback handshake then blocks forever (bounded only from
+                        // v1.0.34 onward). So a NATIVE_BUSY terminal IS evidence about
+                        // this endpoint, not merely about our own bookkeeping.
+                        //
+                        // Recording a wedge here lets the process-scoped ledger
+                        // accumulate ACROSS runs, so the endpoint is excluded after
+                        // EXCLUSION_THRESHOLD runs instead of being re-selected forever.
+                        // The ledger is cleared on any verified tunnel (see the
+                        // wedgeTracker.clear call on a connected run), so a transient
+                        // issue that later resolves does not exclude the endpoint
+                        // permanently.
+                        if (!wedgedThisServer) {
+                            adapter.log(
+                                "[AUTO] Recording a wedge on the NATIVE_BUSY terminal for " +
+                                        "${server.hostname ?: server.ip} (the endpoint itself " +
+                                        "never accepted the native attempt)",
+                            )
+                            recordWedge(server, key)
+                            wedgedThisServer = true
+                        }
                         val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
                         // The slot was still held when the budget expired: the operation is
                         // genuinely stuck, and only here does the fail-closed terminal
@@ -1969,6 +2008,20 @@ enum class AttemptOutcome {
      * The ledger is now written where a server is genuinely implicated — an attempt that
      * reached it and produced no tunnel within the budget ([recordWedge]) — and a give-up
      * caused by our own unresolved operation records nothing.
+     *
+     * ## v1.0.34 — the D-5 rule is narrowed, not reverted
+     *
+     * Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md §7.4) showed that D-5 was
+     * right about *why* it was written and wrong as an absolute: the NATIVE_BUSY terminal
+     * can be caused by the selected endpoint itself (TCP handshake fine, VPNCONNECT
+     * watermark rejected, RUDP fallback handshake unbounded), and because that terminal
+     * ends the run on the FIRST refusal, the per-run counter can never reach
+     * [NATIVE_BUSY_WEDGE_THRESHOLD]. The endpoint was therefore re-selected in 5/5 runs.
+     *
+     * So the caller at the NATIVE_BUSY terminal now records the wedge BEFORE invoking this
+     * function. This function itself still records nothing: it is also reached from the
+     * post-attempt site, where the "our own operation, server never contacted" reasoning
+     * still holds exactly as D-5 described.
      */
     private fun giveUpWithUnresolvedNativeOperation() {
         adapter.log(
@@ -1990,6 +2043,12 @@ enum class AttemptOutcome {
      * (`NATIVE_ERROR`, the endpoint answered but is not usable) remain deliberately
      * not wedges: the first says nothing about the server on its own, and the second is
      * already cheap to recover from.
+     *
+     * v1.0.34 adds a third caller: the NATIVE_BUSY **terminal** (the slot wait expired
+     * without a release). The per-run counter described above cannot fire there, because
+     * that terminal ends the run on its first refusal; the process-scoped ledger is the
+     * only place the strike can survive. See DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md
+     * §7.4 and the call site for the full rationale.
      */
     private fun recordWedge(server: AutoModeCandidate, key: String) {
         val wedges = wedgeTracker.record(key)

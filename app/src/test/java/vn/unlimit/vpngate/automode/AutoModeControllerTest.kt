@@ -227,6 +227,15 @@ class AutoModeControllerTest {
         isTunnelBusy: () -> Boolean = { false },
         /** R8 (OQ-3): settle delay before the first reconnect attempt; 0 keeps JVM tests fast. */
         reconnectInitialDelayMs: Long = 0L,
+        /**
+         * AUTOCONNECT-FIX-4 (v1.0.34): the ledger to inject.
+         *
+         * Defaults to a fresh instance so every pre-existing test keeps its exact
+         * behaviour. A test that needs the ledger to survive ACROSS runs — which is the
+         * whole point of the process-scoped WedgeTracker — passes one shared instance to
+         * two consecutive controllers.
+         */
+        wedgeTracker: WedgeTracker = WedgeTracker(),
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -241,7 +250,8 @@ class AutoModeControllerTest {
         reconnectInitialDelayMs = reconnectInitialDelayMs,
         // AUTOCONNECT-AUDIT D-5: a fresh ledger per controller so the process-wide
         // WedgeTracker.process never leaks wedges across tests in the same JVM.
-        wedgeTracker = WedgeTracker(),
+        // AUTOCONNECT-FIX-4: overridable, so the terminal-wedge test can share one ledger.
+        wedgeTracker = wedgeTracker,
     )
 
     private fun server(
@@ -2977,6 +2987,146 @@ val sstp = AutoModeCandidate(
             "NATIVE_SLOT_AWAIT_MS floor must be at least 30 000 ms, was " +
                 "${AutoModeController.NATIVE_SLOT_AWAIT_MS}",
             AutoModeController.NATIVE_SLOT_AWAIT_MS >= 30_000L,
+        )
+    }
+
+    // ==================================================================
+    // AUTOCONNECT-FIX-4 (v1.0.34): the two complementary fixes.
+    //
+    // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md §7.3/§7.4)
+    // showed that the NATIVE_BUSY terminal is the ONLY terminal this endpoint
+    // can reach: the RUDP fallback handshake blocked forever, so the first
+    // native attempt never returned, the slot never released, and the run
+    // ended before `nativeBusyThisServer` could reach 2. The counter-based
+    // wedge rule therefore could not fire, and the same broken endpoint was
+    // re-selected in 5/5 runs. These two tests pin the two halves of the fix.
+    // ==================================================================
+
+    /**
+     * T-NEW-11 (FIX-B): a NATIVE_BUSY terminal records a wedge, and the strike
+     * survives across runs.
+     *
+     * This is the structural gap v1.0.34 closes. The per-run counter can never
+     * reach [AutoModeController.NATIVE_BUSY_WEDGE_THRESHOLD] on a first-attempt
+     * terminal, because the terminal ends the run — so the process-scoped
+     * ledger is the only place the strike can accumulate. Two runs must be
+     * enough for [WedgeTracker.EXCLUSION_THRESHOLD], and the third run must
+     * skip the endpoint WITHOUT dialling it.
+     *
+     * The falsifiable claim: before v1.0.34, run 1 and run 2 would both leave
+     * `wedgeCountFor == 0` and run 3 would dial the endpoint again.
+     */
+    @Test
+    fun aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns() = runBlocking {
+        val ledger = WedgeTracker()
+        val wedged = server("wedged-endpoint")
+        // The endpoint's own attempt never finishes: the slot is never released.
+        adapter.nativeSlotReleases = false
+
+        // ---- Run 1: the terminal fires and must record one wedge. ----
+        adapter.scriptBusy("wedged-endpoint", false, false)
+        val first = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
+        first.start()
+        val firstState = first.awaitTerminal()
+
+        assertTrue("run 1 must end in Error, got $firstState", firstState is AutoModeState.Error)
+        assertEquals(
+            "run 1 terminal code must be unchanged",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (firstState as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the terminal must say it is recording a wedge: ${adapter.logs}",
+            adapter.logs.any { it.contains("Recording a wedge on the NATIVE_BUSY terminal") },
+        )
+        assertEquals(
+            "one terminal must record exactly one wedge",
+            1,
+            first.wedgeCountFor(wedged),
+        )
+
+        // ---- Run 2: a FRESH controller, same ledger, must reach 2. ----
+        adapter.logs.clear()
+        adapter.connects.clear()
+        adapter.scriptBusy("wedged-endpoint", false, false)
+        val second = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
+        second.start()
+        val secondState = second.awaitTerminal()
+
+        assertTrue("run 2 must end in Error, got $secondState", secondState is AutoModeState.Error)
+        assertEquals(
+            "the ledger must accumulate across runs, which is the whole point",
+            2,
+            second.wedgeCountFor(wedged),
+        )
+
+        // ---- Run 3: the endpoint is now excluded and must not be dialled. ----
+        adapter.logs.clear()
+        adapter.connects.clear()
+        adapter.scriptBusy("wedged-endpoint", false, false)
+        val third = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
+        third.start()
+        val thirdState = third.awaitTerminal()
+
+        assertEquals(
+            "with every candidate excluded the run reports no compatible server",
+            AutoModeController.ERROR_NO_SERVER,
+            (thirdState as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the exclusion must be visible in the log: ${adapter.logs}",
+            adapter.logs.any { it.contains("excluded for this session") },
+        )
+        assertTrue(
+            "an excluded endpoint must consume no dial at all: ${adapter.connects}",
+            adapter.connects.isEmpty(),
+        )
+    }
+
+    /**
+     * T-NEW-12 (FIX-A, source shape): the NAT-T/RUDP fallback handshake is
+     * bounded exactly the way the TCP handshake is.
+     *
+     * Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md §7.3): the TCP
+     * path applied `socket_apply_timeout` before `perform_tls_handshake`, the
+     * RUDP fallback did not, and the RUDP BIO read then blocked for 28.5 s of
+     * complete silence. This is a source-shape guard — the same technique the
+     * other source-shape tests in this file use — because the C transport
+     * cannot be executed from a JVM unit test. It fails if the RUDP site ever
+     * loses the timeout application again, regardless of the surrounding code.
+     */
+    @Test
+    fun theRudpFallbackHandshakeIsBoundedLikeTheTcpPath() {
+        val native = sourceOf(
+            "../SoftEtherClient/src/main/cpp/softether-core/src/proto/softether_protocol.c",
+        )
+
+        assertTrue(
+            "the RUDP handshake entry discriminator must exist, so a device log can " +
+                "distinguish the two paths with one grep",
+            native.contains("[TLS] handshake entry (RUDP)"),
+        )
+
+        val fallback = native.substringAfter("retrying via NAT-T + RUDP fallback")
+            .substringBefore("perform_tls_handshake(conn, connect_host);")
+        assertTrue(
+            "the NAT-T/RUDP fallback must apply the same socket timeout the TCP path " +
+                "does, before its handshake; block was:\n$fallback",
+            fallback.contains("socket_apply_timeout(conn->socket_fd, conn->timeout_ms)"),
+        )
+
+        // The TCP site must keep its own bound — this fix must not be paid for by
+        // weakening the path that was already correct. Its discriminator has no
+        // "(RUDP)" suffix, which is what distinguishes the two sites.
+        assertTrue(
+            "the TCP handshake entry discriminator must survive unchanged",
+            native.contains("[TLS] handshake entry: conn->timeout_ms=%d"),
+        )
+        assertEquals(
+            "exactly two handshake sites may apply the timeout: TCP and NAT-T/RUDP",
+            2,
+            Regex("""\(socket_apply_timeout\(conn->socket_fd, conn->timeout_ms\) == 0\)""")
+                .findAll(native).count(),
         )
     }
 
