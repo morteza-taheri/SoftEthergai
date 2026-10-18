@@ -54,6 +54,34 @@ class AndroidConnectionAdapter(
          * stack that never reports cannot wedge Auto Connect indefinitely.
          */
         private const val TEARDOWN_TIMEOUT_MS = 5_000L
+
+        /**
+         * AUTOCONNECT-AUDIT D-2: how often [awaitNativeSlotRelease] re-reads the registry.
+         *
+         * 100 ms is well below the granularity that matters here (the observed release
+         * arrives ~300 ms after the native exit) and cheap: the check is a read of a
+         * process-wide object with no I/O.
+         */
+        private const val NATIVE_SLOT_POLL_MS = 100L
+
+        /**
+         * AUTOCONNECT-AUDIT D-1: the native connect budget, as a fraction of the
+         * per-attempt budget the controller waits on.
+         *
+         * 4/5 = 80 %: see the derivation in [connectSoftEther]. Expressed as a
+         * numerator/denominator pair so the arithmetic stays integer and exact.
+         */
+        private const val NATIVE_TIMEOUT_FRACTION_NUM = 4L
+        private const val NATIVE_TIMEOUT_FRACTION_DEN = 5L
+
+        /**
+         * AUTOCONNECT-AUDIT D-1: floor for the native connect budget.
+         *
+         * A very short per-attempt setting must still allow a TCP connect, a TLS
+         * handshake and the VPNCONNECT watermark exchange to complete, so the
+         * fraction above is never allowed to shrink the native budget below this.
+         */
+        private const val MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L
     }
 
     @Volatile
@@ -274,6 +302,14 @@ class AndroidConnectionAdapter(
         val busy = CompletableDeferred<Boolean>()
         armedNativeBusy = busy
         TunnelStateWatcher.onNativeBusy = { busy.complete(true) }
+        // AUTOCONNECT-AUDIT D-4: arm a third deferred for a terminal failure the stack
+        // reports before the budget expires, so a fast failure ends the wait instead of
+        // costing the full per-attempt timeout. Reset the per-attempt flag here, because
+        // it is only meaningful for the attempt that armed it.
+        lastArmedFailure = false
+        val failed = CompletableDeferred<Boolean>()
+        armedAttemptFailed = failed
+        TunnelStateWatcher.onAttemptFailed = { failed.complete(true) }
     }
 
     override suspend fun awaitArmedTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
@@ -292,7 +328,8 @@ class AndroidConnectionAdapter(
                 deferred.await()
             } else {
                 val busy = armedNativeBusy
-                if (busy == null) {
+                val failed = armedAttemptFailed
+                if (busy == null || failed == null) {
                     withTimeoutOrNull(timeoutMs) { deferred.await() } ?: false
                 } else {
                     // Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 2 / BUG 3): the
@@ -313,16 +350,24 @@ class AndroidConnectionAdapter(
                         kotlinx.coroutines.selects.select<Boolean> {
                             deferred.onAwait { true }
                             busy.onAwait { false }
+                            // AUTOCONNECT-AUDIT D-4: a terminal failure is also an answer.
+                            failed.onAwait { false }
                         }
                     } ?: false
                 }
             }
         } finally {
+            // AUTOCONNECT-AUDIT D-4: capture the failure verdict before the deferreds are
+            // dropped, so awaitArmedOutcome() can report NATIVE_ERROR instead of
+            // downgrading a real failure to a timeout.
+            lastArmedFailure = armedAttemptFailed?.isCompleted == true
             if (pendingArm == protocol) {
                 pendingArm = null
                 armedTunnel = null
                 armedNativeBusy = null
+                armedAttemptFailed = null
                 TunnelStateWatcher.onNativeBusy = null
+                TunnelStateWatcher.onAttemptFailed = null
                 TunnelStateWatcher.endAttempt()
             }
         }
@@ -339,6 +384,25 @@ class AndroidConnectionAdapter(
     private var armedNativeBusy: CompletableDeferred<Boolean>? = null
 
     /**
+     * AUTOCONNECT-AUDIT D-4: armed alongside [armedTunnel]; completes when the stack
+     * reports a terminal failure for this attempt (SoftEther `STATE_ERROR`, OpenVPN
+     * `LEVEL_AUTH_FAILED`).
+     */
+    @Volatile
+    private var armedAttemptFailed: CompletableDeferred<Boolean>? = null
+
+    /**
+     * AUTOCONNECT-AUDIT D-4: did the attempt that just ended report a terminal failure?
+     *
+     * [awaitArmedTunnel] returns a boolean, which cannot express three outcomes, and its
+     * callers include the plain "did a tunnel come up" path. The verdict is therefore
+     * remembered here for [awaitArmedOutcome] to read immediately afterwards, and reset
+     * by every [armTunnelWatch] so a stale flag can never describe a later attempt.
+     */
+    @Volatile
+    private var lastArmedFailure = false
+
+    /**
      * Stage 2F-F.28AA: report *why* an armed attempt ended, so Auto Mode can distinguish
      * "the server did not come up" from "our own previous native operation is still
      * running".
@@ -352,6 +416,10 @@ class AndroidConnectionAdapter(
     ): AutoModeController.AttemptOutcome {
         val up = awaitArmedTunnel(protocol, timeoutMs)
         if (up) return AutoModeController.AttemptOutcome.TUNNEL_UP
+        // AUTOCONNECT-AUDIT D-4: the stack reported a terminal failure while this attempt
+        // was armed. That is a verdict about the endpoint, not an expired budget, and it is
+        // checked before the slot because a finished operation cannot still own it.
+        if (lastArmedFailure) return AutoModeController.AttemptOutcome.NATIVE_ERROR
         // The tunnel wait has been cleared by `awaitArmedTunnel`, so the busy deferred it
         // raced is no longer authoritative. Re-check the registry directly: this is the
         // same fact the refusal was derived from, and it avoids a race in which a refusal
@@ -367,6 +435,36 @@ class AndroidConnectionAdapter(
     private fun isNativeSlotBusy(): Boolean {
         val registry = runCatching { NativeLifetimeRegistry.process }.getOrNull() ?: return false
         return !registry.isAdmissible() || registry.isBlocked()
+    }
+
+    /**
+     * AUTOCONNECT-AUDIT D-2: wait until the process-wide native slot is admissible again.
+     *
+     * A NATIVE_BUSY refusal means our own previous native operation is still running, and
+     * its completion is observable through [NativeLifetimeRegistry]. Polling that is what
+     * lets the controller wait for the real event instead of paying a fixed number of blind
+     * retries and then abandoning the run — on the 2026-10-17 device run the slot was
+     * released 313 ms after the run had already given up.
+     *
+     * The poll is deliberately read-only: it never acquires, forces or reclaims anything, so
+     * the fail-closed admission policy is untouched. `false` is returned only when the slot
+     * is still held at the deadline, which is the one case where the operation is genuinely
+     * stuck.
+     */
+    override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
+        if (!isNativeSlotBusy()) return true
+        val startedAt = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startedAt < timeoutMs) {
+            kotlinx.coroutines.delay(NATIVE_SLOT_POLL_MS)
+            if (!isNativeSlotBusy()) {
+                log(
+                    "[AUTO] Native slot released after " +
+                            "${System.currentTimeMillis() - startedAt}ms",
+                )
+                return true
+            }
+        }
+        return !isNativeSlotBusy()
     }
 
     @Volatile
@@ -484,7 +582,8 @@ class AndroidConnectionAdapter(
 
         // Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 3): plumb the user's
         // per-attempt timeout into the native connect so the parallel race is
-        // bounded by the SAME budget the controller waits on.
+        // bounded by the same user setting the controller waits on (D-1 below
+        // makes the native side strictly shorter, not identical).
         //
         // AutoModeEngine already reads this exact setting for the controller's
         // `attemptTimeoutMs` (`du.getAutoModeTimeoutSeconds() * 1000`); reading
@@ -496,9 +595,27 @@ class AndroidConnectionAdapter(
         // default and ignored the user's setting entirely.
         //
         // Two-layer fix with the Kotlin-side bound in awaitArmedTunnel():
-        //   layer 1 (here)      — native race timeout (connection-level)
-        //   layer 2 (FIX 2)     — armed select timeout (coroutine-level)
+        //   layer 1 (here)      — native race timeout (connection-level, 80 %)
+        //   layer 2 (FIX 2)     — armed select timeout (coroutine-level, 100 %)
         val attemptTimeoutMs = dataUtil.getAutoModeTimeoutSeconds().toLong() * 1000
+
+        // AUTOCONNECT-AUDIT D-1: hand the native connect a budget STRICTLY SMALLER than
+        // the wait the controller performs.
+        //
+        // Both layers used to use the identical figure, so the two deadlines coincided
+        // and the outcome was decided by whichever timer fired first: on the 2026-10-17
+        // run the native exit and the controller's give-up landed 27 ms apart. With the
+        // native verdict due first, an unresponsive server is reported as a native
+        // failure — and the process-wide slot is released — BEFORE the controller
+        // rotates, instead of the rotation immediately running into NATIVE_BUSY.
+        //
+        // Nothing that could have succeeded is lost: an attempt that cannot finish its
+        // handshake within 80 % of the window could not have produced a verified tunnel
+        // inside the full window either. The remaining 20 % is what the teardown and the
+        // verdict's trip back to the adapter need.
+        val nativeConnectTimeoutMs =
+            (attemptTimeoutMs * NATIVE_TIMEOUT_FRACTION_NUM / NATIVE_TIMEOUT_FRACTION_DEN)
+                .coerceAtLeast(MIN_NATIVE_CONNECT_TIMEOUT_MS)
 
         val config = ConnectionConfig(
             serverHost = serverHost,
@@ -516,7 +633,7 @@ class AndroidConnectionAdapter(
             useTcp = useTcp,
             udpPort = conn.seUdpPort,
             udpOnly = isUdpOnly,
-            connectTimeoutMs = attemptTimeoutMs.toInt(),
+            connectTimeoutMs = nativeConnectTimeoutMs.toInt(),
             clientProductName = "VPN Gate Connector Pro",
             clientVersion = BuildConfig.VERSION_NAME,
             clientBuild = BuildConfig.VERSION_CODE,

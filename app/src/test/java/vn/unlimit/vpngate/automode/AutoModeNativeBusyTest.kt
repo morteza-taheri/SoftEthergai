@@ -89,6 +89,29 @@ class AutoModeNativeBusyTest {
         @Volatile
         var tunnelUp = false
 
+        /**
+         * AUTOCONNECT-AUDIT D-2: when true, a slot wait reports "released" and clears
+         * [nativeBusy], so the controller's retry after the wait is a genuine attempt.
+         *
+         * When false the slot is held for the whole wait, which is the "genuinely stuck"
+         * case the fail-closed terminal still covers.
+         */
+        @Volatile
+        var slotReleases = false
+
+        /** How many slot waits the controller performed. */
+        val slotWaits = AtomicInteger(0)
+
+        override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
+            slotWaits.incrementAndGet()
+            if (!nativeBusy) return true
+            if (slotReleases) {
+                nativeBusy = false
+                return true
+            }
+            return false
+        }
+
         override suspend fun connect(candidate: AutoModeCandidate, protocol: AutoModeProtocol) {
             connects += protocol
         }
@@ -145,7 +168,6 @@ class AutoModeNativeBusyTest {
     private fun controller(
         adapter: BusyAwareAdapter,
         servers: List<AutoModeCandidate>,
-        retryDelayMs: Long = AutoModeController.NATIVE_BUSY_RETRY_DELAY_MS,
         wedgeTracker: WedgeTracker = WedgeTracker(),
     ) =
         AutoModeController(
@@ -159,7 +181,9 @@ class AutoModeNativeBusyTest {
             attemptTimeoutMs = 1_000L,
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
-            nativeBusyRetryDelayMs = retryDelayMs,
+            // AUTOCONNECT-AUDIT D-2: a short slot wait so the "genuinely stuck" tests reach
+            // the terminal give-up quickly instead of paying the production 30 s bound.
+            nativeSlotAwaitMs = 200L,
             // FIX-3: a fresh ledger per controller, so no test depends on — or disturbs —
             // the process-wide instance. The FIX-3 tests inject their own so they can share
             // it across runs and assert on it directly.
@@ -214,20 +238,21 @@ class AutoModeNativeBusyTest {
     }
 
     @Test
-    fun `native-busy refusal does not rotate to a second server`() {
+    fun `a slot that never releases still does not rotate to a second server`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
+        adapter.slotReleases = false // the operation is genuinely stuck
         val c = controller(adapter, listOf(server("a"), server("b"), server("c")))
 
         runUntilTerminal(c)
 
         assertEquals(
             "only the first server's protocol may have been dialled before the run stopped",
-            AutoModeController.NATIVE_BUSY_MAX_RETRIES + 1,
+            1,
             adapter.connects.size,
         )
         assertTrue(
-            "every dial before the run stopped must be the first server's TCP retry",
+            "every dial before the run stopped must be the first server's TCP attempt",
             adapter.connects.all { it == AutoModeProtocol.SOFTETHER_TCP },
         )
     }
@@ -236,6 +261,7 @@ class AutoModeNativeBusyTest {
     fun `native-busy refusal does not advance through the protocols of one server`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
+        adapter.slotReleases = false
         // The candidate offers both SoftEther transports, so without the fix this would try
         // TCP and then UDP on the same server.
         val c = controller(adapter, listOf(server("a")))
@@ -243,8 +269,8 @@ class AutoModeNativeBusyTest {
         runUntilTerminal(c)
 
         assertEquals(
-            "a refusal retries the SAME protocol and never advances to the server's other protocols",
-            List(AutoModeController.NATIVE_BUSY_MAX_RETRIES + 1) { AutoModeProtocol.SOFTETHER_TCP },
+            "a refusal that never clears retries the SAME protocol and never advances to the server's other protocols",
+            listOf(AutoModeProtocol.SOFTETHER_TCP),
             adapter.connects.toList(),
         )
         assertFalse(
@@ -306,9 +332,7 @@ class AutoModeNativeBusyTest {
 
         assertTrue(
             "the unresolved native operation must be diagnosable in the log: ${adapter.logs}",
-            adapter.logs.any {
-                it.contains("Native slot still owned") && it.contains("without blaming")
-            },
+            adapter.logs.any { it.contains("Native slot not released within") },
         )
     }
 
@@ -639,7 +663,7 @@ class AutoModeNativeBusyTest {
     fun `a give-up issues a recovery teardown so the wedged slot can be reclaimed`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
-        val c = controller(adapter, listOf(server("stuck")), retryDelayMs = 0)
+        val c = controller(adapter, listOf(server("stuck")))
 
         runToCompletion(c)
 
@@ -667,36 +691,73 @@ class AutoModeNativeBusyTest {
         )
     }
 
+    // ------------------------- AUTOCONNECT-AUDIT D-2: wait for the slot, then rotate
+    //
+    // Device evidence 2026-10-17: the native connect kept running for 18,915 ms while the
+    // controller waited 5,000 ms. The controller's two blind retries expired 27 ms before the
+    // native operation returned on its own, so the whole Auto Mode cycle was abandoned while
+    // the slot was released 313 ms later. These tests pin the corrected contract: a refusal
+    // is answered by waiting for the observable release and then continuing the rotation,
+    // and only a slot that never releases ends the run.
+
     @Test
-    fun `the budget give-up also issues the recovery teardown`() {
+    fun `a released slot lets the run rotate instead of ending it`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
-        // A 3000 ms budget trips on the second retry gate (2000 + 2000 > 3000), so this
-        // exercises the BUDGET give-up branch rather than the count-exhaustion one.
-        val c = AutoModeController(
-            scope = scope,
-            adapter = adapter,
-            protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
-            serverProvider = { listOf(server("budget-stuck")) },
-            onSuccess = { _, _ -> },
-            attemptTimeoutMs = 1_000L,
-            reachabilityFilter = null,
-            activeRttProvider = { _, _ -> null },
-            nativeBusyRetryDelayMs = 0,
-            perServerRetryDelayBudgetMs = 3_000,
-            wedgeTracker = WedgeTracker(),
-        )
+        adapter.slotReleases = true // the operation finishes while we wait
+        val c = controller(adapter, listOf(server("a")))
 
-        runToCompletion(c)
+        runUntilTerminal(c)
 
-        assertTrue(
-            "the budget branch must be the one that tripped: ${adapter.logs}",
-            adapter.logs.any { it.contains("Per-server retry budget exceeded") },
+        assertEquals(
+            "the run must exhaust the list, not die on the refusal",
+            AutoModeController.ERROR_NO_SERVER,
+            (c.state.value as AutoModeState.Error).message,
         )
         assertEquals(
-            "FIX-2 applies to both give-up sites, not just count exhaustion",
-            1,
-            adapter.recoveryTeardowns.get(),
+            "the released slot must be retried once, then the rotation must continue " +
+                "through the server's second protocol",
+            listOf(
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_UDP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue("the release must be waited for", adapter.slotWaits.get() >= 1)
+        assertTrue(
+            "the release must be logged: ${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
+        )
+        assertFalse(
+            "a released slot must never be reported as stuck: ${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot not released within") },
+        )
+    }
+
+    @Test
+    fun `the controller waits for the slot instead of retrying blind`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        adapter.slotReleases = true
+        val c = controller(adapter, listOf(server("a"), server("b")))
+
+        runUntilTerminal(c)
+
+        assertTrue(
+            "the observable wait is the mechanism: ${adapter.logs}",
+            adapter.slotWaits.get() >= 1,
+        )
+        assertTrue(
+            "the post-release attempt must be logged as a genuine failure and rotated: " +
+                "${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Attempt after the slot was released did not come up")
+            },
+        )
+        assertTrue(
+            "the server's protocol must still be reported as failed: ${adapter.logs}",
+            adapter.logs.any { it.contains("Protocol failed: SOFTETHER_TCP") },
         )
     }
 
@@ -711,14 +772,18 @@ class AutoModeNativeBusyTest {
     fun `a server that wedges twice is excluded for the rest of the session`() {
         val tracker = WedgeTracker()
         val adapter = BusyAwareAdapter()
-        adapter.nativeBusy = true
+        // AUTOCONNECT-AUDIT D-5: a wedge is recorded for an attempt that REACHED the
+        // server and did not come up. No refusal here: nativeBusy stays false, so every
+        // attempt is a plain TIMED_OUT, which is the outcome that implicates the server.
         val wedging = server("wedgey")
-        val c = controller(adapter, listOf(wedging), retryDelayMs = 0, wedgeTracker = tracker)
+        val c = controller(adapter, listOf(wedging), wedgeTracker = tracker)
 
         runToCompletion(c) // wedge #1
         assertEquals("the first give-up must be recorded", 1, c.wedgeCountFor(wedging))
         assertEquals(
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            // D-5: no refusal here, so the wedge is a plain TIMED_OUT which ends the
+            // single-server run with the ordinary exhausted-list message.
+            AutoModeController.ERROR_NO_SERVER,
             (c.state.value as AutoModeState.Error).message,
         )
 
@@ -753,9 +818,8 @@ class AutoModeNativeBusyTest {
     fun `a single wedge does not exclude the server`() {
         val tracker = WedgeTracker()
         val adapter = BusyAwareAdapter()
-        adapter.nativeBusy = true
         val wedging = server("one-strike")
-        val c = controller(adapter, listOf(wedging), retryDelayMs = 0, wedgeTracker = tracker)
+        val c = controller(adapter, listOf(wedging), wedgeTracker = tracker)
 
         runToCompletion(c)
 
@@ -783,9 +847,8 @@ class AutoModeNativeBusyTest {
     fun `a verified tunnel clears the wedge record`() {
         val tracker = WedgeTracker()
         val adapter = BusyAwareAdapter()
-        adapter.nativeBusy = true
         val flaky = server("flaky")
-        val c = controller(adapter, listOf(flaky), retryDelayMs = 0, wedgeTracker = tracker)
+        val c = controller(adapter, listOf(flaky), wedgeTracker = tracker)
 
         runToCompletion(c)
         assertEquals("the give-up must be recorded", 1, c.wedgeCountFor(flaky))

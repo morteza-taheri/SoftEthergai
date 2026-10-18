@@ -19,8 +19,22 @@ enum class AutoModeProtocol(val id: String) {
         /** §24 default when the user never changed the setting. */
         const val DEFAULT_ID = "SOFTETHER_UDP"
 
-        fun fromId(id: String?): AutoModeProtocol =
-            entries.firstOrNull { it.id == id } ?: SOFTETHER_UDP
+        /**
+         * AUTOCONNECT-AUDIT D-7: the protocol [id] names, or **null** when it names none.
+         *
+         * This used to fall back to [SOFTETHER_UDP], so any unrecognised string — a value
+         * written by an older version, a corrupted preference, a typo — became a real,
+         * dialable protocol with no diagnostic at all. That is the same class of silent
+         * fallback v1.0.26 fix (D) removed from `manualProtocolLabel`: after it, a caller
+         * cannot tell "the user chose SoftEther UDP" from "we did not recognise what the
+         * user chose", and the two need opposite handling.
+         *
+         * A caller that legitimately wants a default for an **unset** setting must say so
+         * explicitly with [DEFAULT_ID]. The default belongs to the setting, never to the
+         * parser.
+         */
+        fun fromId(id: String?): AutoModeProtocol? =
+            entries.firstOrNull { it.id == id }
     }
 
     /**

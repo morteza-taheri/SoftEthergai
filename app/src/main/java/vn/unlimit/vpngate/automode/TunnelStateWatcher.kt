@@ -111,6 +111,7 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         watching = null
         onTunnelUp = null
         onNativeBusy = null
+        onAttemptFailed = null
     }
 
     // ---- Teardown completion (Stage 2F-F.28 Fix G) ----
@@ -310,10 +311,32 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
     @Volatile
     var onNativeBusy: (() -> Unit)? = null
 
+    /**
+     * AUTOCONNECT-AUDIT D-4: the armed attempt reached a terminal failure.
+     *
+     * [onTunnelLost] cannot serve this purpose: it is the *connected* session's signal
+     * (it is what makes Auto-Reconnect fire) and it is delivered for every
+     * `STATE_DISCONNECTED`/`STATE_ERROR` regardless of whether an attempt is armed. What
+     * the attempt needs is narrower — "the thing I am waiting for has already failed" —
+     * so it can stop waiting instead of burning the rest of its budget on an operation
+     * that is over.
+     *
+     * Armed by [beginAttempt]'s caller, cleared by [endAttempt], and delivered only while
+     * an attempt is being watched, so it can never end a wait that belongs to someone else.
+     */
+    @Volatile
+    var onAttemptFailed: (() -> Unit)? = null
+
     override fun onSoftEtherStateChanged(state: String, assignedIp: String) {
         if (watching != null && isSoftEtherProtocol(watching!!)) {
             if (state == SoftEtherVpnService.STATE_CONNECTED) {
                 onTunnelUp?.invoke(watching!!)
+            }
+            // AUTOCONNECT-AUDIT D-4: a terminal failure of the attempt being watched.
+            // SoftEther publishes STATE_ERROR for a connect flow that gave up, which is a
+            // verdict the attempt can act on immediately.
+            if (state == SoftEtherVpnService.STATE_ERROR) {
+                onAttemptFailed?.invoke()
             }
         }
         if (state == SoftEtherVpnService.STATE_DISCONNECTED || state == SoftEtherVpnService.STATE_ERROR) {
@@ -337,6 +360,12 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         if (watching != null && isOpenVpnProtocol(watching!!)) {
             if (status == ConnectionStatus.LEVEL_CONNECTED) {
                 onTunnelUp?.invoke(watching!!)
+            }
+            // AUTOCONNECT-AUDIT D-4: OpenVPN's own terminal failure for this attempt. A
+            // rejected profile or a failed handshake is a verdict, not a slow connect, so
+            // the armed wait ends here rather than on its timeout.
+            if (status == ConnectionStatus.LEVEL_AUTH_FAILED) {
+                onAttemptFailed?.invoke()
             }
         }
         if (status == ConnectionStatus.LEVEL_NOTCONNECTED || status == ConnectionStatus.LEVEL_AUTH_FAILED) {

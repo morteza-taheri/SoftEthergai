@@ -42,27 +42,14 @@ class AutoModeController(
     /** Per-attempt timeout in ms (Â§11). */
     private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
     /**
-     * Stage 2F-F.28AL-Y: delay between NATIVE_BUSY retries, in milliseconds.
+     * AUTOCONNECT-AUDIT D-2: how long a NATIVE_BUSY refusal waits for the previous native
+     * operation to release the process-wide slot, before the run is declared stuck.
      *
-     * Injected so the JVM test suite can drive the retry loop with a tiny delay
-     * instead of the production 2s; there is no kotlinx-coroutines-test on the
-     * classpath, so virtual time is not available. Production wires
-     * [NATIVE_BUSY_RETRY_DELAY_MS] here.
+     * Injected so the JVM suite can drive the "genuinely stuck" branch without a
+     * real 30 s wait. Production derives it from the per-attempt budget; see
+     * [NATIVE_SLOT_AWAIT_MS] for why the factor is five.
      */
-    private val nativeBusyRetryDelayMs: Long = NATIVE_BUSY_RETRY_DELAY_MS,
-    /**
-     * Stage 2F-F.28AL-Y-IMPL: per-server cumulative NATIVE_BUSY retry-delay
-     * budget, in milliseconds (design review §8.4/§8.7).
-     *
-     * Injected like [nativeBusyRetryDelayMs] so the JVM suite can drive budget
-     * exhaustion without virtual time (no kotlinx-coroutines-test on the
-     * classpath). Production leaves this at [PER_SERVER_RETRY_DELAY_BUDGET_MS].
-     *
-     * Accounting is NOMINAL: each scheduled retry delay counts as one
-     * [NATIVE_BUSY_RETRY_DELAY_MS] regardless of the injected wait, so the
-     * budget means the same thing in production and in tests.
-     */
-    private val perServerRetryDelayBudgetMs: Long = PER_SERVER_RETRY_DELAY_BUDGET_MS,
+    private val nativeSlotAwaitMs: Long = NATIVE_SLOT_AWAIT_MS,
     /**
      * Optional pre-filter to eliminate blocked candidates via fast reachability testing.
      *
@@ -273,6 +260,25 @@ class AutoModeController(
         ): AttemptOutcome =
             if (awaitArmedTunnel(protocol, timeoutMs)) AttemptOutcome.TUNNEL_UP
             else AttemptOutcome.TIMED_OUT
+
+        /**
+         * AUTOCONNECT-AUDIT D-2: wait until the process-wide native slot is free again,
+         * or [timeoutMs] expires.
+         *
+         * A [AttemptOutcome.NATIVE_BUSY] refusal is not a server verdict: it means this
+         * application's OWN previous native operation is still running, so the selected
+         * server was never contacted. The release of that slot is directly observable, so
+         * the controller can wait for the real event instead of paying a fixed number of
+         * blind retries and then abandoning the run.
+         *
+         * `true` means "a new native attempt may now be admitted". `false` means the slot
+         * was still held when the budget expired — the only case in which the operation is
+         * genuinely stuck and the fail-closed terminal remains correct.
+         *
+         * Defaults to `true` so a test double that does not model the registry keeps its
+         * pre-existing rotation behaviour; the real adapter overrides it with the poll.
+         */
+        suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean = true
     }
 
 /**
@@ -302,6 +308,23 @@ enum class AttemptOutcome {
 
     /** The wait expired with no tunnel and no refusal. A genuine attempt failure. */
     TIMED_OUT,
+
+    /**
+     * AUTOCONNECT-AUDIT D-4: the stack reported a terminal failure for this attempt
+     * before the budget expired.
+     *
+     * The armed wait used to complete only on "tunnel up" or "start refused", so a
+     * connect that failed *fast* — a refused TCP connection, a TLS handshake the peer
+     * rejected, a server that answers the VPNCONNECT watermark with something that is not
+     * a SoftEther Hello — still cost the full per-attempt budget. Auto Mode then paid `T`
+     * per wrong server, which is what turned a list of non-SoftEther endpoints into a slow,
+     * silent walk.
+     *
+     * Distinct from [TIMED_OUT] on purpose: this is a verdict the stack delivered, so the
+     * attempt is over and the slot is free. It is also the cheap post-watermark failure
+     * that AUTOCONNECT-AUDIT D-6 asks to be separated from a genuine attempt.
+     */
+    NATIVE_ERROR,
 }
 
     companion object {
@@ -351,44 +374,27 @@ enum class AttemptOutcome {
         const val ERROR_RECONNECT_LIMIT = "ERROR_RECONNECT_LIMIT"
 
         /**
-         * Stage 2F-F.28AL-Y: fixed delay between NATIVE_BUSY retries, in milliseconds.
+         * AUTOCONNECT-AUDIT D-2: how long a NATIVE_BUSY refusal waits for the previous
+         * native operation to release the process-wide slot before declaring it stuck.
          *
-         * 2 seconds is enough for the typical native teardown to complete (~1.1s
-         * observed in F.28AL-Y-FULL logs) without harming AutoConnect UX. Fixed, not
-         * exponential: the fail-closed policy is not a backoff problem, and a longer
-         * wait would not help a genuinely stuck cleanup.
+         * The figure is derived from the per-attempt budget rather than guessed: a native
+         * connect can still be in flight for several multiples of `conn->timeout_ms`,
+         * because every blocking read on that side is bounded by that same figure. A wait
+         * shorter than that reports "stuck" on an operation that is still working
+         * normally — which is exactly the 2026-10-17 failure, where the run was abandoned
+         * 27 ms before the native operation returned on its own.
+         *
+         * This is a BOUND, not a delay: the wait ends as soon as the slot is released
+         * (measured on device: 313 ms after the native exit), so a healthy rotation is not
+         * slowed by it. Only an operation that never returns pays the full figure.
          */
-        const val NATIVE_BUSY_RETRY_DELAY_MS = 2_000L
+        const val NATIVE_SLOT_AWAIT_MS = 30_000L
 
         /**
-         * Stage 2F-F.28AL-Y: maximum NATIVE_BUSY retries per server+protocol.
-         *
-         * Two retries after the initial attempt: 3 total connection attempts.
-         * Beyond this the previous native operation is presumed genuinely stuck and
-         * the terminal [ERROR_NATIVE_UNRESOLVED] is the correct outcome.
+         * AUTOCONNECT-AUDIT D-2: ceiling for the derived slot wait, so a very large
+         * per-attempt budget cannot make the terminal give-up effectively unreachable.
          */
-        const val NATIVE_BUSY_MAX_RETRIES = 2
-
-        /**
-         * Stage 2F-F.28AL-Y-IMPL: cumulative NATIVE_BUSY retry-delay budget for one
-         * server, in milliseconds (F.28AL-Y-AUTOCONNECT-DESIGN-REVIEW §8.4/D6/D7).
-         *
-         * The retry count (2) bounds the delays within ONE protocol attempt (~4s);
-         * this budget additionally bounds the combined retry effort across every
-         * protocol attempt on the SAME server, so a server that keeps attracting
-         * refusals cannot pin the run in retry loops indefinitely. 10s ≈ two full
-         * NATIVE_BUSY sequences (4s + 4s) plus slack, matched to the ~1.1s observed
-         * cleanup time (F.28AL-Y-FULL logs); beyond it the previous native operation
-         * is presumed genuinely stuck and the terminal [ERROR_NATIVE_UNRESOLVED] is
-         * the correct outcome — same terminal as count exhaustion (§8.5).
-         *
-         * The budget is accounted in NOMINAL production milliseconds (one
-         * [NATIVE_BUSY_RETRY_DELAY_MS] per scheduled delay), which equals the real
-         * waited time in production, where the injected delay is this constant.
-         * The JVM tests inject a tiny delay and a tiny budget instead of relying on
-         * virtual time (there is no kotlinx-coroutines-test on the classpath).
-         */
-        const val PER_SERVER_RETRY_DELAY_BUDGET_MS = 10_000L
+        const val NATIVE_SLOT_AWAIT_MAX_MS = 60_000L
 
         /**
          * R8 (§11.13.3, OQ-3): delay before the FIRST reconnect attempt, in
@@ -396,13 +402,11 @@ enum class AttemptOutcome {
          *
          * A tunnel that just died may still be unwinding at the native layer, so
          * an immediate redial would likely be refused as NATIVE_BUSY and waste a
-         * retry cycle. 2 s is the observed typical native teardown time and is
-         * the same figure [NATIVE_BUSY_RETRY_DELAY_MS] already uses.
+         * retry cycle. 2 s is the observed typical native teardown time.
          *
-         * Injected into the controller on the same pattern as
-         * [nativeBusyRetryDelayMs] so the JVM suite can drive the reconnect path
-         * without a real 2 s wait (there is no kotlinx-coroutines-test on the
-         * classpath).
+         * Injected into the controller so the JVM suite can drive the reconnect
+         * path without a real 2 s wait (there is no kotlinx-coroutines-test on
+         * the classpath).
          */
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
 
@@ -1399,13 +1403,16 @@ enum class AttemptOutcome {
             rememberRemaining(servers, server)
             skipRequested.set(false)
 
-            // Stage 2F-F.28AL-Y-IMPL (§8.4): cumulative NATIVE_BUSY retry-delay
-            // budget for THIS server, reset per server (next to rememberRemaining)
-            // so every candidate starts with a fresh 10s budget. See
-            // PER_SERVER_RETRY_DELAY_BUDGET_MS for the accounting semantics.
-            var accumulatedRetryDelayMs = 0L
+            // AUTOCONNECT-AUDIT D-2: the per-server cumulative NATIVE_BUSY retry-delay
+            // budget that used to be accumulated here is gone. A refusal is no longer
+            // answered with a fixed number of blind retries; the controller waits for the
+            // observable slot release instead (see the NATIVE_BUSY branch below).
 
             var connectedProtocol: AutoModeProtocol? = null
+            // AUTOCONNECT-AUDIT D-5: at most one wedge per server per run. The ledger
+            // counts "runs in which this server produced no tunnel", so trying a second
+            // protocol on the same server must not count as a second strike.
+            var wedgedThisServer = false
             for (protocol in supported) {
                 if (!currentCoroutineContext().isActive) return
 
@@ -1466,114 +1473,85 @@ enum class AttemptOutcome {
                 // only fault was our own stuck native operation.
                 //
                 // Fail-closed: the registry still holds the slot and nothing here may
-                // circumvent that. Stopping the run with its own diagnosable state is the
-                // specified behaviour — it does not retry, does not blame a server, and
-                // leaves the ownership question visible to the user.
+                // circumvent that.
                 //
-                // Stage 2F-F.28AL-Y: bounded retry-after-refusal.
-                //
-                // The F.28Z fail-closed policy is CORRECT — it prevents double-free by
-                // refusing a new native start while a previous operation is unresolved. The
-                // defect it fixed was that AutoConnect aborted the entire AutoMode cycle on
-                // the first refusal, even though the previous cleanup typically completes
-                // within ~1.1s (F.28AL-Y-FULL logs).
-                //
-                // This retry only helps for TRANSIENT NATIVE_BUSY states, where the previous
-                // native cleanup is expected to complete within a few seconds. A genuinely
-                // stuck cleanup (native operation never returning) is NOT recoverable by
-                // retry — the fail-closed policy intentionally prevents new work in that
-                // case, and the terminal error is the correct outcome.
-                //
-                // Safety: no new native attempt is started during the wait. The refusal is
-                // detected BEFORE NativeLifetimeRegistry.tryAcquire() allocates an attempt
-                // ID (NativeLifetimeRegistry.kt:148-157), so the retry path consumes no new
-                // ID. The same server + same protocol are retried; the server cursor is not
-                // advanced. The wait is a cancellable delay() so a user cancel during the
-                // wait terminates the coroutine cleanly.
+                // AUTOCONNECT-AUDIT D-2 (supersedes the F.28AL-Y retry-after-refusal policy):
+                // the previous policy spent two fixed 2 s retries and then terminated the
+                // whole run. Device evidence on 2026-10-17 showed that premise was wrong —
+                // the "previous cleanup completes within ~1.1 s" figure describes a teardown
+                // of an operation that has ALREADY finished, not the lifetime of one still
+                // inside nativeConnectWithHub, which is bounded by 5 x attemptTimeoutMs and
+                // measured 18.9 s. The run therefore died 27 ms before the native operation
+                // returned on its own. The slot release is observable, so it is waited for.
                 if (outcome == AttemptOutcome.NATIVE_BUSY) {
-                    val retryCount = NATIVE_BUSY_MAX_RETRIES
-                    for (retry in 1..retryCount) {
-                        if (!currentCoroutineContext().isActive) return
-                        // Stage 2F-F.28AL-Y-IMPL (§8.4): per-server cumulative retry
-                        // budget, checked BEFORE scheduling each delay. Accounting is
-                        // nominal — one NATIVE_BUSY_RETRY_DELAY_MS per scheduled delay —
-                        // so the 10s cap bounds retry effort identically in production
-                        // (2s real waits) and in tests (0s real waits).
-                        //
-                        // Budget exhaustion is terminal with the SAME error as count
-                        // exhaustion (§8.5): the previous native operation is presumed
-                        // genuinely stuck. The budget message is logged instead of the
-                        // count message so the two terminal causes stay distinguishable.
-                        //
-                        // INVARIANT (§8.7): this check and the wait below consume NO
-                        // native attempt ID. Nothing here calls tryAcquire(); the retry
-                        // re-enters the same admission path, which refuses again (and
-                        // re-pays this loop) while the slot is still held.
-                        if (accumulatedRetryDelayMs + NATIVE_BUSY_RETRY_DELAY_MS >
-                            perServerRetryDelayBudgetMs
-                        ) {
-                            adapter.log(
-                                "[AUTO] Per-server retry budget exceeded " +
-                                        "(${perServerRetryDelayBudgetMs / 1000}s); " +
-                                        "stopping without blaming this server",
-                            )
-                            // FIX-2 + FIX-3: terminal give-up caused by our own unresolved
-                            // native operation — the run has nothing left to try.
-                            giveUpWithUnresolvedNativeOperation(server, key)
-                            setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
-                            job = null
-                            return
-                        }
-                        accumulatedRetryDelayMs += NATIVE_BUSY_RETRY_DELAY_MS
+                    // AUTOCONNECT-AUDIT D-2: a refusal is not a server verdict. It means
+                    // this application's OWN previous native operation is still running, so
+                    // the selected server was never contacted.
+                    //
+                    // The release of the process-wide slot is directly observable, so wait
+                    // for the real event instead of paying a fixed number of blind retries
+                    // and then abandoning the run.
+                    //
+                    // The old code spent two fixed 2 s retries and then returned from
+                    // runAutoMode() with ERROR_NATIVE_UNRESOLVED. On the 2026-10-17 device
+                    // run that killed the whole Auto Mode cycle while the native operation
+                    // was in fact finishing normally 27 ms later (native exit 18,915 ms at
+                    // 16:18:43.191, give-up at 16:18:43.218) and the slot was released
+                    // 313 ms after the run had already been abandoned. Rotation (next
+                    // protocol, then next server) is the documented recovery and must not
+                    // be pre-empted by a wait that can be observed directly.
+                    //
+                    // Safety: no new native attempt is started during the wait, so the
+                    // fail-closed admission policy is not circumvented — we simply wait for
+                    // it. The refusal is detected BEFORE
+                    // NativeLifetimeRegistry.tryAcquire() allocates an attempt ID, so this
+                    // path still consumes no new ID.
+                    val released = adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
+                    if (!released) {
+                        // The slot was still held when the budget expired: the operation is
+                        // genuinely stuck, and only here does the fail-closed terminal
+                        // remain the correct outcome.
                         adapter.log(
-                            "[AUTO] Native slot busy; retrying same server in " +
-                                    "${nativeBusyRetryDelayMs / 1000}s (attempt $retry/$retryCount)" +
-                                    " (holder=${NativeLifetimeRegistry.process.describe()})",
+                            "[AUTO] Native slot not released within " +
+                                    "${nativeSlotAwaitMs}ms " +
+                                    "(${NativeLifetimeRegistry.process.describe()}); stopping",
                         )
-                        kotlinx.coroutines.delay(nativeBusyRetryDelayMs)
-                        if (!currentCoroutineContext().isActive) return
-                        adapter.armTunnelWatch(protocol)
-                        try {
-                            adapter.connect(server, protocol)
-                        } catch (e: VpnPermissionMissingException) {
-                            adapter.log("[AUTO] VPN permission missing; stopping Auto Mode")
-                            adapter.disconnect()
-                            setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
-                            job = null
-                            return
-                        } catch (e: Exception) {
-                            adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
-                            adapter.disconnect()
-                            break // transport-level failure: move to the next server
-                        }
-                        val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
-                        if (!currentCoroutineContext().isActive) return
-                        if (retryOutcome == AttemptOutcome.TUNNEL_UP) {
-                            connectedProtocol = protocol
-                            break
-                        }
-                        if (retryOutcome != AttemptOutcome.NATIVE_BUSY) {
-                            // A genuine failure (TIMED_OUT) or a transport error: stop
-                            // retrying and fall through to the normal failure path.
-                            break
-                        }
-                        // Still NATIVE_BUSY: continue the retry loop.
-                    }
-                    if (connectedProtocol != null) {
-                        // A retry succeeded — fall through to the success path below.
-                    } else {
-                        adapter.log(
-                            "[AUTO] Native slot still owned by an unresolved operation " +
-                                    "(${NativeLifetimeRegistry.process.describe()}); " +
-                                    "stopping without blaming this server",
-                        )
-                        // FIX-2 + FIX-3: terminal give-up caused by our own unresolved
-                        // native operation — the retry count is exhausted.
-                        giveUpWithUnresolvedNativeOperation(server, key)
+                        giveUpWithUnresolvedNativeOperation()
                         setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
                         job = null
                         return
                     }
+                    adapter.log(
+                        "[AUTO] Native slot released; retrying ${protocol.id} on " +
+                                "${server.hostname ?: server.ip}",
+                    )
+                    adapter.armTunnelWatch(protocol)
+                    try {
+                        adapter.connect(server, protocol)
+                    } catch (e: VpnPermissionMissingException) {
+                        adapter.log("[AUTO] VPN permission missing; stopping Auto Mode")
+                        adapter.disconnect()
+                        setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
+                        job = null
+                        return
+                    } catch (e: Exception) {
+                        adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
+                        adapter.disconnect()
+                        break // transport-level failure: move to the next server
+                    }
+                    val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
+                    if (!currentCoroutineContext().isActive) return
+                    if (retryOutcome == AttemptOutcome.TUNNEL_UP) {
+                        connectedProtocol = protocol
+                        break
+                    }
+                    // The slot was free and the attempt still did not come up. That IS a
+                    // genuine failure of this protocol, so fall through to the normal
+                    // failure path and let the rotation continue.
+                    adapter.log(
+                        "[AUTO] Attempt after the slot was released did not come up " +
+                                "(${retryOutcome.name}); moving on",
+                    )
                 }
 
                 // Stage 2F-F.28 Fix C + H: before declaring failure, check
@@ -1596,19 +1574,62 @@ enum class AttemptOutcome {
 
                 // Stage 2F-F.28AL-Y-IMPL (§8.1/§8.8): TIMED_OUT is terminal for THIS
                 // attempt only — there is deliberately no same-server retry. The
-                // rotation below (next protocol, then next server) is its recovery,
-                // and its residual stuck-slot mode surfaces as NATIVE_BUSY on a later
-                // attempt, where the per-server budget already bounds the wait.
+                // rotation below (next protocol, then next server) is its recovery.
                 if (outcome == AttemptOutcome.TIMED_OUT) {
                     adapter.log(
                         "[AUTO] TIMED_OUT after ${attemptTimeoutMs}ms on " +
                                 "${server.hostname ?: server.ip}/${protocol.id}; " +
                                 "cleanup then next protocol (no same-server retry)",
                     )
+                    // AUTOCONNECT-AUDIT D-5: this is the one outcome that implicates the
+                    // server — the attempt reached it and nothing came up inside the
+                    // budget. A refusal and a fast native failure say nothing about it.
+                    if (!wedgedThisServer) {
+                        recordWedge(server, key)
+                        wedgedThisServer = true
+                    }
+                }
+
+                // AUTOCONNECT-AUDIT D-4 + D-6: the stack delivered a terminal failure
+                // before the budget expired, so this endpoint is not usable over this
+                // protocol (a refused port, a rejected handshake, or an answer to the
+                // VPNCONNECT watermark that is not a SoftEther Hello). Logged as its own
+                // cause because it is a verdict, not a slow connect, and it must not be
+                // mistaken for either a timeout or a wedge.
+                if (outcome == AttemptOutcome.NATIVE_ERROR) {
+                    adapter.log(
+                        "[AUTO] NATIVE_ERROR on ${server.hostname ?: server.ip}/" +
+                                "${protocol.id}; the stack rejected this endpoint, " +
+                                "moving to the next protocol",
+                    )
                 }
 
                 adapter.log("[AUTO] Protocol failed: ${protocol.id}")
                 adapter.disconnect() // cleanup before the next protocol attempt
+
+                // AUTOCONNECT-AUDIT D-3: a failed attempt may have left the previous
+                // native operation running, and nothing above waits for it to end. The
+                // next protocol would then be refused (NATIVE_BUSY) before it ever reached
+                // the server — which is exactly the cascade that made a healthy list look
+                // exhausted.
+                //
+                // The teardown above asked the operation to stop; this waits for the
+                // process-wide slot to actually be free. It returns immediately when the
+                // slot is already free, so the healthy path pays nothing. An operation
+                // that never releases is the one genuine terminal.
+                if (outcome != AttemptOutcome.NATIVE_ERROR &&
+                    !adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
+                ) {
+                    adapter.log(
+                        "[AUTO] Native slot not released within ${nativeSlotAwaitMs}ms " +
+                                "after ${outcome.name} on ${protocol.id} " +
+                                "(${NativeLifetimeRegistry.process.describe()}); stopping",
+                    )
+                    giveUpWithUnresolvedNativeOperation()
+                    setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
+                    job = null
+                    return
+                }
             }
 
             if (connectedProtocol != null) {
@@ -1672,11 +1693,8 @@ enum class AttemptOutcome {
         wedgeTracker.countFor(wedgeKey(candidate))
 
     /**
-     * FIX-2 + FIX-3: the single funnel for Auto Mode's **terminal give-up** caused by this
+     * FIX-2: the single funnel for Auto Mode's **terminal give-up** caused by this
      * application's own unresolved native operation.
-     *
-     * Both give-up sites — retry-count exhaustion and per-server budget exhaustion — route
-     * through here, so the two halves of the recovery can never drift apart.
      *
      * ## FIX-2 — release our own wedged native operation
      *
@@ -1692,27 +1710,37 @@ enum class AttemptOutcome {
      * [disconnectNow]: request the teardown first, publish the terminal state second. The
      * request is fire-and-forget, so it cannot delay the terminal state.
      *
-     * ## FIX-3 — remember which server did this
+     * ## FIX-3 — remember which server did this (superseded by AUTOCONNECT-AUDIT D-5)
      *
-     * This is the only moment at which "this server's attempt did not resolve" is known, so
-     * the wedge is recorded here. A server that reaches [WedgeTracker.EXCLUSION_THRESHOLD] is
-     * excluded for the rest of the process; see [WedgeTracker] for the scope, the reset rule
-     * and the stated limitation.
+     * This used to record a wedge against [server]. That was wrong and contradicted the
+     * message logged one branch above it: the give-up happens because *our own* previous
+     * native operation never resolved, so the server was never contacted and its health is
+     * unknown. Two such give-ups were enough to exclude a perfectly good server from the
+     * session for the rest of the process.
      *
-     * @param server the candidate whose attempt did not resolve. Never null: the give-up is
-     *   always reached from inside a concrete server's attempt.
-     * @param key [server]'s ledger key, passed in so the recorded key is exactly the one the
-     *   attempt loop de-duplicated on.
+     * The ledger is now written where a server is genuinely implicated — an attempt that
+     * reached it and produced no tunnel within the budget ([recordWedge]) — and a give-up
+     * caused by our own unresolved operation records nothing.
      */
-    private fun giveUpWithUnresolvedNativeOperation(
-        server: AutoModeCandidate,
-        key: String,
-    ) {
+    private fun giveUpWithUnresolvedNativeOperation() {
         adapter.log(
             "[AUTO] Requesting recovery teardown so the unresolved native operation can be " +
                     "released and a later attempt admitted",
         )
         adapter.requestRecoveryTeardown()
+    }
+
+    /**
+     * FIX-3 (rewritten by AUTOCONNECT-AUDIT D-5): record a wedge against [server] and, at
+     * [WedgeTracker.EXCLUSION_THRESHOLD], exclude it from the rest of the session.
+     *
+     * Called only for an attempt that actually reached the server and did not come up
+     * ([AttemptOutcome.TIMED_OUT]). A refusal (`NATIVE_BUSY`, the server was never
+     * contacted) and a fast native failure (`NATIVE_ERROR`, the endpoint answered but is
+     * not usable) are deliberately not wedges: the first says nothing about the server, and
+     * the second is already cheap to recover from.
+     */
+    private fun recordWedge(server: AutoModeCandidate, key: String) {
         val wedges = wedgeTracker.record(key)
         if (wedges >= WedgeTracker.EXCLUSION_THRESHOLD) {
             adapter.log(
@@ -1872,4 +1900,4 @@ class WedgeTracker {
         val process: WedgeTracker = WedgeTracker()
     }
 }
-
+

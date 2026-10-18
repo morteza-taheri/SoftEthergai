@@ -16,6 +16,7 @@ import vn.unlimit.vpngate.automode.AutoModeCandidate
 import vn.unlimit.vpngate.automode.AutoModeController
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
+import vn.unlimit.vpngate.automode.WedgeTracker
 import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.models.InstalledApp
@@ -89,6 +90,8 @@ class VpnM24x10TaskTest {
                 serverProvider = { servers },
                 attemptTimeoutMs = 200,
                 livenessProbeFactory = null,
+                // D-5: isolate the wedge ledger from the process-wide singleton.
+                wedgeTracker = WedgeTracker(),
             )
             controller.start()
             val deadline = System.currentTimeMillis() + 5_000
@@ -267,6 +270,9 @@ class VpnM24x10TaskTest {
                 serverProvider = { servers },
                 attemptTimeoutMs = 200,
                 livenessProbeFactory = null,
+                // D-5: a fresh ledger per controller so WedgeTracker.process never leaks
+                // wedges across tests in the same JVM.
+                wedgeTracker = WedgeTracker(),
             )
 
             controller.start()
@@ -375,6 +381,8 @@ class VpnM24x10TaskTest {
                 serverProvider = { listOf(allProtocolsServer()) },
                 // The global tunnel state says a manual connect is mid-flight.
                 isTunnelBusy = { true },
+                // D-5: isolate the wedge ledger from the process-wide singleton.
+                wedgeTracker = WedgeTracker(),
             )
 
             val started = controller.startOrRefuseIfNoServers()
@@ -397,6 +405,8 @@ class VpnM24x10TaskTest {
                 protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
                 serverProvider = { listOf(allProtocolsServer()) },
                 isTunnelBusy = { false },
+                // D-5: isolate the wedge ledger from the process-wide singleton.
+                wedgeTracker = WedgeTracker(),
             )
 
             val started = controller.startOrRefuseIfNoServers()

@@ -61,6 +61,31 @@ class AutoModeControllerTest {
          */
         val nativeBusyQueues = mutableMapOf<String, ArrayDeque<Boolean>>()
 
+        /**
+         * AUTOCONNECT-AUDIT D-2: whether a NATIVE_BUSY refusal's slot wait reports the slot
+         * as released.
+         *
+         * `true` (the default) models the normal case — the previous native operation
+         * finishes while the controller waits, so the rotation continues. `false` models a
+         * genuinely stuck operation, which is the only case that still ends the run.
+         */
+        @Volatile
+        var nativeSlotReleases = true
+
+        /** AUTOCONNECT-AUDIT D-2: how long the slot wait blocks before reporting. */
+        @Volatile
+        var slotWaitDelayMs = 0L
+
+        /** AUTOCONNECT-AUDIT D-2: how many slot waits the controller performed. */
+        @Volatile
+        var slotWaits = 0
+
+        override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
+            slotWaits++
+            if (slotWaitDelayMs > 0) kotlinx.coroutines.delay(slotWaitDelayMs)
+            return nativeSlotReleases
+        }
+
         override suspend fun connect(candidate: AutoModeCandidate, protocol: AutoModeProtocol) {
             logs += "connect:${candidate.hostname}"
             connects += candidate.hostname to protocol
@@ -196,15 +221,6 @@ class AutoModeControllerTest {
         activeRttProvider: ((ip: String, protocol: AutoModeProtocol) -> Long?)? = null,
         /** Stage 2F-F.17 (D1): receives the controller-selected probe endpoints. */
         reachabilityFilter: (suspend (List<ReachabilityTarget>) -> ReachabilityGate)? = null,
-        /** Stage 2F-F.28AL-Y: NATIVE_BUSY retry delay; tests pass 0 to avoid real waits. */
-        nativeBusyRetryDelayMs: Long = AutoModeController.NATIVE_BUSY_RETRY_DELAY_MS,
-        /**
-         * Stage 2F-F.28AL-Y-IMPL: per-server cumulative retry-delay budget. Injected so the
-         * budget-exhaustion test can trip the cap without waiting for five real 2s delays
-         * (budget accounting is nominal — one NATIVE_BUSY_RETRY_DELAY_MS per scheduled
-         * delay — so a small budget exercises the same gate as the production 10s cap).
-         */
-        perServerRetryDelayBudgetMs: Long = AutoModeController.PER_SERVER_RETRY_DELAY_BUDGET_MS,
         /** R8 (§11.13.2): whether Auto-Reconnect is enabled; default matches production. */
         autoReconnectEnabled: () -> Boolean = { true },
         /** R8 (OQ-7): whether someone else owns a connection attempt. Default matches production. */
@@ -220,11 +236,12 @@ class AutoModeControllerTest {
         attemptTimeoutMs = timeout,
         reachabilityFilter = reachabilityFilter,
         activeRttProvider = activeRttProvider ?: { _, _ -> null },
-        nativeBusyRetryDelayMs = nativeBusyRetryDelayMs,
-        perServerRetryDelayBudgetMs = perServerRetryDelayBudgetMs,
         autoReconnectEnabled = autoReconnectEnabled,
         isTunnelBusy = isTunnelBusy,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        // AUTOCONNECT-AUDIT D-5: a fresh ledger per controller so the process-wide
+        // WedgeTracker.process never leaks wedges across tests in the same JVM.
+        wedgeTracker = WedgeTracker(),
     )
 
     private fun server(
@@ -1953,7 +1970,6 @@ val sstp = AutoModeCandidate(
         val c = controller(
             servers = listOf(server("busy-then-up")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
         )
         c.start()
         val s = c.awaitTerminal()
@@ -1966,47 +1982,67 @@ val sstp = AutoModeCandidate(
         assertEquals("busy-then-up", adapter.connects[0].first)
         assertEquals("busy-then-up", adapter.connects[1].first)
         assertTrue(
-            "expected a retry log line",
-            adapter.logs.any { it.contains("Native slot busy; retrying") },
+            "expected a slot-release log line",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
         )
     }
 
     /**
-     * T2. NATIVE_BUSY on attempts 1 and 2 → retry → success on attempt 3.
+     * T2. A SECOND refusal on the same protocol — after the slot was observed released —
+     * is a genuine protocol failure, not a stuck native slot.
      *
-     * Verifies the retry budget is honoured: three dial attempts for one server.
+     * AUTOCONNECT-AUDIT D-2 replaced the fixed retry count with "wait for the release,
+     * retry once". A retry that is refused again therefore means the slot was free and
+     * the dial still could not be admitted, so the attempt is closed like any other
+     * failure and the rotation continues to the next protocol of the same server. The
+     * run must NOT end here: the refusal says nothing about the server, and the previous
+     * implementation turned this exact sequence into a terminal ERROR_NATIVE_UNRESOLVED.
      */
     @Test
-    fun nativeBusyRetrySucceedsOnThirdAttempt() = runBlocking {
+    fun secondRefusalAfterReleaseRotatesToTheNextProtocol() = runBlocking {
         adapter.scriptBusy("busy-busy-up", false, false, true)
         val c = controller(
             servers = listOf(server("busy-busy-up")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
         )
         c.start()
         val s = c.awaitTerminal()
-        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        assertTrue("expected Connected via the next protocol, got $s", s is AutoModeState.Connected)
         assertEquals(
-            "expected two retries of the same server",
-            3, adapter.connects.size,
+            "TCP is dialled twice (refusal + retry after release), then the cursor advances",
+            listOf(
+                "busy-busy-up" to AutoModeProtocol.SOFTETHER_TCP,
+                "busy-busy-up" to AutoModeProtocol.SOFTETHER_TCP,
+                "busy-busy-up" to AutoModeProtocol.SOFTETHER_UDP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue("the refusal must be answered by a slot wait", adapter.slotWaits >= 1)
+        assertTrue(
+            "the failed retry must be logged as a protocol failure, not as a stuck slot",
+            adapter.logs.any { it.contains("did not come up") },
+        )
+        assertFalse(
+            "a released slot must never produce the give-up message",
+            adapter.logs.any { it.contains("Native slot not released within") },
         )
     }
 
     /**
-     * T3. NATIVE_BUSY on all 3 attempts → terminal ERROR_NATIVE_UNRESOLVED
-     * after exactly 2 delays.
+     * T3. NATIVE_BUSY whose slot never releases → terminal ERROR_NATIVE_UNRESOLVED.
      *
-     * Verifies the terminal state is byte-identical to the pre-fix behaviour:
-     * same error code, same log line, same job=null, same return.
+     * AUTOCONNECT-AUDIT D-2: the terminal now depends on the OBSERVED release, not on a
+     * retry count. A slot that is still held when the wait expires is the one genuine
+     * "stuck" case, and it must not be re-dialled.
      */
     @Test
-    fun nativeBusyAllRetriesFailTerminal() = runBlocking {
+    fun aSlotThatNeverReleasesEndsTheRun() = runBlocking {
         adapter.scriptBusy("always-busy", false, false, false)
+        adapter.nativeSlotReleases = false
         val c = controller(
             servers = listOf(server("always-busy")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
         )
         c.start()
         val s = c.awaitTerminal()
@@ -2016,30 +2052,15 @@ val sstp = AutoModeCandidate(
             AutoModeController.ERROR_NATIVE_UNRESOLVED,
             (s as AutoModeState.Error).message,
         )
-        // T5-SLOT (commit 5e51e37) appended the dynamic
-        // "(<NativeLifetimeRegistry.process.describe()>)" segment to this
-        // terminal line. describe() is state-dependent ("idle", or
-        // "attempt=N phase=TEARDOWN, ..."), so a strict equality on the full
-        // line is brittle: it breaks whenever the registry reports a different
-        // holder. Assert the two stable substrings that are the real invariant
-        // — the same pattern AutoModeNativeBusyTest already uses. The dynamic
-        // describe() portion is deliberately NOT part of the invariant.
         assertTrue(
-            "terminal log line must contain the unresolved-operation marker",
-            adapter.logs.any {
-                it.contains("Native slot still owned by an unresolved operation") &&
-                        it.contains("stopping without blaming this server")
-            },
+            "terminal log line must contain the unresolved-operation marker: ${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot not released within") },
         )
         assertEquals(
-            "expected exactly 3 dial attempts (1 initial + 2 retries)",
-            3, adapter.connects.size,
+            "a slot that never releases must not be re-dialled",
+            1, adapter.connects.size,
         )
-        val retryLogs = adapter.logs.filter { it.contains("Native slot busy; retrying") }
-        assertEquals(
-            "expected exactly 2 retry log lines (one per retry)",
-            2, retryLogs.size,
-        )
+        assertTrue("the observable slot wait must be the mechanism", adapter.slotWaits >= 1)
     }
 
     /**
@@ -2053,18 +2074,21 @@ val sstp = AutoModeCandidate(
     @Test
     fun nativeBusyCancellationDuringRetryIsClean() = runBlocking {
         adapter.scriptBusy("cancel-me", false, false, false)
+        // AUTOCONNECT-AUDIT D-2: the wait that must be cancellable is now the slot wait,
+        // not a fixed retry delay.
+        adapter.nativeSlotReleases = false
+        adapter.slotWaitDelayMs = 1_000
         val c = controller(
             servers = listOf(server("cancel-me")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 1_000,
         )
         c.start()
-        // Let the first attempt + first retry delay begin.
+        // Let the first attempt finish and the slot wait begin.
         kotlinx.coroutines.delay(200)
         c.stop()
         kotlinx.coroutines.delay(1_500)
         assertFalse("job must not remain active after stop", c.isRunning)
-        // No terminal state should have been published by the retry path.
+        // No terminal state should have been published by the slot-wait path.
         assertTrue(
             "state should be Disconnected after clean stop, got ${c.state.value}",
             c.state.value is AutoModeState.Disconnected,
@@ -2083,7 +2107,6 @@ val sstp = AutoModeCandidate(
         val c = controller(
             servers = listOf(server("plain-success")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
         )
         c.start()
         val s = c.awaitTerminal()
@@ -2092,52 +2115,62 @@ val sstp = AutoModeCandidate(
             "normal flow makes exactly one dial attempt",
             1, adapter.connects.size,
         )
-        assertFalse(
-            "no retry log line on the success path",
-            adapter.logs.any { it.contains("Native slot busy; retrying") },
+        // AUTOCONNECT-AUDIT D-2: the retry path is gated on a NATIVE_BUSY outcome, and
+        // its first action is now the observable slot wait. Zero waits is a stronger
+        // assertion than "no retry log line": it proves the branch was never entered.
+        assertEquals(
+            "the slot wait must not run on the success path",
+            0, adapter.slotWaits,
         )
     }
 
     /**
-     * T6. Per-server retry budget exhausts BEFORE the count limit → terminal
-     * ERROR_NATIVE_UNRESOLVED via the BUDGET message, not the count message.
+     * T6. A slot that RELEASES but whose retry still does not come up must MOVE ON
+     * (AUTOCONNECT-AUDIT D-2).
      *
-     * Budget accounting is nominal (one NATIVE_BUSY_RETRY_DELAY_MS per scheduled
-     * delay), so injecting a 3000ms budget makes the SECOND retry's gate
-     * (2000 + 2000 = 4000 > 3000) trip before the third attempt is ever dialled.
-     * This pins §8.4: the budget is a distinct terminal cause from count
-     * exhaustion (§8.5), with its own log line.
+     * Before D-2 this scenario was answered by counting retries against a nominal
+     * per-server delay budget and then publishing ERROR_NATIVE_UNRESOLVED. Because that
+     * `return` sat inside the protocol loop, neither the remaining protocols of this
+     * server nor any later server were ever tried — a refusal, which says nothing about
+     * the server, ended the whole run.
+     *
+     * The replacement waits for the observable slot release, dials the same protocol
+     * once more, and if that dial also fails to arm it treats the failure as a genuine
+     * protocol failure and lets the rotation continue. Here TCP is refused, the slot is
+     * released, the retry times out, and UDP then connects — three dials in total.
      */
     @Test
-    fun nativeBusyPerServerBudgetExhaustsBeforeCountLimit() = runBlocking {
-        adapter.scriptBusy("budget-cap", false, false, false)
+    fun releasedSlotRetryFailureMovesOnToTheNextProtocol() = runBlocking {
+        adapter.scriptOutcomes(
+            "slot-release", AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeController.AttemptOutcome.NATIVE_BUSY,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
         val c = controller(
-            servers = listOf(server("budget-cap")),
+            servers = listOf(server("slot-release")),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
-            // 3000ms: retry 1 (0+2000) passes, retry 2 (2000+2000=4000) trips.
-            perServerRetryDelayBudgetMs = 3_000,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
         )
         c.start()
         val s = c.awaitTerminal()
-        assertTrue("expected Error, got $s", s is AutoModeState.Error)
+        assertTrue("expected Connected via UDP, got $s", s is AutoModeState.Connected)
         assertEquals(
-            "budget exhaustion uses the same terminal code as count exhaustion",
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
-            (s as AutoModeState.Error).message,
+            "TCP is dialled once more after the release, then the cursor advances to UDP",
+            listOf(
+                "slot-release" to AutoModeProtocol.SOFTETHER_TCP,
+                "slot-release" to AutoModeProtocol.SOFTETHER_TCP,
+                "slot-release" to AutoModeProtocol.SOFTETHER_UDP,
+            ),
+            adapter.connects.toList(),
         )
+        assertTrue("the refusal must be answered by a slot wait", adapter.slotWaits >= 1)
         assertTrue(
-            "the budget-exhaustion message must be logged",
-            adapter.logs.any { it.contains("Per-server retry budget exceeded") },
+            "the release must be logged as a retry, not as a give-up",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
         )
         assertFalse(
-            "the count-exhaustion message must NOT be logged when the budget tripped first",
-            adapter.logs.any { it.contains("Native slot still owned") },
-        )
-        assertEquals(
-            "budget tripped before the 3rd attempt: exactly 2 dials (1 initial + 1 retry)",
-            2,
-            adapter.connects.size,
+            "a released slot must never produce the give-up message",
+            adapter.logs.any { it.contains("Native slot not released within") },
         )
     }
 
@@ -2186,24 +2219,27 @@ val sstp = AutoModeCandidate(
             "the TIMED_OUT rotation log line must be emitted",
             adapter.logs.any { it.contains("TIMED_OUT after") && it.contains("no same-server retry") },
         )
+        // AUTOCONNECT-AUDIT D-3/D-4: after a timeout the controller now waits for the
+        // process-wide slot before the next dial (D-3), so a slot wait after TIMED_OUT is
+        // legitimate. What must still never happen is entering the REFUSAL path.
         assertFalse(
-            "TIMED_OUT must never log a NATIVE_BUSY retry line",
-            adapter.logs.any { it.contains("Native slot busy; retrying") },
+            "TIMED_OUT must never be answered as a native refusal",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
         )
     }
 
     /**
-     * T8. TIMED_OUT then NATIVE_BUSY on the NEXT protocol → the NATIVE_BUSY loop
-     * runs with a FRESH budget for that protocol attempt (D5 scenario 1).
+     * T8. TIMED_OUT on one protocol, then NATIVE_BUSY on the NEXT one (D5 scenario 1).
      *
-     * The first protocol times out (terminal, no retry, budget untouched); the second
-     * protocol then hits NATIVE_BUSY twice and succeeds on its third attempt. Four
-     * dials total prove the retry loop started with a full budget and the timed-out
-     * protocol was dialled exactly once — had the TIMED_OUT wrongly consumed budget or
-     * entered the loop, these counts would differ.
+     * A timeout on TCP leaves no residue that suppresses the refusal handling on the
+     * following protocol: UDP is refused once, the slot is observed released, and the
+     * single retry connects. Three dials and exactly one slot wait pin both halves —
+     * the timed-out protocol is dialled once (no same-server retry), and the refusal on
+     * the next protocol still goes through the wait-then-retry path rather than being
+     * counted against a budget that the earlier timeout had already spent.
      */
     @Test
-    fun timedOutThenNativeBusyRunsFreshRetryBudget() = runBlocking {
+    fun timedOutThenNativeBusyOnNextProtocolWaitsAndRetries() = runBlocking {
         val s = server("mixed")
         adapter.scriptOutcomes(
             "mixed", AutoModeProtocol.SOFTETHER_TCP,
@@ -2212,27 +2248,19 @@ val sstp = AutoModeCandidate(
         adapter.scriptOutcomes(
             "mixed", AutoModeProtocol.SOFTETHER_UDP,
             AutoModeController.AttemptOutcome.NATIVE_BUSY,
-            AutoModeController.AttemptOutcome.NATIVE_BUSY,
             AutoModeController.AttemptOutcome.TUNNEL_UP,
         )
         val c = controller(
             servers = listOf(s),
             timeout = 500,
-            nativeBusyRetryDelayMs = 0,
-            // 4000ms = exactly one full 2-retry NATIVE_BUSY sequence. This makes the
-            // test discriminating: the timed-out TCP protocol must consume ZERO budget
-            // (it never enters the retry loop), leaving UDP a full 4000ms to spend on
-            // its own two retries. Had TIMED_OUT wrongly charged the budget, UDP's
-            // first retry gate (4000 + 2000 > 4000) would trip and terminate the run.
-            perServerRetryDelayBudgetMs = 4_000,
             priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
         )
         c.start()
         val terminal = c.awaitTerminal()
         assertTrue("expected Connected, got $terminal", terminal is AutoModeState.Connected)
         assertEquals(
-            "TCP timed out once; UDP was dialled three times (initial + 2 fresh retries)",
-            4,
+            "TCP once (no retry) + UDP twice (refusal, then the retry that connects)",
+            3,
             adapter.connects.size,
         )
         assertEquals(
@@ -2241,9 +2269,55 @@ val sstp = AutoModeCandidate(
             adapter.connects.count { it.second == AutoModeProtocol.SOFTETHER_TCP },
         )
         assertEquals(
-            "the busy protocol received a full 3-attempt retry loop (fresh budget)",
-            3,
+            "the refused protocol was dialled twice: the refusal plus one retry after release",
+            2,
             adapter.connects.count { it.second == AutoModeProtocol.SOFTETHER_UDP },
+        )
+        assertTrue("the refusal must be answered by a slot wait", adapter.slotWaits >= 1)
+    }
+
+    /**
+     * T9. AUTOCONNECT-AUDIT D-4 + D-6: a terminal failure the stack reports early ends the
+     * attempt immediately, records nothing against the server, and does not wait for a slot
+     * that the finished operation no longer holds.
+     *
+     * Before D-4 this server would have cost the full per-attempt budget on a connect that
+     * had already failed, and before D-5 it would also have been charged a wedge it did not
+     * deserve. A refused port or a non-SoftEther answer to the watermark is a cheap, honest
+     * verdict, which is exactly what the audit asks to be separated from a real attempt.
+     */
+    @Test
+    fun fastNativeFailureEndsTheAttemptWithoutAWedge() = runBlocking {
+        adapter.scriptOutcomes(
+            "not-softether", AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeController.AttemptOutcome.NATIVE_ERROR,
+        )
+        val c = controller(
+            servers = listOf(server("not-softether")),
+            timeout = 5_000,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+        assertTrue("expected Connected via the next protocol, got $s", s is AutoModeState.Connected)
+        assertEquals(
+            "the failed protocol is dialled exactly once — the verdict is already known",
+            2,
+            adapter.connects.size,
+        )
+        assertEquals(
+            "the falsifiable claim: no wedge is recorded for a fast native failure",
+            0,
+            c.wedgeCountFor(server("not-softether")),
+        )
+        assertEquals(
+            "no slot wait is paid by a finished operation",
+            0,
+            adapter.slotWaits,
+        )
+        assertTrue(
+            "the cause must be named in the log: ${adapter.logs}",
+            adapter.logs.any { it.contains("NATIVE_ERROR on not-softether") },
         )
     }
 
