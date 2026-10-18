@@ -569,22 +569,49 @@ int ssl_read(ssl_context_t* ctx, uint8_t* buffer, size_t len) {
         // (and write, below) under g_openssl_lock to close the last uncovered
         // provider-touching path. Lock order stays g_tls_use_lock ->
         // g_openssl_lock, matching the handshake.
+        errno = 0;
         pthread_mutex_lock(&g_openssl_lock);
         result = SSL_read(ctx->ssl, buffer, (int)len);
+        // errno is only meaningful for the call that just failed, and
+        // SSL_get_error() may clobber it, so sample it here.
+        const int read_errno = errno;
         pthread_mutex_unlock(&g_openssl_lock);
         if (result > 0 || result == 0) {
             break;
         }
         int ssl_error = SSL_get_error(ctx->ssl, result);
         if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE) {
+            // AUTOCONNECT-AUDIT D-1: this socket is blocking with SO_RCVTIMEO set
+            // from conn->timeout_ms (softether_protocol.c), so WANT_READ with
+            // errno == EAGAIN means "the socket timeout already expired", not
+            // "more data is on the way". Retrying here multiplied the caller's
+            // budget by (max_retries + 1): a server that accepts the TCP
+            // connection and completes the TLS handshake but never answers the
+            // VPNCONNECT watermark made the native connect take 5 x timeout_ms
+            // (18,915 ms measured on 2026-10-17 against a 5,000 ms budget), so
+            // every higher layer had already given up before the native verdict
+            // arrived. The ladder stays for transient WANT_READ without EAGAIN;
+            // an expired SO_RCVTIMEO is returned to the caller immediately.
+            if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) {
+                LOGD("SSL read: SO_RCVTIMEO expired (errno=%d); reporting to caller "
+                     "instead of retrying", read_errno);
+                break;
+            }
             retries++;
             LOGD("SSL read retry %d/%d (ssl_error=%d)", retries, max_retries, ssl_error);
             continue;
         }
-        if (ssl_error == SSL_ERROR_SYSCALL && (errno == EINTR || errno == EAGAIN)) {
+        if (ssl_error == SSL_ERROR_SYSCALL && read_errno == EINTR) {
             retries++;
-            LOGD("SSL read retry %d/%d (syscall errno=%d)", retries, max_retries, errno);
+            LOGD("SSL read retry %d/%d (syscall errno=%d)", retries, max_retries, read_errno);
             continue;
+        }
+        // Same reasoning as above: EAGAIN/EWOULDBLOCK on the syscall path is an
+        // expired SO_RCVTIMEO, so it ends the ladder rather than restarting it.
+        if (ssl_error == SSL_ERROR_SYSCALL && read_errno == EAGAIN) {
+            LOGD("SSL read: SO_RCVTIMEO expired (syscall errno=%d); reporting to caller "
+                 "instead of retrying", read_errno);
+            break;
         }
         unsigned long err_detail = ERR_get_error();
         LOGE("SSL read error: %d, detail: %lu (%s)", ssl_error, err_detail,

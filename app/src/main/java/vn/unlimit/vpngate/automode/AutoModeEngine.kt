@@ -73,6 +73,14 @@ object AutoModeEngine {
                 },
                 // §3 §4 §5 §14 Read timeout from Settings per attempt (per-server, not total)
                 attemptTimeoutMs = du.getAutoModeTimeoutSeconds().toLong() * 1000,
+                // AUTOCONNECT-AUDIT D-2: a NATIVE_BUSY refusal is answered by waiting for
+                // the previous native operation to release the process-wide slot. A native
+                // connect can still be in flight for several multiples of the per-attempt
+                // budget (each blocking read on that side is bounded by the same figure),
+                // so the wait is derived from that budget rather than hard-coded, and is
+                // capped so a large setting cannot make the terminal give-up unreachable.
+                nativeSlotAwaitMs = (du.getAutoModeTimeoutSeconds().toLong() * 1000L * 5L)
+                    .coerceAtMost(AutoModeController.NATIVE_SLOT_AWAIT_MAX_MS),
 // Stage 2F-F.13 (Y4): the controller selects the protocol/endpoint
                 // pairs and hands them over; the probe only measures them.
                 reachabilityFilter = { targets ->

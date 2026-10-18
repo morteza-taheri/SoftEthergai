@@ -221,7 +221,18 @@ class AutoModeEndToEndTest {
 
         assertTrue(
             "connectSoftEther must set connectTimeoutMs on the ConnectionConfig",
-            text.contains("connectTimeoutMs = attemptTimeoutMs.toInt()"),
+            text.contains("connectTimeoutMs = nativeConnectTimeoutMs.toInt()"),
+        )
+        // AUTOCONNECT-AUDIT D-1: the native budget must be a FRACTION of the attempt
+        // budget, strictly smaller, so the native verdict arrives before the controller
+        // stops waiting. Wiring the two figures to the same value is the regression this
+        // pins against.
+        assertTrue(
+            "the native connect budget must be derived from the attempt budget",
+            text.contains("val nativeConnectTimeoutMs =") &&
+                text.contains("NATIVE_TIMEOUT_FRACTION_NUM") &&
+                text.contains("NATIVE_TIMEOUT_FRACTION_DEN") &&
+                text.contains("MIN_NATIVE_CONNECT_TIMEOUT_MS"),
         )
         assertTrue(
             "connectSoftEther must read the user's Auto Mode timeout setting",

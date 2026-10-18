@@ -51,7 +51,11 @@ class VpnServerRepositoryR4bTest {
         }
     }
 
-    private val openInput = CollectorRoutingInput(false, true, true)
+    // v1.0.27: with the default (no opt-in) the primary rung is OPEN and the VPN
+    // rung is only a fallback. "Open path, no tunnel" is modelled with a down
+    // tunnel (false, false, false); a usable tunnel is exercised via vpnInput's
+    // fallback direction and via VpnServerRepositoryRoutingTest.
+    private val openInput = CollectorRoutingInput(false, false, false)
     private val vpnInput = CollectorRoutingInput(true, true, true)
 
     /**
@@ -73,8 +77,13 @@ class VpnServerRepositoryR4bTest {
 
     @Test
     fun `open path is logged per source`() = runBlocking {
+        // v1.0.27 — D-2 fix (bucket A): openInput is (false,false,false) — no
+        // opt-in, no usable tunnel, no bound network. The OPEN primary therefore
+        // has no VPN rung to fall back to, so we pass a null bound fetcher to
+        // model that faithfully; the [collector] stream then carries exactly one
+        // `path=open` line per source and no fallback line.
         logs.clear()
-        repository(openInput, EmptyFetcher()).refresh()
+        repository(openInput, EmptyFetcher(), boundFetcher = null).refresh()
 
         assertEquals(
             listOf(
@@ -84,7 +93,10 @@ class VpnServerRepositoryR4bTest {
             ).sorted(),
             logs.sorted(),
         )
-        assertTrue("no vpn line may appear on the open path", logs.none { it.contains("path=vpn") })
+        assertTrue(
+            "no VPN rung may be taken when there is no bound network",
+            logs.none { it.contains("path=vpn") },
+        )
         assertTrue(
             "no fallback line may appear when the VPN rung was never taken",
             logs.none { it.contains("fallback-to-open") },
@@ -255,7 +267,11 @@ class VpnServerRepositoryR4bTest {
             succeeded = { it.isNotEmpty() },
         ) { emptyList<String>() }
 
-        assertEquals(emptyList<String>(), mirrors)
+        // v1.0.27 — D-2 fix: a total failure (primary VPN + OPEN fallback both
+        // empty) returns null; the caller treats null as empty via `.orEmpty()`.
+        // The user-visible behaviour — retry on open — is asserted by the log
+        // lines below.
+        assertNull(mirrors)
         assertEquals(
             listOf(
                 "[collector] path=vpn source=mirror",
@@ -279,7 +295,14 @@ class VpnServerRepositoryR4bTest {
         logs.clear()
         runBlocking { repo.refresh() }
         val firstRun = logs.toList()
-        assertTrue(firstRun.isNotEmpty() && firstRun.all { it.contains("path=open") })
+        // v1.0.27 — D-2 fix: with a bound tunnel the OPEN primary now falls back
+        // to VPN on failure, so the first run (openInput, no opt-in) logs
+        // `path=open` as its primary plus `fallback-to-vpn` lines. Assert the
+        // primary rung taken was OPEN.
+        assertTrue(
+            "first refresh did not take the OPEN rung: $firstRun",
+            firstRun.isNotEmpty() && firstRun.any { it.contains("path=open") },
+        )
 
         // Tunnel comes up and the user opts in: the next run must follow.
         input = vpnInput

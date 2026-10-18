@@ -70,6 +70,12 @@ class VpnServerRepository(
      * [ServerListUpdater.isKeyConflict] matches by class name instead of type.
      */
     private val pathLog: (String) -> Unit = { runCatching { Log.i(TAG, it) } },
+    /**
+     * v1.0.27: where the `[fetch] path=...` diagnostic lines go (tag
+     * `VpnServerFetch`). Wrapped in runCatching for the same JVM-stub reason as
+     * [pathLog]; tests inject a recorder to assert on routing decisions.
+     */
+    private val fetchLog: (String) -> Unit = { runCatching { Log.d("VpnServerFetch", it) } },
 ) {
     companion object {
         private const val MAIN_TIMEOUT_MS = 45_000L
@@ -83,14 +89,49 @@ class VpnServerRepository(
         internal const val SOURCE_TAG_MIRROR = "mirror"
 
         /**
-         * Production routing inputs: the user's opt-in, whether the tunnel is
-         * genuinely usable, and whether a VPN network is at hand.
+         * Production routing inputs.
+         *
+         * v1.0.27 routing model — OPEN-first, VPN-fallback:
+         *   - [preferVpn] is the user's "always prefer VPN" opt-in
+         *     ([GlobalVpnTracker.prefersVpnForCollector], default false). When
+         *     set it is the PRIMARY order: the VPN rung is taken first and OPEN
+         *     is the fallback.
+         *   - When the opt-in is OFF (the default) the primary rung is OPEN and
+         *     the VPN rung is only a fallback, used when OPEN fails AND a tunnel
+         *     the app itself created is up and OS-bound ([tunnelUsable] /
+         *     [hasBoundNetwork]).
+         *   - [tunnelUsable] / [hasBoundNetwork] describe whether the VPN rung
+         *     is actually reachable right now; they never force the VPN rung on
+         *     their own. The earlier `preferVpn ||= tunnelUp` form wrongly
+         *     preferred the VPN whenever any tunnel was up, wasting tunnel
+         *     bandwidth on directly-reachable lists.
+         *   The decision is consumed by [resolvePrimary] + [fetchOnChosenPath],
+         *     which try the primary rung and fall back to the other only when the
+         *     primary fails and the other rung is reachable.
          */
-        internal fun productionRouting(): CollectorRoutingInput = CollectorRoutingInput(
-            preferVpn = GlobalVpnTracker.prefersVpnForCollector(),
-            tunnelUsable = GlobalVpnTracker.isTunnelUsable(),
-            hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
-        )
+        internal fun productionRouting(): CollectorRoutingInput {
+            val tunnelUp = GlobalVpnTracker.isConnected &&
+                GlobalVpnTracker.currentVpnNetwork() != null
+            return CollectorRoutingInput(
+                // FIX-3a: honour the user opt-in as the PRIMARY order; do NOT OR the
+                // live tunnel state in here. OPEN-first / VPN-fallback is decided by
+                // resolvePrimary + fetchOnChosenPath.
+                preferVpn = GlobalVpnTracker.prefersVpnForCollector(),
+                tunnelUsable = tunnelUp,
+                hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
+            )
+        }
+
+        /**
+         * v1.0.27: the single primary rung for one refresh.
+         *
+         * When the user opted in ([preferVpn]) the VPN rung is primary and OPEN
+         * is the fallback; otherwise OPEN is primary and VPN is the fallback.
+         * The fallback is attempted by [fetchOnChosenPath] only when the primary
+         * actually fails and the fallback rung is reachable.
+         */
+        internal fun resolvePrimary(input: CollectorRoutingInput): CollectorPath =
+            if (input.preferVpn) CollectorPath.VPN else CollectorPath.OPEN
 
         /**
          * The fetcher the VPN rung binds with, or null.
@@ -160,9 +201,12 @@ class VpnServerRepository(
 
         // R4b: re-read per refresh, never cached across runs, so a tunnel that
         // comes up between two refreshes is honoured by the next one.
-        val path = CollectorRouting.choose(routing())
-        val boundFetcher: HttpFetcher? =
-            if (path == CollectorPath.VPN) bindHttpFetcher() else null
+        // v1.0.27: OPEN-first, VPN-fallback. The primary rung is derived from the
+        // routing inputs; fetchOnChosenPath tries it and falls back to the other
+        // rung only when the primary fails and the other is reachable.
+        val input = routing()
+        val primary = resolvePrimary(input)
+        val boundFetcher: HttpFetcher? = bindHttpFetcher()
 
         val records = coroutineScope {
             val cachedMirrors = runCatching {
@@ -170,7 +214,7 @@ class VpnServerRepository(
             }.getOrDefault(emptyList())
 
             val mirrorsDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_MIRROR, path, boundFetcher, { it.isNotEmpty() }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_MIRROR, primary, boundFetcher, { it.isNotEmpty() }) { f ->
                     VpnGateMirrorSource(f).discoverMirrors(cachedMirrors)
                 }
             }
@@ -187,12 +231,12 @@ class VpnServerRepository(
                 // Canonical CSV only: a mirror's CSV schema is undefined
                 // for this project, so it is never fed to the API parser.
                 // A null result IS the failure signal for this source.
-                fetchOnChosenPath(SOURCE_TAG_API, path, boundFetcher, { true }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_API, primary, boundFetcher, { true }) { f ->
                     VpnGateApiSource(f).fetch()
                 }
             }
             val htmlDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_HTML, path, boundFetcher, { true }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_HTML, primary, boundFetcher, { true }) { f ->
                     VpnGateHtmlSource(f).fetch(mirrors)
                 }
             }
@@ -281,8 +325,9 @@ class VpnServerRepository(
     // `network.socketFactory` to that request's own client — never
     // `bindProcessToNetwork()`, which would capture every other socket in the
     // process. §7 Q3's ordering is honoured in its first two rungs only: open
-    // is the default, VPN is an opt-in that falls back to open. Emergency and
-    // manual sources are out of scope for this phase.
+    // is the default, VPN is auto-selected whenever the app's own tunnel is up
+    // and OS-bound (see [productionRouting]) and still falls back to open on
+    // failure. Emergency and manual sources are out of scope for this phase.
     // ─────────────────────────────────────────────────────────────────────
 
     /**
@@ -321,24 +366,59 @@ class VpnServerRepository(
         succeeded: (T) -> Boolean,
         fetch: suspend (HttpFetcher) -> T?,
     ): T? {
-        if (path == CollectorPath.OPEN || boundFetcher == null) {
-            // Either the user did not opt in, or the tunnel is not usable, or
-            // there is no VPN network at hand. Any of the three lands here,
-            // which is the pre-R4b behaviour and the fail-safe direction.
+        // A VPN attempt needs a bound network. If none is available the rung is
+        // simply unusable, so degrade to OPEN without claiming a fallback we did
+        // not perform.
+        if (path == CollectorPath.VPN && boundFetcher == null) {
+            fetchLog("[fetch] path=open (vpn rung unavailable)")
             pathLog("[collector] path=open source=$sourceTag")
             return fetch(fetcher)
         }
 
-        pathLog("[collector] path=vpn source=$sourceTag")
-        val primary = fetch(boundFetcher)
-        if (primary != null && succeeded(primary)) return primary
+        // --- primary rung ---
+        val primaryResult = if (path == CollectorPath.VPN) {
+            fetchLog("[fetch] path=vpn source=$sourceTag")
+            pathLog("[collector] path=vpn source=$sourceTag")
+            fetch(boundFetcher!!)
+        } else {
+            fetchLog("[fetch] path=open source=$sourceTag")
+            pathLog("[collector] path=open source=$sourceTag")
+            fetch(fetcher)
+        }
+        if (primaryResult != null && succeeded(primaryResult)) return primaryResult
 
-        // The VPN rung was tried and produced nothing. Falling back to open is
-        // strictly better than failing the whole refresh: the user asked for
-        // the VPN rung to be *preferred*, not *required*, and a collector that
-        // cannot reach vpngate.net serves nobody.
-        pathLog("[collector] path=fallback-to-open source=$sourceTag")
-        return fetch(fetcher)
+        // --- fallback to the opposite rung, only when it is reachable ---
+        val fallback = if (path == CollectorPath.OPEN) CollectorPath.VPN else CollectorPath.OPEN
+        val canFallback = when (fallback) {
+            CollectorPath.VPN -> boundFetcher != null
+            CollectorPath.OPEN -> true
+        }
+        if (!canFallback) {
+            // Diagnostic only — the `[collector]` stream stays clean so existing
+            // per-source log assertions are unaffected.
+            // v1.0.27 — D-2 fix: here path is always OPEN (VPN-only fallback is
+            // unreachable without a bound network), so log it lowercase to match
+            // the OPEN-first diagnostic contract.
+            fetchLog("[fetch] path=open failed (no result); no fallback (tunnel down)")
+            return null
+        }
+
+        // v1.0.27 — D-2 fix: emit the rung names lowercase so the [fetch]
+        // diagnostics read `path=open` / `path=vpn` / `fallback-to-open`
+        // consistently with the primary-attempt lines.
+        fetchLog("[fetch] path=${path.name.lowercase()} failed (no result); falling back to ${fallback.name.lowercase()}")
+        pathLog("[collector] path=fallback-to-${fallback.name.lowercase()} source=$sourceTag")
+        val fallbackResult = if (fallback == CollectorPath.VPN) {
+            fetch(boundFetcher!!)
+        } else {
+            fetch(fetcher)
+        }
+        if (fallbackResult != null && succeeded(fallbackResult)) {
+            fetchLog("[fetch] path=${fallback.name.lowercase()} succeeded after ${path.name.lowercase()} failed")
+            return fallbackResult
+        }
+        fetchLog("[fetch] path=${fallback.name.lowercase()} failed (no result)")
+        return null
     }
 
     /** Visible for tests; builds the R4b fetcher actually used by a run. */
