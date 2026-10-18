@@ -433,7 +433,7 @@ class AutoModeControllerTest {
         c.stop()
     }
 
-    // Test 10: pressing while Connected goes back to Disconnected
+    // Test 10: pressing while Connected goes back to Disconnected but starts a continuation run
     @Test
     fun pressWhileConnectedDisconnects() = runBlocking {
         val c = controller(servers = listOf(server("s1")))
@@ -441,7 +441,10 @@ class AutoModeControllerTest {
         assertTrue(c.awaitTerminal() is AutoModeState.Connected)
         c.onButtonPressed()
         assertEquals(AutoModeState.Disconnected, c.state.value)
-        assertTrue(!c.isRunning)
+        assertTrue(c.isRunning) // v1.0.31 D-5: pressing while Connected starts a continuation run
+        val terminal = c.awaitTerminal()
+        assertTrue(terminal is AutoModeState.Error)
+        assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
     }
 
     // §7 per-protocol capability rules
@@ -2557,6 +2560,227 @@ val sstp = AutoModeCandidate(
         assertTrue(source.contains("Tunnel disconnected externally / revoked by system"))
         assertTrue(source.contains("GlobalVpnTracker confirmed disconnected"))
         assertTrue(source.contains("No proof of life for"))
+    }
+
+    // ------------------------------------------------------------------
+    // v1.0.31 — AUTOCONNECT-FIX (D-1, D-2, D-4, D-5)
+    //
+    // Four gaps found by the two independent AutoConnect audits. Each test
+    // below fails on the pre-v1.0.31 tree and passes after the fix, so the
+    // regression they guard against is the fix being reverted, not a
+    // hypothetical.
+    // ------------------------------------------------------------------
+
+    /**
+     * T-NEW-1 (D-1): the documented default, the Settings default and the
+     * pure-JVM fallback all agree on 12 s.
+     *
+     * Before v1.0.31 three figures described this one setting — 25 s in
+     * `DEFAULT_ATTEMPT_TIMEOUT_MS`, 12 s in `DataUtil`, 5 s in the spec — and
+     * nothing pinned any of them, so the drift was invisible to CI. This pins
+     * the two that are reachable from the JVM; the spec figure is asserted by
+     * §6.7 R5 / §6.8 themselves.
+     */
+    @Test
+    fun defaultAttemptTimeoutMatchesTheSettingsDefault() {
+        assertEquals(
+            "the controller fallback must equal the shipped Settings default (12 s)",
+            12_000L,
+            AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS,
+        )
+        val dataUtil = sourceOf("src/main/java/vn/unlimit/vpngate/utils/DataUtil.kt")
+        assertTrue(
+            "DataUtil must default SETTING_AUTO_MODE_TIMEOUT_SECONDS to 12",
+            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
+        )
+        assertTrue(
+            "the timeout must stay clamped to the documented 5..60 range",
+            dataUtil.contains(".coerceIn(5, 60)"),
+        )
+    }
+
+    /**
+     * T-NEW-2 (D-4): a press while a tunnel this run does not own is active is
+     * refused, and nothing is dialled.
+     *
+     * This is the production button path (`onButtonPressed`). Before v1.0.31 the
+     * `isTunnelBusy()` guard existed only in `startOrRefuseIfNoServers()`, which
+     * has no production caller, so pressing the button during a manual
+     * connection dispatched a second, competing `ACTION_CONNECT`.
+     */
+    @Test
+    fun buttonRefusesToStartWhileAnotherTunnelIsActive() = runBlocking {
+        val c = controller(
+            servers = listOf(server("s1")),
+            isTunnelBusy = { true },
+        )
+
+        c.onButtonPressed()
+        // Give a wrongly-started run time to reach connect() before asserting.
+        delay(200)
+
+        assertTrue(
+            "no attempt may be armed while another tunnel is active",
+            adapter.connects.isEmpty(),
+        )
+        assertFalse("no run may be left active", c.isRunning)
+        assertTrue(
+            "the state must stay Disconnected, not move to an error",
+            c.state.value is AutoModeState.Disconnected,
+        )
+        assertTrue(
+            "the refusal must be explained in the log",
+            adapter.logs.any {
+                it.contains("start refused") && it.contains("a tunnel is already active")
+            },
+        )
+    }
+
+    /**
+     * T-NEW-3 (D-5 / OP-R6): pressing while Connected continues from the server
+     * AFTER the one that connected, instead of restarting at #1.
+     *
+     * Three servers of identical quality keep their insertion order, so "index
+     * 1" and "s2" name the same candidate and the assertion cannot pass by
+     * accident of ordering.
+     */
+    @Test
+    fun pressingWhileConnectedContinuesFromTheNextServer() = runBlocking {
+        val servers = listOf(server("s1"), server("s2"), server("s3"))
+        // s1 never comes up, so the first run connects on s2 (index 1).
+        adapter.failing += "s1"
+        val c = controller(servers = servers, timeout = 300)
+
+        c.onButtonPressed()
+        val first = c.awaitTerminal()
+        assertTrue("expected the first run to connect, got $first", first is AutoModeState.Connected)
+        assertEquals("s2", (first as AutoModeState.Connected).hostname)
+
+        // Everything is healthy from here; only the continuation matters.
+        adapter.connects.clear()
+        adapter.failing.clear()
+
+        c.onButtonPressed() // Connected press → resume at index 2
+        val second = c.awaitTerminal()
+
+        assertEquals(
+            "the continued run must dial s3 first — not restart at s1",
+            "s3" to AutoModeProtocol.SOFTETHER_UDP,
+            adapter.connects.first(),
+        )
+        assertEquals(
+            "the continued run must not re-dial s1 or s2",
+            listOf("s3"),
+            adapter.connects.map { it.first }.distinct(),
+        )
+        assertTrue("expected the continued run to connect, got $second", second is AutoModeState.Connected)
+        assertEquals("s3", (second as AutoModeState.Connected).hostname)
+    }
+
+    /**
+     * T-NEW-4 (D-5 edge): pressing while connected to the LAST server starts no
+     * attempt at all and terminates with `ERROR_NO_SERVER`.
+     *
+     * This is the documented meaning of an out-of-range continuation: the list
+     * is exhausted, so the run must not wrap around to index 0.
+     */
+    @Test
+    fun pressingWhileConnectedToTheLastServerEndsWithoutRestarting() = runBlocking {
+        val servers = listOf(server("s1"), server("s2"))
+        adapter.failing += "s1"
+        val c = controller(servers = servers, timeout = 300)
+
+        c.onButtonPressed()
+        val first = c.awaitTerminal()
+        assertTrue("expected the first run to connect, got $first", first is AutoModeState.Connected)
+        assertEquals("s2", (first as AutoModeState.Connected).hostname)
+
+        adapter.connects.clear()
+        c.onButtonPressed() // last server (index 1) → resume index 2 == size
+        val second = c.awaitTerminal()
+
+        assertTrue("expected ERROR_NO_SERVER, got $second", second is AutoModeState.Error)
+        assertEquals(
+            AutoModeController.ERROR_NO_SERVER,
+            (second as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "an exhausted list must not wrap around and dial index 0",
+            adapter.connects.isEmpty(),
+        )
+    }
+
+    /**
+     * T-NEW-5 (D-2): a thrown exception is one (server, protocol) failing, so it
+     * advances to the NEXT PROTOCOL — the same transition as every other
+     * non-timeout outcome.
+     *
+     * Before v1.0.31 this was a `break`, which jumped to the next SERVER: s1
+     * would be dialled once (TCP) and its second protocol never attempted. The
+     * assertion is the exact `connects` sequence, which differs between the two
+     * behaviours.
+     */
+    @Test
+    fun connectExceptionAdvancesToTheNextProtocolNotTheNextServer() = runBlocking {
+        val c = controller(
+            servers = listOf(server("s1"), server("s2")),
+            timeout = 300,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        // s1's connect() throws on every protocol; s2 is healthy.
+        adapter.connectThrowing += "s1"
+
+        c.onButtonPressed()
+        val terminal = c.awaitTerminal()
+
+        assertEquals(
+            "s1 must be dialled on BOTH protocols: a thrown exception advances to the " +
+                "next protocol, not straight to the next server",
+            listOf(
+                "s1" to AutoModeProtocol.SOFTETHER_TCP,
+                "s1" to AutoModeProtocol.SOFTETHER_UDP,
+                "s2" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue("expected s2 to connect, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals("s2", (terminal as AutoModeState.Connected).hostname)
+    }
+
+    /**
+     * T-NEW-6 (D-5 reset): a spent continuation never leaks into a later run.
+     *
+     * After the list is exhausted the recorded position is zero, so the next
+     * fresh press starts at index 0 again. Without this, one "continue" would
+     * permanently shorten every subsequent run.
+     */
+    @Test
+    fun aFreshPressAfterExhaustionStartsFromTheTopAgain() = runBlocking {
+        val servers = listOf(server("s1"), server("s2"))
+        adapter.failing += "s1"
+        val c = controller(servers = servers, timeout = 300)
+
+        c.onButtonPressed()
+        val first = c.awaitTerminal()
+        assertTrue("expected the first run to connect, got $first", first is AutoModeState.Connected)
+        assertEquals("s2", (first as AutoModeState.Connected).hostname)
+
+        c.onButtonPressed() // connected on the LAST server → exhausted
+        val exhausted = c.awaitTerminal()
+        assertTrue("expected ERROR_NO_SERVER, got $exhausted", exhausted is AutoModeState.Error)
+
+        adapter.connects.clear()
+        adapter.failing.clear() // s1 is healthy now
+        c.onButtonPressed()
+        val restarted = c.awaitTerminal()
+
+        assertEquals(
+            "a fresh press must start at index 0 again",
+            "s1" to AutoModeProtocol.SOFTETHER_UDP,
+            adapter.connects.first(),
+        )
+        assertTrue("expected the restart to connect, got $restarted", restarted is AutoModeState.Connected)
+        assertEquals("s1", (restarted as AutoModeState.Connected).hostname)
     }
 
     /** Reads a production source file, relative to the module directory. */

@@ -498,11 +498,17 @@ class AutoModeNativeBusyTest {
     }
 
     @Test
-    fun `the default attempt timeout is unchanged`() {
+    fun `the default attempt timeout matches the settings default`() {
         // The refusal is delivered on the service's main handler while the attempt waits
         // on the adapter's dispatcher; nothing in the contract requires them to share a
         // thread. Keeping the default intact preserves "a genuine failure still waits".
-        assertEquals(25_000L, AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS)
+        //
+        // v1.0.31 (AUTOCONNECT-FIX, D-1): the fallback is now 12_000L, the shipped
+        // Settings default, instead of 25_000L. Three figures used to describe this one
+        // setting (25 s here, 12 s in DataUtil, 5 s in the spec) and nothing pinned any
+        // of them, so the drift was invisible. The assertion is kept — with the corrected
+        // value — precisely so it stays a guard against the three drifting apart again.
+        assertEquals(12_000L, AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS)
     }
 
     // ------------------------------------- Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 2)

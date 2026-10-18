@@ -328,7 +328,23 @@ enum class AttemptOutcome {
 }
 
     companion object {
-        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 25_000L
+        /**
+         * v1.0.31 (AUTOCONNECT-FIX, D-1): the pure-JVM fallback for
+         * [attemptTimeoutMs], aligned with the shipped Settings default —
+         * `DataUtil.getAutoModeTimeoutSeconds()` returns 12 s
+         * (`SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped to 5..60).
+         *
+         * Before v1.0.31 this read `25_000L`, a third figure that agreed with
+         * neither the Settings default (12 s) nor the documented default (5 s).
+         * Three numbers described one setting, and no test pinned any of them,
+         * so the drift was invisible to CI. Now all three agree on 12 s
+         * (§6.7 R5, §6.8).
+         *
+         * Production never reaches this value: `AutoModeEngine.ensure()` always
+         * injects the user's setting explicitly. It exists for direct
+         * construction (tests, library callers).
+         */
+        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 12_000L
 
         /**
          * Protocol order used when no provider is supplied at all (library
@@ -485,6 +501,35 @@ enum class AttemptOutcome {
     @Volatile
     var totalServerCount: Int = 0
         private set
+
+    /**
+     * v1.0.31 (OP-R6 / D-5): the position in the resolved candidate list at
+     * which the **next** run must start, instead of always restarting at #1.
+     *
+     * ## Invariant
+     *
+     * - Set to a non-zero value **only** by a button press taken while
+     *   [AutoModeState.Connected]: the user pressed "Auto Connect" on a live
+     *   tunnel, which means "move on from here", not "start over". The value is
+     *   `currentServerIndex + 1` — the server after the one that connected.
+     * - Consumed **exactly once**, at the top of [runAutoMode], and zeroed
+     *   there. Consuming at read time (rather than at a terminal branch) is
+     *   deliberate: an internal restart that the user did not press — the R8
+     *   Auto-Reconnect path calls [start] directly — must never inherit a stale
+     *   index and silently skip servers.
+     * - Zeroed on every fresh start (a press from Disconnected/Error).
+     * - If the value is `>= servers.size`, the run starts no attempts and
+     *   terminates with `ERROR_NO_SERVER`; that is the documented meaning of
+     *   pressing the button while connected to the **last** server.
+     *
+     * The index refers to the *previous* run's resolved (filtered + sorted)
+     * list — the same list [currentServerIndex] reported. A re-sorted list can
+     * therefore shift the position by one or more places. That is accepted:
+     * pinning a server identity instead would silently skip a candidate that
+     * has since become better, and the ordering is the contract (§6.6).
+     */
+    @Volatile
+    private var resumeFromIndex: Int = 0
 
     /**
      * User-requested skip of the current server (Try next server button).
@@ -965,12 +1010,40 @@ enum class AttemptOutcome {
     private fun onButtonPressedWithoutGuard() {
         when (_state.value) {
             is AutoModeState.Disconnected, is AutoModeState.Error -> {
+                // v1.0.31 (D-4): a tunnel that this run does not own — a manual
+                // connection, or a manual connect that is still coming up — must
+                // not be raced. Before v1.0.31 this guard existed only in
+                // [startOrRefuseIfNoServers], which has no production caller, so
+                // the button dialled a second, competing tunnel while the first
+                // was live. Refusing is the fail-closed choice: the user can
+                // disconnect and press again. Spec §6.7 R2 / §6.8.
+                if (isTunnelBusy()) {
+                    adapter.log("[AUTO] start refused: a tunnel is already active")
+                    return
+                }
                 overrideServers = null
+                // A fresh start always begins at the top of the list.
+                resumeFromIndex = 0
                 resetReconnectBudget()
                 start()
             }
             is AutoModeState.Connecting -> stop()
-            is AutoModeState.Connected -> disconnectNow()
+            is AutoModeState.Connected -> {
+                // v1.0.31 (OP-R6 / D-5): pressing while connected means "move
+                // on", not "start over". Record the position after the server
+                // that connected, then tear down and run again from there.
+                //
+                // Ordering: [disconnectNow] issues the teardown request
+                // synchronously (it is enqueued before the state is published —
+                // see its comment), and [runAutoMode] then resolves the server
+                // list and probes before its first `connect()`. The DISCONNECT
+                // therefore reaches the service ahead of the new run's first
+                // ACTION_CONNECT without making this (synchronous) handler
+                // suspend.
+                resumeFromIndex = currentServerIndex + 1
+                disconnectNow()
+                start()
+            }
         }
     }
 
@@ -1362,7 +1435,22 @@ enum class AttemptOutcome {
         val attempted = mutableSetOf<String>()
         var attempt = 0
 
-        for (server in servers) {
+        // v1.0.31 (OP-R6 / D-5): a press taken while Connected asked this run to
+        // continue after the server that connected. The value is consumed HERE,
+        // once, and zeroed immediately — see [resumeFromIndex] for why
+        // consumption happens at read time rather than at a terminal branch (an
+        // internal R8 reconnect calls start() directly and must never inherit a
+        // stale index). `coerceIn` makes an out-of-range value (including
+        // "connected to the last server") start no attempts and fall through to
+        // ERROR_NO_SERVER, which is the documented meaning.
+        val startAt = resumeFromIndex.coerceIn(0, servers.size)
+        resumeFromIndex = 0
+        if (startAt > 0) {
+            adapter.log("[AUTO] Continuing from server #${startAt + 1} of ${servers.size}")
+        }
+
+        for (i in startAt until servers.size) {
+            val server = servers[i]
             if (!currentCoroutineContext().isActive) return
 
             val key = wedgeKey(server)
@@ -1383,7 +1471,10 @@ enum class AttemptOutcome {
             // VpnM Phase 3 "Cursor": the absolute position of the server being
             // tried, counted over the whole (post-filter) list, so the UI can say
             // "server #5 of 20" rather than only "attempt 1 of 3".
-            currentServerIndex = servers.indexOf(server).coerceAtLeast(0)
+            // v1.0.31: the loop index IS that position, so it is used directly
+            // instead of a linear `indexOf` search (which also mis-reported the
+            // first of two equal candidates).
+            currentServerIndex = i
             totalServerCount = servers.size
 
             // Stage 2F-F.13 (D2 + D8 + Y4): the protocols to try for THIS server,
@@ -1445,7 +1536,15 @@ enum class AttemptOutcome {
                 } catch (e: Exception) {
                     adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
                     adapter.disconnect()
-                    break // transport-level failure: move to the next server
+                    // v1.0.31 (AUTOCONNECT-FIX, D-2 / OP-R4): a thrown exception
+                    // is one (server, protocol) failing, so it advances to the
+                    // NEXT PROTOCOL — the same transition as every other
+                    // non-timeout outcome. Before v1.0.31 this was `break`,
+                    // which skipped the server's remaining protocols and jumped
+                    // to the next server: two failures with identical meaning
+                    // rotated at different granularity, so a server that threw
+                    // on its first protocol never got a chance at its second.
+                    continue
                 }
                 val outcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
 
@@ -1537,7 +1636,11 @@ enum class AttemptOutcome {
                     } catch (e: Exception) {
                         adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
                         adapter.disconnect()
-                        break // transport-level failure: move to the next server
+                        // v1.0.31 (D-2): same transition as the first dial above
+                        // — the exception belongs to this (server, protocol)
+                        // pair, so the next protocol on this server still gets
+                        // its turn rather than being skipped.
+                        continue
                     }
                     val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
                     if (!currentCoroutineContext().isActive) return
@@ -1663,6 +1766,11 @@ enum class AttemptOutcome {
 
         adapter.log("[AUTO] All compatible servers failed")
         setState(AutoModeState.Error(ERROR_NO_SERVER)) // no auto loop back to #1
+        // v1.0.31 (D-5): the continuation is spent. This is a second, defensive
+        // reset — [resumeFromIndex] is already zeroed when it is consumed above;
+        // zeroing here too means "the list is exhausted" can never leave a
+        // position behind for a later run.
+        resumeFromIndex = 0
         job = null // terminal state: the run is over; next press restarts cleanly
     }
 
