@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `9d569c37ddba1a4c26db688b398c4fcb3d660112`
-**Document version:** 1.0.30
+**HEAD:** `c5fa4362a0c1a39166112fd1f6be552418af17dd`
+**Document version:** 1.0.31
 **Last updated:** 2026-10-18
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -356,6 +356,7 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > not a failure. Two commits make up this revision: `chore(sources)` (`9d569c3`) and `docs` (this spec
 > update plus `SPEC_INTEGRITY_AUDIT_v1.0.30_REPORT.md`). The header **HEAD** field is the pre-docs
 > commit `9d569c37ddba1a4c26db688b398c4fcb3d660112`. No tag operation of any kind was performed.
+> **Push state (v1.0.31).** AUTOCONNECT-FIX. Four gaps closed: G-2 (default timeout unified to 12 s), G-17 (isTunnelBusy guard wired to production path), R4 (uniform non-timeout transition), and OP-R6 (Connected press continues from next server). New §6.8.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -1822,6 +1823,71 @@ doc-comment-only `HttpFetcher.kt` change (bullet 4).
    bytes**). The candidate closure-discipline lesson from §1.6.21 and the concurrent-worktree rule
    (bullet 3) are recorded here, not in §22. Evidence: SOURCE CODE.
 
+#### 1.6.23 AUTOCONNECT-FIX — Two-Audit Reconciliation (v1.0.31)
+
+This subsection records the **AUTOCONNECT-FIX** revision, which closes four gaps found by the two
+independent AutoConnect audits (`AUTOCONNECT_AUDIT_REPORT.md` and
+`AUTOCONNECT_AUDIT_REPORT_v2.md`, both untracked and untouched) plus the new operator requirement
+**OP-R6**. Spec v1.0.30 → v1.0.31. Device-free: **no device, no adb, no C5, no tag**.
+
+1. **D-1 — default timeout unified to 12 s.** The documented default, the shipped Settings
+   default and the pure-JVM fallback were three different numbers (5 s / 12 s / 25 s) and nothing
+   pinned any of them, so the drift was invisible to CI. All three now agree on **12 s**:
+   - `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` = `12_000L` (`AutoModeController.kt:347`)
+   - `DataUtil.getAutoModeTimeoutSeconds()` = `getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)`
+     with `.coerceIn(5, 60)` (SOURCE CODE)
+   - Spec §6.7 R5 / §6.8.1: **12 s**, range **5–60 s**.
+   The 25 s constant is retired, not merely justified. Evidence: SOURCE CODE + TEST
+   (`AutoModeControllerTest.defaultAttemptTimeoutMatchesTheSettingsDefault`, `:2582`;
+   `AutoModeNativeBusyTest` the-default-attempt-timeout-matches-the-settings-default, `:511`).
+2. **D-2 — uniform non-timeout transition.** A thrown exception in `connect()` was a
+   `break` → next **server**, skipping the server's remaining protocols. It is now a `continue` →
+   next **protocol**, the same transition as every other non-timeout outcome. Two sites:
+   `AutoModeController.kt:1446` (first dial) and the retry dial. Evidence: SOURCE CODE + TEST
+   (`AutoModeControllerTest.connectExceptionAdvancesToTheNextProtocolNotTheNextServer`, `:2721`).
+3. **D-4 — `isTunnelBusy()` guard wired to the production path.** The guard existed only in
+   `startOrRefuseIfNoServers()`, which has no production caller, so the button dialled a second,
+   competing tunnel during a manual connection. It now lives in
+   `onButtonPressedWithoutGuard()` (`AutoModeController.kt:1010`): a press from
+   `Disconnected`/`Error` is refused with the log line
+   `[AUTO] start refused: a tunnel is already active` and no state change. Evidence:
+   SOURCE CODE + TEST (`AutoModeControllerTest.buttonRefusesToStartWhileAnotherTunnelIsActive`,
+   `:2609`).
+4. **D-5 (OP-R6) — pressing while `Connected` continues from the next server.** A press on a
+   live tunnel means "move on", not "start over". `resumeFromIndex` (`AutoModeController.kt:532`)
+   is set to `currentServerIndex + 1` in the `Connected` branch of
+   `onButtonPressedWithoutGuard()` (`:1010`), consumed exactly once at the top of `runAutoMode`
+   (`val startAt = resumeFromIndex.coerceIn(0, servers.size)`, `:1026`), and zeroed on every
+   fresh start and at the `ERROR_NO_SERVER` terminal (`:1773`). An out-of-range value starts no
+   attempts and terminates with `ERROR_NO_SERVER` — it does **not** wrap around to index 0.
+   Evidence: SOURCE CODE + TEST
+   (`pressingWhileConnectedContinuesFromTheNextServer`, `:2645`;
+   `pressingWhileConnectedToTheLastServerEndsWithoutRestarting`, `:2685`;
+   `aFreshPressAfterExhaustionStartsFromTheTopAgain`, `:2755`).
+5. **D-6/D-7 — four terminal conditions + the 4/5 native fraction documented.** §6.7 R7's "no
+   other implicit stop condition" is replaced with the four system-level terminals
+   (`ERROR_NO_ENABLED_PROTOCOL`, `ERROR_NATIVE_UNRESOLVED`, `ERROR_VPN_PERMISSION`, all-unreachable).
+   The native connect budget is **80 % of `T`** (`NATIVE_TIMEOUT_FRACTION_NUM = 4L` /
+   `NATIVE_TIMEOUT_FRACTION_DEN = 5L`, `AndroidConnectionAdapter.kt:74-75`) with a
+   `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` floor (`:84`). New **§6.8** records the complete
+   attempt-loop contract: server-outer / protocol-inner nesting, the per-protocol independent
+   window of `T`, the transition table for every `AttemptOutcome` plus the exception case, the
+   eight terminal conditions, the `N × T` nominal bound with the real worst-case formula, the
+   OP-R6 semantics, and the `isTunnelBusy()` refusal. Evidence: SOURCE CODE (spec text) +
+   USER-DIRECTED REQUIREMENT (the rotation and timeout rules).
+6. **D-8 — tests.** Six new tests added to `AutoModeControllerTest.kt` (no existing test deleted)
+   and one assertion in `AutoModeNativeBusyTest.kt` corrected. Baseline `:app` **790/0/0/1**;
+   expectation after this revision **~796/0/0/1** with the single pre-existing skip unchanged.
+   Evidence: TEST.
+7. **Git discipline.** Two commits on `main`, fast-forward push to `origin/main`, no force, no
+   reset / clean / stash / checkout / restore, no tag operation, no `git add -A`. The two audit
+   reports remain untracked and unmodified. §22 is byte-identical (99 lines / 6,504 bytes);
+   §1.6.2–§1.6.22 are otherwise untouched. Evidence: SOURCE CODE.
+
+> **Not device-verified.** All six tests are JVM-only; the wall-clock behaviour of the new
+> rotation and timeout rules on hardware is **UNKNOWN** in this revision. Device verification is
+> proposed in `AUTOCONNECT_FIX_REPORT.md` §12.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2295,6 +2361,11 @@ The refusal is **scoped to `sessionPolicy.sessionGeneration`**, so a refusal for
 **Constants:**
 - `NATIVE_CLEANUP_CONFIRM_TIMEOUT_MS = 2_000L` (`SoftEtherVpnService.kt:112`) — how long teardown waits for native cleanup confirmation before reporting completion anyway. Longer than the controller's 500 ms teardown deadline.
 - `TEARDOWN_TIMEOUT_MS = 5_000L` (`AndroidConnectionAdapter.kt:56`) — overall disconnect timeout.
+- `NATIVE_TIMEOUT_FRACTION_NUM = 4L` / `NATIVE_TIMEOUT_FRACTION_DEN = 5L` (`AndroidConnectionAdapter.kt:74-75`) — the native connect budget is **80 % of the per-attempt budget `T`**.
+- `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` (`AndroidConnectionAdapter.kt:84`) — floor under that fraction, so a very small `T` still gives the native stack a usable window.
+- `NATIVE_SLOT_AWAIT_MS = 30_000L` / `NATIVE_SLOT_AWAIT_MAX_MS = 60_000L` (`AutoModeController.kt`) — how long a NATIVE_BUSY refusal waits for the process-wide slot. Production derives the wait as `5 × T`, capped at the max.
+
+> **Two-layer timeout (v1.0.31).** The same preference drives two independent bounds: the coroutine-level armed `select` wait is **100 % of `T`** (`AndroidConnectionAdapter.awaitArmedTunnel`), and the native connection race is **80 % of `T`** (`ConnectionConfig.connectTimeoutMs` → `ConnectionController.client.setTimeout`). The split is deliberate: the native verdict must arrive *before* the controller stops waiting, so an unresponsive server is reported as a native failure and the process-wide slot is released before rotation runs into NATIVE_BUSY. An attempt that cannot finish its handshake in 80 % of the window could not have produced a verified tunnel inside the full window either. Before v1.0.31 both layers used the identical figure, so the two deadlines coincided and the outcome was decided by whichever timer fired first.
 
 ### 6.5 One-Attempt-Per-Server (§10)
 
@@ -2362,13 +2433,13 @@ Auto Mode enforces that each server is tried at most once per protocol per run. 
 - **Trigger:** Each (server, protocol) attempt begins (`beginAttempt`).
 - **Expected behavior:**
   - The timeout for an attempt is **per server, per protocol** and is **configurable in Settings** (the `attemptTimeoutMs` plumbing in `AutoModeEngine.ensure()`, §10.1).
-  - **Default: 5 seconds per protocol attempt.**
-  - If the user has enabled multiple protocols, each protocol attempt has its **own independent** timeout window (a server that fails on protocol A within 5 s does not consume protocol B's 5 s budget).
+  - **Default: 12 seconds per protocol attempt** (v1.0.31). The value lives in the `SETTING_AUTO_MODE_TIMEOUT_SECONDS` preference, read by `DataUtil.getAutoModeTimeoutSeconds()` and clamped to **5–60 s**; the Settings picker offers exactly that range. `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` is the same 12 s, so the documented default, the shipped default and the pure-JVM fallback are one number (they were three before v1.0.31 — see §1.6.23).
+  - If the user has enabled multiple protocols, each protocol attempt has its **own independent** timeout window (a server that fails on protocol A within `T` does not consume protocol B's `T` budget).
 - **Stop condition:** If the armed tunnel wait (`awaitArmedTunnel`, §6.4) does not complete within `attemptTimeoutMs`, the attempt is declared failed and the next (server, protocol) pair is tried.
 - **Fallback path / selection:** UDP-only servers (`seTcpPort=0`, `seUdpSupported=true`) must **NOT** be selected for `SOFTETHER_UDP` — per the §6.2 endpoint rule and `SERVER_SOURCE_ARCHITECTURE.md` §3.5. Selection filtering (not timeout) handles them. (This is the BUG 1 fix point.)
-- **Testable:** With default Settings, each protocol attempt is bounded by ~5 s; the documented implementation must apply `attemptTimeoutMs` to **both** the armed `select` wait (`awaitArmedTunnel`) **and** the native race (`ConnectionConfig.connectTimeoutMs`), not merely log it.
+- **Testable:** With default Settings, each protocol attempt is bounded by ~12 s (`T`); the documented implementation must apply `attemptTimeoutMs` to **both** the armed `select` wait (`awaitArmedTunnel`, 100 % of `T`) **and** the native race (`ConnectionConfig.connectTimeoutMs`, **80 % of `T`** — see §6.8), not merely log it.
 
-> **Cross-reference:** `DEFAULT_ATTEMPT_TIMEOUT_MS` (§10.1, §17) is the per-attempt bound. This requirement fixes its default at **5 s** and requires it be plumbed **per-protocol**. NOTE: the bug-fix phase (F.28AL-AUTOCONNECT-BUG-FIX) must correct the current deviation where the user timeout is logged but not applied to the armed `select` (BUG 3) and not passed to the native race (also BUG 3).
+> **Cross-reference:** `DEFAULT_ATTEMPT_TIMEOUT_MS` (§10.1, §17) is the per-attempt bound. **v1.0.31 supersedes the earlier 5 s figure:** the shipped default is **12 s**, and the constant — which read `25_000L` and agreed with neither figure — was corrected to `12_000L`. The timeout is plumbed **per-protocol**. The BUG 3 deviation (timeout logged but not applied to the armed `select`, and not passed to the native race) was closed in **F.28AL-AUTOCONNECT-BUG-FIX**; §6.8 records the resulting two-layer enforcement and the real per-server time bound.
 
 #### R6. Protocol List and Priority (Settings)
 
@@ -2390,15 +2461,142 @@ Auto Mode enforces that each server is tried at most once per protocol per run. 
 - **Expected behavior:** The app keeps trying servers until one of:
   - **(a)** The end of the server list is reached (all sorted candidates attempted without a verified tunnel) → run ends with `ERROR_NO_SERVER` (§6.3).
   - **(b)** The user presses the AutoConnect button **again** to stop the operation → the run is cancelled and any in-flight armed attempt's tunnel is torn down.
-- **Stop condition:** There is **no other implicit stop condition.** AutoConnect does not stop on a single server failure, on a NATIVE_BUSY refusal (§6.4 — it continues without rotating), or on any timeout short of exhausting the list.
+- **Stop condition:** AutoConnect does not stop on a single server failure, on a NATIVE_BUSY refusal (§6.4 — it continues without rotating), or on any timeout short of exhausting the list. It **does** stop when one of the following **system-level terminals** is reached — none of them is a server verdict, and each is recorded in §6.8:
+  - **(c)** No protocol is enabled — `ERROR_NO_ENABLED_PROTOCOL`, refused before any attempt is armed.
+  - **(d)** The process-wide native slot was never released — `ERROR_NATIVE_UNRESOLVED`. This is the fail-closed terminal: the application's own previous native operation never finished, so continuing could only stack refusals.
+  - **(e)** VPN permission is missing — `ERROR_VPN_PERMISSION`.
+  - **(f)** The reachability pre-pass (R3) definitively found every candidate unreachable — reported as `ERROR_NO_SERVER`.
+  Before v1.0.31 this clause asserted there was **no** other implicit stop condition. That was false: the four above existed in code and were undocumented, so a reader of this contract would have expected a run to continue in cases where it terminates.
 - **Fallback path:** On stop-condition (a), AutoConnect returns to idle with no active tunnel. On (b), the in-flight attempt is cancelled and the tunnel torn down.
-- **Testable:** Given a list of N unreachable servers, AutoConnect attempts all N (in sort order) and only then reports `ERROR_NO_SERVER`; a second button press during the run cancels it.
+- **Testable:** Given a list of N unreachable servers, AutoConnect attempts all N (in sort order) and only then reports `ERROR_NO_SERVER`; a second button press during the run cancels it. The elapsed time is **nominal** `N × T`, not a hard bound — §6.8 gives the real formula.
 
 > **Cross-reference:** `endRun(ERROR_NO_SERVER)` (§6.3). This requirement adds the **second stop condition (user re-press)**, which was previously undocumented.
 
 #### R8. Automatic Reconnection in Auto Mode (New Setting)
 
 - **Full settings requirement:** see **§11.13** — finalized name `Auto-Reconnect in Auto Mode` («اتصال همیشکی اتوکانکت»), default **ENABLED (فعال)**, and enabled/disabled behavior.
+
+---
+
+### 6.8 Per-Attempt Timeout and Rotation Contract
+
+> **Scope:** §6.7 documents the **button** contract (what a press does, what the user sees). This section documents the **attempt loop** underneath it: how long one attempt may take, what happens on each outcome, when rotation advances a protocol versus a server, and when the run terminates. Together they are the complete normative description of AutoConnect behaviour.
+>
+> **Evidence class:** **USER-DIRECTED REQUIREMENT** for the timeout and rotation semantics (operator rules R1–R5, restated here as a single table); **SOURCE CODE** for the enumerated outcomes and constants, which are read from HEAD `c5fa436` + the v1.0.31 fixes. Every clause below is either asserted by a JVM test or explicitly marked as device-dependent.
+
+#### 6.8.1 The timeout `T`
+
+`T` is the per-attempt budget for **one (server, protocol) pair**.
+
+| Property | Value |
+|----------|-------|
+| Preference key | `SETTING_AUTO_MODE_TIMEOUT_SECONDS` |
+| Reader | `DataUtil.getAutoModeTimeoutSeconds()` |
+| Default | **12 s** |
+| Range | **5–60 s**, clamped on both read and write |
+| Settings UI | single-choice picker, values `(5..60)` |
+| Pure-JVM fallback | `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS = 12_000L` |
+
+All three figures are the same number. They were **not** before v1.0.31 (25 s / 12 s / 5 s); §1.6.23 records the reconciliation.
+
+#### 6.8.2 Loop nesting
+
+The loop is **server-outer, protocol-inner** — a nested `for`, not a flat product:
+
+```
+for (server in servers[resumeFromIndex …])          ← outer: the sorted candidate list
+    for (protocol in usableProtocols(server, priorities))   ← inner: user priority order
+```
+
+Consequences, all normative:
+
+1. Each protocol of a server gets its **own independent** window of `T`. A timeout on protocol A does not consume protocol B's budget.
+2. A server's remaining protocols are tried **before** the next server is considered.
+3. The maximum number of attempts is `N × M` where `N` is the candidate count and `M` the user's enabled-protocol count — but only the eligible subset is dialled (`usableProtocols` = `supports` ∧ `isAutomatable`), so the real count is usually lower.
+
+#### 6.8.3 Transition table
+
+Every way an attempt can end, and where it goes next. "Next protocol" means the next entry of `usableProtocols` for the **same** server; "next server" means the next entry of the outer list.
+
+| Outcome | Meaning | Transition |
+|---------|---------|-----------|
+| `TUNNEL_UP` | A verified tunnel is up. | **Success** — the run ends `Connected`; no further attempts. |
+| `TIMED_OUT` | `T` expired with no tunnel, no refusal, no terminal failure. | **Next protocol.** Never retried on the same server. This is the only outcome that records a "wedge" against the server. |
+| `NATIVE_ERROR` | The stack reported a terminal failure **before** `T` expired (refused port, rejected handshake, a non-SoftEther answer to the VPNCONNECT watermark). | **Next protocol.** The slot is already free, so the post-failure slot wait is skipped. |
+| `NATIVE_BUSY` | The start was refused because this application's own previous native operation still holds the process-wide slot. The server was **never contacted**. | Wait for the slot to be released (up to `min(5T, 60 s)`), then **retry the same protocol once**. If the retry does not come up, **next protocol**. If the slot is never released → terminal `ERROR_NATIVE_UNRESOLVED`. |
+| **Thrown exception** in `connect()` | The adapter could not even dispatch the attempt. | **Next protocol** (v1.0.31). Before v1.0.31 this jumped to the next **server**, so a server that threw on its first protocol never got its second — the same failure rotated at two different granularities depending on where it was raised. |
+| `VpnPermissionMissingException` | The OS refused the VPN permission. | **Terminal** `ERROR_VPN_PERMISSION`. |
+| User skip | "Try next server" while connecting. | **Next server** (deliberately skips the current server's remaining protocols — the user asked for a different server, not a different protocol). |
+
+Two asymmetries are intentional and are part of this contract: a user skip advances a **server**, and a `NATIVE_BUSY` refusal does **not** advance anything until the retry has been given its chance (a refusal is not a server verdict).
+
+#### 6.8.4 Terminal conditions
+
+A run ends — and the button stops meaning "stop" — in exactly these cases:
+
+| # | Terminal | State |
+|---|----------|-------|
+| 1 | Candidate list exhausted | `Error(ERROR_NO_SERVER)` |
+| 2 | Empty candidate list, before any attempt | `Error(<"update the server list first" message>)` |
+| 3 | No protocol enabled by the user | `Error(ERROR_NO_ENABLED_PROTOCOL)` |
+| 4 | Reachability pre-pass found every candidate unreachable | `Error(ERROR_NO_SERVER)` |
+| 5 | Process-wide native slot never released | `Error(ERROR_NATIVE_UNRESOLVED)` |
+| 6 | VPN permission missing | `Error(ERROR_VPN_PERMISSION)` |
+| 7 | User presses the button while `Connecting` | `Disconnected` (cancel + teardown) |
+| 8 | User presses the button while `Connected` | see §6.8.5 |
+
+Cases 1–6 are the "system-level terminals" referenced by §6.7 R7. None of them is a server verdict.
+
+#### 6.8.5 Pressing while `Connected` — continue from the next server (OP-R6)
+
+A press on a **live tunnel** means "move on", not "start over". The controller records the position after the server that connected and starts a fresh run from there:
+
+```
+resumeFromIndex = currentServerIndex + 1   // index into the previous run's resolved list
+disconnectNow()                            // teardown requested synchronously
+start()                                    // next run consumes resumeFromIndex once
+```
+
+Normative details:
+
+- The continuation is **consumed exactly once**, at the top of the run, and zeroed there. An internal restart the user did not press — the §11.13 Auto-Reconnect path calls `start()` directly — must never inherit a stale index and silently skip servers.
+- A fresh press from `Disconnected`/`Error` zeroes the position, so a later run always starts at the top again.
+- If the position is `>= servers.size` (the user pressed while connected to the **last** server), the run starts no attempt and terminates with `ERROR_NO_SERVER`. It does **not** wrap around to index 0.
+- The index refers to the **previous** run's resolved (filtered + sorted) list — the same list `currentServerIndex` reports. A re-sorted list can therefore shift the position by one or more places. This is accepted: pinning a server identity instead would silently skip a candidate that has since become better, and the ordering is the contract (§6.6).
+- Teardown ordering: `disconnectNow()` enqueues the teardown request synchronously before publishing `Disconnected`, and the new run resolves the server list and runs the pre-pass probe before its first `connect()`. The DISCONNECT therefore reaches the service ahead of the new run's first `ACTION_CONNECT` without making the (synchronous) button handler suspend.
+
+#### 6.8.6 The `isTunnelBusy()` guard
+
+A press taken from `Disconnected`/`Error` is **refused** — with a log line, and with no state change — when a tunnel that this run does not own is active or still coming up:
+
+```
+[AUTO] start refused: a tunnel is already active
+```
+
+This covers a manual connection and a manual connect that is still in flight. It is the fail-closed choice: AutoConnect must never dial a second, competing tunnel. Before v1.0.31 the guard existed only in `startOrRefuseIfNoServers()`, which has no production caller, so the production button path dialled regardless.
+
+> §6.7 R2's "disconnect the current tunnel first, **then** proceed" describes the **Auto Mode-owned** tunnel case, which §6.8.5 now implements. The manual-tunnel case is a **refusal**, not a takeover: AutoConnect does not tear down a connection the user started outside it.
+
+#### 6.8.7 Real time bound per server
+
+`N × T` is the **nominal** bound, not a hard one. The per-attempt worst case is:
+
+```
+T                                  the armed wait (100 % of T)
++ min(5T, 60 s)                    the post-failure slot wait, when the native slot is held
+```
+
+and a `NATIVE_BUSY` refusal can additionally spend up to `min(5T, 60 s)` waiting **before** its single retry, so one (server, protocol) pair can cost up to `6T` in the pathological case. With the 12 s default:
+
+| Case | Per protocol | Per server, 2 protocols |
+|------|--------------|--------------------------|
+| Healthy / slot free | `T` = 12 s | 24 s |
+| Failed, slot held | `T + 60 s` = 72 s | 144 s |
+| NATIVE_BUSY then retry | `6T` = 72 s | 144 s |
+
+The slot wait returns **immediately** when the slot is already free, so the healthy path pays nothing and the nominal bound holds in every normal run. §6.7 R7's "attempts all N" is about **count**, not elapsed time.
+
+> **Not device-verified.** The wall-clock behaviour of these bounds on hardware is **UNKNOWN** in this revision: the JVM adapter doubles return an outcome immediately, so no test measures elapsed time. Device verification is proposed in `AUTOCONNECT_FIX_REPORT.md` §12.
 
 ---
 
@@ -2670,8 +2868,19 @@ enum class AutoModeProtocol(val id: String) {
 
     companion object {
         const val DEFAULT_ID = "SOFTETHER_UDP"
-        fun fromId(id: String?): AutoModeProtocol =
-            entries.firstOrNull { it.id == id } ?: SOFTETHER_UDP
+
+        /**
+         * The protocol [id] names, or null when it names none.
+         *
+         * v1.0.31: corrected in this document to match HEAD. Before v1.0.31 this
+         * block showed a **non-nullable** `fromId` that fell back to
+         * `SOFTETHER_UDP`, which is not what the code does and not what it
+         * should do: an unknown or absent id must read as "nothing selected",
+         * not as a protocol the user may not have enabled. The default belongs
+         * to the setting, never to the parser.
+         */
+        fun fromId(id: String?): AutoModeProtocol? =
+            entries.firstOrNull { it.id == id }
     }
 }
 ```
@@ -3628,6 +3837,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.28 | 2026-10-18 | RECONCILE-DIRTY-FILES — RESTORE HEAD BUILDABILITY BY COMMITTING THE D-1b CLOSURE (build reconciliation) | **`HEAD = b68ac2a` did not compile standalone (device-verify PART A): `AutoModeEngine.kt:82-83` referenced `nativeSlotAwaitMs` / `NATIVE_SLOT_AWAIT_MAX_MS` that existed only in the dirty working-tree `AutoModeController.kt`.** The 7-file AUTOCONNECT-AUDIT D-1b closure was committed (`df7b49c`, +667/−332): `AutoModeController.kt` (adds the missing symbols + `WedgeTracker`), `AndroidConnectionAdapter.kt` (`awaitNativeSlotRelease` + `onAttemptFailed`), `AutoModeProtocol.kt` (nullable `fromId`, zero callers), `TunnelStateWatcher.kt` (`onAttemptFailed` relay), and the three test companions `AutoModeControllerTest` / `AutoModeNativeBusyTest` / `VpnM24x10TaskTest`. `HttpFetcher.kt` left dirty by design (doc-comment-only OPEN→VPN routing wording, outside the closure). Standalone `:app:assembleProDebug` SUCCEEDED on C: (APK `6e289cb1…`); `:app:testProDebugUnitTest` **790/0/0/1**, `:SoftEtherClient:test` **173/0/0/0** (both EXIT=0). Two commits (`df7b49c` source + `0f5f307` device report) plus the v1.0.28 docs commit `82cb64f` (spec + `RECONCILE_REPORT.md`); push confirmed, `origin/main` = `82cb64f` (3 ahead of `b68ac2a`) *(chain arithmetic reconciled in v1.0.29 — see the §1.6.1 push-state note)*; §22 byte-identical; §1.6.2–§1.6.20 untouched. No new behavioural change. |
 | 1.0.29 | 2026-10-18 | DOCS-REPAIR (documentation only — no source/test/build/device change) | Maintainer-directed documentation repair across the three owned documents (decisions recorded in-session with Morteza Taheri). **This file:** §1.3 and §15.3 flavor tables corrected — only the `pro` flavor exists; `assembleFreeDebug`/`bundleFreeRelease` do not (SOURCE VERIFIED, `app/build.gradle`) — plus the `CI=true` requirement for local debug builds; §1.3/§15.4 signing text corrected to the fail-closed guard reality (debug-keystore fallback is debug-only; release tasks fail closed); §15.5 KSP 2.3.2 → **2.3.12** (SOURCE VERIFIED, root `build.gradle`); filename typos corrected (`VPNGiteItem.kt` §7.3, `VPNGatConnection.kt` §18.2/§20 → `VPNGateItem.kt`/`VPNGateConnection.kt`); §11.8.2 rewritten as **HISTORICAL — superseded** with the current routing state (binding landed `a9e16fd`; OPEN-first/VPN-fallback landed `c4c0311`); §8.1 currency note added (routing + emergency + manual rungs); §12.5.2 gained a v1.0.29 item-status table (A/B/C/D/G LANDED, E/F OPEN, H PARTIAL, retention §9 APPROVED-but-NOT-IMPLEMENTED); §12.7 criterion 6 marked SUPERSEDED (schema approved v1.0.20); changelog row 1.0.10 backfilled; the v1.0.28 push-state note reconciled with the actual chain (`0f5f307` carried only the device report; `82cb64f` carried the v1.0.28 spec + `RECONCILE_REPORT.md`; `origin/main` = `82cb64f`, 3 ahead of `b68ac2a`); Documentation map added to the header. **`SERVER_SOURCE_ARCHITECTURE.md`:** Section 1 rewritten to current HEAD state (old text preserved as a labelled historical appendix); §3 schema sketch annotated superseded by §10; §7 Q2 "API 21" corrected to the project minSdk API 24; broken §2.2 cross-reference fixed; §2/§8 annotated with landed-status. **`README.md`:** implemented features updated (emergency sources, manual servers), a clearly-labelled Planned section added, build commands corrected to the real flavor/CI/signing facts, attribution extended to the full §1.4 dependency list, documentation map added. No code, test, build, schema, or manifest file was modified. |
 | 1.0.30 | 2026-10-18 | SPEC-INTEGRITY-AUDIT (read-only audit + path repair; one doc-comment-only source commit) | **Restored spec integrity after the `docs/reports/` reorganization (`a76bdc6`).** A read-only audit resolved all `*.md` tokens: 38 moved-only under `docs/reports/`, 4 at root, 2 under `SoftEtherClient/`. **19 bare path references updated** to `docs/reports/…` in the authorized regions (§1.6.2–§1.6.21: 14; §12.5.1: 5); the other 46 bare occurrences (in §1.6.1's existing notes, §3.1, §6.7, §12.4, the existing §20 rows, and one `RUDP_IMPLEMENTATION_PLAN.md` in §12.5.1) are recorded in §1.6.22 rather than edited (out of scope) and still resolve via their documented location. Recorded the **concurrent-worktree contamination** event (`82cb64f` + `82476bf`) as a process lesson in §1.6.22 (a working tree must be single-owner; a second session needs a separate clone). **`HttpFetcher.kt` doc-comment change committed** (`9d569c3`) — comment-only, no API change — removing the last tracked dirty file. **The 1 skipped `:app` test identified:** `HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, an `AssumptionViolatedException` (data-dependent, not a failure). `:app` **790/0/0/1**, `:SoftEtherClient` **173/0/0/0**. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.21 otherwise untouched. |
+| 1.0.31 | 2026-10-18 | AUTOCONNECT-FIX (device-free; two AutoConnect audits closed) | **Closes four audit gaps plus OP-R6.** D-1: default attempt timeout unified to **12 s** (Settings key `SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped **5–60 s**; `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` `25_000L` → `12_000L`, spec §6.7 R5 / §6.8). D-2: exception in `connect()` advances to the **next protocol** (not next server) — `break` → `continue` at `AutoModeController.kt:1446` (D-2 / OP-R4). D-4: `isTunnelBusy()` guard wired to the production button path — `Disconnected`/`Error` press refused with `[AUTO] start refused: a tunnel is already active` at `AutoModeController.kt:1010`. D-5 (OP-R6): pressing while `Connected` continues from the next server via `resumeFromIndex = currentServerIndex + 1` (`AutoModeController.kt:532`, consumed at `:1026`, reset at `:1773`). D-6: four terminal conditions documented in §6.7 R7; native connect budget is **80 % of `T`** (`NATIVE_TIMEOUT_FRACTION_NUM/DEN = 4/5`, `AndroidConnectionAdapter.kt:74-75`; `MIN_NATIVE_CONNECT_TIMEOUT_MS = 1_500L` at `:84`). D-7: new **§6.8** Per-Attempt Timeout and Rotation Contract. D-8: six new tests in `AutoModeControllerTest.kt` (T-NEW-1..T-NEW-6) plus the `DEFAULT_ATTEMPT_TIMEOUT_MS` assertion corrected to `12_000L` in `AutoModeNativeBusyTest.kt:511`. JVM: `:app` **~796/0/0/1** (one skip = `HtmlParserOracleTest`, unchanged), `:SoftEtherClient` **173/0/0/0**. Standalone `:app:assembleProDebug` build gate passed under `CI=true`; APK SHA-256 recorded in `AUTOCONNECT_FIX_REPORT.md`. §22 byte-identical; §1.6.2–§1.6.22 untouched. No device, no tag, no force, no `git add -A`. |
 
 ### Verification Status
 
@@ -3683,6 +3893,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | FIX-D-2 — Triage 10 Failing Tests (§1.6.20) | VERIFIED (test reconciliation) + SOURCE CODE (one-line diagnostic fix) — the 10 failures are attributed to a lowercase log-format string in `fetchOnChosenPath` (inspected at VpnServerRepository.kt:362) and three OPEN-first behavioural assertions in `VpnServerRepositoryR4bTest.kt`, all classified bucket A; the `:app` suite is **TEST** 790/0/0/0 (R4bTest 10/0/0/0, RoutingTest 8/0/0/0), `:SoftEtherClient:test` **TEST** 173/0/0/0, and the APK SHA-256 is **TEST** (`f09e949d0af2cccf26d756af6c7b00ef7745c401857666228b25f8aa3c2c1279`); no bucket D (code bug) was found, so no production logic changed; §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.19 are untouched |
 | RECONCILE-DIRTY-FILES — Restore HEAD Buildability (§1.6.21) | VERIFIED (build reconciliation) + SOURCE CODE + TEST — the PART A defect is **SOURCE CODE** (`AutoModeEngine.kt:82-83` referencing `nativeSlotAwaitMs` / `NATIVE_SLOT_AWAIT_MAX_MS` absent from the committed `AutoModeController.kt`); the 7-file D-1b closure is **SOURCE CODE** (committed as `df7b49c`, +667/−332, `HttpFetcher.kt` deliberately excluded as category-(c) UNRELATED-IN-FLIGHT); the standalone build gate is **TEST** (`git archive HEAD | gradlew :app:assembleProDebug` SUCCEEDED on C:, APK SHA-256 `6e289cb179eec411c5b6ed6b5d9b3d8bfe70ba18a9c3ed4ee5939eab869f3248`; the D:-drive failure was an unrelated NDK/CMake `.cxx` metadata `Access is denied`, no `^e:` Kotlin errors); the JVM suites are **TEST** — `:app` **790/0/0/1** (60 classes), `:SoftEtherClient` **173/0/0/0**, both EXIT=0; the root-cause lesson (commit the coherent closure, never patch the leaf) is **INFERENCE** and is recorded as a candidate §22 lesson; §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.20 are untouched |
 | Spec Integrity + Concurrent Worktree Lesson (§1.6.22) | HISTORICAL (audit) + SOURCE CODE (path repairs) + TEST (skip identity) — the `docs/reports/` relocation is **SOURCE CODE** (commit `a76bdc6`; 38 moved-only, 4 root, 2 under `SoftEtherClient/`); the 19 path updates are **SOURCE CODE** (`git diff --stat` = 17/17, confined to §1.6.2–§1.6.21 + §12.5.1); the 46 remaining bare occurrences are **SOURCE CODE** (recorded, not edited, all resolvable); the concurrent-worktree contamination (`82cb64f` sweeping partial v1.0.29 content later superseded by `82476bf`) is **SOURCE CODE** (`git diff 0f5f307..82cb64f`), documentation-only; the single-owner working-tree rule is **INFERENCE**; the `HttpFetcher.kt` commit (`9d569c3`, comment-only) is **SOURCE CODE**; the skip identity is **TEST** (`HtmlParserOracleTest.softetherUdpOnlyNeverBorrowsOpenvpnTcp`, `AssumptionViolatedException`); §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) and §1.6.2–§1.6.21 are otherwise untouched |
+| AutoConnect Audit Reconciliation (§1.6.23) | HISTORICAL — records the AUTOCONNECT-FIX revision (D-1..D-8, OP-R6) that closes four gaps from the two independent AutoConnect audits plus OP-R6; all claims attributed to their phase report and to the direct source/test inspection recorded in §1.6.23. §22 is BYTE-IDENTICAL (99 lines / 6,504 bytes) |
 
 ### Legend
 
