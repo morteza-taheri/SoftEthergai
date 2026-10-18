@@ -1,88 +1,109 @@
 # Server Source Architecture — Design Document
 
-- **Status:** DESIGN ONLY. No implementation, code, tests, build, or device interaction.
+- **Status:** DESIGN ONLY for §2–§10 (design proposals and user-directed requirements; the document itself implements nothing). §1 and Appendix A are read-only audits of the code as it exists/existed. Several designs here have since **landed** — see the status annotations at §2, §8, §9, §10.
 - **Phase:** F.28AL-Z-SERVER-SOURCE-DESIGN
 - **Scope:** (1) dynamic/intelligent server-list retrieval incl. through the app's own VPN tunnel; (2) the emergency CSV source format design.
 - **Canonical spec:** `PROJECT_SPECIFICATION.md` (§11.8, §11.9, §11.10, §12).
 - **RUDP reference:** `SoftEtherClient/RUDP_IMPLEMENTATION_PLAN.md` (port-semantics context for §3.5).
 - **Evidence labels used:** `SOURCE CODE EVIDENCE` / `INFERENCE` / `UNKNOWN`.
+- **Documentation map (added in the 2026-10-18 repair):** this file owns the **server-source/path design** (retrieval paths, emergency CSV schema §10, manual import §4, cumulative retention §9). [`PROJECT_SPECIFICATION.md`](PROJECT_SPECIFICATION.md) owns requirements and project status. [`README.md`](README.md) is the public overview. Do not duplicate the CSV schema tables or migration mechanics into those files.
 
-> Every finding below that names a file was read from the working tree at HEAD
-> `071462816b1eef7e7f7459483fcd69909938cd11` (branch `main`). Where a design
-> recommendation is not directly supported by source, it is tagged `INFERENCE`.
+> **Currency note (2026-10-18 repair):** §1 below was rewritten against source HEAD
+> `df7b49cf1b91078622cc72774dd1b4fbba73b20a`. The original §1 snapshot, read at HEAD
+> `071462816b1eef7e7f7459483fcd69909938cd11` (branch `main`), is preserved verbatim in
+> **Appendix A** and is HISTORICAL. Where a design recommendation is not directly supported by
+> source, it is tagged `INFERENCE`.
 
 ---
 
 ## Section 1 — Current-State Audit (READ-ONLY findings)
 
+> **Rewritten in the 2026-10-18 documentation repair (spec v1.0.29).** The original Section 1 — a
+> snapshot taken at HEAD `071462816b1eef7e7f7459483fcd69909938cd11` — is preserved verbatim in
+> **Appendix A** and is **HISTORICAL**: it predates the emergency-source landings (v1.0.20/v1.0.21),
+> manual-server landing (v1.0.22, visibility fix v1.0.26), the integrity-outcome classification
+> (v1.0.23), and the OPEN-first / VPN-fallback routing fix (v1.0.27). Everything in §1 below was
+> re-read from the working tree at source HEAD `df7b49cf1b91078622cc72774dd1b4fbba73b20a`
+> (branch `main`, 2026-10-18). Evidence class for all of §1: `SOURCE CODE EVIDENCE` unless tagged.
+
 ### 1.1 The full server-list update chain as it exists today
 
-`Update button → ConnectionListViewModel → ServerListUpdater → fetch (HttpFetcher) → HTTP/HTTPS → VpnGateApiParser → DatasetIntegrity → VpnServerMerger → Room (VPNGateItemDao.replaceAll) → CollectorSnapshotStore (snapshot) → UI`
+`Update button → HomeScreen → ConnectionListViewModel.getAPIData → ServerListUpdater.update (pure-JVM orchestrator) → primary fetch: VpnServerRepository.refresh (mirror/api/html race via HttpFetcher on the chosen network path) → if primary returned null: emergency rung (ServerListUpdates.emergencyDataset → EmergencySourceFetcher → EmergencyCsvParser) → parse (VpnGateApiParser for the canonical feeds) → DatasetIntegrity.evaluate → VpnServerMerger → Room (VPNGateItemDao.replaceAll, with manual rows merged via withManualRows) → CollectorSnapshotStore (snapshot only after acceptance) → UI`
 
 | Component | File : anchor | Role |
 |---|---|---|
-| Update trigger / ViewModel | `app/src/main/java/vn/unlimit/vpngate/viewmodels/ConnectionListViewModel.kt:65` (`getAPIData(isUserInitiated)`), `:75` (`viewModelScope.launch`), `:77` (`updater.update()`) | UI entry point; launches the update and maps the `Outcome` to UI state. |
-| Updater builder | `ConnectionListViewModel.kt:46` (`ServerListUpdates.forUpdateTrigger(...)`) | Wires the concrete `fetch` + `store` closures into the pure-JVM orchestrator. |
-| Orchestrator | `app/src/main/java/vn/unlimit/vpngate/repository/ServerListUpdater.kt:51` (class), `:223` (`update(): Outcome`) | Pure JVM. Enforces atomic replace, "never replace by a less-connectable dataset", "only writer of the stored dataset" (`:16`,`:29`,`:35`). |
-| Persistence boundary | `ServerListUpdater.kt:77` (`interface Store`), `:108` (`saveLastKnownGood`), `:111` (`replaceAll`) | DAO must be atomic; snapshot written only after a successful replace (`:102`–`:105`). |
-| HTTP fetcher | `app/src/main/java/vn/unlimit/vpngate/data/remote/HttpFetcher.kt:94` (`OkHttpFetcher`), `:41` (`HttpFetcher.get`) | Single-shot GET returning a provenance-rich `HttpResponse` (`:23`). |
-| Response/provenance type | `HttpFetcher.kt:23` (`data class HttpResponse`) | Carries `requestedUrl`, `finalUrl`, `status`, `contentType`, `body`, `redirectChain`, `redirectRejected`, `redirectRejectionReason` (`:24`–`:31`). |
-| Resilient DNS | `HttpFetcher.kt:53` (`ResilientDns`), `:55` (`VPNGATE_FALLBACK_IPS`), `:67` (`lookup`) | Filters poisoned/private/loopback redirect IPs; falls back to hard-coded IPs. |
-| Redirect policy | `HttpFetcher.kt:130` (`maxHops = redirectPolicy?.maxHops ?: RedirectPolicy.DEFAULT_MAX_HOPS`) | Redirects followed **by hand** (`:101` followRedirects false) so each hop is checked. |
-| Source catalog | `app/src/main/java/vn/unlimit/vpngate/data/remote/VpnGateSources.kt:21` (`VpnGateUrls`), `:50` (`VpnGateSourceCandidates`) | Canonical HTML/API URLs (`:22`–`:27`) and bootstrap mirrors (`:35`–`:41`). |
-| Source identity | `app/src/main/java/vn/unlimit/vpngate/data/remote/SourceIdentity.kt:45` (`SourceIdentity`), `:75` (`sourceTag`) | Canonical vs mirror provenance; merge policy `api > html > mirror` (`:40`–`:43`). |
-| CSV parser | `app/src/main/java/vn/unlimit/vpngate/parser/VpnGateApiParser.kt:81` (`parseApi`), `:35` (`splitCsvRecords`) | Port of Python oracle's `/api/iphone/` CSV parse; `CANONICAL_COLUMNS = 15` (`:16`). |
-| Integrity gate | `app/src/main/java/vn/unlimit/vpngate/repository/DatasetIntegrity.kt:122` (`object`), `:198` (`evaluate`) | Produces a `DatasetVerdict` (`:90`) with thresholds below. |
-| Merger | `app/src/main/java/vn/unlimit/vpngate/merger/VpnServerMerger.kt` | Combines multi-source records per the merge policy. |
-| Room write | `app/src/main/java/vn/unlimit/vpngate/db/VPNGateItemDao.kt:50` (`replaceAll`), `:53` (`deleteAll`) | Atomic clear+insert inside a transaction. |
-| Room schema | `app/src/main/java/vn/unlimit/vpngate/db/AppDatabase.kt:12` (`@Database(version = 5)`), entities `VPNGateItem`, `ExcludedApp` | Migrations v2→5 add `seTcpPort`, `seUdpPort`, `seUdpSupported`, `sstpPort`, `sstpPortSource` (`:18`–`:68`). |
-| Record model | `app/src/main/java/vn/unlimit/vpngate/models/VPNGateItem.kt:8` (`@Entity`), `:10` (`@PrimaryKey hostName`) | Columns incl. `ip` (`:11`), `seTcpPort` (`:39`), `seUdpPort` (`:40`), `seUdpSupported` (`:41`), `sstpPort` (`:37`), `sstpPortSource` (`:38`). |
-| Snapshot store | `app/src/main/java/vn/unlimit/vpngate/data/persistence/CollectorSnapshotStore.kt` | Persists the last-known-good snapshot. |
+| Update trigger / ViewModel | `app/src/main/java/vn/unlimit/vpngate/ui/screens/home/HomeScreen.kt:251,336`; `app/src/main/java/vn/unlimit/vpngate/viewmodels/ConnectionListViewModel.kt:266` (`getAPIData`), `:83`–`:86` (`ServerListUpdates.forUpdateTrigger(...)`), `:278` (`updater.update()`) | UI entry point; launches the update and maps the `Outcome` to UI state. |
+| Production wiring | `app/src/main/java/vn/unlimit/vpngate/repository/ServerListUpdates.kt:51` (`object ServerListUpdates`), fetch lambda `:89`–`:110`, `daoStore` `:225`–`:275`, `emergencyDataset()` `:146`–`:215` | Wires the concrete `fetch` + `store` + `emergencyFetch` closures into the pure-JVM orchestrator. |
+| Orchestrator | `app/src/main/java/vn/unlimit/vpngate/repository/ServerListUpdater.kt:58` (class); mutex gate `:222`,`:253`; emergency rung `:271`–`:287`; `DatasetIntegrity.evaluate` `:326`; single write `store.replaceAll` `:336`; snapshot after acceptance `:340`–`:352` | Pure JVM. Enforces atomic replace, "never replace by a less-connectable dataset", single writer. |
+| Routing (path selection) | `app/src/main/java/vn/unlimit/vpngate/repository/VpnServerRepository.kt:197` (`refresh()`), `:112` (`productionRouting()`), `:133` (`resolvePrimary()`), `:362`–`:422` (`fetchOnChosenPath()`), `:143`–`:147` (`productionBoundFetcher()`) | OPEN-first / VPN-fallback (§1.2). |
+| Legacy single-call chooser | `app/src/main/java/vn/unlimit/vpngate/data/remote/HttpFetcher.kt:321`–`:336` (`CollectorRouting.choose`) | Still unit-tested; **no longer the production decision point** — `resolvePrimary` + `fetchOnChosenPath` are. |
+| HTTP fetcher | `HttpFetcher.kt` (`OkHttpFetcher`); timeouts `:106`–`:113`; per-request VPN binding `boundToSocketFactory` `:132`–`:133`; hand-followed redirects `:167`–`:243` | Single-shot GET returning a provenance-rich `HttpResponse`. |
+| Resilient DNS | `HttpFetcher.kt:55` (`ResilientDns`), `:57` (`VPNGATE_FALLBACK_IPS`), `:107` (`.dns(...)` wiring) | Filters poisoned/private/loopback answers; falls back to hard-coded IPs. |
+| Source catalog | `app/src/main/java/vn/unlimit/vpngate/data/remote/VpnGateSources.kt:22`–`:25` (`MAIN_URL`, `API_URL`, `MIRRORS_URL`, `MAX_MIRRORS = 12`); per-source race deadlines `:171`,`:188` (12 s html/api), `:215` (8 s mirror discovery) | Canonical URLs are compile-time constants. |
+| Source identity | `app/src/main/java/vn/unlimit/vpngate/data/remote/SourceIdentity.kt:12`–`:41` (`SourceKind`), tags `:102`–`:135`, `:152`–`:174` | Seven kinds, including **`EMERGENCY_CSV`** (`:32`, tag `"emergency"`) and **`MANUAL`** (`:40`, tag `"manual"`). The `when` is exhaustive with no `else` (v1.0.23). |
+| Canonical CSV parser | `app/src/main/java/vn/unlimit/vpngate/parser/VpnGateApiParser.kt` | Port of the VPN Gate `/api/iphone/` 15-column CSV parse. |
+| Emergency CSV parser | `app/src/main/java/vn/unlimit/vpngate/parser/EmergencyCsvParser.kt` — required columns `HostName, IP, schema_version, SourceTag` (`:64`); `schema_version` fail-closed on anything but `"1.0"` (`:51`,`:233`–`:242`); snake-case column names (`:73`–`:80`); IPv4-only identity (`:98`–`:99`,`:318`–`:322`); BOM / non-UTF-8 rejected (`:198`–`:207`); header-driven, not positional | Implements **§10** of this document (landed v1.0.21). |
+| Emergency fetcher | `app/src/main/java/vn/unlimit/vpngate/data/remote/EmergencySourceFetcher.kt` — 2 attempts + 40 s deadline (`:141`,`:151`); 1 MiB body cap (`:168`); redirect-confined (`:52`–`:111`) | Open-network only; last automatic rung (§1.2). |
+| Integrity gate | `app/src/main/java/vn/unlimit/vpngate/repository/DatasetIntegrity.kt` — `MIN_ACCEPTABLE_DATASET_SIZE = 10` (`:180`), `MIN_RELATIVE_DATASET_RATIO = 0.5` (`:183`), `MIN_PROTOCOL_COVERAGE_RATIO = 0.5` / `BASELINE = 20` (`:186`,`:189`), `MIN_PROFILE_COVERAGE_RATIO = 0.5` / `BASELINE = 20` (`:192`,`:195`); `DatasetOutcome` classification (`ACCEPT_NEW` / `MERGE_WITH_EXISTING` / `REJECT_DEGRADED`) added v1.0.23 — **names/logged only, the update still replaces** (§9 not implemented) | Produces the `DatasetVerdict`; rejects empty/degraded datasets. |
+| Merger | `app/src/main/java/vn/unlimit/vpngate/merger/VpnServerMerger.kt:48` (`SOURCE_PRIORITY`: `api` 0 > `html` 10 > default 20 — mirrors **and** `emergency` — > `manual` 30; default at `:62`–`:63`) | Conflict-aware multi-source merge. |
+| Manual servers | `app/src/main/java/vn/unlimit/vpngate/data/remote/ManualServerEntity.kt:20`–`:34` (table `manual_server`, unique index host+port+protocol); `app/src/main/java/vn/unlimit/vpngate/repository/ManualServerStore.kt:27`, `toItems` `:122`, `materialize` `:145`–`:146`; merge `withManualRows` `ServerListUpdates.kt:356`–`:369` (invoked inside `daoStore.replaceAll` `:268`); add-time materialize `ConnectionListViewModel.kt:217`–`:228` | User-owned records; preserved across refreshes; visible immediately on add (v1.0.26). |
+| Room write | `app/src/main/java/vn/unlimit/vpngate/db/VPNGateItemDao.kt:49`–`:55` (`replaceAll`) | `@Transaction` delete+insert; refuses an empty list; dedupes first. |
+| Room schema | `app/src/main/java/vn/unlimit/vpngate/db/AppDatabase.kt:23` (`version = 7`), entities `:16`–`:22` (`VPNGateItem`, `ExcludedApp`, `EmergencySourceConfigEntity`, `ManualServerEntity`); `MIGRATION_5_6` `:97`, `MIGRATION_6_7` `:125` | Device migration 5 → 6 → 7 verified on hardware (v1.0.24, spec §1.6.17). |
+| Record model | `app/src/main/java/vn/unlimit/vpngate/models/VPNGateItem.kt:9`–`:41` | **No** `firstSeenAt` / `lastSeenAt` / `healthScore` fields — §9 cumulative retention is **NOT IMPLEMENTED**. |
+| Snapshot store | `app/src/main/java/vn/unlimit/vpngate/data/persistence/CollectorSnapshotStore.kt:32`–`:38` (`collector_vpn_servers.json`) | Last-known-good snapshot; written only after an accepted update (`VpnServerRepository.kt:471`–`:495`). |
+| Settings UI | `app/src/main/java/vn/unlimit/vpngate/ui/screens/settings/SettingsScreen.kt:598`,`:696` (emergency sources), `:723+` (manual servers) | **No settings UI exists for `vpn_always_prefer_vpn`** — the key lives only in `GlobalVpnTracker.kt:639` (read `:408`–`:410`) and can only be set out-of-band. |
+
 ### 1.2 Network binding model today
 
-**Default Android routing. No explicit VPN/Network binding exists in the retrieval chain.** `SOURCE CODE EVIDENCE`.
+**Explicit per-request binding exists now.** `SOURCE CODE EVIDENCE` (supersedes the historical "no binding" finding — Appendix A §A.2):
 
-- The downloader runs on `Dispatchers.IO` (`HttpFetcher.kt:116`) and makes an ordinary `OkHttpClient` request (`:95`–`:101`). It calls **none** of `protect()`, `bindSocket`, `allNetworks`, or `requestNetwork`.
-- Every network-binding API in the tree lives in the **VPN-transport / state layer**, not retrieval: `AndroidConnectionAdapter.kt:331`, `GlobalVpnTracker.kt:118` (`TRANSPORT_VPN` request), `DataUtil.kt:574`.
-- Therefore a server-list update issued while a VPN tunnel is active is served by whatever the OS default route is at that moment — **not** by the app's own tunnel, and **not** guaranteed to bypass it. `INFERENCE`.
+- The VPN `Network` is captured by the system-VPN watcher in `GlobalVpnTracker.kt:432`–`:437` and exposed via `currentVpnNetwork()` (`:397`).
+- `productionBoundFetcher()` (`VpnServerRepository.kt:143`–`:147`) builds an OkHttp client on `network.socketFactory` (`boundToSocketFactory`, `HttpFetcher.kt:132`–`:133`). The process-wide `bindProcessToNetwork()` is **never** used (honouring §7 Q2).
+- Path order (landed v1.0.27, commit `c4c0311`): `resolvePrimary()` picks the primary rung from the user opt-in **only** (`PREF_ALWAYS_PREFER_VPN`, default `false` → OPEN); `fetchOnChosenPath()` tries the primary and falls back to the other rung only when it is reachable, emitting `[fetch]` diagnostics.
+- The emergency rung is **open-network only** and runs **last** — only when the primary fetch returned `null` (`ServerListUpdater.kt:271`–`:287`; `EmergencySourceFetcher`).
+- Manual import is user-triggered, never automatic (§4 design; implemented v1.0.22/v1.0.26).
 
-### 1.3 Where a VPN `Network` object is reachable by the downloader (if at all)
+### 1.3 Where a VPN `Network` object is reachable by the downloader, and the usability signal
 
-**Today: not reachable by the downloader.** `SOURCE CODE EVIDENCE` + `INFERENCE`.
-
-- `GlobalVpnTracker` (`state/GlobalVpnTracker.kt:65`) already observes the system VPN network: `registerSystemVpnWatcher` (`:113`) registers a `NetworkRequest` for `TRANSPORT_VPN` (`:116`–`:118`) with an `onAvailable(network: Network)` callback (`:122`). It exposes connection state (`vpnState: StateFlow` `:68`, `isConnected` `:73`, `isConnecting` `:76`).
-- The observed `Network` is used only for state tracking, **not** surfaced as a bindable object to `HttpFetcher`. §2 would surface it (hold the `Network` from `onAvailable` and bind the fetch socket to it).
+- **Reachable today:** `productionRouting()` (`VpnServerRepository.kt:112`–`:119`) reads `GlobalVpnTracker.isConnected` and `GlobalVpnTracker.currentVpnNetwork()`. `SOURCE CODE EVIDENCE`.
+- **Usability signals exist:** `noteRxAdvance()` (`GlobalVpnTracker.kt:353`) is called from `SoftEtherClient/.../controller/ConnectionController.kt:1157`, and `noteTunEio()` from `SoftEtherClient/.../terminal/TunTerminal.kt:171`; `isTunnelUsable()` (`GlobalVpnTracker.kt:372`–`:373`) is implemented. `SOURCE CODE EVIDENCE`.
+- **Gap:** `productionRouting()` does **not** consume `isTunnelUsable()` — the VPN rung's qualification is "connected + bound network present", not measured tunnel health. The freshness/health gating of §2.2/§7 Q1 therefore remains **design, not implemented**. `SOURCE CODE EVIDENCE` (at HEAD `df7b49c`).
 
 ### 1.4 Current retry, timeout, and error-handling behavior
 
 | Concern | Current behavior | Anchor |
 |---|---|---|
-| Connect timeout | 10 s | `HttpFetcher.kt:97` |
-| Read timeout | 15 s | `HttpFetcher.kt:98` |
-| Inter-request delay | `requestDelayMs` (default 0) | `HttpFetcher.kt:104` |
-| Redirect handling | hand-followed, per-hop policy check, `maxHops` = `RedirectPolicy.DEFAULT_MAX_HOPS` | `HttpFetcher.kt:101`, `:130` |
-| Redirect rejection | recorded as `redirectRejected`/`redirectRejectionReason`, not silently followed | `HttpFetcher.kt:159`–`:187` |
-| DNS failure | `ResilientDns` fallback IPs | `HttpFetcher.kt:53`–`:67` |
-| HTTP/parse/integrity failure | `Outcome.Preserved` with a `Reason` (never treated as success) | `ServerListUpdater.kt:151` (`Reason`), `:220`–`:273` |
-| Empty / degraded dataset | rejected by `DatasetIntegrity` thresholds | `DatasetIntegrity.kt:203`, `:223`–`:262` |
-| Concurrent update | `Outcome.SkippedConcurrent`; a second caller awaits the running one | `ServerListUpdater.kt:147`, `ViewModel.kt:78`–`:84` |
+| Connect timeout | 10 s | `HttpFetcher.kt:106`–`:113` |
+| Read timeout | 15 s | `HttpFetcher.kt:106`–`:113` |
+| Redirect handling | hand-followed, per-hop policy check, `maxHops` via `RedirectPolicy` | `HttpFetcher.kt:167`–`:243` |
+| DNS failure | `ResilientDns` fallback IPs | `HttpFetcher.kt:55`–`:107` |
+| Per-source race deadlines | 12 s (html/api), 8 s (mirror discovery) | `VpnGateSources.kt:171`,`:188`,`:215` |
+| Emergency fetch | 2 attempts per source, 40 s deadline, 1 MiB body cap | `EmergencySourceFetcher.kt:141`,`:151`,`:168` |
+| HTTP/parse/integrity failure | `Outcome.Preserved` with a `Reason` (never treated as success) | `ServerListUpdater.kt` (`evaluate` `:326`, write `:336`) |
+| Concurrent update | `Outcome.SkippedConcurrent`; a second caller awaits the running one | `ServerListUpdater.kt:174`,`:253` |
 
-`INFERENCE`: there is **no per-path timeout/retry ladder** (open vs VPN vs emergency); a single timeout pair applies to whichever fetch runs.
+- There is still **no per-path open-vs-VPN timeout/retry ladder**; §2.6 remains design. `SOURCE CODE EVIDENCE`.
+- **Dead constants:** `MAIN_TIMEOUT_MS` / `MIRROR_TIMEOUT_MS` (`VpnServerRepository.kt:81`–`:82`) are declared but never referenced; the effective deadlines live in `VpnGateSources.kt`. `SOURCE CODE EVIDENCE`.
 
 ### 1.5 Current source-list configuration
 
-`SOURCE CODE EVIDENCE`:
-
-- Canonical HTML/API URLs are compile-time constants: `MAIN_URL`, `API_URL`, `MIRRORS_URL` and HTTP fallbacks (`VpnGateSources.kt:22`–`:27`); `MAX_MIRRORS = 12` (`:28`).
-- Bootstrap mirrors are hard-coded `http://IP:PORT` entries (`VpnGateSources.kt:35`–`:41`).
-- Source *kinds* are the `SourceKind` enum: `CANONICAL_HTML`, `CANONICAL_API`, `BOOTSTRAP_MIRROR`, `DISCOVERED_MIRROR`, `CACHED_MIRROR` (`SourceIdentity.kt:12`–`:26`). **There is no `EMERGENCY_CSV` or `MANUAL` kind yet.**
-- `INFERENCE`: there is currently **no user-configurable emergency URL or manual-import plumbing wired into this chain**; §11.9/§11.10 of the spec describe these as requirements, not implemented features. The mirror CSV feed is intentionally refused because its schema is undefined.
-
----
+- Canonical HTML/API URLs are compile-time constants (`VpnGateSources.kt:22`–`:25`); bootstrap mirrors remain hard-coded `http://IP:PORT` entries.
+- `SourceKind` now has seven members including **`EMERGENCY_CSV`** and **`MANUAL`** (`SourceIdentity.kt:12`–`:41`) — the historical "no `EMERGENCY_CSV` or `MANUAL` kind yet" finding (Appendix A §A.5) is **superseded**.
+- Emergency sources are **user-configured only** (no hardcoded default URL — §7 Q4) and stored in Room: table `emergency_source_config` (`EmergencySourceConfigEntity.kt:21`–`:29`, `MIGRATION_5_6` `AppDatabase.kt:97`–`:109`).
+- Manual servers are stored in Room: table `manual_server` (`ManualServerEntity.kt:20`–`:34`, `MIGRATION_6_7` `AppDatabase.kt:125`).
+- Merge priority (`VpnServerMerger.kt:48`,`:62`–`:63`): `api` (0) > `html` (10) > **mirror = `emergency`** (default 20) > `manual` (30). Note the nuance against §3.3/§3.8: `canonical > emergency > manual` **holds**, but an emergency record ranks **equal to a mirror**, not above it.
 
 ## Section 2 — Retrieval Path Design (PROPOSAL, not implementation)
 
-All of §2 is a design proposal. Nothing here is implemented today; §1 shows the current chain uses default routing with a single timeout pair.
+> **Status annotation (2026-10-18 repair, spec v1.0.29):** the line below is the original proposal
+> framing and is now partly stale. **Landed:** the §2.1 rungs 1–3 exist today — OPEN is the default
+> primary, VPN is an opt-in primary / reachable fallback (`resolvePrimary` + `fetchOnChosenPath`,
+> v1.0.27), and the emergency rung runs last when configured (v1.0.21); manual import (rung 4) is
+> user-triggered (v1.0.22/v1.0.26). **Not landed:** the §2.2 usability gating (`isTunnelUsable()`
+> is not consumed by production routing — §1.3), the §2.4 loop-risk detection, the §2.6 per-path
+> timeout ladder, and the §2.8 `pathKind` provenance.
+
+All of §2 is a design proposal. ~~Nothing here is implemented today; §1 shows the current chain uses default routing with a single timeout pair.~~ *(Struck in the 2026-10-18 repair — see the status annotation above; §1 now shows the landed routing.)*
 
 ### 2.1 Target sequence (proposal)
 
@@ -96,12 +117,12 @@ Reuse `GlobalVpnTracker` (`GlobalVpnTracker.kt:68` `vpnState`, `:73` `isConnecte
 - the `Network` from `onAvailable` is still the current default/VPN network (not stale after `onLost`), and
 - the tunnel is not in a zero-RX / TUN-`EIO` broken state (see §2.9).
 
-`INFERENCE`: `isConnected` alone is **not** sufficient proof of usability; a CONNECTED flag can be published while the tunnel is actually broken (consistent with the spec's §12.3 "PUBLISHED CONNECTED may be false" residual risk). Usability must be measured, not assumed.
+`INFERENCE`: `isConnected` alone is **not** sufficient proof of usability; a CONNECTED flag can be published while the tunnel is actually broken (the published-state reliability concern is tracked in the spec's residual register, `PROJECT_SPECIFICATION.md` §12.5.1 row 10, Axis B; the reference previously pointed at "§12.3", which contains no such text — corrected in the 2026-10-18 repair). Usability must be measured, not assumed.
 
 ### 2.3 Binding a request explicitly to the VPN `Network` (with compatibility constraints)
 
-- Surface the `Network` observed in `GlobalVpnTracker.onAvailable` (`:122`) into the retrieval layer.
-- Bind the fetch socket to that `Network`. For `OkHttp`, the supported, compatibility-safe approach is a custom `SocketFactory`/`OkHttpClient` built on `network.socketFactory` (API 21+), rather than the process-wide `bindProcessToNetwork` (API 23+) or `bindSocket` (API 22+). `INFERENCE` — the exact API level floor should be confirmed against `minSdk` before implementation.
+- Surface the `Network` observed in `GlobalVpnTracker.onAvailable` (`GlobalVpnTracker.kt:432`–`:437` at HEAD `df7b49c`; was `:122` at the original audit HEAD) into the retrieval layer.
+- Bind the fetch socket to that `Network`. For `OkHttp`, the supported, compatibility-safe approach is a custom `SocketFactory`/`OkHttpClient` built on `network.socketFactory` (API 21+), rather than the process-wide `bindProcessToNetwork` (API 23+) or `bindSocket` (API 22+). `INFERENCE` — the exact API level floor should be confirmed against `minSdk` before implementation. *(Landed: implemented via `boundToSocketFactory` (`HttpFetcher.kt:132`–`:133`); at the project's `minSdk = 24` all three APIs are available, so the compatibility argument is moot but the per-request choice stands — §7 Q2.)*
 - **Constraint:** binding is per-socket. Do **not** bind the whole process, because that would route unrelated app traffic through the VPN as a side effect and is explicitly out of scope.
 
 ### 2.4 Avoiding loops, leaks, or blocked requests when the VPN is up but the destination is unreachable
@@ -152,7 +173,20 @@ Extend the existing `SourceKind`/`sourceTag` model (`SourceIdentity.kt:12`, `:75
 
 ## Section 3 — Emergency CSV Source Design (PROPOSAL)
 
-Design target: a compact, self-describing, field-level-provenance emergency CSV that merges cleanly with the existing `VpnRecords`/`SourceIdentity` model and honors the RUDP port semantics. **Design only — no format is approved yet** (consistent with the specification's standing position that the emergency CSV schema is undefined).
+> **Superseded-in-part (2026-10-18 repair, maintainer-confirmed):** the concrete format choices in
+> **§3.1 and §3.2** — the `# schema_version=1.0` metadata header row, the `SETcpPort` / `SEUdpPort`
+> column names, IPv4/IPv6 acceptance, and "SE ports are required" — are **SUPERSEDED by §10**, which
+> the maintainer approved as the design basis in spec v1.0.20 (`PROJECT_SPECIFICATION.md` §11.9.3) and
+> which was implemented in v1.0.21 (`EmergencyCsvParser.kt`): pure CSV with a header row (no comment
+> lines, §10.7), snake-case columns (`SE_TCP_Port` / `SE_UDP_Port`, §10.2), IPv4-only identity with
+> `Has_IPv6` as metadata (§10.4/§10.5), required = `HostName`/`IP`/`schema_version`/`SourceTag` only.
+> Wherever §3 and §10 disagree, **§10 wins**. The conceptual content of §3.4–§3.12 (supported-vs-usable
+> split, the §3.5 RUDP warning, per-field provenance, fail-closed integrity, partial-import behavior)
+> remains valid design and is consistent with §10 and the implementation. Note also that the merge
+> priority implemented for emergency records equals mirrors (`VpnServerMerger.kt:48` default 20), so
+> §3.3/§3.8's `canonical > emergency > manual` holds but emergency-vs-mirror is a tie (§1.5).
+
+Design target: a compact, self-describing, field-level-provenance emergency CSV that merges cleanly with the existing `VpnRecords`/`SourceIdentity` model and honors the RUDP port semantics. ~~**Design only — no format is approved yet** (consistent with the specification's standing position that the emergency CSV schema is undefined).~~ *(Struck in the 2026-10-18 repair: the §10 format was approved in spec v1.0.20 and implemented in v1.0.21.)*
 
 ### 3.1 Schema version
 
@@ -277,9 +311,11 @@ A parsed emergency CSV is acceptable only if **all** hold:
 ## Section 7 — Dependencies and Open Questions
 
 > **Status: ALL EIGHT RESOLVED (F.28AL-Z-DESIGN-UPDATE).** Each original open question is retained below and marked **RESOLVED** with the user-directed decision. Evidence class: design decisions are **USER-DIRECTED REQUIREMENT** (policy choices) with implementation-level notes as **INFERENCE**.
+>
+> **Landed-status annotation (2026-10-18 repair, verified at HEAD `df7b49c`):** Q1 — the RX/EIO counters **now exist** and are fed (`noteRxAdvance` from `ConnectionController.kt:1157`, `noteTunEio` from `TunTerminal.kt:171`) and `isTunnelUsable()` is implemented, **but production routing does not consume it** (§1.3); Q2 — **landed** (`boundToSocketFactory`); Q3 — **landed** (`resolvePrimary` + `fetchOnChosenPath`, v1.0.27); Q4 — **landed** (user-configured only, Room `emergency_source_config`); Q7 — **landed** (fail-closed `schema_version` in `EmergencyCsvParser.kt:51`); Q8 — **landed** (migrations 5→6→7, device-verified v1.0.24). Q5 (a computed `usable` gate) and Q6 (the "Configure Emergency Source" prompt) are **not verified as implemented — treat as OPEN**.
 
 1. **VPN-tunnel usability signal** — ~~RESOLVED~~ → Define `isTunnelUsable()` requiring **all three**: (a) VPN service state == `CONNECTED`, (b) RX counter advanced within the last **10 s**, (c) no TUN `EIO` in the last **30 s**. Requires a **new RX/EIO counter in `GlobalVpnTracker`** — **future code work, not this phase**. *USER-DIRECTED REQUIREMENT (signal definition); INFERENCE (tracker change).*
-2. **Explicit bind mechanism** — ~~RESOLVED~~ → Use **per-request `Network.getSocketFactory()` on a dedicated OkHttp client for the VPN path**. Do **NOT** use `bindProcessToNetwork()` (too broad, process-wide). Minimum SDK **API 21**; target device **API 33**. *USER-DIRECTED REQUIREMENT; SOURCE-compat note is INFERENCE.*
+2. **Explicit bind mechanism** — ~~RESOLVED~~ → Use **per-request `Network.getSocketFactory()` on a dedicated OkHttp client for the VPN path**. Do **NOT** use `bindProcessToNetwork()` (too broad, process-wide). Minimum SDK **API 24** *(corrected in the 2026-10-18 repair — this line previously read "API 21", which is the API-availability floor of `Network.getSocketFactory()`, not the project minimum; `minSdkVersion = 24` in `build.gradle`, spec §1.1)*; target device **API 33**. *USER-DIRECTED REQUIREMENT; SOURCE-compat note is INFERENCE.*
 3. **Default routing policy** — ~~RESOLVED~~ → Order: **open network first → VPN as fallback → emergency → manual**. A user preference may invert this to **"always prefer VPN"**, but that is an **opt-in setting, not the default**. *USER-DIRECTED REQUIREMENT.*
 4. **Emergency source URL(s) & trust policy** — ~~RESOLVED~~ → **No hardcoded default URL; user-configured only. No implicit trust** in any source. `DatasetIntegrity` applies before **any** replacement (§3.10, §9.6). *USER-DIRECTED REQUIREMENT.*
 5. **`usable` vs `supported` computation** — ~~RESOLVED~~ → `supported` = **static / parse-time** (format compatibility). `usable` = **dynamic / dial-time** (protocol/port responsiveness). Aligns with the `REACHABLE / UNREACHABLE / UNKNOWN` model (§3.4, §5.3). *USER-DIRECTED REQUIREMENT.*
@@ -288,6 +324,18 @@ A parsed emergency CSV is acceptable only if **all** hold:
 8. **Room migration** — ~~RESOLVED~~ → **Scope in the implementation phase, not here.** Requires reading the actual Room schema first (§3.12, §9.2, §9.5). *USER-DIRECTED REQUIREMENT.*
 
 ## Section 8 — Implementation Phase Outline (NOT implementation)
+
+> **Status annotation (2026-10-18 repair, spec v1.0.29):** the sequencing below is the original
+> design-phase outline; implementation has since proceeded **out of this order and without the
+> Phase-1 abstraction**. Verified at HEAD `df7b49c`: **Phase 1** (a `ServerSourceProvider` interface
+> and `pathKind` provenance) — **NOT LANDED**; **Phase 2** (VPN-aware retrieval) — **PARTIALLY
+> LANDED** as explicit per-request binding + OPEN-first/VPN-fallback (`a9e16fd`, `c4c0311`) but
+> **without** the §7.1 usability gating and **without** a feature flag; **Phase 3** (emergency CSV
+> parser + integrity) — **LANDED** v1.0.21; **Phase 4** (manual import) — **LANDED** as a
+> single-record form with refresh-retention (v1.0.22/v1.0.26); CSV/URL import remains open
+> (roadmap item F); **Phase 5** (three-condition physical test) — **PARTIAL**: the C4 baseline was
+> device-verified in v1.0.28, the "tunnel up" and fallback conditions remain NOT TESTABLE without
+> operator actions. Roadmap item statuses: `PROJECT_SPECIFICATION.md` §12.5.2.
 
 Proposed sequencing (each phase independently testable; none started in this design phase):
 - **Phase 1 — Provider abstraction + provenance plumbing:** introduce `ServerSourceProvider` and layer `pathKind` onto `SourceIdentity`/`sourceTag` (§4/§5.1, §2.8). No behavior change to existing fetch.
@@ -298,6 +346,8 @@ Proposed sequencing (each phase independently testable; none started in this des
 - **Dependencies:** 2 depends on 1; 3 depends on 1; 4 depends on 3 (schema) and 1; 5 depends on 2 and 3.
 
 ## Section 9 — Cumulative Server Database Retention (USER-DIRECTED REQUIREMENT)
+
+> **Currency note (2026-10-18 repair):** **still NOT IMPLEMENTED** at HEAD `df7b49c` — verified in source: `VPNGateItem.kt:9`–`:41` carries no `firstSeenAt` / `lastSeenAt` / `lastSuccessfulConnectionAt` / `healthScore` fields, and `DatasetOutcome`'s `ACCEPT_NEW` / `MERGE_WITH_EXISTING` are names/logs only (v1.0.23); the update still **replaces**. The requirement status is unchanged: approved as a user-directed requirement, not scheduled into an implementation phase. §9.7's open questions all remain **UNKNOWN**.
 
 > Evidence class: functional requirements below are **USER-DIRECTED REQUIREMENT**; concrete field types, defaults, and algorithm mechanics are **INFERENCE** (proposed design). No schema, code, or behavior is implemented by this document.
 
@@ -378,6 +428,8 @@ To be resolved before implementation:
 ---
 
 ## Section 10 — Extended Server CSV Schema for Emergency Source (`servers.csv`)
+
+> **Implementation status (2026-10-18 repair):** §10 is **approved as the design basis** (spec v1.0.20, §11.9.3) and **implemented** in v1.0.21 (`EmergencyCsvParser.kt`, `EmergencySourceFetcher.kt`, opt-in last-rung wire-in). A real data asset exists at `emergency-sources/servers.csv` (v1.0.24; 3-row point-in-time snapshot, 29 columns). Of §10.9's open questions: **Q2 (column ordering) is settled by the implementation** — the parser is header-driven, so column order is not load-bearing; **Q1, Q3, Q4 and Q5 remain UNKNOWN**. This section remains the canonical CSV contract; where §3 conflicts with it, §10 wins (§3 banner).
 
 > Evidence class: column names and the base-15 are **USER-DIRECTED REQUIREMENT** (supplied and cross-checked against the VPN Gate iPhone API); extended-column semantics are **USER-DIRECTED REQUIREMENT** with validation/encoding choices as **INFERENCE**; the RUDP constraint is **SOURCE CODE EVIDENCE** (`RUDP_IMPLEMENTATION_PLAN.md` lines 7, 26, 51). No CSV file or generator is produced by this phase.
 
@@ -483,8 +535,86 @@ A **partial `servers.csv` must never replace a known-good dataset** (§2.7, §3.
 To be resolved before the generator script (§10.1) is built:
 
 1. **Generator data sources** — will the generator read the live iPhone API **and** the HTML page (producing `SourceTag="merged"`), or a single source? **UNKNOWN.**
-2. **Column ordering** — must the CSV column order be **fixed** (matching §10.2 exactly) or may it vary with the header row authoritative? (Design assumes the §10.2 order; header-driven parsing is an **INFERENCE**.) **UNKNOWN — needs confirmation.**
+2. **Column ordering** — must the CSV column order be **fixed** (matching §10.2 exactly) or may it vary with the header row authoritative? (Design assumes the §10.2 order; header-driven parsing is an **INFERENCE**.) ~~**UNKNOWN — needs confirmation.**~~ **SETTLED BY IMPLEMENTATION (v1.0.21):** `EmergencyCsvParser.kt` is header-driven, so column order is not load-bearing (SOURCE CODE EVIDENCE; recorded in the 2026-10-18 repair).
 3. **Size / row cap** — should the committed `servers.csv` be capped (e.g. top-N by `Score`/health) to keep the repo small, given the §9.1 in-app cap of 1000? **UNKNOWN.**
 4. **`Score`/health refresh cadence** — how often is `servers.csv` regenerated/committed, and by what mechanism (manual vs CI)? Out of scope for CI in this phase. **UNKNOWN.**
 5. **IPv6 identity** — confirm IPv6 remains **metadata only** (`Has_IPv6`) and never an identity/dedup key (§10.5). Assumed by this design; **needs confirmation.**
 
+
+---
+
+## Appendix A — Historical Section 1 audit snapshot (SUPERSEDED)
+
+> **HISTORICAL — preserved verbatim from the original document.** This appendix is the
+> Section 1 audit exactly as written at HEAD `071462816b1eef7e7f7459483fcd69909938cd11`
+> (branch `main`). It was superseded on 2026-10-18 (spec v1.0.29) when Section 1 was rewritten
+> against HEAD `df7b49cf1b91078622cc72774dd1b4fbba73b20a`. Do not cite this appendix as current
+> behavior: several findings are now false (e.g. "no EMERGENCY_CSV or MANUAL kind yet",
+> "no explicit VPN/Network binding", Room `version = 5`). It is kept for traceability only.
+> The only adaptation is in headings: the original `## Section 1` heading is replaced by this
+> banner, and `### 1.x` subsections are renumbered `### A.x`; the body text is byte-identical.
+
+### A.1 The full server-list update chain as it exists today
+
+`Update button → ConnectionListViewModel → ServerListUpdater → fetch (HttpFetcher) → HTTP/HTTPS → VpnGateApiParser → DatasetIntegrity → VpnServerMerger → Room (VPNGateItemDao.replaceAll) → CollectorSnapshotStore (snapshot) → UI`
+
+| Component | File : anchor | Role |
+|---|---|---|
+| Update trigger / ViewModel | `app/src/main/java/vn/unlimit/vpngate/viewmodels/ConnectionListViewModel.kt:65` (`getAPIData(isUserInitiated)`), `:75` (`viewModelScope.launch`), `:77` (`updater.update()`) | UI entry point; launches the update and maps the `Outcome` to UI state. |
+| Updater builder | `ConnectionListViewModel.kt:46` (`ServerListUpdates.forUpdateTrigger(...)`) | Wires the concrete `fetch` + `store` closures into the pure-JVM orchestrator. |
+| Orchestrator | `app/src/main/java/vn/unlimit/vpngate/repository/ServerListUpdater.kt:51` (class), `:223` (`update(): Outcome`) | Pure JVM. Enforces atomic replace, "never replace by a less-connectable dataset", "only writer of the stored dataset" (`:16`,`:29`,`:35`). |
+| Persistence boundary | `ServerListUpdater.kt:77` (`interface Store`), `:108` (`saveLastKnownGood`), `:111` (`replaceAll`) | DAO must be atomic; snapshot written only after a successful replace (`:102`–`:105`). |
+| HTTP fetcher | `app/src/main/java/vn/unlimit/vpngate/data/remote/HttpFetcher.kt:94` (`OkHttpFetcher`), `:41` (`HttpFetcher.get`) | Single-shot GET returning a provenance-rich `HttpResponse` (`:23`). |
+| Response/provenance type | `HttpFetcher.kt:23` (`data class HttpResponse`) | Carries `requestedUrl`, `finalUrl`, `status`, `contentType`, `body`, `redirectChain`, `redirectRejected`, `redirectRejectionReason` (`:24`–`:31`). |
+| Resilient DNS | `HttpFetcher.kt:53` (`ResilientDns`), `:55` (`VPNGATE_FALLBACK_IPS`), `:67` (`lookup`) | Filters poisoned/private/loopback redirect IPs; falls back to hard-coded IPs. |
+| Redirect policy | `HttpFetcher.kt:130` (`maxHops = redirectPolicy?.maxHops ?: RedirectPolicy.DEFAULT_MAX_HOPS`) | Redirects followed **by hand** (`:101` followRedirects false) so each hop is checked. |
+| Source catalog | `app/src/main/java/vn/unlimit/vpngate/data/remote/VpnGateSources.kt:21` (`VpnGateUrls`), `:50` (`VpnGateSourceCandidates`) | Canonical HTML/API URLs (`:22`–`:27`) and bootstrap mirrors (`:35`–`:41`). |
+| Source identity | `app/src/main/java/vn/unlimit/vpngate/data/remote/SourceIdentity.kt:45` (`SourceIdentity`), `:75` (`sourceTag`) | Canonical vs mirror provenance; merge policy `api > html > mirror` (`:40`–`:43`). |
+| CSV parser | `app/src/main/java/vn/unlimit/vpngate/parser/VpnGateApiParser.kt:81` (`parseApi`), `:35` (`splitCsvRecords`) | Port of Python oracle's `/api/iphone/` CSV parse; `CANONICAL_COLUMNS = 15` (`:16`). |
+| Integrity gate | `app/src/main/java/vn/unlimit/vpngate/repository/DatasetIntegrity.kt:122` (`object`), `:198` (`evaluate`) | Produces a `DatasetVerdict` (`:90`) with thresholds below. |
+| Merger | `app/src/main/java/vn/unlimit/vpngate/merger/VpnServerMerger.kt` | Combines multi-source records per the merge policy. |
+| Room write | `app/src/main/java/vn/unlimit/vpngate/db/VPNGateItemDao.kt:50` (`replaceAll`), `:53` (`deleteAll`) | Atomic clear+insert inside a transaction. |
+| Room schema | `app/src/main/java/vn/unlimit/vpngate/db/AppDatabase.kt:12` (`@Database(version = 5)`), entities `VPNGateItem`, `ExcludedApp` | Migrations v2→5 add `seTcpPort`, `seUdpPort`, `seUdpSupported`, `sstpPort`, `sstpPortSource` (`:18`–`:68`). |
+| Record model | `app/src/main/java/vn/unlimit/vpngate/models/VPNGateItem.kt:8` (`@Entity`), `:10` (`@PrimaryKey hostName`) | Columns incl. `ip` (`:11`), `seTcpPort` (`:39`), `seUdpPort` (`:40`), `seUdpSupported` (`:41`), `sstpPort` (`:37`), `sstpPortSource` (`:38`). |
+| Snapshot store | `app/src/main/java/vn/unlimit/vpngate/data/persistence/CollectorSnapshotStore.kt` | Persists the last-known-good snapshot. |
+### A.2 Network binding model today
+
+**Default Android routing. No explicit VPN/Network binding exists in the retrieval chain.** `SOURCE CODE EVIDENCE`.
+
+- The downloader runs on `Dispatchers.IO` (`HttpFetcher.kt:116`) and makes an ordinary `OkHttpClient` request (`:95`–`:101`). It calls **none** of `protect()`, `bindSocket`, `allNetworks`, or `requestNetwork`.
+- Every network-binding API in the tree lives in the **VPN-transport / state layer**, not retrieval: `AndroidConnectionAdapter.kt:331`, `GlobalVpnTracker.kt:118` (`TRANSPORT_VPN` request), `DataUtil.kt:574`.
+- Therefore a server-list update issued while a VPN tunnel is active is served by whatever the OS default route is at that moment — **not** by the app's own tunnel, and **not** guaranteed to bypass it. `INFERENCE`.
+
+### A.3 Where a VPN `Network` object is reachable by the downloader (if at all)
+
+**Today: not reachable by the downloader.** `SOURCE CODE EVIDENCE` + `INFERENCE`.
+
+- `GlobalVpnTracker` (`state/GlobalVpnTracker.kt:65`) already observes the system VPN network: `registerSystemVpnWatcher` (`:113`) registers a `NetworkRequest` for `TRANSPORT_VPN` (`:116`–`:118`) with an `onAvailable(network: Network)` callback (`:122`). It exposes connection state (`vpnState: StateFlow` `:68`, `isConnected` `:73`, `isConnecting` `:76`).
+- The observed `Network` is used only for state tracking, **not** surfaced as a bindable object to `HttpFetcher`. §2 would surface it (hold the `Network` from `onAvailable` and bind the fetch socket to it).
+
+### A.4 Current retry, timeout, and error-handling behavior
+
+| Concern | Current behavior | Anchor |
+|---|---|---|
+| Connect timeout | 10 s | `HttpFetcher.kt:97` |
+| Read timeout | 15 s | `HttpFetcher.kt:98` |
+| Inter-request delay | `requestDelayMs` (default 0) | `HttpFetcher.kt:104` |
+| Redirect handling | hand-followed, per-hop policy check, `maxHops` = `RedirectPolicy.DEFAULT_MAX_HOPS` | `HttpFetcher.kt:101`, `:130` |
+| Redirect rejection | recorded as `redirectRejected`/`redirectRejectionReason`, not silently followed | `HttpFetcher.kt:159`–`:187` |
+| DNS failure | `ResilientDns` fallback IPs | `HttpFetcher.kt:53`–`:67` |
+| HTTP/parse/integrity failure | `Outcome.Preserved` with a `Reason` (never treated as success) | `ServerListUpdater.kt:151` (`Reason`), `:220`–`:273` |
+| Empty / degraded dataset | rejected by `DatasetIntegrity` thresholds | `DatasetIntegrity.kt:203`, `:223`–`:262` |
+| Concurrent update | `Outcome.SkippedConcurrent`; a second caller awaits the running one | `ServerListUpdater.kt:147`, `ViewModel.kt:78`–`:84` |
+
+`INFERENCE`: there is **no per-path timeout/retry ladder** (open vs VPN vs emergency); a single timeout pair applies to whichever fetch runs.
+
+### A.5 Current source-list configuration
+
+`SOURCE CODE EVIDENCE`:
+
+- Canonical HTML/API URLs are compile-time constants: `MAIN_URL`, `API_URL`, `MIRRORS_URL` and HTTP fallbacks (`VpnGateSources.kt:22`–`:27`); `MAX_MIRRORS = 12` (`:28`).
+- Bootstrap mirrors are hard-coded `http://IP:PORT` entries (`VpnGateSources.kt:35`–`:41`).
+- Source *kinds* are the `SourceKind` enum: `CANONICAL_HTML`, `CANONICAL_API`, `BOOTSTRAP_MIRROR`, `DISCOVERED_MIRROR`, `CACHED_MIRROR` (`SourceIdentity.kt:12`–`:26`). **There is no `EMERGENCY_CSV` or `MANUAL` kind yet.**
+- `INFERENCE`: there is currently **no user-configurable emergency URL or manual-import plumbing wired into this chain**; §11.9/§11.10 of the spec describe these as requirements, not implemented features. The mirror CSV feed is intentionally refused because its schema is undefined.
+
+---
