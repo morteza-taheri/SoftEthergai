@@ -2949,6 +2949,37 @@ val sstp = AutoModeCandidate(
         )
     }
 
+    /**
+     * v1.0.33 (AUTOCONNECT-FIX-3): the slot-wait budget must never fall below
+     * [AutoModeController.NATIVE_SLOT_AWAIT_MS], whatever the user selected.
+     *
+     * The device run of v1.0.32 recorded release latencies of 6.0 / 6.2 / 7.5 / 13.3 /
+     * 13.7 / 17.0 / 20.9 s with the preference at T = 5 s, i.e. a derived budget of 25 s —
+     * a 4.1 s margin — and one release landed 292 ms past that cutoff
+     * (DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md §7). The release latency belongs to our
+     * own operation, not to the attempt timeout, so a small T must not shrink it.
+     *
+     * This pins both halves: the constant is at least 30 s, and the engine derives the
+     * value through the floor rather than from `5 × T` alone.
+     */
+    @Test
+    fun nativeSlotAwaitHasAThirtySecondFloor() {
+        val engineSource = sourceOf(
+            "app/src/main/java/vn/unlimit/vpngate/automode/AutoModeEngine.kt",
+        )
+        assertTrue(
+            "AutoModeEngine must derive nativeSlotAwaitMs with a floor of " +
+                "AutoModeController.NATIVE_SLOT_AWAIT_MS, was:\n$engineSource",
+            engineSource.contains("coerceAtLeast") &&
+                engineSource.contains("AutoModeController.NATIVE_SLOT_AWAIT_MS"),
+        )
+        assertTrue(
+            "NATIVE_SLOT_AWAIT_MS floor must be at least 30 000 ms, was " +
+                "${AutoModeController.NATIVE_SLOT_AWAIT_MS}",
+            AutoModeController.NATIVE_SLOT_AWAIT_MS >= 30_000L,
+        )
+    }
+
     /** Reads a production source file, relative to the module directory. */
     private fun sourceOf(relativePath: String): String {
         for (path in listOf(relativePath, "../$relativePath", "app/$relativePath")) {

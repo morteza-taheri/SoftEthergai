@@ -1686,8 +1686,16 @@ enum class AttemptOutcome {
                     // it. The refusal is detected BEFORE
                     // NativeLifetimeRegistry.tryAcquire() allocates an attempt ID, so this
                     // path still consumes no new ID.
+                    // v1.0.33 (AUTOCONNECT-FIX-3): timing and the diagnostic line are
+                    // additions only; the wait condition and every branch below are
+                    // unchanged. The device run of v1.0.32 terminated the whole run from
+                    // THIS site three times and never reached the post-attempt site that
+                    // carried the diagnostic, so the one log line the v1.0.32 phase needed
+                    // was never emitted (DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md §7).
+                    val slotWaitStartedAt = System.currentTimeMillis()
                     val released = adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
                     if (!released) {
+                        val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
                         // The slot was still held when the budget expired: the operation is
                         // genuinely stuck, and only here does the fail-closed terminal
                         // remain the correct outcome.
@@ -1695,6 +1703,19 @@ enum class AttemptOutcome {
                             "[AUTO] Native slot not released within " +
                                     "${nativeSlotAwaitMs}ms " +
                                     "(${NativeLifetimeRegistry.process.describe()}); stopping",
+                        )
+                        // v1.0.33 diagnostics: same body as the post-attempt site, so the
+                        // two terminals are comparable line for line. `outcome` is not in
+                        // scope in this branch — it can only ever be NATIVE_BUSY here.
+                        adapter.log(
+                            "[AUTO] SLOT_UNRELEASED_DIAG waited=${waitedMs}ms " +
+                                    "budget=${nativeSlotAwaitMs}ms " +
+                                    "outcome=${AttemptOutcome.NATIVE_BUSY.name} " +
+                                    "protocol=${protocol.id} " +
+                                    "server=${server.hostname ?: server.ip} " +
+                                    "tracker=${adapter.tunnelTrackerStatus()} " +
+                                    "ownTunnel=${adapter.isOwnTunnelEstablished()} " +
+                                    "registry=${NativeLifetimeRegistry.process.describe()}",
                         )
                         giveUpWithUnresolvedNativeOperation()
                         setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))

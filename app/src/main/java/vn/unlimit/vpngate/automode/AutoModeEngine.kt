@@ -79,7 +79,19 @@ object AutoModeEngine {
                 // budget (each blocking read on that side is bounded by the same figure),
                 // so the wait is derived from that budget rather than hard-coded, and is
                 // capped so a large setting cannot make the terminal give-up unreachable.
+                //
+                // v1.0.33 (AUTOCONNECT-FIX-3): ...and floored, because the release latency
+                // is a property of the PREVIOUS native operation's own duration, not of the
+                // attempt timeout the user picked. Device data
+                // (DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md §7) recorded release latencies
+                // of 6.0 / 6.2 / 7.5 / 13.3 / 13.7 / 17.0 / 20.9 s with the device preference
+                // at T = 5 s, which squeezed the derived 25 s budget to a 4.1 s margin and on
+                // one occasion terminated the run 292 ms before the release landed. A user
+                // who selects a small T is choosing how long to wait for a SERVER; that
+                // choice must not also shorten the budget for our own stuck operation.
+                // AUTO_CONNECT_AUDIT D-2's cap still applies on top of the floor.
                 nativeSlotAwaitMs = (du.getAutoModeTimeoutSeconds().toLong() * 1000L * 5L)
+                    .coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS)
                     .coerceAtMost(AutoModeController.NATIVE_SLOT_AWAIT_MAX_MS),
 // Stage 2F-F.13 (Y4): the controller selects the protocol/endpoint
                 // pairs and hands them over; the probe only measures them.
