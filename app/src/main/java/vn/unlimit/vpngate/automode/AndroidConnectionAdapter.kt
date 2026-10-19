@@ -88,6 +88,24 @@ class AndroidConnectionAdapter(
     private var currentProtocol: AutoModeProtocol? = null
 
     /**
+     * AUTOCONNECT-FIX-5 (v1.0.35): the outcome of the most recent [disconnect] teardown.
+     *
+     * [disconnect] already computes this value to decide which line to log; it was
+     * simply never retained, so the controller could not distinguish "the teardown
+     * released the native structures" from "ownership was retained and the next start
+     * will be refused". Keeping the enum — rather than a boolean — leaves the exact
+     * reason available for diagnostics without re-deriving it.
+     *
+     * `null` means no teardown has run yet, or the last one timed out
+     * (`withTimeoutOrNull` returned null, which the code below already treats as "not
+     * confirmed, never completed"). Both are reported as *resolved* by
+     * [lastTeardownWasResolved] so that the retry-skip only ever engages on the one
+     * outcome that actually refuses a new attempt.
+     */
+    @Volatile
+    private var lastTeardownOutcome: TeardownCompletion.Outcome? = null
+
+    /**
      * Stage 2F-F.2 (Q-7): L2TP/IPsec is the one protocol this adapter cannot
      * drive unattended — it needs the OS Settings UI, which no background
      * intent can open.
@@ -276,8 +294,29 @@ class AndroidConnectionAdapter(
                         )
                     }
             }
+            // AUTOCONNECT-FIX-5 (v1.0.35): retain the outcome this function just
+            // interpreted, so the controller can ask whether a retry could be admitted.
+            // A timeout (`result == null`) stays `null` — "not confirmed, never
+            // completed" — and is treated as resolved below, i.e. it never changes the
+            // pre-v1.0.35 retry behaviour.
+            lastTeardownOutcome = result?.outcome
             currentProtocol = null
         }
+
+    /**
+     * AUTOCONNECT-FIX-5 (v1.0.35): only `NATIVE_UNRESOLVED` makes the registry refuse a
+     * new native attempt, so only that outcome suppresses the post-slot-release retry.
+     *
+     * `NATIVE_CONFIRMED` obviously permits one. `NOOP_REENTRANT` published a terminal
+     * state for a session that had nothing left to release (every observed instance was
+     * followed by a real `NATIVE_CONFIRMED` within ~1 s), and
+     * `FOREIGN_STACK_TERMINAL` asserts nothing about native cleanup — neither refuses a
+     * start, so neither may suppress a retry. A timeout is left on the old path too:
+     * the state is unknown, and this fix only narrows the one state the device
+     * evidence actually covers.
+     */
+    override fun lastTeardownWasResolved(): Boolean =
+        lastTeardownOutcome != TeardownCompletion.Outcome.NATIVE_UNRESOLVED
 
     /**
      * Stage 2F-F.28 Fix D: arm the tunnel watcher BEFORE the connect request.

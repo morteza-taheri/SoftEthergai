@@ -80,6 +80,19 @@ class AutoModeControllerTest {
         @Volatile
         var slotWaits = 0
 
+        /**
+         * AUTOCONNECT-FIX-5 (v1.0.35): whether the most recent teardown was resolved.
+         *
+         * `true` (the default) models every pre-v1.0.35 test double and keeps the
+         * post-slot-release retry exactly as it was. `false` models the device case the
+         * fix targets — `TeardownCompletion.Outcome.NATIVE_UNRESOLVED`, where the
+         * registry retains ownership and every later start is refused.
+         */
+        @Volatile
+        var lastTeardownResolved = true
+
+        override fun lastTeardownWasResolved(): Boolean = lastTeardownResolved
+
         override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
             slotWaits++
             if (slotWaitDelayMs > 0) kotlinx.coroutines.delay(slotWaitDelayMs)
@@ -3127,6 +3140,104 @@ val sstp = AutoModeCandidate(
             2,
             Regex("""\(socket_apply_timeout\(conn->socket_fd, conn->timeout_ms\) == 0\)""")
                 .findAll(native).count(),
+        )
+    }
+
+    /**
+     * T-NEW-13 (v1.0.35, AUTOCONNECT-FIX-5): an unresolved teardown suppresses the
+     * post-slot-release retry.
+     *
+     * Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_4_REPORT.md §15): 12 post-release
+     * retries in one session, ZERO of which reached TUNNEL_UP; 11 of 12 followed a
+     * `NATIVE_UNRESOLVED` teardown, the one outcome in which the registry retains
+     * ownership and refuses every later start. Retrying there cannot be admitted and
+     * costs the retry's own teardown (~6 s per failed protocol).
+     *
+     * This pins three things at once: the skip is logged, the refused protocol is
+     * dialled exactly ONCE (no retry), and the wedge accounting that runs before the
+     * skip is untouched — the second refusal still records the wedge.
+     */
+    @Test
+    fun unresolvedTeardownSkipsThePostReleaseRetry() = runBlocking {
+        adapter.scriptBusy("wedged-endpoint", false, false, false, false)
+        adapter.lastTeardownResolved = false
+        val c = controller(
+            servers = listOf(server("wedged-endpoint"), server("good")),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue(
+            "the run must still escape the refusing server and connect on the next one, got $s",
+            s is AutoModeState.Connected,
+        )
+        assertEquals("good", (s as AutoModeState.Connected).hostname)
+
+        assertTrue(
+            "v1.0.35: the skip must be logged with its reason: ${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Skipping retry on SOFTETHER_TCP") &&
+                    it.contains("previous teardown was unresolved")
+            },
+        )
+        assertFalse(
+            "no post-release retry may be issued while the teardown is unresolved: " +
+                "${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
+        )
+        assertEquals(
+            "each refused protocol is dialled exactly once when the teardown was unresolved",
+            listOf(
+                "wedged-endpoint" to AutoModeProtocol.SOFTETHER_TCP,
+                "wedged-endpoint" to AutoModeProtocol.SOFTETHER_UDP,
+                "good" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue(
+            "the wedge accounting before the skip must be preserved: ${adapter.logs}",
+            adapter.logs.any { it.contains("NATIVE_BUSY x2") && it.contains("recording a wedge") },
+        )
+    }
+
+    /**
+     * T-NEW-14 (v1.0.35, AUTOCONNECT-FIX-5): a resolved teardown keeps the retry.
+     *
+     * The retry exists for a real case — the refusal was caused by our own previous
+     * native operation still finishing, and once the slot is confirmed free the same
+     * protocol deserves one more attempt. The fix must narrow that to the unresolved
+     * state only; a clean teardown must behave exactly as it did before v1.0.35.
+     */
+    @Test
+    fun resolvedTeardownKeepsThePostReleaseRetry() = runBlocking {
+        adapter.scriptBusy("busy-then-up", false, true)
+        adapter.lastTeardownResolved = true
+        val c = controller(
+            servers = listOf(server("busy-then-up")),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue("expected Connected, got $s", s is AutoModeState.Connected)
+        assertTrue(
+            "the retry must still be attempted when the teardown resolved: ${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
+        )
+        assertFalse(
+            "a resolved teardown must never log the skip: ${adapter.logs}",
+            adapter.logs.any { it.contains("Skipping retry") },
+        )
+        assertEquals(
+            "the refused protocol is dialled twice: once, then the post-release retry",
+            listOf(
+                "busy-then-up" to AutoModeProtocol.SOFTETHER_TCP,
+                "busy-then-up" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
         )
     }
 

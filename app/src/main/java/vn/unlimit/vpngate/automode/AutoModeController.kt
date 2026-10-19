@@ -295,6 +295,31 @@ class AutoModeController(
          * pre-existing rotation behaviour; the real adapter overrides it with the poll.
          */
         suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean = true
+
+        /**
+         * AUTOCONNECT-FIX-5 (v1.0.35): did the most recent [disconnect] end in a
+         * teardown that a new native attempt may legally follow?
+         *
+         * This is deliberately narrower than "did the teardown finish". The stack
+         * reports four outcomes, and only one of them refuses a later attempt:
+         * `NATIVE_CONFIRMED` released the native structures; `NOOP_REENTRANT` published
+         * a terminal state for a session that had nothing left to release;
+         * `FOREIGN_STACK_TERMINAL` asserts nothing about native cleanup and never
+         * refuses. Only `NATIVE_UNRESOLVED` retains ownership and makes the registry
+         * refuse every later start.
+         *
+         * The controller uses this to decide whether a post-slot-release retry can
+         * possibly be admitted. Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_4_REPORT.md
+         * §15) showed 12 such retries in one session: 10 failed instantly with
+         * NATIVE_ERROR, 2 with NATIVE_BUSY, and ZERO succeeded — 11 of the 12 were
+         * preceded by an unresolved teardown. Retrying into that state only pays the
+         * retry's own teardown (~6 s) for a refusal the registry has already decided.
+         *
+         * Defaults to `true` so a test double that does not model teardown outcomes
+         * keeps its pre-existing rotation behaviour exactly; the real adapter overrides
+         * it from the outcome it already observes.
+         */
+        fun lastTeardownWasResolved(): Boolean = true
     }
 
 /**
@@ -1760,6 +1785,37 @@ enum class AttemptOutcome {
                         setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
                         job = null
                         return
+                    }
+                    // v1.0.35 (AUTOCONNECT-FIX-5): skip the retry when the teardown that
+                    // preceded this refusal was unresolved.
+                    //
+                    // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_4_REPORT.md §15): across
+                    // one session the controller performed 12 post-slot-release retries —
+                    // 10 ended instantly with NATIVE_ERROR (0.1 s), 2 with NATIVE_BUSY
+                    // (~5 s), and ZERO reached TUNNEL_UP. In 11 of the 12 the preceding
+                    // teardown was NATIVE_UNRESOLVED, which is precisely the state in which
+                    // the registry retains ownership and refuses every later start
+                    // (see TeardownCompletion.Outcome.NATIVE_UNRESOLVED). The retry could
+                    // not have been admitted, yet it cost the retry's own disconnect plus
+                    // the slot wait that follows it (~6 s per failed protocol).
+                    //
+                    // Skipping it advances straight to the next protocol with the slot
+                    // already confirmed free (`released` is true here), so the next attempt
+                    // is a real one rather than a re-dial of a protocol that just failed.
+                    // The wedge ledger is unaffected: the NATIVE_BUSY accounting above has
+                    // already run for this refusal.
+                    //
+                    // `continue` targets the `for (protocol in supported)` loop this branch
+                    // sits inside, so the shared post-attempt cleanup is skipped too. That
+                    // is safe in this specific state: NATIVE_BUSY means the registry refused
+                    // the start before any native attempt was admitted, so there is no
+                    // tunnel of ours for the own-tunnel re-check below to adopt.
+                    if (!adapter.lastTeardownWasResolved()) {
+                        adapter.log(
+                            "[AUTO] Skipping retry on ${protocol.id}: previous teardown " +
+                                    "was unresolved",
+                        )
+                        continue
                     }
                     adapter.log(
                         "[AUTO] Native slot released; retrying ${protocol.id} on " +
