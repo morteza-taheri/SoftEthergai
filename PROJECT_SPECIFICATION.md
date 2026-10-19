@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `fc359c6e578c41a2c2c44eab19bb990cd2b41f8a`
-**Document version:** 1.0.38
+**HEAD:** `9951c9c9622ff94d694b8ee565dd2e3b318b71f1`
+**Document version:** 1.0.39
 **Last updated:** 2026-10-19
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -434,6 +434,8 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > **RISK-A**) — this phase changes no signing configuration and **creates no tag**. The header
 > **HEAD** field is the code commit of this phase, the state this revision was verified against; a
 > commit cannot carry its own hash.
+
+> **Push state (v1.0.39).** RETENTION-IMPL-PHASE-1 — Cumulative Server Retention, foundation only (spec §1.6.31). Three authorized source files change: `VPNGateItem.kt` gains `firstSeenAt` / `lastSeenAt` / `healthScore`; `AppDatabase.kt` moves Room `version 7 → 8` with `MIGRATION_7_8` (three additive `ALTER TABLE VPNGateItem ADD COLUMN … INTEGER NOT NULL DEFAULT 0` statements — no DROP / DELETE / TRUNCATE / CREATE TABLE, so existing rows survive the upgrade); `App.kt` registers the migration; `ServerListUpdates.kt` rewires the single writer so a fresh network observation is **merged** (`mergeAll`) instead of replaced, while a fallback still replaces wholesale via the retained `replaceAll`. `ServerListUpdater` is untouched (the `fetchedFromCache` flag is threaded through `daoStore`). 11 new JVM tests (5 migration + 6 retention); `:app` **823/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `79c102728581023f77f2542053fce11131a0263563f2c86c08c9aa70a6de3c17`. Phases 2–3 (the max-server cap and the §9.3 retention-priority prune, plus the Settings UI) are out of scope. The header **HEAD** field is the code commit of this phase, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -2429,6 +2431,74 @@ v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
    version-only change. Evidence: PRIOR REPORT.
 8. **No new methodology lessons.**
 
+#### 1.6.31 RETENTION-IMPL-PHASE-1 (v1.0.39)
+
+1. **The requirement.** Cumulative Server Retention (`SERVER_SOURCE_ARCHITECTURE.md` §9.1–§9.2): a
+   refresh that no longer lists a server must **not** delete it — rows present in storage but absent
+   from the incoming feed are retained. At HEAD `fed8787` (the v1.0.38 docs commit, the code commit
+   `fc359c6`), `VPNGateItem` carried no `firstSeenAt` / `lastSeenAt` / `healthScore`, and the single
+   writer (`ServerListUpdates.daoStore.replaceAll`) replaced the whole table on every accepted
+   refresh; `ACCEPT_NEW` / `MERGE_WITH_EXISTING` were names only (§1.6.16). Evidence: SOURCE CODE.
+2. **The fix (phase 1 — foundation only).** Three parts, all within the authorized file set:
+   - **(a) Schema.** `VPNGateItem` gains `firstSeenAt: Long`, `lastSeenAt: Long`, `healthScore: Int`,
+     each `@ColumnInfo(name = "…", defaultValue = "0")`. Room `version 7 → 8`. `MIGRATION_7_8` runs
+     exactly three `ALTER TABLE VPNGateItem ADD COLUMN … INTEGER NOT NULL DEFAULT 0` statements — no
+     `DROP` / `DELETE` / `TRUNCATE` / `CREATE TABLE`, so every existing row survives the upgrade.
+     `App.kt` registers `MIGRATION_7_8`. The KSP-exported `app/schemas/vn.unlimit.vpngate.db.AppDatabase/8.json`
+     carries `version 8` and the three backticked columns; the migration DDL writes the same columns
+     without backticks, so Room will not throw "Migration didn't properly handle" on a real upgrade.
+     Evidence: SOURCE CODE + TEST.
+   - **(b) Write path.** `ServerListUpdates.daoStore.replaceAll` now branches on `fetchedFromCache()`:
+     a fallback (last-known-good snapshot / stored list / bundled seed) still replaces wholesale exactly
+     as before (the `replaceAll` retention of the fallback path), while a fresh network observation is
+     merged via the new `mergeAll(dao, items, manualRows, now)`. `mergeAll` reads `dao.getAll()`,
+     matches on `hostName.trim()`, sets `firstSeenAt = prev?.firstSeenAt ?: now` (a new server is
+     stamped `now`; a returning server keeps the moment it was first observed), `lastSeenAt = now`,
+     recomputes `healthScore` (see bullet 3), retains stored rows the feed omitted, applies
+     `withManualRows` first so manual servers survive the overlay, and commits via `dao.replaceAll(merged)`
+     inside `VPNGateItemDao.replaceAll`'s `@Transaction` (deleteAll + insertAll) so the table is never
+     left half-written. The `ServerListUpdater` class is untouched — the `fetchedFromCache` flag is
+     threaded through `daoStore`. Evidence: SOURCE CODE + TEST.
+   - **(c) `replaceAll` retained as the fallback writer** (no behaviour change on the cache path), so a
+     snapshot / stored / seed dataset — which already represents a complete known-good set — still
+     replaces wholesale. Evidence: SOURCE CODE.
+3. **Phase-1 health score.** `retentionHealthScore(item, lastSeenAt)`:
+   `0` if `lastSeenAt == 0` (a reserved sentinel for a pre-phase-1 row that has never yet been observed
+   by a merge — an incoming row is always stamped `now`, so it never lands here);
+   `100` if `item.score > 0 && item.ping > 0`;
+   `50` if `item.score > 0 || item.ping > 0`;
+   `25` otherwise. The score is a property of the latest observation, so it is always recomputed, never
+   carried forward. This is the brief's minimal formula; the richer §9.3 retention-priority model is
+   phase 2. Evidence: SOURCE CODE + TEST.
+4. **Tests.** 11 new JVM tests in two files. `Migration7to8Test` (5): the migration is bounded to 7→8;
+   it adds exactly the three retention columns; it is non-destructive (asserts no `DROP` / `DELETE` /
+   `TRUNCATE` / `CREATE TABLE`); the DAO accessor is present; the generated v8 schema matches the
+   migration DDL. `ServerListRetentionTest` (6): T-NEW-23 (a quiet stored server is retained and a new
+   server gets `firstSeenAt == lastSeenAt == now`); T-NEW-24 (a returning server keeps `firstSeenAt`
+   and refreshes `lastSeenAt`); T-NEW-25 (the score/ping health ranking — 100 / 50 / 25); T-NEW-25b
+   (the `0` sentinel is reserved for never-refreshed rows); T-NEW-26 (a manual server survives the
+   merge overlay); T-NEW-27 (the merge is additive, so a quiet server is never dropped). No existing
+   test was modified or deleted. Evidence: TEST.
+5. **JVM tests.** `:app` **823 / 0 / 0 / 1** (baseline 812 / 0 / 0 / 1 — the delta is exactly the 11
+   new tests; the one skip is unchanged, `HtmlParserOracleTest`); `:SoftEtherClient` **173 / 0 / 0 / 0**
+   (unchanged). Evidence: TEST.
+6. **Build gate.** `:app:assembleProDebug --rerun-tasks --no-build-cache` under `CI=true` → BUILD
+   SUCCESSFUL. `aapt2 dump badging` on the APK reports
+   `package: name='vn.unlimit.vpngatepro' versionCode='144' versionName='2.4.11-dev'` — the `-dev`
+   suffix is the debug-variant append; the base `versionName` is `2.4.11` from v1.0.38. APK SHA-256
+   `79c102728581023f77f2542053fce11131a0263563f2c86c08c9aa70a6de3c17`. Evidence: TEST.
+7. **Roadmap item G (§12.5.2).** Item G ("Safe merge and persistence") is now **PARTIAL**: the
+   merge-to-retention branch is implemented here (manual preservation was already LANDED at v1.0.23;
+   the cumulative-retention merge lands in this phase), but the §9.3 retention-priority prune and the
+   max-server cap (phases 2–3) are **NOT IMPLEMENTED**, and item H's Android-runtime / device coverage
+   remains open. Evidence: SOURCE CODE + TEST.
+8. **Out of scope / what remains.** Phases 2–3: the max-server cap and the §9.3 retention-priority
+   prune. The phase-1 merge only ever *adds* and *refreshes*, never *prunes*. A real-device 7 → 8
+   upgrade is **UNKNOWN** — the migration is JVM-verified only; the KSP export and the recording-proxy
+   test prove the DDL is correct, but no device has yet replayed `MIGRATION_7_8` against a populated
+   database. Evidence: SOURCE CODE + UNKNOWN.
+9. **No new methodology lessons.**
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -4133,6 +4203,16 @@ The following items are planned for the source-and-path architecture described i
 > (SOURCE VERIFIED). This note updates but does not edit the item descriptions above, which stay
 > verbatim per the v1.0.20 direction.
 
+> **Item status (v1.0.39 — RETENTION-IMPL-PHASE-1):** item **G** ("Safe merge and persistence") is
+> now **PARTIAL**. The cumulative-retention merge (`mergeAll`) lands in this phase: the single writer
+> (`ServerListUpdates.daoStore.replaceAll`) now **merges** a fresh network observation into the stored
+> dataset (so a server the feed no longer lists is kept) instead of replacing it, while a fallback
+> still replaces wholesale via the retained `replaceAll`. Manual-server preservation (the Z1-IMPL-D
+> half of G) was already LANDED at v1.0.23. The remaining G work — the §9.3 retention-priority prune
+> and the max-server cap (phases 2–3 of the retention plan) — is **NOT IMPLEMENTED**, and item H's
+> Android-runtime / device coverage stays open. Evidence: SOURCE CODE + TEST (11 new JVM tests); see
+> §1.6.31.
+
 ### 12.6 Test Requirements for Source/Path Architecture
 
 Tests must cover at minimum:
@@ -4483,6 +4563,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.37 | 2026-10-19 | AUTOCONNECT-FIX-7 (device-free; driven by the v1.0.36 device run) | **Undoes the v1.0.36 regression and makes the code obey the contract §6.8.4 has stated since v1.0.31.** `DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md` §7.1 measured v1.0.36 on hardware: **2 of 5** runs terminated `ERROR_NATIVE_UNRESOLVED` on the **first** server, the controller giving up **431 ms** after a native attempt started and **7.7 s before** the stack reached its own verdict (`VPNCONNECT watermark failed — server may not be SoftEther`). Root cause: `awaitArmedOutcome` re-checked `isNativeSlotBusy()`, which answers "busy" both for a **refusal** (a previous operation owns the slot; the server was never contacted) and for **our own** attempt still unwinding after its timeout — so every case-1 timeout was mis-labelled `NATIVE_BUSY` and its slot-wait expiry was a run terminal. Fix-1 (adapter): new `@Volatile lastArmedBusyRefused`, reset in `armTunnelWatch` (`AndroidConnectionAdapter.kt:349`) and captured in `awaitArmedTunnel`'s `finally` (`:406`) from `armedNativeBusy?.isCompleted` — a deferred that completes **only** through `TunnelStateWatcher.onSoftEtherNativeBusy`, i.e. only on a refused start. `awaitArmedOutcome` (`:497`) now returns `NATIVE_BUSY` iff the refusal fired, `TIMED_OUT` otherwise; `isNativeSlotBusy()` is kept for the admission checks. Fix-2 (controller): the slot-wait terminal is gone from **both** sites — the `NATIVE_BUSY` branch (`AutoModeController.kt:1774`) and the post-attempt branch (`:1991`) now log `Slot-wait expired on <protocol>; moving on (no terminal, per §6.8.4)`, keep their existing `SLOT_UNRELEASED_DIAG` line, issue one `disconnect()` and `break`. Fix-3 (contract): no path publishes `ERROR_NATIVE_UNRESOLVED`; `ERROR_NO_SERVER` is the only exhausted-list terminal (§6.8.4 row removed and table renumbered); the constant and the now-unreferenced `giveUpWithUnresolvedNativeOperation()` are kept so the device evidence they encode is not silently deleted, and the v1.0.34 terminal wedge is **withdrawn** (a refusal is not evidence about the endpoint — `TIMED_OUT` carries that role, and cross-run exclusion is re-pinned through it). **Eight tests rewritten under explicit operator authorization, none deleted** (2 in `AutoModeControllerTest`, 6 in `AutoModeNativeBusyTest` — the latter had pinned the *opposite* of §6.8.4 since v1.0.28, which is the hidden contradiction §1.6.29 bullet 8 records) plus **four new** (T-NEW-18..21; T-NEW-21 pins OP-R6 try-next **ordering**). `:app` **812/0/0/1** (+4, skip unchanged), `:SoftEtherClient` **173/0/0/0**. `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `4FE44174…9EB6E68` (63,755,062 bytes). New §1.6.29; §6.8.3 NATIVE_BUSY and TIMED_OUT rows and the wedge rule updated; §6.8.4 terminal list updated. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.28, §12.5.1, §12.5.2 untouched. **Fix-A remains UNVERIFIED**; the three fixes here are SOURCE CODE + TEST only — no device run in this phase. No tag, no force, no `git add -A`. | **Stops destroying live tunnels and wedging healthy servers, and cuts the per-protocol worst case from `7T` to `3T`.** The v1.0.34 build was re-run on an **unfiltered** WiFi network (`DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` §5.3): **3 of 4** runs destroyed a **working** tunnel (`DHCP SUCCESS` + `SLOT_UNRELEASED_DIAG … tracker=CONNECTED ownTunnel=true`, written by the code that then destroyed it) and **1** excluded a healthy server after two false wedges. Root cause: `awaitArmedOutcome`'s timeout fires a few hundred ms before `CONNECTED`, so `isNativeSlotBusy()` is true because **our own** operation is still running; the `NATIVE_BUSY` branch then waited for a slot held by the tunnel it had just established, and the terminal tore it down. The post-attempt path already re-checked ownership; this branch never did. Fix-1: `adapter.isOwnTunnelEstablished()` at the top of the branch (`AutoModeController.kt:1683`) — a live tunnel is treated as `Connected` (`:1685`), with no wait, no retry and no wedge. Fix-2: the `NATIVE_BUSY` slot wait is capped to `min(nativeSlotAwaitMs, attemptTimeoutMs)` (`:1772`), with the terminal log and `SLOT_UNRELEASED_DIAG` `budget=` reporting the capped value (`:1820`, `:1828`). Fix-3: the same cap post-attempt (`:2003`, `:2010`, `:2019`). The retry mechanism is **kept** (Option A) and the v1.0.35 `lastTeardownWasResolved` gate still skips it when the preceding teardown was unresolved (`:1865`), so the three cases are `1T` (own tunnel up), `2T` (unresolved teardown) and `3T` (resolved teardown, retry fires) — previously `1T`, `7T`, `7T`, with the first reachable but never checked. **Option B** (remove the retry for a strict `2T`) was **deferred**: it breaks **9** documented tests, so the prior phase stopped at STEP 2 without editing any file and the operator chose Option A. Three new tests (`nativeBusyWithOwnTunnelUpIsTreatedAsConnected` `:3285`, `nativeBusySlotWaitIsCappedToTheAttemptBudget` `:3334`, `postAttemptSlotWaitIsCappedToTheAttemptBudget` `:3374`); no existing test modified or deleted; the fake gained `ownTunnelEstablished = false` (`:116`) and `slotWaitTimeouts` (`:92`), both additive with behaviour-preserving defaults. `:app` **808/0/0/1** (+3, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `BE345075…4ECF249` (differs from v1.0.35 as expected; no native source changed). The first build failed with `There is not enough space on the disk` on a volume reporting 0 bytes free — an environment fault, resolved by deleting regenerable build outputs and stale temp artifacts, after which identical sources built green. §6.8.3 updated (own-tunnel row + sub-note); §6.8.7 updated (cap + the three-case table); new §1.6.28. `DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` committed here. **Fix-A remains UNVERIFIED** (zero NAT-T rendezvous, zero `[TLS] handshake entry (RUDP)`) and untouched. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.27, §12.5.1, §12.5.2 untouched. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 
 | 1.0.38 | 2026-10-19 | VERSION-BUMP-PAST-2.4.10 (device-free; no source, test, or signing change) | **Resolves the version-identity collision recorded in §1.6.12 bullet 5 (v1.0.19).** HEAD declared `versionCode 143` / `versionName "2.4.10"` — the same identity as tag `p2.4.10` — while it stood 60+ commits ahead of that tag, so every device install since v1.0.19, including the v1.0.37 hardware verification, reported `versionCode 143` and was indistinguishable by version from the `p2.4.10` artifact. `app/build.gradle` now declares **`versionCode 144`** / **`versionName "2.4.11"`** inside the `pro` flavor, the only place in the repository that declares the application version; a two-line comment above the fields cites §1.6.30. Discovery was exhaustive and read-only: no second `build.gradle`/`.properties`/`.json`/`.toml` declares a version, **no test** under `app/src/test/` or `app/src/androidTest/` references `versionCode`/`versionName`/`143`/`2.4.10` (so no test changed and no count moved), and the seven `BuildConfig.VERSION_NAME` / `VERSION_CODE` readers are symbolic, display-only, and follow the bump automatically. One comment in `CollectorSnapshotStore.kt` still says "the 143 / 2.4.10 release line", but it is a historical citation of commit `0714628` used as mapping evidence — not a version declaration — and that file is FROZEN. `aapt2 dump badging` on the rebuilt APK confirms `versionCode='144' versionName='2.4.11'`, so the manifest came from the bumped Gradle values, not a stale cache. JVM unchanged: `:app` **812 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. This does **not** make 2.4.11 releasable: a cut still requires the fail-closed release keystore (§1.6.10 bullet 8 / **RISK-A**), no signing configuration was touched, and **no tag was created** (still five). The v1.0.37 AutoConnect contract (§1.6.29) and its hardware verification are untouched. |
+| 1.0.39 | 2026-10-19 | RETENTION-IMPL-PHASE-1 (device-free; foundation of Cumulative Server Retention, spec §1.6.31) | **Lays the foundation of Cumulative Server Retention (`SERVER_SOURCE_ARCHITECTURE.md` §9.1–§9.2).** At HEAD `fed8787`, `VPNGateItem` carried no retention fields and the single writer replaced the whole table on every accepted refresh. This phase: (a) adds `firstSeenAt` / `lastSeenAt` / `healthScore` to `VPNGateItem` and moves Room `version 7 → 8` via `MIGRATION_7_8` (three additive `ALTER TABLE … ADD COLUMN … INTEGER NOT NULL DEFAULT 0` — no DROP/DELETE/TRUNCATE/CREATE TABLE, so existing rows survive); `App.kt` registers the migration and the KSP-exported `8.json` matches the DDL; (b) rewires `ServerListUpdates.daoStore.replaceAll` to **merge** a fresh network observation (`mergeAll`: new server gets `firstSeenAt = now`, returning server keeps `firstSeenAt` and refreshes `lastSeenAt`, quiet stored servers are retained, manual servers survive the overlay, commit inside `replaceAll`'s `@Transaction`) while a fallback still replaces wholesale via the retained `replaceAll`; `ServerListUpdater` is untouched; (c) the phase-1 `healthScore` is `0 if lastSeenAt==0; 100 if score>0 && ping>0; 50 if score>0 || ping>0; 25 otherwise`. 11 new JVM tests (5 migration + 6 retention); no existing test changed. `:app` **823 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'`, SHA-256 `79c102728581023f77f2542053fce11131a0263563f2c86c08c9aa70a6de3c17`. Roadmap item G is now **PARTIAL** (merge landed; §9.3 retention-priority prune + max-server cap are phases 2–3, NOT IMPLEMENTED). Phases 2–3 and a real-device 7→8 upgrade are **UNKNOWN**. No tag was created; §22 byte-identical. |
 
 ### Verification Status
 
@@ -4491,6 +4572,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | Project Baseline (§1) | VERIFIED — `build.gradle`, `gradle-wrapper.properties`, module structure |
 | §1.6.29 — AUTOCONNECT-FIX-7 (v1.0.37) | VERIFIED at SOURCE CODE + TEST level — adapter `lastArmedBusyRefused` and both controller branches inspected; `:app` **812/0/0/1**, `:SoftEtherClient` **173/0/0/0**; 8 tests rewritten and 4 added. **NOT device-verified** — no device run in this phase; Fix-A remains UNVERIFIED |
 | §1.6.30 — VERSION-BUMP-PAST-2.4.10 (v1.0.38) | HISTORICAL — the collision and the bump are source-verifiable (`app/build.gradle` is the only version declaration; no test pins it); APK `versionCode='144' versionName='2.4.11'` confirmed by `aapt2 dump badging`; JVM unchanged at `:app` **812/0/0/1**, `:SoftEtherClient` **173/0/0/0**. Release-readiness (RISK-A keystore) is **INFERENCE** from §1.6.10 bullet 8 — no release build was attempted and no tag exists |
+| §1.6.31 — RETENTION-IMPL-PHASE-1 (v1.0.39) | VERIFIED at SOURCE CODE + TEST level — `VPNGateItem` retention fields and Room `version 8` / `MIGRATION_7_8` inspected; `mergeAll` and `retentionHealthScore` inspected; the `8.json` schema matches the DDL; 11 new JVM tests (5 migration + 6 retention) all green; `:app` **823/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `79c10272…3c17`. The 7→8 upgrade is JVM-verified only — a real-device replay is **UNKNOWN**; phases 2–3 (§9.3 prune, max-server cap) are **NOT IMPLEMENTED**. Item G (§12.5.2) is **PARTIAL** |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
