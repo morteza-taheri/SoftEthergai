@@ -110,7 +110,7 @@ object ServerListUpdates {
             },
             fetchCapability = { capability.value },
             fetchedFromCache = { origin.value },
-            store = daoStore(repository, dao, manual, capability),
+            store = daoStore(repository, dao, manual, capability) { origin.value },
             emergencyFetch = {
                 // Re-read at this rung too: the emergency fetch can take
                 // seconds, and the rows written at the end of this run must be
@@ -227,6 +227,7 @@ object ServerListUpdates {
         dao: VPNGateItemDao?,
         manual: LastManualRows,
         capability: LastFetchCapability,
+        fetchedFromCache: () -> Boolean = { false },
     ): ServerListUpdater.Store = object : ServerListUpdater.Store {
         override fun currentCount(): Int = dao?.count() ?: 0
 
@@ -265,7 +266,20 @@ object ServerListUpdates {
                 "Dataset outcome ${DatasetIntegrity.outcome(verdict, stored)}: " +
                     "${items.size} incoming vs ${stored.size} stored (${verdict.detail})",
             )
-            dao?.replaceAll(withManualRows(items, manual.rows))
+            // RETENTION-IMPL-PHASE-1 (spec §1.6.31): MERGE_WITH_EXISTING is no
+            // longer a *name* on the accepted path. A fresh network observation
+            // is merged into the stored dataset (so a server the feed no longer
+            // lists is kept, not deleted); a fallback — the last-known-good
+            // snapshot, the stored list or the bundled seed — already
+            // represents a complete known-good set, so it still replaces
+            // wholesale exactly as before. `fetchedFromCache` is the origin
+            // flag the updater computed from the fetch. REJECT_DEGRADED remains
+            // enforced upstream and never reaches this method.
+            if (fetchedFromCache()) {
+                dao?.replaceAll(withManualRows(items, manual.rows))
+            } else {
+                mergeAll(dao, items, manual.rows, System.currentTimeMillis())
+            }
         }
 
         // Written only after the accepted dataset is already in the table, so
@@ -366,4 +380,108 @@ internal fun withManualRows(
     if (fresh.isEmpty()) return networkRows
 
     return VPNGateItem.dedupeForStorage(networkRows + fresh)
+}
+
+// -------------------------------------------------------------------------
+// RETENTION-IMPL-PHASE-1 (spec §1.6.31): Cumulative Server Retention, phase 1.
+// -------------------------------------------------------------------------
+
+/**
+ * Merge [incoming] into the stored dataset instead of replacing it.
+ *
+ * This is the add-only core of Cumulative Server Retention
+ * (`SERVER_SOURCE_ARCHITECTURE.md` §9.1–§9.2). A refresh that no longer
+ * mentions a server does **not** delete it: rows present in storage but absent
+ * from [incoming] are retained unchanged. Every row that survives — whether it
+ * came from the feed or from storage — is written back through
+ * [VPNGateItemDao.replaceAll], which is `@Transaction` (deleteAll + insertAll),
+ * so the table is never left half-written.
+ *
+ *   - A server that is new this observation gets `firstSeenAt = now`.
+ *   - A server the app has seen before keeps its existing `firstSeenAt` (the
+ *     moment it was first observed) and simply has `lastSeenAt` refreshed to
+ *     `now`.
+ *   - Every surviving row gets a freshly recomputed phase-1 `healthScore`
+ *     (see [retentionHealthScore]); the score is a property of the latest
+ *     observation, so it is always recomputed, never carried forward.
+ *
+ * [withManualRows] runs first so the user's own servers survive the merge
+ * exactly as they do on the replace path. The merge is computed in memory from
+ * a single `dao.getAll()` read and committed in one transaction; the updater's
+ * process-wide mutex already prevents a concurrent write from racing the
+ * read-then-write.
+ *
+ * Phases 2–3 (the max-server cap and the §9.3 retention-priority prune) are
+ * explicitly out of scope for phase 1; this function only ever *adds* and
+ * *refreshes*, never *prunes*.
+ *
+ * @param now the observation timestamp; injected so callers and tests share
+ *   one clock.
+ */
+internal fun mergeAll(
+    dao: VPNGateItemDao?,
+    incoming: List<VPNGateItem>,
+    manualRows: List<VPNGateItem>,
+    now: Long,
+) {
+    if (dao == null) return
+    if (incoming.isEmpty()) return
+
+    // The manual overlay must run before the merge so a user server the feed
+    // does not list is still present in `withManual` and therefore matched /
+    // retained rather than dropped.
+    val withManual = withManualRows(incoming, manualRows)
+    if (withManual.isEmpty()) return
+
+    val stored = dao.getAll()
+    val storedByHost = stored.associateBy { it.hostName.trim() }
+    val incomingKeys = HashSet<String>(withManual.size * 2)
+    for (row in withManual) incomingKeys.add(row.hostName.trim())
+
+    val merged = ArrayList<VPNGateItem>(stored.size + withManual.size)
+    for (item in withManual) {
+        val key = item.hostName.trim()
+        val prev = storedByHost[key]
+            merged.add(
+                item.copy(
+                    // A returning server keeps the moment it was first seen; a new
+                    // one is stamped now.
+                    firstSeenAt = prev?.firstSeenAt ?: now,
+                    lastSeenAt = now,
+                    healthScore = retentionHealthScore(item, now),
+                )
+            )
+    }
+    // Retain stored rows the incoming feed did not mention. This is the whole
+    // point of phase 1: a quiet server is kept, not pruned.
+    for (row in stored) {
+        if (row.hostName.trim() !in incomingKeys) merged.add(row)
+    }
+
+    dao.replaceAll(merged)
+}
+
+/**
+ * Phase-1 retention health score (brief STEP 5): a minimal, explicit ranking
+ * of the latest observation, so the §9 retention-priority prune that arrives
+ * in phase 2 has a monotonic signal to work with.
+ *
+ *   - 0   — `lastSeenAt == 0`: an unknown / never-refreshed row (a server that
+ *     pre-dates this schema and has not yet been observed by a merge). Reserved
+ *     sentinel; an incoming row is always stamped `now`, so it never hits this.
+ *   - 100 — `score > 0 && ping > 0`: a server the collector measured as
+ *     reachable and ranked.
+ *   - 50  — `score > 0 || ping > 0`: measured on one axis only.
+ *   - 25  — neither axis measured.
+ *
+ * This is intentionally the brief's minimal formula; the richer §9
+ * retention-priority model is phase 2.
+ */
+private fun retentionHealthScore(item: VPNGateItem, lastSeenAt: Long): Int {
+    if (lastSeenAt == 0L) return 0
+    return when {
+        item.score > 0 && item.ping > 0 -> 100
+        item.score > 0 || item.ping > 0 -> 50
+        else -> 25
+    }
 }

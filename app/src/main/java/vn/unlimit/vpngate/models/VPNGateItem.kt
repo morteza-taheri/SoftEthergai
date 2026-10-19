@@ -38,7 +38,20 @@ data class VPNGateItem(
     @ColumnInfo val sstpPortSource: String = VpnPortSource.UNKNOWN,
     @ColumnInfo val seTcpPort: Int = 0,
     @ColumnInfo val seUdpPort: Int = 0,
-    @ColumnInfo val seUdpSupported: Boolean = false
+    @ColumnInfo val seUdpSupported: Boolean = false,
+    // RETENTION-IMPL-PHASE-1 (spec §1.6.31 / SERVER_SOURCE_ARCHITECTURE.md §9.2):
+    // Cumulative Server Retention, phase 1. `firstSeenAt` and `lastSeenAt` are
+    // epoch-millis timestamps recording when the app first observed / most
+    // recently observed a server; `healthScore` is the minimal phase-1 ranking
+    // (0/25/50/100) the §9.3 priority prune will later build on. All three
+    // default to 0 so a fresh install and a migrated row share one defined,
+    // comparable baseline.
+    @ColumnInfo(name = "firstSeenAt", defaultValue = "0")
+    var firstSeenAt: Long = 0L,
+    @ColumnInfo(name = "lastSeenAt", defaultValue = "0")
+    var lastSeenAt: Long = 0L,
+    @ColumnInfo(name = "healthScore", defaultValue = "0")
+    var healthScore: Int = 0
 ) {
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpPort > 0

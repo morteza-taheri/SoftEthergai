@@ -20,7 +20,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         EmergencySourceConfigEntity::class,
         ManualServerEntity::class,
     ],
-    version = 7,
+    version = 8,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -140,6 +140,26 @@ abstract class AppDatabase: RoomDatabase() {
                     "CREATE UNIQUE INDEX IF NOT EXISTS " +
                             "`index_manual_server_host_port_protocol` " +
                             "ON `manual_server` (`host`, `port`, `protocol`)"
+                )
+            }
+        }
+
+        // Migration from version 7 to 8 — RETENTION-IMPL-PHASE-1 (spec
+        // §1.6.31 / ROADMAP §12.5.2 item G, phase 1): three additive columns
+        // for Cumulative Server Retention (SERVER_SOURCE_ARCHITECTURE.md §9.2).
+        // Each new column is NOT NULL DEFAULT 0, so every existing row and
+        // every pre-existing table survive the upgrade untouched and Room's
+        // schema validation passes against the KSP-exported version 8 schema.
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE VPNGateItem ADD COLUMN firstSeenAt INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE VPNGateItem ADD COLUMN lastSeenAt INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE VPNGateItem ADD COLUMN healthScore INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

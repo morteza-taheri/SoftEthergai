@@ -51,6 +51,8 @@ class App : Application() {
             .addMigrations(AppDatabase.MIGRATION_5_6)
             // Z1-IMPL-D (Roadmap §12.5.2 item D): manual server entry.
             .addMigrations(AppDatabase.MIGRATION_6_7)
+            // RETENTION-IMPL-PHASE-1 (spec §1.6.31): version 7 -> 8 columns.
+            .addMigrations(AppDatabase.MIGRATION_7_8)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()
