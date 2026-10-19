@@ -68,8 +68,10 @@ android {
             dimension "tier"
             applicationId "vn.unlimit.vpngatepro"
             signingConfig signingConfigs.pro
-            versionCode 143
-            versionName "2.4.10"
+            // v1.0.38 (§1.6.30): version bump past 2.4.10 — HEAD and tag
+            // p2.4.10 had shared the 2.4.10/143 identity for 60+ commits.
+            versionCode 144
+            versionName "2.4.11"
         }
     }
 
