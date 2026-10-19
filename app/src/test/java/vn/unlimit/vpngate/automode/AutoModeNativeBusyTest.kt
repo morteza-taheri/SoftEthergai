@@ -221,74 +221,117 @@ class AutoModeNativeBusyTest {
     // ---------------------------------------------------- Auto Mode behaviour
 
     @Test
-    fun `native-busy refusal stops the run instead of blaming the server`() {
-        val adapter = BusyAwareAdapter()
-        adapter.nativeBusy = true
-        val c = controller(adapter, listOf(server("a"), server("b"), server("c")))
-
-        runUntilTerminal(c)
-
-        val state = c.state.value
-        assertTrue("expected an error state, was $state", state is AutoModeState.Error)
-        assertEquals(
-            "a busy native slot must not be reported as 'no compatible server'",
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
-            (state as AutoModeState.Error).message,
-        )
-    }
-
-    @Test
-    fun `a slot that never releases still does not rotate to a second server`() {
-        val adapter = BusyAwareAdapter()
-        adapter.nativeBusy = true
-        adapter.slotReleases = false // the operation is genuinely stuck
-        val c = controller(adapter, listOf(server("a"), server("b"), server("c")))
-
-        runUntilTerminal(c)
-
-        assertEquals(
-            "only the first server's protocol may have been dialled before the run stopped",
-            1,
-            adapter.connects.size,
-        )
-        assertTrue(
-            "every dial before the run stopped must be the first server's TCP attempt",
-            adapter.connects.all { it == AutoModeProtocol.SOFTETHER_TCP },
-        )
-    }
-
-    @Test
-    fun `native-busy refusal does not advance through the protocols of one server`() {
+    fun `native-busy refusal does not stop the run and does not record a false wedge`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
         adapter.slotReleases = false
-        // The candidate offers both SoftEther transports, so without the fix this would try
-        // TCP and then UDP on the same server.
-        val c = controller(adapter, listOf(server("a")))
+        val a = server("a")
+        val b = server("b")
+        val c = server("c")
+        val ctl = controller(adapter, listOf(a, b, c))
 
-        runUntilTerminal(c)
+        runUntilTerminal(ctl)
 
+        // v1.0.37: rewritten under explicit operator authorization to match the contract
+        // that AutoConnect does not stop for NATIVE_BUSY (§6.8.4 lead, §1.6.29).
+        //
+        // The original test asserted that a refusal ends the run with
+        // ERROR_NATIVE_UNRESOLVED. That terminal is gone. Its INTENT — "a refusal must not
+        // be turned into a verdict about the server" — is preserved and strengthened here:
+        // the refused server is never contacted, so it must receive no wedge either.
+        val state = ctl.state.value
+        assertTrue("expected a terminal state, was $state", state is AutoModeState.Error)
         assertEquals(
-            "a refusal that never clears retries the SAME protocol and never advances to the server's other protocols",
-            listOf(AutoModeProtocol.SOFTETHER_TCP),
+            "v1.0.37: a refusal is not a reason to abandon the remaining list",
+            AutoModeController.ERROR_NO_SERVER,
+            (state as AutoModeState.Error).message,
+        )
+        assertNotEquals(
+            "v1.0.37: the removed terminal must never be published",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            state.message,
+        )
+        assertFalse(
+            "a refusal must not blame the server: ${adapter.logs}",
+            adapter.logs.any { it.contains("Recording a wedge on the NATIVE_BUSY terminal") },
+        )
+        assertEquals("a refused server was never contacted, so it gets no wedge", 0, ctl.wedgeCountFor(a))
+        assertEquals(0, ctl.wedgeCountFor(b))
+        assertEquals(0, ctl.wedgeCountFor(c))
+    }
+
+    @Test
+    fun `a slot that never releases does rotate to the next server`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        adapter.slotReleases = false // the operation never finishes
+        val ctl = controller(adapter, listOf(server("a"), server("b"), server("c")))
+
+        runUntilTerminal(ctl)
+
+        // v1.0.37: rewritten under explicit operator authorization. The original test
+        // asserted that the run stops after the FIRST server's first protocol (connects == 1)
+        // because a stuck slot was a terminal. Under the new contract the expiry is a
+        // rotation event: every server gets its turn and the list is exhausted normally.
+        assertEquals(
+            "v1.0.37: the expiry must rotate instead of ending the run",
+            AutoModeController.ERROR_NO_SERVER,
+            (ctl.state.value as AutoModeState.Error).message,
+        )
+        assertEquals(
+            "each server must be dialled exactly once, in order, before the list is exhausted",
+            listOf(
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue(
+            "the rotation must be driven by the slot wait, not by blind retries",
+            adapter.slotWaits.get() >= 3,
+        )
+    }
+
+    @Test
+    fun `native-busy refusal advances past the refused protocol instead of retrying it`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        adapter.slotReleases = false
+        // Two servers, each offering both SoftEther transports: the run has somewhere to
+        // advance TO, so "did it move on" is observable.
+        val ctl = controller(adapter, listOf(server("a"), server("b")))
+
+        runUntilTerminal(ctl)
+
+        // v1.0.37: rewritten under explicit operator authorization. The original test
+        // asserted that a refusal never advances and never issues a rotation disconnect
+        // (connects == [TCP], disconnects == 0, exactly one recovery teardown). All three
+        // of those encoded the removed terminal. Under the new contract the expiry issues a
+        // cleanup disconnect and leaves the refused protocol behind.
+        assertTrue(
+            "a rotation disconnect must be issued before the next candidate: " +
+                "${adapter.disconnects.get()}",
+            adapter.disconnects.get() >= 1,
+        )
+        assertEquals(
+            "the refused protocol must not be retried and the server's second protocol must " +
+                "not be dialled; the cursor advances to the next server",
+            listOf(
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_TCP,
+            ),
             adapter.connects.toList(),
         )
         assertFalse(
-            "a refusal must never try the server's other protocol (UDP)",
+            "no UDP dial may happen on a refused server: ${adapter.connects}",
             adapter.connects.contains(AutoModeProtocol.SOFTETHER_UDP),
         )
-        assertEquals(
-            "a refusal must not ROTATE: no disconnect() may be issued for the server",
-            0,
-            adapter.disconnects.get(),
-        )
-        // FIX-2 supersedes the pre-FIX-2 expectation that *no* teardown is requested here.
-        // The give-up does now issue one — but through the dedicated recovery primitive, not
-        // the rotation primitive, which is exactly why the assertion above still holds.
-        assertEquals(
-            "FIX-2: the terminal give-up must issue exactly one recovery teardown",
-            1,
-            adapter.recoveryTeardowns.get(),
+        assertTrue(
+            "the expiry must be logged: ${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Slot-wait expired") && it.contains("moving on (no terminal")
+            },
         )
     }
 
@@ -307,18 +350,43 @@ class AutoModeNativeBusyTest {
     }
 
     @Test
-    fun `native-busy refusal never reports ERROR_NO_SERVER`() {
-        val adapter = BusyAwareAdapter()
+    fun `a single native-busy refusal does not immediately report ERROR_NO_SERVER`() {
+        // The refusal is answered by a slot wait; that wait is also the moment the stuck
+        // operation finishes, so the NEXT server is a genuine attempt. One refusal must
+        // therefore cost one server, not the whole list.
+        val adapter = object : BusyAwareAdapter() {
+            override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
+                val released = super.awaitNativeSlotRelease(timeoutMs)
+                // The previous native operation finishes right after this wait expires,
+                // and the following server is reachable.
+                nativeBusy = false
+                tunnelUp = true
+                return released
+            }
+        }
         adapter.nativeBusy = true
-        // Many servers: without the fix this drains the list and ends in ERROR_NO_SERVER.
-        val c = controller(adapter, (1..12).map { server("s$it") })
+        adapter.slotReleases = false
+        val ctl = controller(adapter, listOf(server("refusing"), server("healthy")))
 
-        runUntilTerminal(c)
+        runUntilTerminal(ctl)
 
-        assertNotEquals(
-            "ERROR_NO_SERVER must not be reported solely because the slot was occupied",
-            AutoModeController.ERROR_NO_SERVER,
-            (c.state.value as AutoModeState.Error).message,
+        // v1.0.37: rewritten under explicit operator authorization. The original test
+        // asserted the state was NOT ERROR_NO_SERVER because the run always ended in
+        // ERROR_NATIVE_UNRESOLVED instead. That terminal is gone, so the property it was
+        // protecting ("do not give up on the list because of one refusal") is now asserted
+        // against the outcome it should produce: the healthy server is reached.
+        val state = ctl.state.value
+        assertTrue(
+            "the healthy second server must be reached, was $state; logs=${adapter.logs}",
+            state is AutoModeState.Connected,
+        )
+        assertFalse(
+            "a single refusal must not exhaust the list: ${adapter.logs}",
+            adapter.logs.any { it.contains("All compatible servers failed") },
+        )
+        assertTrue(
+            "the refusal must still be visible in the log: ${adapter.logs}",
+            adapter.logs.any { it.contains("Slot-wait expired") },
         )
     }
 
@@ -337,16 +405,31 @@ class AutoModeNativeBusyTest {
     }
 
     @Test
-    fun `a busy refusal on the last server is not hidden by a list exhaustion`() {
+    fun `a busy refusal on the last server is reported as list exhaustion`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
-        val c = controller(adapter, listOf(server("only")))
+        adapter.slotReleases = false
+        val ctl = controller(adapter, listOf(server("only")))
 
-        runUntilTerminal(c)
+        runUntilTerminal(ctl)
 
+        // v1.0.37: rewritten under explicit operator authorization. The original test
+        // asserted that the LAST server's refusal surfaced as ERROR_NATIVE_UNRESOLVED and
+        // must not be "hidden" by a list exhaustion. That distinction no longer exists:
+        // the refusal is a rotation event, so the run reaches the ordinary exhausted-list
+        // terminal and the user is told exactly that.
         assertEquals(
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
-            (c.state.value as AutoModeState.Error).message,
+            "v1.0.37: the only remaining terminal is the exhausted list",
+            AutoModeController.ERROR_NO_SERVER,
+            (ctl.state.value as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the exhaustion must be stated, not implied: ${adapter.logs}",
+            adapter.logs.any { it.contains("All compatible servers failed") },
+        )
+        assertTrue(
+            "the reason must still be diagnosable in the log: ${adapter.logs}",
+            adapter.logs.any { it.contains("Slot-wait expired") },
         )
     }
 
@@ -656,44 +739,49 @@ class AutoModeNativeBusyTest {
         )
     }
 
-    // ------------------------------------- FIX-2: recovery teardown on the give-up path
+    // ------------------------------- FIX-2 (v1.0.37): the give-up path no longer exists
     //
-    // Device evidence V3: Auto Mode gave up on a wedged server while the wedged attempt was
-    // still holding the process-wide native slot, and nothing was ever asked to tear down —
-    // so the TEARDOWN soft-bound (verified working on device) had no TEARDOWN holder to
-    // reclaim. FIX-2 makes the give-up issue a teardown. These tests pin the contract the
-    // controller owes: the give-up must ask, exactly once, through the recovery primitive —
-    // and must NOT rotate (no disconnect()).
+    // Device evidence V3 (v1.0.32) added a recovery teardown to the NATIVE_BUSY give-up:
+    // Auto Mode abandoned a wedged server while the wedged attempt still held the
+    // process-wide native slot, and nothing was ever asked to tear down. v1.0.37 removes
+    // the give-up itself — a slot-wait expiry is now a rotation event (§6.8.4) — so the
+    // contract these tests must pin has inverted: the run must clean up with the ordinary
+    // rotation disconnect and must NOT reach the recovery primitive at all. The primitive
+    // is kept in the controller (unreferenced) so the device evidence it encodes is not
+    // silently deleted; this test is what proves it is no longer on any live path.
 
     @Test
-    fun `a give-up issues a recovery teardown so the wedged slot can be reclaimed`() {
+    fun `a slot-wait timeout does not issue a recovery teardown`() {
         val adapter = BusyAwareAdapter()
         adapter.nativeBusy = true
-        val c = controller(adapter, listOf(server("stuck")))
+        adapter.slotReleases = false // the operation never finishes
+        val ctl = controller(adapter, listOf(server("stuck")))
 
-        runToCompletion(c)
+        runToCompletion(ctl)
 
+        // v1.0.37: rewritten under explicit operator authorization. The original test
+        // asserted the give-up issued exactly one recovery teardown, never a disconnect,
+        // and stopped on ERROR_NATIVE_UNRESOLVED. That path is gone; what survives is the
+        // property it existed to protect — the still-held operation is asked to stop, and
+        // the run does not leave a wedged native operation behind with no cleanup request.
         assertEquals(
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
-            (c.state.value as AutoModeState.Error).message,
-        )
-        assertEquals(
-            "FIX-2: exactly one recovery teardown must be requested on the terminal give-up",
-            1,
+            "v1.0.37: the recovery primitive must no longer be reached",
+            0,
             adapter.recoveryTeardowns.get(),
         )
-        assertEquals(
-            "the recovery teardown must not be a rotating disconnect()",
-            0,
-            adapter.disconnects.get(),
-        )
-        assertTrue(
-            "the request must be visible in the log for the next device run: ${adapter.logs}",
+        assertFalse(
+            "the removed give-up must not be logged: ${adapter.logs}",
             adapter.logs.any { it.contains("Requesting recovery teardown") },
         )
         assertTrue(
-            "the give-up must still stop without blaming the server: ${adapter.logs}",
-            adapter.logs.none { it.contains("Protocol failed") },
+            "the still-held operation must still be asked to stop, via the rotation " +
+                "primitive: ${adapter.disconnects.get()}",
+            adapter.disconnects.get() >= 1,
+        )
+        assertEquals(
+            "the run must not terminal mid-list; it ends when the list is exhausted",
+            AutoModeController.ERROR_NO_SERVER,
+            (ctl.state.value as AutoModeState.Error).message,
         )
     }
 
@@ -872,6 +960,97 @@ class AutoModeNativeBusyTest {
             "a verified tunnel proves the server does not wedge, so the record must be cleared",
             0,
             c.wedgeCountFor(flaky),
+        )
+    }
+
+    // ------------------------------------------- AUTOCONNECT-FIX-7 (v1.0.37): the contract
+
+    /**
+     * T-NEW-19: a slot-wait timeout in the NATIVE_BUSY branch moves on to the next server
+     * and never publishes `ERROR_NATIVE_UNRESOLVED`.
+     *
+     * This is the exact device sequence of v1.0.36 §7.1 — a refusal followed by a wait that
+     * expires — but with two candidates, so "moved on" is observable rather than inferred
+     * from the terminal alone. The log string is pinned verbatim because it is the line the
+     * next device run will be read against.
+     */
+    @Test
+    fun `a slot-wait timeout moves on to the next server instead of terminating`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        adapter.slotReleases = false
+        val ctl = controller(adapter, listOf(server("first"), server("second")))
+
+        runUntilTerminal(ctl)
+
+        val state = ctl.state.value
+        assertTrue("expected a terminal state, was $state", state is AutoModeState.Error)
+        assertNotEquals(
+            "v1.0.37: the removed terminal must not be published on a slot-wait expiry",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            (state as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the exact move-on line must be emitted: ${adapter.logs}",
+            adapter.logs.contains(
+                "[AUTO] Slot-wait expired on SOFTETHER_TCP; moving on (no terminal, per §6.8.4)",
+            ),
+        )
+        assertEquals(
+            "the run must advance to the second server before it can exhaust the list",
+            listOf(
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertEquals(
+            "the list, not the refusal, is what ends the run",
+            AutoModeController.ERROR_NO_SERVER,
+            (ctl.state.value as AutoModeState.Error).message,
+        )
+    }
+
+    /**
+     * T-NEW-20: `ERROR_NO_SERVER` is the ONLY terminal after the list is exhausted, however
+     * many refusals were absorbed on the way.
+     *
+     * The old contract produced `ERROR_NATIVE_UNRESOLVED` for the FIRST refusal, so a
+     * twelve-server list was abandoned on server #1. This test walks the whole list and
+     * asserts that exactly one terminal is published at the end — the ordinary one — and
+     * that every candidate was given its turn.
+     */
+    @Test
+    fun `every refusal is absorbed and the list ends with ERROR_NO_SERVER`() {
+        val adapter = BusyAwareAdapter()
+        adapter.nativeBusy = true
+        adapter.slotReleases = false
+        val servers = (1..12).map { server("s$it") }
+        val ctl = controller(adapter, servers)
+
+        runUntilTerminal(ctl)
+
+        assertEquals(
+            "v1.0.37: the exhausted list is the only terminal left",
+            AutoModeController.ERROR_NO_SERVER,
+            (ctl.state.value as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "the exhaustion must be stated explicitly: ${adapter.logs}",
+            adapter.logs.contains("[AUTO] All compatible servers failed"),
+        )
+        assertFalse(
+            "no other terminal may be published mid-list: ${adapter.logs}",
+            adapter.logs.any { it.contains("native_operation_unresolved") },
+        )
+        assertEquals(
+            "every candidate must be dialled once before the list is called exhausted",
+            12,
+            adapter.connects.size,
+        )
+        assertTrue(
+            "one slot wait per refused candidate",
+            adapter.slotWaits.get() >= 12,
         )
     }
 }

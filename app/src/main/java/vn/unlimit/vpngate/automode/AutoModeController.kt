@@ -1772,57 +1772,37 @@ enum class AttemptOutcome {
                     val slotWaitBudget = minOf(nativeSlotAwaitMs, attemptTimeoutMs)
                     val released = adapter.awaitNativeSlotRelease(slotWaitBudget)
                     if (!released) {
-                        // v1.0.34 (AUTOCONNECT-FIX-4, FIX-B): record a wedge on the
-                        // NATIVE_BUSY terminal.
+                        // v1.0.37 (AUTOCONNECT-FIX-7, Fix-2): a slot-wait timeout no longer
+                        // terminals the run.
                         //
-                        // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md
-                        // §7.4) shows that `nativeBusyThisServer` can never reach
-                        // NATIVE_BUSY_WEDGE_THRESHOLD in one run when the FIRST
-                        // NATIVE_BUSY terminal fires: the loop exits before the counter
-                        // reaches 2, so the WedgeTracker never sees the same broken
-                        // endpoint. The same endpoint (vpn131251792 in the device run)
-                        // was re-selected in 5/5 runs and died identically 5/5 times,
-                        // and no `recording a wedge` / `Excluding …` line was ever
-                        // emitted.
+                        // Operator contract (§6.8.4 lead): "AutoConnect never stops for
+                        // NATIVE_BUSY." The v1.0.36 device run proved why that matters —
+                        // twice the run died on the FIRST server with
+                        // `ERROR_NATIVE_UNRESOLVED`, 431 ms after a native attempt had just
+                        // started and 7.7 s before the stack produced its own verdict
+                        // (DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md §7.1). The endpoint was
+                        // never given the chance the native layer was still working towards.
                         //
-                        // The design intent of AUTOCONNECT-AUDIT D-5 ("a give-up caused
-                        // by our own unresolved operation records nothing") was correct
-                        // for the case where OUR OWN PREVIOUS operation was still
-                        // running — but device evidence proved this endpoint itself
-                        // triggers the hang: TCP connect and the TCP TLS handshake
-                        // succeed, the VPNCONNECT watermark fails, and the NAT-T/RUDP
-                        // fallback handshake then blocks forever (bounded only from
-                        // v1.0.34 onward). So a NATIVE_BUSY terminal IS evidence about
-                        // this endpoint, not merely about our own bookkeeping.
-                        //
-                        // Recording a wedge here lets the process-scoped ledger
-                        // accumulate ACROSS runs, so the endpoint is excluded after
-                        // EXCLUSION_THRESHOLD runs instead of being re-selected forever.
-                        // The ledger is cleared on any verified tunnel (see the
-                        // wedgeTracker.clear call on a connected run), so a transient
-                        // issue that later resolves does not exclude the endpoint
-                        // permanently.
-                        if (!wedgedThisServer) {
-                            adapter.log(
-                                "[AUTO] Recording a wedge on the NATIVE_BUSY terminal for " +
-                                        "${server.hostname ?: server.ip} (the endpoint itself " +
-                                        "never accepted the native attempt)",
-                            )
-                            recordWedge(server, key)
-                            wedgedThisServer = true
-                        }
+                        // No wedge is recorded here. Since Fix-1 a NATIVE_BUSY means the
+                        // start was REFUSED because a previous operation owns the slot: this
+                        // server was never contacted, so a strike against it would be
+                        // evidence about the wrong endpoint. The v1.0.34 terminal wedge is
+                        // therefore withdrawn; repeated genuine refusals are still counted
+                        // by `nativeBusyThisServer` above, and a server that is actually
+                        // unreachable still accumulates strikes through TIMED_OUT.
                         val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
-                        // The slot was still held when the budget expired: the operation is
-                        // genuinely stuck, and only here does the fail-closed terminal
-                        // remain the correct outcome.
+                        adapter.log(
+                            "[AUTO] Slot-wait expired on ${protocol.id}; moving on " +
+                                    "(no terminal, per §6.8.4)",
+                        )
                         adapter.log(
                             "[AUTO] Native slot not released within " +
                                     "${slotWaitBudget}ms " +
-                                    "(${NativeLifetimeRegistry.process.describe()}); stopping",
+                                    "(${NativeLifetimeRegistry.process.describe()}); moving on",
                         )
                         // v1.0.33 diagnostics: same body as the post-attempt site, so the
-                        // two terminals are comparable line for line. `outcome` is not in
-                        // scope in this branch — it can only ever be NATIVE_BUSY here.
+                        // two sites are comparable line for line. `outcome` is not in scope
+                        // in this branch — it can only ever be NATIVE_BUSY here.
                         adapter.log(
                             "[AUTO] SLOT_UNRELEASED_DIAG waited=${waitedMs}ms " +
                                     "budget=${slotWaitBudget}ms " +
@@ -1833,10 +1813,14 @@ enum class AttemptOutcome {
                                     "ownTunnel=${adapter.isOwnTunnelEstablished()} " +
                                     "registry=${NativeLifetimeRegistry.process.describe()}",
                         )
-                        giveUpWithUnresolvedNativeOperation()
-                        setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
-                        job = null
-                        return
+                        // Ask the still-held operation to stop before the next protocol is
+                        // dialled; nothing of ours is connecting in this branch, so this is
+                        // a request to the previous operation, not a teardown of a tunnel.
+                        adapter.disconnect()
+                        // `break` leaves the protocol loop; the outer server loop advances.
+                        // If every server ends this way the run reaches the ordinary
+                        // "All compatible servers failed" → ERROR_NO_SERVER terminal.
+                        break
                     }
                     // v1.0.35 (AUTOCONNECT-FIX-5): skip the retry when the teardown that
                     // preceded this refusal was unresolved.
@@ -2005,11 +1989,27 @@ enum class AttemptOutcome {
                     outcome == AttemptOutcome.NATIVE_ERROR ||
                             adapter.awaitNativeSlotRelease(postWaitBudget)
                 if (!slotReleased) {
+                    // v1.0.37 (AUTOCONNECT-FIX-7, Fix-2): the post-attempt slot-wait
+                    // timeout no longer terminals the run either. This was the last of the
+                    // two sites that could end a whole run on a NATIVE_BUSY-shaped event;
+                    // §6.8.4 now holds at both of them.
+                    //
+                    // The same reasoning as the NATIVE_BUSY branch applies: an operation
+                    // that outlives 1×T of extra waiting is a reason to move to the next
+                    // (server, protocol) pair, not a reason to abandon the remaining list.
+                    // A server that really is unreachable accumulates strikes through
+                    // TIMED_OUT and is excluded by the wedge ledger after
+                    // EXCLUSION_THRESHOLD consecutive failures; the only terminal that
+                    // survives is ERROR_NO_SERVER once every candidate has been tried.
                     val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
+                    adapter.log(
+                        "[AUTO] Slot-wait expired on ${protocol.id}; moving on " +
+                                "(no terminal, per §6.8.4)",
+                    )
                     adapter.log(
                         "[AUTO] Native slot not released within ${postWaitBudget}ms " +
                                 "after ${outcome.name} on ${protocol.id} " +
-                                "(${NativeLifetimeRegistry.process.describe()}); stopping",
+                                "(${NativeLifetimeRegistry.process.describe()}); moving on",
                     )
                     // v1.0.32 diagnostics: everything needed to place the race is on
                     // one line, so a single device log is enough to decide whether the
@@ -2023,10 +2023,13 @@ enum class AttemptOutcome {
                                 "ownTunnel=${adapter.isOwnTunnelEstablished()} " +
                                 "registry=${NativeLifetimeRegistry.process.describe()}",
                     )
-                    giveUpWithUnresolvedNativeOperation()
-                    setState(AutoModeState.Error(ERROR_NATIVE_UNRESOLVED))
-                    job = null
-                    return
+                    // The plain `disconnect()` above ran BEFORE this wait; this second
+                    // request is addressed to the operation that outlived it. No recovery
+                    // teardown and no ERROR_NATIVE_UNRESOLVED: the run continues, and
+                    // `giveUpWithUnresolvedNativeOperation()` is now unreferenced (kept
+                    // for the contract note in its KDoc, not called).
+                    adapter.disconnect()
+                    break
                 }
             }
 

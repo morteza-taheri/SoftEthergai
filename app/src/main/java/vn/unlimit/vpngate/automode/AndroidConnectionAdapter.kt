@@ -346,6 +346,9 @@ class AndroidConnectionAdapter(
         // costing the full per-attempt timeout. Reset the per-attempt flag here, because
         // it is only meaningful for the attempt that armed it.
         lastArmedFailure = false
+        // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): the refusal verdict is per-attempt too, so a
+        // stale `true` from a previous attempt can never classify this one.
+        lastArmedBusyRefused = false
         val failed = CompletableDeferred<Boolean>()
         armedAttemptFailed = failed
         TunnelStateWatcher.onAttemptFailed = { failed.complete(true) }
@@ -400,6 +403,10 @@ class AndroidConnectionAdapter(
             // dropped, so awaitArmedOutcome() can report NATIVE_ERROR instead of
             // downgrading a real failure to a timeout.
             lastArmedFailure = armedAttemptFailed?.isCompleted == true
+            // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): capture the refusal verdict before the
+            // deferreds are dropped. `armedNativeBusy` completes ONLY on a real start
+            // refusal, so a silent deferred means our own operation held the slot.
+            lastArmedBusyRefused = armedNativeBusy?.isCompleted == true
             if (pendingArm == protocol) {
                 pendingArm = null
                 armedTunnel = null
@@ -442,6 +449,34 @@ class AndroidConnectionAdapter(
     private var lastArmedFailure = false
 
     /**
+     * v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): did the armed attempt end because the START was
+     * REFUSED, or merely because its budget expired?
+     *
+     * [awaitArmedOutcome] has to tell two situations apart that used to look identical:
+     *
+     *  - **case 1 — our own attempt timed out while its native operation is still running.**
+     *    `tryAcquire()` succeeded, the server was contacted, and the slot is held by the very
+     *    operation this attempt started. The correct outcome is [TIMED_OUT]; the post-attempt
+     *    path already knows how to clean up after it.
+     *  - **case 2 — the start was refused.** `tryAcquire()` failed because a PREVIOUS
+     *    operation still owns the slot, so the server was never contacted. The correct
+     *    outcome is [NATIVE_BUSY].
+     *
+     * `armedNativeBusy` completes only through `TunnelStateWatcher.onSoftEtherNativeBusy`,
+     * which the service fires only when it refuses a start (`TunnelStateWatcher.kt:301-305`).
+     * Its completion is therefore an exact discriminator: it cannot fire for our own attempt.
+     * The previous code re-checked `isNativeSlotBusy()` instead, which answers "yes" in BOTH
+     * cases and mis-labelled case 1 as a refusal — the defect the v1.0.36 device run exposed
+     * (`DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md` §7.1: both terminals had
+     * `registry=attempt=N phase=CONNECTING` with N equal to the controller's own attempt).
+     *
+     * Captured in [awaitArmedTunnel]'s `finally` for the same reason as [lastArmedFailure]:
+     * the deferreds are dropped there, and the verdict has to outlive them.
+     */
+    @Volatile
+    private var lastArmedBusyRefused = false
+
+    /**
      * Stage 2F-F.28AA: report *why* an armed attempt ended, so Auto Mode can distinguish
      * "the server did not come up" from "our own previous native operation is still
      * running".
@@ -459,12 +494,18 @@ class AndroidConnectionAdapter(
         // was armed. That is a verdict about the endpoint, not an expired budget, and it is
         // checked before the slot because a finished operation cannot still own it.
         if (lastArmedFailure) return AutoModeController.AttemptOutcome.NATIVE_ERROR
-        // The tunnel wait has been cleared by `awaitArmedTunnel`, so the busy deferred it
-        // raced is no longer authoritative. Re-check the registry directly: this is the
-        // same fact the refusal was derived from, and it avoids a race in which a refusal
-        // that arrived *after* the timeout is silently downgraded to TIMED_OUT.
-        return if (isNativeSlotBusy()) AutoModeController.AttemptOutcome.NATIVE_BUSY
-        else AutoModeController.AttemptOutcome.TIMED_OUT
+        // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): classify on whether the REFUSAL fired, not on
+        // whether the slot happens to be busy now.
+        //
+        // `isNativeSlotBusy()` answers "yes" both when a previous operation holds the slot
+        // (a genuine refusal) and when our own attempt is still unwinding after its timeout
+        // (not a refusal at all). Using it here is what turned a slow-but-recoverable
+        // endpoint into `ERROR_NATIVE_UNRESOLVED` twice in the v1.0.36 device run, 7.7 s
+        // before the native stack reached its own verdict
+        // (DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md §7.1). The deferred is the exact fact:
+        // it completes only when the service refused the start.
+        if (lastArmedBusyRefused) return AutoModeController.AttemptOutcome.NATIVE_BUSY
+        return AutoModeController.AttemptOutcome.TIMED_OUT
     }
 
     /**

@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -2081,37 +2082,71 @@ val sstp = AutoModeCandidate(
     }
 
     /**
-     * T3. NATIVE_BUSY whose slot never releases → terminal ERROR_NATIVE_UNRESOLVED.
+     * T3 (rewritten in v1.0.37). NATIVE_BUSY whose slot never releases no longer ends the
+     * run: the expiry moves on to the next candidate.
      *
-     * AUTOCONNECT-AUDIT D-2: the terminal now depends on the OBSERVED release, not on a
-     * retry count. A slot that is still held when the wait expires is the one genuine
-     * "stuck" case, and it must not be re-dialled.
+     * v1.0.37: rewritten under explicit operator authorization to match the contract that
+     * AutoConnect does not stop for NATIVE_BUSY (§6.8.4 lead, §1.6.29).
+     *
+     * The original test pinned the v1.0.34 terminal — a slot still held when the wait
+     * expired published `ERROR_NATIVE_UNRESOLVED` and the whole run stopped on the first
+     * server. The v1.0.36 device run measured what that terminal costs: 2 of 5 runs died
+     * on the first server, 7.7 s before the native stack reached its own verdict
+     * (`DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md` §7.1). A wait that expires now means
+     * "move on": the refused protocol is left behind, the remaining list is walked, and the
+     * only terminal is the ordinary exhausted-list `ERROR_NO_SERVER`.
+     *
+     * The falsifiable claim: before v1.0.37 this run ended with
+     * `ERROR_NATIVE_UNRESOLVED` after exactly ONE dial and never logged
+     * `"All compatible servers failed"`.
+     *
+     * Naming note: the brief for this phase proposed
+     * `aSlotThatNeverReleasesMovesOnToTheNextProtocol`, but the controller's `break` leaves
+     * the PROTOCOL loop, so the rotation continues at the next SERVER — the refused
+     * server's second protocol is deliberately never dialled. The name states what the code
+     * does; the assertion below pins that the second protocol of the first server is absent.
      */
     @Test
-    fun aSlotThatNeverReleasesEndsTheRun() = runBlocking {
-        adapter.scriptBusy("always-busy", false, false, false)
+    fun aSlotThatNeverReleasesMovesOnToTheNextServer() = runBlocking {
+        adapter.scriptBusy("always-busy", false, false, false, false)
+        adapter.scriptBusy("also-busy", false, false, false, false)
         adapter.nativeSlotReleases = false
         val c = controller(
-            servers = listOf(server("always-busy")),
+            servers = listOf(server("always-busy"), server("also-busy")),
             timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
         )
         c.start()
         val s = c.awaitTerminal()
         assertTrue("expected Error, got $s", s is AutoModeState.Error)
         assertEquals(
-            "terminal error code must be unchanged",
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            "v1.0.37: a slot-wait expiry must no longer publish the removed terminal",
+            AutoModeController.ERROR_NO_SERVER,
             (s as AutoModeState.Error).message,
         )
         assertTrue(
-            "terminal log line must contain the unresolved-operation marker: ${adapter.logs}",
-            adapter.logs.any { it.contains("Native slot not released within") },
+            "the expiry must be logged as a move-on, not as a stop: ${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Slot-wait expired") && it.contains("moving on (no terminal")
+            },
+        )
+        assertTrue(
+            "the run must walk the remaining list instead of stopping: ${adapter.logs}",
+            adapter.logs.any { it.contains("All compatible servers failed") },
         )
         assertEquals(
-            "a slot that never releases must not be re-dialled",
-            1, adapter.connects.size,
+            "each server gets exactly one dial: the refused protocol is left behind and the " +
+                "server's second protocol is never dialled",
+            listOf(
+                "always-busy" to AutoModeProtocol.SOFTETHER_TCP,
+                "also-busy" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
         )
-        assertTrue("the observable slot wait must be the mechanism", adapter.slotWaits >= 1)
+        assertTrue(
+            "the observable slot wait must be the mechanism, once per refused server",
+            adapter.slotWaits >= 2,
+        )
     }
 
     /**
@@ -3041,44 +3076,50 @@ val sstp = AutoModeCandidate(
     // ==================================================================
 
     /**
-     * T-NEW-11 (FIX-B): a NATIVE_BUSY terminal records a wedge, and the strike
-     * survives across runs.
+     * v1.0.37: successor to `aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns`.
+     * The NATIVE_BUSY terminal is no longer a terminal, so cross-run exclusion is now
+     * exercised through the TIMED_OUT path. The wedge ledger and exclusion threshold (2)
+     * are unchanged.
      *
-     * This is the structural gap v1.0.34 closes. The per-run counter can never
-     * reach [AutoModeController.NATIVE_BUSY_WEDGE_THRESHOLD] on a first-attempt
-     * terminal, because the terminal ends the run — so the process-scoped
-     * ledger is the only place the strike can accumulate. Two runs must be
-     * enough for [WedgeTracker.EXCLUSION_THRESHOLD], and the third run must
-     * skip the endpoint WITHOUT dialling it.
+     * T-NEW-11 (FIX-B) pinned a NATIVE_BUSY terminal that recorded a wedge and let the
+     * strike survive across runs. That mechanism no longer exists: since Fix-1 a
+     * NATIVE_BUSY means the start was REFUSED because a previous operation owns the slot,
+     * so the server was never contacted and a strike against it would be evidence about
+     * the wrong endpoint (§1.6.29). The behaviour T-NEW-11 existed to protect — a server
+     * that keeps failing is excluded for the session, across runs, without being dialled
+     * again — is still required, and is still produced by the ledger. It is now fed by the
+     * outcome that actually implicates the server: TIMED_OUT (AUTOCONNECT-AUDIT D-5).
      *
-     * The falsifiable claim: before v1.0.34, run 1 and run 2 would both leave
-     * `wedgeCountFor == 0` and run 3 would dial the endpoint again.
+     * The falsifiable claim: without the cross-run ledger, run 1 and run 2 would both
+     * leave `wedgeCountFor == 0` and run 3 would dial the endpoint again.
      */
     @Test
-    fun aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns() = runBlocking {
+    fun aTimedOutWedgeAccumulatesAcrossRunsAndExcludesTheServer() = runBlocking {
         val ledger = WedgeTracker()
         val wedged = server("wedged-endpoint")
-        // The endpoint's own attempt never finishes: the slot is never released.
-        adapter.nativeSlotReleases = false
+        // The endpoint IS contacted and never comes up: TIMED_OUT, the outcome that
+        // implicates the server. No refusal is involved, which is the point — the old
+        // mechanism is gone and the ledger must still accumulate.
+        adapter.failing += "wedged-endpoint"
 
-        // ---- Run 1: the terminal fires and must record one wedge. ----
-        adapter.scriptBusy("wedged-endpoint", false, false)
+        // ---- Run 1: the timeout must record one wedge. ----
         val first = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
         first.start()
         val firstState = first.awaitTerminal()
 
         assertTrue("run 1 must end in Error, got $firstState", firstState is AutoModeState.Error)
         assertEquals(
-            "run 1 terminal code must be unchanged",
-            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            "run 1 must end with the ordinary exhausted-list terminal",
+            AutoModeController.ERROR_NO_SERVER,
             (firstState as AutoModeState.Error).message,
         )
-        assertTrue(
-            "the terminal must say it is recording a wedge: ${adapter.logs}",
-            adapter.logs.any { it.contains("Recording a wedge on the NATIVE_BUSY terminal") },
+        assertNotEquals(
+            "v1.0.37: the removed terminal must never be published",
+            AutoModeController.ERROR_NATIVE_UNRESOLVED,
+            firstState.message,
         )
         assertEquals(
-            "one terminal must record exactly one wedge",
+            "one TIMED_OUT attempt must record exactly one wedge",
             1,
             first.wedgeCountFor(wedged),
         )
@@ -3086,7 +3127,6 @@ val sstp = AutoModeCandidate(
         // ---- Run 2: a FRESH controller, same ledger, must reach 2. ----
         adapter.logs.clear()
         adapter.connects.clear()
-        adapter.scriptBusy("wedged-endpoint", false, false)
         val second = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
         second.start()
         val secondState = second.awaitTerminal()
@@ -3097,11 +3137,16 @@ val sstp = AutoModeCandidate(
             2,
             second.wedgeCountFor(wedged),
         )
+        assertTrue(
+            "reaching the threshold must be logged: ${adapter.logs}",
+            adapter.logs.any {
+                it.contains("Excluding wedged-endpoint from this session after 2 wedges.")
+            },
+        )
 
         // ---- Run 3: the endpoint is now excluded and must not be dialled. ----
         adapter.logs.clear()
         adapter.connects.clear()
-        adapter.scriptBusy("wedged-endpoint", false, false)
         val third = controller(servers = listOf(wedged), timeout = 500, wedgeTracker = ledger)
         third.start()
         val thirdState = third.awaitTerminal()
@@ -3118,6 +3163,112 @@ val sstp = AutoModeCandidate(
         assertTrue(
             "an excluded endpoint must consume no dial at all: ${adapter.connects}",
             adapter.connects.isEmpty(),
+        )
+    }
+
+    // ==================================================================
+    // AUTOCONNECT-FIX-7 (v1.0.37): the classification and the OP-R6 contract.
+    // ==================================================================
+
+    /**
+     * T-NEW-18 (Fix-1, controller-visible half): an attempt whose OWN native operation is
+     * still running when the budget expires must be classified as TIMED_OUT, not as a
+     * refusal.
+     *
+     * The adapter is the only place that can make this distinction
+     * (`lastArmedBusyRefused`, `AndroidConnectionAdapter.awaitArmedOutcome`), and it is not
+     * JVM-testable because it needs a `Context`. What the controller owes is the observable
+     * consequence: a TIMED_OUT must walk the protocols and record a wedge, and must NEVER
+     * take the NATIVE_BUSY path — no slot wait, no refusal diagnostics.
+     *
+     * The falsifiable claim: if this attempt were mis-classified as NATIVE_BUSY (the
+     * v1.0.36 defect), the run would log `Slot-wait expired` and the refusal diagnostic,
+     * and the second protocol would never be dialled.
+     */
+    @Test
+    fun anOwnOperationTimeoutIsClassifiedAsTimedOutNotBusy() = runBlocking {
+        val cand = server("own-op")
+        adapter.scriptOutcomes(
+            "own-op",
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
+        adapter.scriptOutcomes(
+            "own-op",
+            AutoModeProtocol.SOFTETHER_UDP,
+            AutoModeController.AttemptOutcome.TIMED_OUT,
+        )
+        val c = controller(
+            servers = listOf(cand),
+            timeout = 500,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertEquals(
+            "the list is exhausted after both protocols time out",
+            AutoModeController.ERROR_NO_SERVER,
+            (s as AutoModeState.Error).message,
+        )
+        assertEquals(
+            "a timeout must rotate through the server's protocols",
+            listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+            adapter.connects.map { it.second },
+        )
+        assertFalse(
+            "v1.0.37: an own-operation timeout must never enter the refusal path: " +
+                "${adapter.logs}",
+            adapter.logs.any { it.contains("Slot-wait expired") },
+        )
+        assertFalse(
+            "no refusal may be reported for a timeout: ${adapter.logs}",
+            adapter.logs.any { it.contains("NATIVE_BUSY") },
+        )
+        assertEquals(
+            "a TIMED_OUT is the outcome that implicates the server, so it records one wedge",
+            1,
+            c.wedgeCountFor(cand),
+        )
+    }
+
+    /**
+     * T-NEW-21 (FIX-4 / OP-R6): Try-next while Connected goes to the NEXT server and never
+     * restarts the list from index 0.
+     *
+     * The operator has emphasised this contract repeatedly. The existing
+     * [skipWhileConnectedDisconnectsAndTriesNext] pins the counts; this test pins the
+     * ORDER — the first dial after the skip must be the second candidate, and the server the
+     * user just left must not be dialled again in the new run.
+     */
+    @Test
+    fun skipWhileConnectedDialsTheNextServerAndNeverRestartsFromTheTop() = runBlocking {
+        val c = controller(servers = listOf(server("s1"), server("s2"), server("s3")))
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val beforeSkip = c.state.value
+        val dialsBefore = adapter.connects.size
+
+        c.skipToNextServer()
+
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
+        assertTrue("expected Connected after the skip, got $final", final is AutoModeState.Connected)
+        assertEquals("s2", (final as AutoModeState.Connected).hostname)
+
+        val afterSkip = adapter.connects.drop(dialsBefore)
+        assertTrue("the skip must start a new run: $afterSkip", afterSkip.isNotEmpty())
+        assertEquals(
+            "OP-R6: the FIRST dial after the skip must be the next candidate, not a restart",
+            "s2",
+            afterSkip.first().first,
+        )
+        assertTrue(
+            "OP-R6: the skipped server must not be dialled again: $afterSkip",
+            afterSkip.none { it.first == "s1" },
+        )
+        assertTrue(
+            "the user's intent must be logged: ${adapter.logs}",
+            adapter.logs.contains("[AUTO] Connected server skipped by user; trying next"),
         )
     }
 
