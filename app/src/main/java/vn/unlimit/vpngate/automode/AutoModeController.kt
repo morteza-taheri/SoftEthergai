@@ -1658,6 +1658,36 @@ enum class AttemptOutcome {
                 // measured 18.9 s. The run therefore died 27 ms before the native operation
                 // returned on its own. The slot release is observable, so it is waited for.
                 if (outcome == AttemptOutcome.NATIVE_BUSY) {
+                    // v1.0.36 (AUTOCONNECT-FIX-6, Fix-1): before treating NATIVE_BUSY as a
+                    // failure, check whether our OWN tunnel is actually up.
+                    //
+                    // awaitArmedOutcome's timeout can fire a few hundred milliseconds before
+                    // the CONNECTED notification arrives, which makes isNativeSlotBusy() true
+                    // because OUR OWN operation is still running. Entering the wait in that
+                    // state keeps the controller holding the slot that the very tunnel it
+                    // just established needs, and the terminal then destroys a live tunnel.
+                    //
+                    // Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md
+                    // §5.3): 3 of 4 runs destroyed a WORKING tunnel — `DHCP SUCCESS` and
+                    // `SLOT_UNRELEASED_DIAG … tracker=CONNECTED ownTunnel=true` were logged
+                    // by the very code that then destroyed it — and 1 run excluded a healthy
+                    // server after two false wedges.
+                    //
+                    // This is the same check the post-attempt branch already performs (the
+                    // `ownTunnelUp` block below). It was simply missing from this branch, so a
+                    // healthy tunnel racing the timeout took the failure path. Exiting through
+                    // `break` reuses the existing success path: the `connectedProtocol != null`
+                    // block after the protocol loop sets Connected, calls onSuccess and starts
+                    // the connected watcher. No wedge is recorded, because the endpoint did
+                    // not fail — our own operation succeeded.
+                    if (adapter.isOwnTunnelEstablished()) {
+                        adapter.log(
+                            "[AUTO] Tunnel came up despite NATIVE_BUSY; treating attempt as " +
+                                    "connected",
+                        )
+                        connectedProtocol = protocol
+                        break
+                    }
                     // AUTOCONNECT-AUDIT D-2: a refusal is not a server verdict. It means
                     // this application's OWN previous native operation is still running, so
                     // the selected server was never contacted.
@@ -1718,7 +1748,29 @@ enum class AttemptOutcome {
                     // carried the diagnostic, so the one log line the v1.0.32 phase needed
                     // was never emitted (DEVICE_VERIFY_AUTOCONNECT_FIX_2_REPORT.md §7).
                     val slotWaitStartedAt = System.currentTimeMillis()
-                    val released = adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
+                    // v1.0.36 (AUTOCONNECT-FIX-6, Fix-2): cap the slot wait to the
+                    // per-attempt budget T.
+                    //
+                    // The uncapped 30 s figure pushed one (server, protocol) pair to
+                    // 5 s attempt + 30 s wait + 5 s retry = 7×T with T=5 s, so a single
+                    // refused endpoint could consume a seventh of a minute before the
+                    // rotation even started. Capping to min(nativeSlotAwaitMs, T) bounds the
+                    // wait to the same budget the attempt itself already had: at most
+                    // 1×T wait, hence at most 3×T for the whole pair (attempt + wait +
+                    // retry) instead of 7×T.
+                    //
+                    // The retry mechanism is deliberately KEPT (Option A). The v1.0.35
+                    // `lastTeardownWasResolved` gate below still skips it when the previous
+                    // teardown was unresolved, which is the common device case, so most
+                    // pairs stay at 2×T — and a pair whose own tunnel came up never reaches
+                    // this line at all (Fix-1 above), i.e. 1×T.
+                    //
+                    // The healthy path is unchanged: awaitNativeSlotRelease returns as soon
+                    // as the slot is free, so a normal rotation pays nothing for the cap.
+                    // Only an actually-held slot hits the budget, and the cap makes the
+                    // "stuck" verdict arrive sooner rather than later.
+                    val slotWaitBudget = minOf(nativeSlotAwaitMs, attemptTimeoutMs)
+                    val released = adapter.awaitNativeSlotRelease(slotWaitBudget)
                     if (!released) {
                         // v1.0.34 (AUTOCONNECT-FIX-4, FIX-B): record a wedge on the
                         // NATIVE_BUSY terminal.
@@ -1765,7 +1817,7 @@ enum class AttemptOutcome {
                         // remain the correct outcome.
                         adapter.log(
                             "[AUTO] Native slot not released within " +
-                                    "${nativeSlotAwaitMs}ms " +
+                                    "${slotWaitBudget}ms " +
                                     "(${NativeLifetimeRegistry.process.describe()}); stopping",
                         )
                         // v1.0.33 diagnostics: same body as the post-attempt site, so the
@@ -1773,7 +1825,7 @@ enum class AttemptOutcome {
                         // scope in this branch — it can only ever be NATIVE_BUSY here.
                         adapter.log(
                             "[AUTO] SLOT_UNRELEASED_DIAG waited=${waitedMs}ms " +
-                                    "budget=${nativeSlotAwaitMs}ms " +
+                                    "budget=${slotWaitBudget}ms " +
                                     "outcome=${AttemptOutcome.NATIVE_BUSY.name} " +
                                     "protocol=${protocol.id} " +
                                     "server=${server.hostname ?: server.ip} " +
@@ -1941,13 +1993,21 @@ enum class AttemptOutcome {
                 // the whole-run terminal without any record of what the app believed
                 // about the tunnel it had just given up on. Root cause STILL UNKNOWN.
                 val slotWaitStartedAt = System.currentTimeMillis()
+                // v1.0.36 (AUTOCONNECT-FIX-6, Fix-3): same cap as Fix-2, applied to the
+                // post-attempt branch. The contract is per (server, protocol) time of at
+                // most 2×T here — the attempt plus a wait that cannot outlast it — instead
+                // of the 6×T the uncapped 30 s figure allowed with T=5 s.
+                //
+                // NATIVE_ERROR short-circuits the wait entirely (no slot was ever
+                // acquired), so the cap only affects the outcomes that really hold the slot.
+                val postWaitBudget = minOf(nativeSlotAwaitMs, attemptTimeoutMs)
                 val slotReleased =
                     outcome == AttemptOutcome.NATIVE_ERROR ||
-                            adapter.awaitNativeSlotRelease(nativeSlotAwaitMs)
+                            adapter.awaitNativeSlotRelease(postWaitBudget)
                 if (!slotReleased) {
                     val waitedMs = System.currentTimeMillis() - slotWaitStartedAt
                     adapter.log(
-                        "[AUTO] Native slot not released within ${nativeSlotAwaitMs}ms " +
+                        "[AUTO] Native slot not released within ${postWaitBudget}ms " +
                                 "after ${outcome.name} on ${protocol.id} " +
                                 "(${NativeLifetimeRegistry.process.describe()}); stopping",
                     )
@@ -1956,7 +2016,7 @@ enum class AttemptOutcome {
                     // tunnel was in fact up (ownership) while the slot stayed held.
                     adapter.log(
                         "[AUTO] SLOT_UNRELEASED_DIAG waited=${waitedMs}ms " +
-                                "budget=${nativeSlotAwaitMs}ms outcome=${outcome.name} " +
+                                "budget=${postWaitBudget}ms outcome=${outcome.name} " +
                                 "protocol=${protocol.id} " +
                                 "server=${server.hostname ?: server.ip} " +
                                 "tracker=${adapter.tunnelTrackerStatus()} " +

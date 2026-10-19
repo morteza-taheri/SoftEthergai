@@ -81,6 +81,17 @@ class AutoModeControllerTest {
         var slotWaits = 0
 
         /**
+         * AUTOCONNECT-FIX-6 (v1.0.36): the budget handed to each slot wait, in call order.
+         *
+         * Recording the ARGUMENT rather than only counting the calls is what lets a test
+         * prove the v1.0.36 cap is active: the controller must pass
+         * `min(nativeSlotAwaitMs, attemptTimeoutMs)`, so a controller built with an
+         * attempt budget below [AutoModeController.NATIVE_SLOT_AWAIT_MS] has to hand over
+         * exactly that smaller budget. Every pre-existing test ignores this list.
+         */
+        val slotWaitTimeouts = mutableListOf<Long>()
+
+        /**
          * AUTOCONNECT-FIX-5 (v1.0.35): whether the most recent teardown was resolved.
          *
          * `true` (the default) models every pre-v1.0.35 test double and keeps the
@@ -93,8 +104,22 @@ class AutoModeControllerTest {
 
         override fun lastTeardownWasResolved(): Boolean = lastTeardownResolved
 
+        /**
+         * AUTOCONNECT-FIX-6 (v1.0.36): whether this app's OWN tunnel is already up when
+         * the controller asks.
+         *
+         * `false` (the default) is the interface default and therefore keeps the new
+         * own-tunnel check in the NATIVE_BUSY branch inert for every pre-v1.0.36 test —
+         * including the tests that deliberately pin the slot-wait/retry mechanism.
+         */
+        @Volatile
+        var ownTunnelEstablished = false
+
+        override suspend fun isOwnTunnelEstablished(): Boolean = ownTunnelEstablished
+
         override suspend fun awaitNativeSlotRelease(timeoutMs: Long): Boolean {
             slotWaits++
+            slotWaitTimeouts += timeoutMs
             if (slotWaitDelayMs > 0) kotlinx.coroutines.delay(slotWaitDelayMs)
             return nativeSlotReleases
         }
@@ -3238,6 +3263,134 @@ val sstp = AutoModeCandidate(
                 "busy-then-up" to AutoModeProtocol.SOFTETHER_TCP,
             ),
             adapter.connects.toList(),
+        )
+    }
+
+    /**
+     * T-NEW-15 (v1.0.36, AUTOCONNECT-FIX-6 Fix-1): a NATIVE_BUSY whose own tunnel is
+     * already up is a SUCCESS, not a failure.
+     *
+     * Device evidence (DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md §5.3): the
+     * attempt timeout fired while the CONNECTED notification was still in flight, so the
+     * registry still reported the slot as busy — because OUR OWN operation was still
+     * running. The controller then waited for a slot held by the tunnel it had just
+     * established, and the terminal destroyed a working tunnel in 3 of 4 runs.
+     *
+     * The decisive assertions are `slotWaits == 0` (the wait was never entered) and the
+     * absence of a wedge log. The ledger count corroborates but is not decisive alone:
+     * the connected path clears the ledger, so it would read zero even if a wedge had
+     * been recorded on the way in.
+     */
+    @Test
+    fun nativeBusyWithOwnTunnelUpIsTreatedAsConnected() = runBlocking {
+        adapter.scriptBusy("own-tunnel", false)
+        adapter.ownTunnelEstablished = true
+        val tracker = WedgeTracker()
+        val target = server("own-tunnel")
+        val c = controller(servers = listOf(target), timeout = 300, wedgeTracker = tracker)
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue(
+            "a live own tunnel must be reported as Connected, got $s",
+            s is AutoModeState.Connected,
+        )
+        assertEquals("own-tunnel", (s as AutoModeState.Connected).hostname)
+        assertTrue(
+            "Fix-1 must announce the recovery: ${adapter.logs}",
+            adapter.logs.any { it.contains("Tunnel came up despite NATIVE_BUSY") },
+        )
+        assertFalse(
+            "a live tunnel is not a wedge: ${adapter.logs}",
+            adapter.logs.any { it.contains("Recording a wedge") },
+        )
+        assertEquals(
+            "the slot wait must never run once the own tunnel is up",
+            0, adapter.slotWaits,
+        )
+        assertEquals(
+            "no wedge may be recorded for an endpoint whose tunnel came up",
+            0, tracker.countFor("${target.ip}|${target.hostname ?: ""}"),
+        )
+        assertEquals(
+            "the refused protocol must not be re-dialled once the tunnel is adopted",
+            1, adapter.connects.size,
+        )
+    }
+
+    /**
+     * T-NEW-16 (v1.0.36, AUTOCONNECT-FIX-6 Fix-2): the NATIVE_BUSY slot wait is capped
+     * to the per-attempt budget.
+     *
+     * The uncapped 30 s figure let one refused (server, protocol) pair cost 7×T. The cap
+     * has to be provably active, not merely present in the source, so the controller is
+     * built with T below NATIVE_SLOT_AWAIT_MS and the ARGUMENT the fake received is
+     * asserted.
+     *
+     * The retry itself is kept (Option A): a resolved teardown still re-dials once, and
+     * that re-dial is what reaches Connected here.
+     */
+    @Test
+    fun nativeBusySlotWaitIsCappedToTheAttemptBudget() = runBlocking {
+        adapter.scriptBusy("capped-wait", false, true)
+        adapter.lastTeardownResolved = true
+        val attemptBudget = 300L
+        val c = controller(servers = listOf(server("capped-wait")), timeout = attemptBudget)
+        c.start()
+        val s = c.awaitTerminal()
+
+        assertTrue("the retry must still reach Connected, got $s", s is AutoModeState.Connected)
+        assertEquals(
+            "the wait must receive min(NATIVE_SLOT_AWAIT_MS, T), and exactly once before " +
+                "the retry: ${adapter.slotWaitTimeouts}",
+            listOf(minOf(AutoModeController.NATIVE_SLOT_AWAIT_MS, attemptBudget)),
+            adapter.slotWaitTimeouts.toList(),
+        )
+        assertTrue(
+            "the recorded budget must be strictly below the uncapped constant, otherwise " +
+                "this test proves nothing: ${adapter.slotWaitTimeouts}",
+            adapter.slotWaitTimeouts.single() < AutoModeController.NATIVE_SLOT_AWAIT_MS,
+        )
+        assertTrue(
+            "the retry must still fire on a resolved teardown: ${adapter.logs}",
+            adapter.logs.any { it.contains("Native slot released; retrying") },
+        )
+        assertFalse(
+            "a resolved teardown must never log the skip: ${adapter.logs}",
+            adapter.logs.any { it.contains("Skipping retry") },
+        )
+    }
+
+    /**
+     * T-NEW-17 (v1.0.36, AUTOCONNECT-FIX-6 Fix-3): the post-attempt slot wait carries the
+     * same cap.
+     *
+     * This is the branch that runs after a TIMED_OUT, i.e. after a real attempt reached
+     * the server and the slot may genuinely still be held. It used to wait the full
+     * NATIVE_SLOT_AWAIT_MS regardless of T, so the per-pair bound was 6×T rather than the
+     * 2×T the contract now states.
+     */
+    @Test
+    fun postAttemptSlotWaitIsCappedToTheAttemptBudget() = runBlocking {
+        adapter.failing += "post-attempt"
+        val attemptBudget = 300L
+        val c = controller(servers = listOf(server("post-attempt")), timeout = attemptBudget)
+        c.start()
+        c.awaitTerminal()
+
+        assertEquals(
+            "the post-attempt wait must receive the capped budget: ${adapter.slotWaitTimeouts}",
+            listOf(minOf(AutoModeController.NATIVE_SLOT_AWAIT_MS, attemptBudget)),
+            adapter.slotWaitTimeouts.toList(),
+        )
+        assertTrue(
+            "the recorded budget must be strictly below the uncapped constant: " +
+                "${adapter.slotWaitTimeouts}",
+            adapter.slotWaitTimeouts.single() < AutoModeController.NATIVE_SLOT_AWAIT_MS,
+        )
+        assertTrue(
+            "the attempt must have timed out, not been refused: ${adapter.logs}",
+            adapter.logs.any { it.contains("TIMED_OUT after") },
         )
     }
 
