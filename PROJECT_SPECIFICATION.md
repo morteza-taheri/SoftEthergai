@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `d884062aaf8be20cc87a9cb19bf3600b415ef4db`
-**Document version:** 1.0.36
+**HEAD:** `86ade9f3a2a260eb30054a70897d8f894680cf35`
+**Document version:** 1.0.37
 **Last updated:** 2026-10-19
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -407,6 +407,21 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > `DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md`. Fix-A (native RUDP bound) remains
 > **UNVERIFIED** and untouched. The header **HEAD** field is the baseline commit
 > `d884062aaf8be20cc87a9cb19bf3600b415ef4db`, the state this revision was verified against; a commit
+> cannot carry its own hash. No tag operation of any kind was performed.
+
+> **Push state (v1.0.37).** AUTOCONNECT-FIX-7 (STOP **Option A**: all eight affected tests rewritten
+> under explicit operator authorization). Fixes the **v1.0.36 regression**: 2 of 5 device runs
+> terminated `ERROR_NATIVE_UNRESOLVED` on the **first** server. Fix-1 (adapter):
+> `lastArmedBusyRefused` distinguishes an own-operation timeout (→ `TIMED_OUT`) from a genuine
+> start-refusal (→ `NATIVE_BUSY`). Fix-2 (controller): a slot-wait timeout no longer terminals —
+> both branches log `Slot-wait expired … moving on`, issue one `disconnect()` and advance. Fix-3
+> (contract): `ERROR_NATIVE_UNRESOLVED` is removed as a terminal; `ERROR_NO_SERVER` is the only
+> exhausted-list terminal, which honours the operator contract already stated in §6.8.4. **Eight**
+> tests rewritten (2 in `AutoModeControllerTest`, 6 in `AutoModeNativeBusyTest`), none deleted; the
+> six in the latter file had been pinning the **opposite** of §6.8.4 since v1.0.28 (§1.6.29 bullet 8).
+> OP-R6 (try-next) is re-pinned by T-NEW-21. Fix-A (native RUDP bound) remains **UNVERIFIED** and
+> untouched. The header **HEAD** field is the code commit
+> `86ade9f3a2a260eb30054a70897d8f894680cf35`, the state this revision was verified against; a commit
 > cannot carry its own hash. No tag operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
@@ -2293,6 +2308,79 @@ v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
 11. **No new methodology lessons.** Bullet 6 is an instance of the rule already recorded in §1.6.24
     bullet 8 — validate against the path that actually executes — and is not restated.
 
+#### 1.6.29 AUTOCONNECT-FIX-7 — NATIVE_BUSY Classification + No Terminal (v1.0.37)
+
+1. **The v1.0.36 regression, measured on the device.** `DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md`
+   §7.1 records the v1.0.36 build against the same endpoint: **2 of 5** runs terminated with
+   `ERROR_NATIVE_UNRESOLVED` on the **first** server. The controller gave up **431 ms** after a native
+   attempt had started and **7.7 s before** the stack produced its own verdict
+   (`VPNCONNECT watermark failed — server may not be SoftEther`). The endpoint was still being worked
+   on; the terminal ended the run first. Evidence: PHYSICAL DEVICE.
+2. **The root cause.** `awaitArmedOutcome` could not tell two situations apart. `isNativeSlotBusy()`
+   answers `true` both when the start was **refused** because a *previous* operation owns the slot
+   (case 2 — the server was never contacted) and when **our own** attempt has timed out and its
+   native operation is still unwinding (case 1 — the server *was* contacted). Every case-1 timeout
+   was therefore classified `NATIVE_BUSY`, and the `NATIVE_BUSY` branch's slot-wait expiry was a run
+   terminal. Evidence: SOURCE CODE + PHYSICAL DEVICE.
+3. **Fix-1 (adapter) — classify on the refusal, not on the slot.** `AndroidConnectionAdapter` gains
+   `lastArmedBusyRefused`, a per-attempt `@Volatile Boolean` reset in `armTunnelWatch`
+   (`AndroidConnectionAdapter.kt:349`) and captured in `awaitArmedTunnel`'s `finally` (`:406`) from
+   `armedNativeBusy?.isCompleted`. That deferred completes **only** through
+   `TunnelStateWatcher.onSoftEtherNativeBusy`, which the service fires **only** when it refuses a
+   start, so its completion is an exact discriminator. `awaitArmedOutcome` (`:497`) returns
+   `NATIVE_BUSY` iff the refusal fired and `TIMED_OUT` otherwise. `isNativeSlotBusy()` is kept — it
+   still serves the admission checks — but no longer decides the outcome. Evidence: SOURCE CODE.
+4. **Fix-2 (controller) — a slot-wait expiry moves on.** In **both** the `NATIVE_BUSY` branch
+   (`AutoModeController.kt:1774`) and the post-attempt branch (`:1991`) the terminal
+   (`giveUpWithUnresolvedNativeOperation()` + `Error(ERROR_NATIVE_UNRESOLVED)` + `job = null` +
+   `return`) is replaced by the move-on log, the pre-existing diagnostics, `adapter.disconnect()` and
+   `break`. The run therefore advances to the next server and pays at most `1T` for the expiry.
+   `NATIVE_SLOT_AWAIT_MS`, `NATIVE_SLOT_AWAIT_MAX_MS` and the v1.0.36 caps are unchanged. Evidence:
+   SOURCE CODE.
+5. **Fix-3 (contract) — `ERROR_NATIVE_UNRESOLVED` is no longer a terminal.** The constant is kept (the
+   adapter's KDoc and §1.6.24–§1.6.28 reference it) but no path publishes it. The only exhausted-list
+   terminal is `ERROR_NO_SERVER` (§6.8.4), which is what the user is told once every candidate has
+   been tried. `giveUpWithUnresolvedNativeOperation()` is kept, now unreferenced, so the device
+   evidence it encodes (v1.0.32 §V3) is not silently deleted. Evidence: SOURCE CODE.
+6. **Eight tests rewritten, none deleted, under explicit operator authorization.**
+   `AutoModeControllerTest`: `aSlotThatNeverReleasesMovesOnToTheNextServer` and
+   `aTimedOutWedgeAccumulatesAcrossRunsAndExcludesTheServer`. `AutoModeNativeBusyTest`:
+   `native-busy refusal does not stop the run and does not record a false wedge`,
+   `a slot that never releases does rotate to the next server`,
+   `native-busy refusal advances past the refused protocol instead of retrying it`,
+   `a single native-busy refusal does not immediately report ERROR_NO_SERVER`,
+   `a busy refusal on the last server is reported as list exhaustion`,
+   `a slot-wait timeout does not issue a recovery teardown`. Each keeps its original intent (the
+   refusal must not become a verdict about the server) and pins the new contract; none is a trivial
+   pass. One naming deviation is recorded: the brief proposed `…MovesOnToTheNextProtocol`, but the
+   controller's `break` leaves the **protocol** loop, so the rotation continues at the next
+   **server** — the test is named for what the code does. Evidence: TEST.
+7. **Four new tests.** `anOwnOperationTimeoutIsClassifiedAsTimedOutNotBusy` (T-NEW-18: a timeout
+   walks the protocols, records one wedge, never enters the refusal path),
+   `a slot-wait timeout moves on to the next server instead of terminating` (T-NEW-19: pins the exact
+   move-on line), `every refusal is absorbed and the list ends with ERROR_NO_SERVER` (T-NEW-20:
+   twelve candidates, one terminal), and
+   `skipWhileConnectedDialsTheNextServerAndNeverRestartsFromTheTop` (T-NEW-21: OP-R6, asserts the
+   **order** of dials, not only the counts). Evidence: TEST.
+8. **The hidden contradiction, resolved.** §6.8.4 has said "AutoConnect does not stop for
+   `NATIVE_BUSY`" since v1.0.31, while `AutoModeNativeBusyTest.kt` pinned the **opposite** since
+   v1.0.28 — a refusal terminal, no rotation, exactly one recovery teardown, zero disconnects. Both
+   passed because the code implemented the tests, not the contract. v1.0.37 makes the code and the
+   tests agree with §6.8.4. Evidence: SOURCE CODE + TEST.
+9. **JVM tests and build.** `:app` **812 / 0 / 0 / 1** (baseline 808 / 0 / 0 / 1 — the delta is
+   exactly the four new tests; the eight rewrites change no count and the skip is unchanged);
+   `:SoftEtherClient` **173 / 0 / 0 / 0** (unchanged). `:app:assembleProDebug --rerun-tasks
+   --no-build-cache` under `CI=true` → BUILD SUCCESSFUL. APK SHA-256
+   `4FE4417469C7C7829DED3C7B723705DC77678B28FAA14345E057108BE9EB6E68` (63,755,062 bytes). Evidence:
+   TEST.
+10. **What remains UNVERIFIED.** Fix-A (the native RUDP handshake bound) is still **UNVERIFIED** and
+    untouched. The three fixes here are SOURCE CODE + TEST only — no device run was performed in this
+    phase (the brief is device-free), so the corrected classification and the no-terminal contract
+    have not yet been observed on hardware. A device re-run of the v1.0.36 §7.1 scenario is the next
+    evidence layer. Evidence: UNKNOWN.
+11. **No new methodology lessons.** Bullet 8 is an instance of the rule already recorded in §1.6.24
+    bullet 8 — a passing test proves only that the code matches the test — and is not restated.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -2926,14 +3014,14 @@ Every way an attempt can end, and where it goes next. "Next protocol" means the 
 | Outcome | Meaning | Transition |
 |---------|---------|-----------|
 | `TUNNEL_UP` | A verified tunnel is up. | **Success** — the run ends `Connected`; no further attempts. |
-| `TIMED_OUT` | `T` expired with no tunnel, no refusal, no terminal failure. | **Next protocol.** Never retried on the same server. This outcome records a "wedge" against the server (once per server per run). |
+| `TIMED_OUT` | `T` expired with no tunnel, no refusal, no terminal failure. **Includes case 1 (v1.0.37):** the attempt *did* reach the server and its own native operation was still unwinding when `T` expired — a timeout, not a refusal (§1.6.29 bullet 2). | **Next protocol.** Never retried on the same server. This outcome records a "wedge" against the server (once per server per run). |
 | `NATIVE_ERROR` | The stack reported a terminal failure **before** `T` expired (refused port, rejected handshake, a non-SoftEther answer to the VPNCONNECT watermark). | **Next protocol.** The slot is already free, so the post-failure slot wait is skipped. |
-| `NATIVE_BUSY` | The start was refused because this application's own previous native operation still holds the process-wide slot. The server was **never contacted**. | **Own-tunnel check (v1.0.36):** if `isOwnTunnelEstablished()` is true the attempt is **Connected** — no wait, no retry, no wedge. Otherwise: wait for the slot to be released (up to `min(nativeSlotAwaitMs, T)`), then **retry the same protocol once**. If the retry does not come up, **next protocol**. If the slot is never released → terminal `ERROR_NATIVE_UNRESOLVED`. **Repeated** refusals on the same server in the same run record a wedge — see below. **Post-release retry (v1.0.35):** the retry is attempted only when the previous teardown resolved (`NATIVE_CONFIRMED`). When it was `NATIVE_UNRESOLVED` the retry is skipped and the run advances directly to the next protocol — see §1.6.27. |
+| `NATIVE_BUSY` | The start was **refused** because this application's own previous native operation still holds the process-wide slot. The server was **never contacted**. **Classification (v1.0.37):** only a genuine refusal is `NATIVE_BUSY`. An attempt whose **own** operation is still unwinding when `T` expires is `TIMED_OUT` — see that row and §1.6.29. | **Own-tunnel check (v1.0.36):** if `isOwnTunnelEstablished()` is true the attempt is **Connected** — no wait, no retry, no wedge. Otherwise: wait for the slot to be released (up to `min(nativeSlotAwaitMs, T)`), then **retry the same protocol once** — skipped when the previous teardown was `NATIVE_UNRESOLVED` (§1.6.27). If the wait **expires** (v1.0.37): log `Slot-wait expired on <protocol>; moving on (no terminal, per §6.8.4)`, issue one `disconnect()` and **advance to the next server**. A refusal is never a run terminal. **Repeated** refusals on the same server in the same run record a wedge — see below. |
 | **Thrown exception** in `connect()` | The adapter could not even dispatch the attempt. | **Next protocol** (v1.0.31). Before v1.0.31 this jumped to the next **server**, so a server that threw on its first protocol never got its second — the same failure rotated at two different granularities depending on where it was raised. |
 | `VpnPermissionMissingException` | The OS refused the VPN permission. | **Terminal** `ERROR_VPN_PERMISSION`. |
 | User skip | "Try next server" while connecting. | **Next server** (deliberately skips the current server's remaining protocols — the user asked for a different server, not a different protocol). |
 
-Two asymmetries are intentional and are part of this contract: a user skip advances a **server**, and a `NATIVE_BUSY` refusal does **not** advance anything until the retry has been given its chance (a refusal is not a server verdict).
+Two asymmetries are intentional and are part of this contract: a user skip advances a **server**, and a `NATIVE_BUSY` refusal advances **nothing** until either the retry has been given its chance or the slot wait expires — and when it expires (v1.0.37) it advances a **server**, never the run.
 
 **The post-release retry gate (added v1.0.35).** The "retry the same protocol once" transition above is now conditional on the teardown that preceded the refusal. The stack reports four teardown outcomes and only `NATIVE_UNRESOLVED` retains ownership and makes the registry refuse every later start; `NATIVE_CONFIRMED` released the structures, `NOOP_REENTRANT` published a terminal state for a session with nothing left to release, and `FOREIGN_STACK_TERMINAL` asserts nothing about native cleanup. The controller therefore consults `ConnectionAdapter.lastTeardownWasResolved()` — false only for `NATIVE_UNRESOLVED` — and, when it is false, logs `Skipping retry on <protocol>: previous teardown was unresolved` and advances directly to the next protocol. A timeout in `disconnect()` (unknown state) keeps the pre-v1.0.35 retry. Rationale and device evidence: §1.6.27.
 
@@ -2948,7 +3036,7 @@ it was simply missing from this branch. Device evidence and the full fix: §1.6.
 
 **The wedge rule (added v1.0.32, BUG-B).** A wedge is one strike against a server in the
 session ledger (`WedgeTracker`); `WedgeTracker.EXCLUSION_THRESHOLD` strikes exclude it for the rest
-of the process. Three outcomes write a strike, at most one per server per run:
+of the process. Two outcomes write a strike, at most one per server per run:
 
 1. `TIMED_OUT` — the attempt reached the server and nothing came up inside `T`. (Unchanged since
    the AUTOCONNECT-AUDIT D-5 revision.)
@@ -2960,15 +3048,13 @@ of the process. Three outcomes write a strike, at most one per server per run:
    endpoint. Before v1.0.32 no refusal path reached the ledger at all, so a server that was
    refused on every protocol could never be excluded and was re-selected on every subsequent run
    (§1.6.24 bullet 2).
-3. **Terminal wedge (v1.0.34).** A `NATIVE_BUSY` terminal that ends the run with
-   `ERROR_NATIVE_UNRESOLVED` records one wedge for the affected server. This is required because
-   the per-run counter can never reach `NATIVE_BUSY_WEDGE_THRESHOLD` on a first-attempt terminal —
-   the terminal ends the run before the counter can advance — so the process-scoped `WedgeTracker`
-   must accumulate across runs for the exclusion threshold to be honoured. Device evidence
-   (`DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.4): `vpn131251792` was re-selected in 5/5 runs
-   and died identically 5/5 times, with no `recording a wedge` and no `excluded for this session`
-   line ever emitted. The strike is cleared on any verified tunnel, so a transient cause that later
-   resolves does not exclude the endpoint permanently. Evidence: SOURCE CODE + PHYSICAL DEVICE.
+3. ~~**Terminal wedge (v1.0.34).**~~ **Withdrawn in v1.0.37.** There is no `NATIVE_BUSY` terminal any
+   more, so nothing can be wedged on one. The strike existed on the premise that a stuck slot is
+   evidence about the **endpoint**; the v1.0.36 device run disproved that premise — the endpoint was
+   being contacted and the stack reached its own verdict 7.7 s after the controller gave up
+   (§1.6.29 bullet 1). A server that is genuinely unreachable now accumulates strikes through
+   `TIMED_OUT`, the outcome that does implicate it, so cross-run exclusion still works and is pinned
+   by `aTimedOutWedgeAccumulatesAcrossRunsAndExcludesTheServer`. Evidence: SOURCE CODE + TEST.
 
 A `NATIVE_ERROR` never records a strike (the endpoint answered and is cheaply recoverable). The
 **exclusion** threshold is unchanged at 2 — v1.0.32 only made a refusal *countable*, it did not
@@ -2986,18 +3072,22 @@ slot-wait budget could recover from, because the first `SSL_do_handshake` never 
 
 A run ends — and the button stops meaning "stop" — in exactly these cases:
 
+**AutoConnect does not stop for `NATIVE_BUSY`** (v1.0.37). A refusal, or a slot wait that expires
+after one, moves to the next server; it is never a run terminal. The only exhausted-list terminal is
+case 1. `ERROR_NATIVE_UNRESOLVED` is therefore no longer published by any path — the constant is kept
+because the adapter's documentation and the v1.0.32–v1.0.36 history reference it (§1.6.29 bullet 5).
+
 | # | Terminal | State |
 |---|----------|-------|
 | 1 | Candidate list exhausted | `Error(ERROR_NO_SERVER)` |
 | 2 | Empty candidate list, before any attempt | `Error(<"update the server list first" message>)` |
 | 3 | No protocol enabled by the user | `Error(ERROR_NO_ENABLED_PROTOCOL)` |
 | 4 | Reachability pre-pass found every candidate unreachable | `Error(ERROR_NO_SERVER)` |
-| 5 | Process-wide native slot never released | `Error(ERROR_NATIVE_UNRESOLVED)` |
-| 6 | VPN permission missing | `Error(ERROR_VPN_PERMISSION)` |
-| 7 | User presses the button while `Connecting` | `Disconnected` (cancel + teardown) |
-| 8 | User presses the button while `Connected` | see §6.8.5 |
+| 5 | VPN permission missing | `Error(ERROR_VPN_PERMISSION)` |
+| 6 | User presses the button while `Connecting` | `Disconnected` (cancel + teardown) |
+| 7 | User presses the button while `Connected` | see §6.8.5 |
 
-Cases 1–6 are the "system-level terminals" referenced by §6.7 R7. None of them is a server verdict.
+Cases 1–5 are the "system-level terminals" referenced by §6.7 R7. None of them is a server verdict.
 
 #### 6.8.5 Pressing while `Connected` — continue from the next server (OP-R6)
 
@@ -4342,12 +4432,14 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.34 | 2026-10-18 | AUTOCONNECT-FIX-4 (device-free; driven by the v1.0.33 device run) | **Closes the unbounded RUDP fallback handshake and the wedge counter's structural gap — the two reasons every timeout budget failed identically on the same endpoint.** Fix-A (native): the NAT-T/RUDP branch called `perform_tls_handshake` with no timeout application while the TCP branch applied one at `softether_protocol.c:2839`, so the RUDP BIO read could block indefinitely (device: 28.5 s of silence on `vpn131251792`, `DEVICE_VERIFY_AUTOCONNECT_FIX_3_REPORT.md` §7.3) and the first `SSL_do_handshake` never returned, leaving the `max_attempts` loop with nothing to iterate; the fallback now calls `socket_apply_timeout(conn->socket_fd, conn->timeout_ms)` at `:2935` and emits the same `[TLS] handshake entry` discriminator tagged `(RUDP)` at `:2941`, fail-open like the TCP site. `conn->socket_fd` is the RUDP socketpair's app-facing fd, i.e. exactly what OpenSSL reads from — the same lever the parallel UDP race path already uses at `:2036`. Fix-B (Kotlin): `nativeBusyThisServer` can never reach `NATIVE_BUSY_WEDGE_THRESHOLD` on a first-attempt terminal, so the ledger was never written and the endpoint was re-selected in 5/5 runs (§7.4); the terminal now records one wedge before giving up (`AutoModeController.kt:1729-1736`), so the process-scoped `WedgeTracker` accumulates across runs and the unchanged `EXCLUSION_THRESHOLD` (2) applies. The AUTOCONNECT-AUDIT D-5 rule is **narrowed, not reverted**: `giveUpWithUnresolvedNativeOperation` still records nothing and still serves the post-attempt site. STEP 4 (bound the RUDP BIO read in project code) was deliberately **not** applied — no custom BIO exists, the blocking call is OpenSSL's socket-BIO `recv()`. Two new tests (`aNativeBusyTerminalRecordsAWedgeThatSurvivesAcrossRuns`, `theRudpFallbackHandshakeIsBoundedLikeTheTcpPath`); no existing test modified or deleted. `:app` **803/0/0/1** (+2, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `4ABC4636…624B1435` (differs from v1.0.33 as expected — the native library changed). §6.8.3 updated (third wedge sub-rule; native timeout invariant). New §1.6.26. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.25, §12.5.1, §12.5.2 untouched. Device re-verification **PENDING**; the endpoint's own refusal cause remains **UNKNOWN** and deliberately not attempted. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 | 1.0.35 | 2026-10-19 | AUTOCONNECT-FIX-5 (device-free; driven by the v1.0.34 device run) | **Stops paying ~6 s per failed protocol for a retry the registry has already decided to refuse.** The v1.0.34 device run (`DEVICE_VERIFY_AUTOCONNECT_FIX_4_REPORT.md` §15) counted 12 post-slot-release retries in one five-run session: 10 ended instantly with `NATIVE_ERROR` (~0.1 s), 2 with `NATIVE_BUSY` (~5 s), **zero** reached `TUNNEL_UP`, and **11 of 12** were preceded by a `NATIVE_UNRESOLVED` teardown — the one outcome whose own KDoc says ownership is retained and every later start is refused. `ConnectionAdapter` gains `lastTeardownWasResolved()` (`AutoModeController.kt:322`, default `true`); `AndroidConnectionAdapter` retains the outcome it already computes (`:106`, assigned `:302`, override `:318-319`) and reports `false` only for `NATIVE_UNRESOLVED`; the `NATIVE_BUSY` branch consults it after the slot is confirmed free (`AutoModeController.kt:1813`) and, when unresolved, logs `Skipping retry on <protocol>: previous teardown was unresolved` and advances straight to the next protocol. `NATIVE_CONFIRMED`, `NOOP_REENTRANT`, `FOREIGN_STACK_TERMINAL` and a `disconnect()` timeout all keep the pre-v1.0.35 retry, so the change is confined to the state the evidence covers; the NATIVE_BUSY wedge accounting above the gate is untouched. Two new tests (`unresolvedTeardownSkipsThePostReleaseRetry` at `:3161`, `resolvedTeardownKeepsThePostReleaseRetry` at `:3214`); no existing test modified or deleted. `:app` **805/0/0/1** (+2, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `8FB20696…92FD801` (differs from v1.0.34 although no native source changed — the APK embeds the compiled Kotlin). §6.8.3 updated (post-release retry gate); new §1.6.27. Both prior-phase reports (`DEVICE_VERIFY_AUTOCONNECT_FIX_4_REPORT.md`, `SLOT_RACE_INVESTIGATION_PREP_REPORT.md`) are committed here. **Fix-A and Fix-B remain UNVERIFIED** — Fix-A's RUDP site is unreachable while `softether_try_nat_t_connect` returns `error=6`, and no run reached the `NATIVE_BUSY` terminal — and neither file was touched. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.26, §12.5.1, §12.5.2 untouched. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 | 1.0.36 | 2026-10-19 | AUTOCONNECT-FIX-6, Option A (device-free; driven by the unfiltered-network device run) | **Stops destroying live tunnels and wedging healthy servers, and cuts the per-protocol worst case from `7T` to `3T`.** The v1.0.34 build was re-run on an **unfiltered** WiFi network (`DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` §5.3): **3 of 4** runs destroyed a **working** tunnel (`DHCP SUCCESS` + `SLOT_UNRELEASED_DIAG … tracker=CONNECTED ownTunnel=true`, written by the code that then destroyed it) and **1** excluded a healthy server after two false wedges. Root cause: `awaitArmedOutcome`'s timeout fires a few hundred ms before `CONNECTED`, so `isNativeSlotBusy()` is true because **our own** operation is still running; the `NATIVE_BUSY` branch then waited for a slot held by the tunnel it had just established, and the terminal tore it down. The post-attempt path already re-checked ownership; this branch never did. Fix-1: `adapter.isOwnTunnelEstablished()` at the top of the branch (`AutoModeController.kt:1683`) — a live tunnel is treated as `Connected` (`:1685`), with no wait, no retry and no wedge. Fix-2: the `NATIVE_BUSY` slot wait is capped to `min(nativeSlotAwaitMs, attemptTimeoutMs)` (`:1772`), with the terminal log and `SLOT_UNRELEASED_DIAG` `budget=` reporting the capped value (`:1820`, `:1828`). Fix-3: the same cap post-attempt (`:2003`, `:2010`, `:2019`). The retry mechanism is **kept** (Option A) and the v1.0.35 `lastTeardownWasResolved` gate still skips it when the preceding teardown was unresolved (`:1865`), so the three cases are `1T` (own tunnel up), `2T` (unresolved teardown) and `3T` (resolved teardown, retry fires) — previously `1T`, `7T`, `7T`, with the first reachable but never checked. **Option B** (remove the retry for a strict `2T`) was **deferred**: it breaks **9** documented tests, so the prior phase stopped at STEP 2 without editing any file and the operator chose Option A. Three new tests (`nativeBusyWithOwnTunnelUpIsTreatedAsConnected` `:3285`, `nativeBusySlotWaitIsCappedToTheAttemptBudget` `:3334`, `postAttemptSlotWaitIsCappedToTheAttemptBudget` `:3374`); no existing test modified or deleted; the fake gained `ownTunnelEstablished = false` (`:116`) and `slotWaitTimeouts` (`:92`), both additive with behaviour-preserving defaults. `:app` **808/0/0/1** (+3, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `BE345075…4ECF249` (differs from v1.0.35 as expected; no native source changed). The first build failed with `There is not enough space on the disk` on a volume reporting 0 bytes free — an environment fault, resolved by deleting regenerable build outputs and stale temp artifacts, after which identical sources built green. §6.8.3 updated (own-tunnel row + sub-note); §6.8.7 updated (cap + the three-case table); new §1.6.28. `DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` committed here. **Fix-A remains UNVERIFIED** (zero NAT-T rendezvous, zero `[TLS] handshake entry (RUDP)`) and untouched. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.27, §12.5.1, §12.5.2 untouched. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
+| 1.0.37 | 2026-10-19 | AUTOCONNECT-FIX-7 (device-free; driven by the v1.0.36 device run) | **Undoes the v1.0.36 regression and makes the code obey the contract §6.8.4 has stated since v1.0.31.** `DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md` §7.1 measured v1.0.36 on hardware: **2 of 5** runs terminated `ERROR_NATIVE_UNRESOLVED` on the **first** server, the controller giving up **431 ms** after a native attempt started and **7.7 s before** the stack reached its own verdict (`VPNCONNECT watermark failed — server may not be SoftEther`). Root cause: `awaitArmedOutcome` re-checked `isNativeSlotBusy()`, which answers "busy" both for a **refusal** (a previous operation owns the slot; the server was never contacted) and for **our own** attempt still unwinding after its timeout — so every case-1 timeout was mis-labelled `NATIVE_BUSY` and its slot-wait expiry was a run terminal. Fix-1 (adapter): new `@Volatile lastArmedBusyRefused`, reset in `armTunnelWatch` (`AndroidConnectionAdapter.kt:349`) and captured in `awaitArmedTunnel`'s `finally` (`:406`) from `armedNativeBusy?.isCompleted` — a deferred that completes **only** through `TunnelStateWatcher.onSoftEtherNativeBusy`, i.e. only on a refused start. `awaitArmedOutcome` (`:497`) now returns `NATIVE_BUSY` iff the refusal fired, `TIMED_OUT` otherwise; `isNativeSlotBusy()` is kept for the admission checks. Fix-2 (controller): the slot-wait terminal is gone from **both** sites — the `NATIVE_BUSY` branch (`AutoModeController.kt:1774`) and the post-attempt branch (`:1991`) now log `Slot-wait expired on <protocol>; moving on (no terminal, per §6.8.4)`, keep their existing `SLOT_UNRELEASED_DIAG` line, issue one `disconnect()` and `break`. Fix-3 (contract): no path publishes `ERROR_NATIVE_UNRESOLVED`; `ERROR_NO_SERVER` is the only exhausted-list terminal (§6.8.4 row removed and table renumbered); the constant and the now-unreferenced `giveUpWithUnresolvedNativeOperation()` are kept so the device evidence they encode is not silently deleted, and the v1.0.34 terminal wedge is **withdrawn** (a refusal is not evidence about the endpoint — `TIMED_OUT` carries that role, and cross-run exclusion is re-pinned through it). **Eight tests rewritten under explicit operator authorization, none deleted** (2 in `AutoModeControllerTest`, 6 in `AutoModeNativeBusyTest` — the latter had pinned the *opposite* of §6.8.4 since v1.0.28, which is the hidden contradiction §1.6.29 bullet 8 records) plus **four new** (T-NEW-18..21; T-NEW-21 pins OP-R6 try-next **ordering**). `:app` **812/0/0/1** (+4, skip unchanged), `:SoftEtherClient` **173/0/0/0**. `CI=true :app:assembleProDebug` SUCCESSFUL, APK SHA-256 `4FE44174…9EB6E68` (63,755,062 bytes). New §1.6.29; §6.8.3 NATIVE_BUSY and TIMED_OUT rows and the wedge rule updated; §6.8.4 terminal list updated. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.28, §12.5.1, §12.5.2 untouched. **Fix-A remains UNVERIFIED**; the three fixes here are SOURCE CODE + TEST only — no device run in this phase. No tag, no force, no `git add -A`. | **Stops destroying live tunnels and wedging healthy servers, and cuts the per-protocol worst case from `7T` to `3T`.** The v1.0.34 build was re-run on an **unfiltered** WiFi network (`DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` §5.3): **3 of 4** runs destroyed a **working** tunnel (`DHCP SUCCESS` + `SLOT_UNRELEASED_DIAG … tracker=CONNECTED ownTunnel=true`, written by the code that then destroyed it) and **1** excluded a healthy server after two false wedges. Root cause: `awaitArmedOutcome`'s timeout fires a few hundred ms before `CONNECTED`, so `isNativeSlotBusy()` is true because **our own** operation is still running; the `NATIVE_BUSY` branch then waited for a slot held by the tunnel it had just established, and the terminal tore it down. The post-attempt path already re-checked ownership; this branch never did. Fix-1: `adapter.isOwnTunnelEstablished()` at the top of the branch (`AutoModeController.kt:1683`) — a live tunnel is treated as `Connected` (`:1685`), with no wait, no retry and no wedge. Fix-2: the `NATIVE_BUSY` slot wait is capped to `min(nativeSlotAwaitMs, attemptTimeoutMs)` (`:1772`), with the terminal log and `SLOT_UNRELEASED_DIAG` `budget=` reporting the capped value (`:1820`, `:1828`). Fix-3: the same cap post-attempt (`:2003`, `:2010`, `:2019`). The retry mechanism is **kept** (Option A) and the v1.0.35 `lastTeardownWasResolved` gate still skips it when the preceding teardown was unresolved (`:1865`), so the three cases are `1T` (own tunnel up), `2T` (unresolved teardown) and `3T` (resolved teardown, retry fires) — previously `1T`, `7T`, `7T`, with the first reachable but never checked. **Option B** (remove the retry for a strict `2T`) was **deferred**: it breaks **9** documented tests, so the prior phase stopped at STEP 2 without editing any file and the operator chose Option A. Three new tests (`nativeBusyWithOwnTunnelUpIsTreatedAsConnected` `:3285`, `nativeBusySlotWaitIsCappedToTheAttemptBudget` `:3334`, `postAttemptSlotWaitIsCappedToTheAttemptBudget` `:3374`); no existing test modified or deleted; the fake gained `ownTunnelEstablished = false` (`:116`) and `slotWaitTimeouts` (`:92`), both additive with behaviour-preserving defaults. `:app` **808/0/0/1** (+3, skip unchanged), `:SoftEtherClient` **173/0/0/0**. APK SHA-256 `BE345075…4ECF249` (differs from v1.0.35 as expected; no native source changed). The first build failed with `There is not enough space on the disk` on a volume reporting 0 bytes free — an environment fault, resolved by deleting regenerable build outputs and stale temp artifacts, after which identical sources built green. §6.8.3 updated (own-tunnel row + sub-note); §6.8.7 updated (cap + the three-case table); new §1.6.28. `DEVICE_VERIFY_AUTOCONNECT_FIX_4_UNFILTERED_REPORT.md` committed here. **Fix-A remains UNVERIFIED** (zero NAT-T rendezvous, zero `[TLS] handshake entry (RUDP)`) and untouched. §22 byte-identical (99 lines / 6,504 bytes); §1.6.2–§1.6.27, §12.5.1, §12.5.2 untouched. No device command, no tag, no force, no reset/clean/stash, no `git add -A`. |
 
 ### Verification Status
 
 | Section | Verification |
 |---------|-------------|
 | Project Baseline (§1) | VERIFIED — `build.gradle`, `gradle-wrapper.properties`, module structure |
+| §1.6.29 — AUTOCONNECT-FIX-7 (v1.0.37) | VERIFIED at SOURCE CODE + TEST level — adapter `lastArmedBusyRefused` and both controller branches inspected; `:app` **812/0/0/1**, `:SoftEtherClient` **173/0/0/0**; 8 tests rewritten and 4 added. **NOT device-verified** — no device run in this phase; Fix-A remains UNVERIFIED |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
