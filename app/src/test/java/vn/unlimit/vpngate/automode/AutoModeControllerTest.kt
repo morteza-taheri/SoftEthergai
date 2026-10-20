@@ -281,7 +281,7 @@ class AutoModeControllerTest {
         protocolPriorityProvider = { priorities ?: listOf(protocol) },
         serverProvider = { servers },
         onSuccess = onSuccess,
-        attemptTimeoutMs = timeout,
+        attemptTimeoutMsProvider = { timeout },
         reachabilityFilter = reachabilityFilter,
         activeRttProvider = activeRttProvider ?: { _, _ -> null },
         autoReconnectEnabled = autoReconnectEnabled,

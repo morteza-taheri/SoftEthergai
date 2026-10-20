@@ -134,7 +134,7 @@ class AutoModeLifecycleF28Test {
         protocolPriorityProvider = { listOf(protocol) },
         serverProvider = { servers },
         onSuccess = onSuccess,
-        attemptTimeoutMs = timeout,
+        attemptTimeoutMsProvider = { timeout },
         reachabilityFilter = null,
         activeRttProvider = { _, _ -> null },
     )
@@ -274,7 +274,7 @@ class AutoModeLifecycleF28Test {
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP) },
             serverProvider = { listOf(server("slow.example.com")) },
             onSuccess = { _, _ -> },
-            attemptTimeoutMs = 30_000,
+            attemptTimeoutMsProvider = { 30_000 },
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
         ).also { ctrl ->

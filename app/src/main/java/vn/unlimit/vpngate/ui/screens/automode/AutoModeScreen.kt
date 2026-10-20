@@ -478,6 +478,12 @@ fun AutoModeScreen(
                                     stringResource(R.string.auto_mode_error_no_enabled_protocol)
                                 error.message == AutoModeController.ERROR_VPN_PERMISSION ->
                                     stringResource(R.string.auto_mode_error_vpn_permission)
+                                // v1.0.42 (§1.6.35 / F2): the offline terminal. Without
+                                // this branch the user would see the generic failure text
+                                // and could not tell that the device, not the servers,
+                                // is the problem.
+                                error.message == AutoModeController.ERROR_NO_NETWORK ->
+                                    stringResource(R.string.auto_mode_error_no_network)
                                 else -> stringResource(R.string.auto_mode_error_generic)
                             },
                             style = MaterialTheme.typography.bodyMedium,

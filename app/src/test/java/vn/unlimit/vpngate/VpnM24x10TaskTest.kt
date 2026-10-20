@@ -88,7 +88,7 @@ class VpnM24x10TaskTest {
                 adapter = RecordingAdapter(runOrder),
                 protocolPriorityProvider = { profile },
                 serverProvider = { servers },
-                attemptTimeoutMs = 200,
+                attemptTimeoutMsProvider = { 200 },
                 livenessProbeFactory = null,
                 // D-5: isolate the wedge ledger from the process-wide singleton.
                 wedgeTracker = WedgeTracker(),
@@ -128,7 +128,7 @@ class VpnM24x10TaskTest {
                 adapter = adapter,
                 protocolPriorityProvider = { emptyList() },
                 serverProvider = { listOf(allProtocolsServer()) },
-                attemptTimeoutMs = 200,
+                attemptTimeoutMsProvider = { 200 },
                 livenessProbeFactory = null,
             )
 
@@ -268,7 +268,7 @@ class VpnM24x10TaskTest {
                 adapter = adapter,
                 protocolPriorityProvider = { profile },
                 serverProvider = { servers },
-                attemptTimeoutMs = 200,
+                attemptTimeoutMsProvider = { 200 },
                 livenessProbeFactory = null,
                 // D-5: a fresh ledger per controller so WedgeTracker.process never leaks
                 // wedges across tests in the same JVM.

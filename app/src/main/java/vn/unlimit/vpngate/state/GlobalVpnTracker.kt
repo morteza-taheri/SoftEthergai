@@ -465,6 +465,31 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         nowMs = System.currentTimeMillis(),
     )
 
+    /**
+     * v1.0.42 (§1.6.35 / F2): a process-wide reachability signal.
+     *
+     * Reads `ConnectivityManager.activeNetwork` — "is there ANY network at
+     * all" — not "is the VPN usable". Auto Mode's run loop uses this to stop
+     * cleanly when the user is offline, before any server is blamed.
+     *
+     * Deliberately **not** a check for internet *capability*: a Wi-Fi network
+     * behind a captive portal counts as available here, and the run will still
+     * time out against it. That is the pre-v1.0.42 behaviour for that case and
+     * is out of scope; the finding this closes is "Wi-Fi and mobile data both
+     * off", where there is no network object at all.
+     *
+     * `true` when the tracker has not been initialised (no `appContext`): an
+     * unanswerable question must not block a user's run, and on a real device
+     * the context is always set before any UI can reach Auto Mode. The same
+     * applies if the system service is missing.
+     */
+    fun isAnyNetworkAvailable(): Boolean {
+        val ctx = appContext ?: return true
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        return cm.activeNetwork != null
+    }
+
     /** Exposed for the unit tests written for R4a. */
     internal fun resetHealthCountersForTest() = TunnelHealth.resetHealthCountersForTest()
 

@@ -72,7 +72,10 @@ object AutoModeEngine {
                     AutoModeRun.lastSuccess = candidate
                 },
                 // §3 §4 §5 §14 Read timeout from Settings per attempt (per-server, not total)
-                attemptTimeoutMs = du.getAutoModeTimeoutSeconds().toLong() * 1000,
+                // v1.0.42 (§1.6.35 / F1): a PROVIDER, not a value. `ensure()` is a
+                // singleton, so a frozen Long diverged from the adapter (which
+                // re-reads the setting per call) the moment the user changed it.
+                attemptTimeoutMsProvider = { du.getAutoModeTimeoutSeconds().toLong() * 1000 },
                 // AUTOCONNECT-AUDIT D-2: a NATIVE_BUSY refusal is answered by waiting for
                 // the previous native operation to release the process-wide slot. A native
                 // connect can still be in flight for several multiples of the per-attempt
@@ -90,9 +93,11 @@ object AutoModeEngine {
                 // who selects a small T is choosing how long to wait for a SERVER; that
                 // choice must not also shorten the budget for our own stuck operation.
                 // AUTO_CONNECT_AUDIT D-2's cap still applies on top of the floor.
-                nativeSlotAwaitMs = (du.getAutoModeTimeoutSeconds().toLong() * 1000L * 5L)
-                    .coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS)
-                    .coerceAtMost(AutoModeController.NATIVE_SLOT_AWAIT_MAX_MS),
+                nativeSlotAwaitMsProvider = {
+                    (du.getAutoModeTimeoutSeconds().toLong() * 1000L * 5L)
+                        .coerceAtLeast(AutoModeController.NATIVE_SLOT_AWAIT_MS)
+                        .coerceAtMost(AutoModeController.NATIVE_SLOT_AWAIT_MAX_MS)
+                },
 // Stage 2F-F.13 (Y4): the controller selects the protocol/endpoint
                 // pairs and hands them over; the probe only measures them.
                 reachabilityFilter = { targets ->
@@ -138,6 +143,11 @@ object AutoModeEngine {
                 // R8 (§11.13.2): the Auto-Reconnect setting, read live so a
                 // toggle takes effect at the next unexpected disconnect.
                 autoReconnectEnabled = { du.getAutoReconnectInAutoMode() },
+                // v1.0.42 (§1.6.35 / F2): read live before the run and before every
+                // attempt. A device with no network at all must stop with
+                // ERROR_NO_NETWORK instead of marking every server TIMED_OUT and
+                // handing each one a wedge strike.
+                isNetworkAvailable = { vn.unlimit.vpngate.state.GlobalVpnTracker.isAnyNetworkAvailable() },
             )
             controller = created
             _state.value = created.state.value

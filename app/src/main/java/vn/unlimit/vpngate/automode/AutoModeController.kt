@@ -40,7 +40,24 @@ class AutoModeController(
     /** Called when a tunnel is verified so the caller can persist it (Â§19). */
     private val onSuccess: (AutoModeCandidate, AutoModeProtocol) -> Unit = { _, _ -> },
     /** Per-attempt timeout in ms (Â§11). */
-    private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
+    /**
+     * v1.0.42 (§1.6.35 / F1): per-attempt timeout in ms, read through a
+     * **provider** instead of being frozen at construction.
+     *
+     * `AutoModeEngine.ensure()` builds this controller exactly once (the
+     * `controller?.let { return it }` singleton), while
+     * `AndroidConnectionAdapter` re-reads `SETTING_AUTO_MODE_TIMEOUT_SECONDS`
+     * on every call. A frozen field therefore diverged from the adapter the
+     * moment the user changed the setting — the run kept logging the old
+     * value and only a process restart reconciled them (device-observed:
+     * `DEVICE_VERIFY_AUTOCONNECT_BUGS_v1.0.41_REPORT.md` §11). Reading the
+     * provider at ATTEMPT time makes a Settings change apply to the next
+     * attempt.
+     *
+     * Default is the documented 12 s, so a caller that does not model the
+     * setting keeps the pre-v1.0.42 behaviour exactly.
+     */
+    private val attemptTimeoutMsProvider: () -> Long = { DEFAULT_ATTEMPT_TIMEOUT_MS },
     /**
      * AUTOCONNECT-AUDIT D-2: how long a NATIVE_BUSY refusal waits for the previous native
      * operation to release the process-wide slot, before the run is declared stuck.
@@ -48,8 +65,14 @@ class AutoModeController(
      * Injected so the JVM suite can drive the "genuinely stuck" branch without a
      * real 30 s wait. Production derives it from the per-attempt budget; see
      * [NATIVE_SLOT_AWAIT_MS] for why the factor is five.
+     *
+     * v1.0.42 (§1.6.35 / B-3): also a **provider**, for the same reason as
+     * [attemptTimeoutMsProvider] — both budgets derive from the SAME
+     * `SETTING_AUTO_MODE_TIMEOUT_SECONDS` read, so freezing one while reading the
+     * other live would have left F1 half-fixed. The production lambda keeps the
+     * existing `5 × T` derivation with its v1.0.36 floor and its D-2 cap.
      */
-    private val nativeSlotAwaitMs: Long = NATIVE_SLOT_AWAIT_MS,
+    private val nativeSlotAwaitMsProvider: () -> Long = { NATIVE_SLOT_AWAIT_MS },
     /**
      * Optional pre-filter to eliminate blocked candidates via fast reachability testing.
      *
@@ -121,6 +144,24 @@ class AutoModeController(
      * the setting gets the documented behaviour rather than a silent DISABLED.
      */
     private val autoReconnectEnabled: () -> Boolean = { true },
+    /**
+     * v1.0.42 (§1.6.35 / F2): whether ANY network is available at all.
+     *
+     * The run loop consults this before the server loop and again before every
+     * attempt. When it is false the run stops with [ERROR_NO_NETWORK] instead
+     * of dialling servers that cannot possibly answer: without the guard, an
+     * offline AutoConnect walked the whole list, marked every server
+     * `TIMED_OUT`, and handed each one a `WedgeTracker` strike — after two such
+     * runs the healthy servers were excluded for the rest of the process.
+     *
+     * Injected rather than read from `ConnectivityManager` here for the same
+     * reason as [isTunnelBusy]: this class stays free of Android types and
+     * JVM-testable. Production supplies
+     * `{ GlobalVpnTracker.isAnyNetworkAvailable() }`. The default `true`
+     * preserves the pre-v1.0.42 behaviour for every caller that does not model
+     * connectivity.
+     */
+    private val isNetworkAvailable: () -> Boolean = { true },
     /**
      * R8 (§11.13.3, OQ-3): delay before the first reconnect attempt, in ms.
      *
@@ -509,6 +550,20 @@ enum class AttemptOutcome {
          * is simply nothing the user allowed us to dial.
          */
         const val ERROR_NO_ENABLED_PROTOCOL = "no_enabled_protocol"
+
+        /**
+         * v1.0.42 (§1.6.35 / F2): no network is available at all.
+         *
+         * A **system-level** terminal, distinct from [ERROR_NO_SERVER]: the
+         * servers were never blamed, so no attempt was made and no wedge was
+         * recorded. §6.8.4's lead sentence already names "WiFi and data both
+         * off" as a stop condition; this is the code path that enforces it.
+         *
+         * Before v1.0.42 an offline run dialled the whole list, marked every
+         * server `TIMED_OUT`, and gave each one a [WedgeTracker] strike — two
+         * such runs excluded every healthy server for the rest of the process.
+         */
+        const val ERROR_NO_NETWORK = "no_network"
     }
 
     /**
@@ -562,33 +617,57 @@ enum class AttemptOutcome {
         private set
 
     /**
-     * v1.0.31 (OP-R6 / D-5): the position in the resolved candidate list at
-     * which the **next** run must start, instead of always restarting at #1.
+     * v1.0.31 (OP-R6 / D-5), re-based on **identity** in v1.0.42 (§1.6.35 / F6):
+     * the server after which the **next** run must start, instead of always
+     * restarting at #1.
+     *
+     * ## What changed, and why this is a decision reversal
+     *
+     * v1.0.31 stored an integer index (`currentServerIndex + 1`) and accepted,
+     * in this very KDoc, that "a re-sorted list can therefore shift the
+     * position by one or more places … That is accepted: pinning a server
+     * identity instead would silently skip a candidate that has since become
+     * better, and the ordering is the contract (§6.6)."
+     *
+     * v1.0.42 overrides that decision (operator decision, OP-R6). The
+     * continuation is now the server's stable identity — `ip|hostname`, the
+     * same key [wedgeKey] gives the ledger. The two theories are both
+     * defensible; identity wins because the position drift is the more
+     * dangerous failure mode (silently continuing from a position that now
+     * names a different server), and because the user's mental model is "the
+     * next server", not "index N+1".
+     *
+     * **The trade-off is real and accepted**: a candidate that became *better*
+     * in the new sort, and now sorts before the connected server, is skipped
+     * by this continuation. It is not skipped for ever — the next fresh press
+     * starts from the top.
+     *
+     * Note on the spec: §11.13.3 says "the **next server in the sorted list**"
+     * — it does not require identity. This change is a tightening of that
+     * requirement, recorded as an annotation in §11.13.3, not the enforcement
+     * of text that was already there.
      *
      * ## Invariant
      *
-     * - Set to a non-zero value **only** by a button press taken while
-     *   [AutoModeState.Connected]: the user pressed "Auto Connect" on a live
-     *   tunnel, which means "move on from here", not "start over". The value is
-     *   `currentServerIndex + 1` — the server after the one that connected.
-     * - Consumed **exactly once**, at the top of [runAutoMode], and zeroed
+     * - Set **only** by a button press taken while [AutoModeState.Connected]:
+     *   the user pressed "Auto Connect" on a live tunnel, which means "move on
+     *   from here", not "start over". The value is the identity of the server
+     *   that connected ([connectedCandidate]).
+     * - Consumed **exactly once**, at the top of [runAutoMode], and cleared
      *   there. Consuming at read time (rather than at a terminal branch) is
      *   deliberate: an internal restart that the user did not press — the R8
      *   Auto-Reconnect path calls [start] directly — must never inherit a stale
-     *   index and silently skip servers.
-     * - Zeroed on every fresh start (a press from Disconnected/Error).
-     * - If the value is `>= servers.size`, the run starts no attempts and
+     *   position and silently skip servers.
+     * - Cleared on every fresh start (a press from Disconnected/Error).
+     * - If the identity is **not found** in the newly resolved list (the server
+     *   dropped out of the dataset), the run starts from the top and logs that
+     *   fallback — it never restarts silently.
+     * - If the identity is the **last** server, the run starts no attempts and
      *   terminates with `ERROR_NO_SERVER`; that is the documented meaning of
-     *   pressing the button while connected to the **last** server.
-     *
-     * The index refers to the *previous* run's resolved (filtered + sorted)
-     * list — the same list [currentServerIndex] reported. A re-sorted list can
-     * therefore shift the position by one or more places. That is accepted:
-     * pinning a server identity instead would silently skip a candidate that
-     * has since become better, and the ordering is the contract (§6.6).
+     *   pressing the button while connected to the last server.
      */
     @Volatile
-    private var resumeFromIndex: Int = 0
+    private var resumeFromServerKey: String? = null
 
     /**
      * User-requested skip of the current server (Try next server button).
@@ -619,7 +698,14 @@ enum class AttemptOutcome {
         }
 
         if (isConnected) {
-            val currentIp = (current as? AutoModeState.Connected)?.ip
+            // v1.0.42 (§1.6.35 / F6): identity, not IP. The Next-Server
+            // continuation uses the `ip|hostname` key, so the skip filter uses
+            // the same one — an IP-only filter also drops a *different* server
+            // that happens to share an IP (NAT / load balancer). Captured BEFORE
+            // `connectedCandidate` is cleared below.
+            val connectedState: AutoModeState.Connected? = current
+            val currentKey = connectedCandidate?.let { serverKey(it) }
+                ?: connectedState?.let { serverKey(it.ip, it.hostname) }
             adapter.log("[AUTO] Connected server skipped by user; trying next")
             connectedWatcher?.cancel()
             connectedWatcher = null
@@ -636,7 +722,7 @@ enum class AttemptOutcome {
                     val all = (overrideServers ?: serverProvider())
                         .withActiveRtt(protocolPriorityProvider())
                         .sortedForAutoConnect()
-                    if (currentIp != null) all.filterNot { it.ip == currentIp } else all
+                    if (currentKey != null) all.filterNot { serverKey(it) == currentKey } else all
                 }
                 if (remaining.isEmpty()) {
                     adapter.log("[AUTO] No more servers to try")
@@ -1094,7 +1180,7 @@ enum class AttemptOutcome {
                 }
                 overrideServers = null
                 // A fresh start always begins at the top of the list.
-                resumeFromIndex = 0
+                resumeFromServerKey = null
                 resetReconnectBudget()
                 start()
             }
@@ -1111,7 +1197,7 @@ enum class AttemptOutcome {
                 // therefore reaches the service ahead of the new run's first
                 // ACTION_CONNECT without making this (synchronous) handler
                 // suspend.
-                resumeFromIndex = currentServerIndex + 1
+                resumeFromServerKey = connectedCandidate?.let { serverKey(it) }
                 disconnectNow()
                 start()
             }
@@ -1383,6 +1469,17 @@ enum class AttemptOutcome {
             job = null // terminal state: nothing is running
             return
         }
+        // v1.0.42 (§1.6.35 / F2): stop before any attempt when the device has no
+        // network at all. Placed here — after the protocol check, before the list
+        // is resolved and before the continuation is consumed — so the run blames
+        // no server, records no wedge, and does not spend the Next-Server position
+        // it was handed. §6.8.4 terminal #8.
+        if (!isNetworkAvailable()) {
+            adapter.log("[AUTO] No network available; stopping before any attempt")
+            setState(AutoModeState.Error(ERROR_NO_NETWORK))
+            job = null
+            return
+        }
         adapter.log("[AUTO] Protocols (priority) = ${priorities.joinToString(" > ") { it.id }}")
         // Stage 2F-F.13 (D8): say once, up front, which enabled protocols Auto
         // Connect will not dial — a priority entry that silently does nothing is
@@ -1394,7 +1491,7 @@ enum class AttemptOutcome {
                     "skipping them instead of waiting for a timeout",
             )
         }
-        adapter.log("[AUTO] Connection timeout = ${attemptTimeoutMs / 1000} seconds")
+        adapter.log("[AUTO] Connection timeout = ${attemptTimeoutMs() / 1000} seconds")
 
         val all = overrideServers ?: serverProvider()
         overrideServers = null
@@ -1506,23 +1603,48 @@ enum class AttemptOutcome {
         val attempted = mutableSetOf<String>()
         var attempt = 0
 
-        // v1.0.31 (OP-R6 / D-5): a press taken while Connected asked this run to
-        // continue after the server that connected. The value is consumed HERE,
-        // once, and zeroed immediately — see [resumeFromIndex] for why
-        // consumption happens at read time rather than at a terminal branch (an
-        // internal R8 reconnect calls start() directly and must never inherit a
-        // stale index). `coerceIn` makes an out-of-range value (including
-        // "connected to the last server") start no attempts and fall through to
-        // ERROR_NO_SERVER, which is the documented meaning.
-        val startAt = resumeFromIndex.coerceIn(0, servers.size)
-        resumeFromIndex = 0
-        if (startAt > 0) {
-            adapter.log("[AUTO] Continuing from server #${startAt + 1} of ${servers.size}")
+        // v1.0.31 (OP-R6 / D-5), identity-based in v1.0.42 (§1.6.35 / F6): a
+        // press taken while Connected asked this run to continue after the server
+        // that connected. The value is consumed HERE, once, and cleared
+        // immediately — see [resumeFromServerKey] for why consumption happens at
+        // read time rather than at a terminal branch (an internal R8 reconnect
+        // calls start() directly and must never inherit a stale position).
+        //
+        // The key is looked up in the list THIS run resolved, so a re-sort cannot
+        // shift the start position. If the server has left the dataset, the run
+        // starts from the top and says so — it never restarts silently.
+        val resumeKey = resumeFromServerKey
+        val matchedAt = resumeKey?.let { key ->
+            servers.indexOfFirst { serverKey(it) == key }
+        } ?: -1
+        val startAt = if (matchedAt >= 0) {
+            val pos = matchedAt + 1
+            adapter.log(
+                "[AUTO] Continuing after $resumeKey; starting at index $pos of ${servers.size}",
+            )
+            pos
+        } else {
+            if (resumeKey != null) {
+                adapter.log("[AUTO] Previous connected server no longer in the list; starting from the top")
+            }
+            0
         }
+        resumeFromServerKey = null
 
         for (i in startAt until servers.size) {
             val server = servers[i]
             if (!currentCoroutineContext().isActive) return
+
+            // v1.0.42 (§1.6.35 / F2): the network can drop mid-run. Re-checked
+            // before every server so a lost connection stops the run instead of
+            // marking the rest of the list TIMED_OUT — each of which would earn a
+            // WedgeTracker strike for a failure the server did not cause.
+            if (!isNetworkAvailable()) {
+                adapter.log("[AUTO] Network lost; stopping before the next attempt")
+                setState(AutoModeState.Error(ERROR_NO_NETWORK))
+                job = null
+                return
+            }
 
             val key = wedgeKey(server)
             if (!attempted.add(key)) continue
@@ -1621,7 +1743,7 @@ enum class AttemptOutcome {
                     // on its first protocol never got a chance at its second.
                     continue
                 }
-                val outcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
+                val outcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs())
 
                 if (!currentCoroutineContext().isActive) return
 
@@ -1769,7 +1891,7 @@ enum class AttemptOutcome {
                     // as the slot is free, so a normal rotation pays nothing for the cap.
                     // Only an actually-held slot hits the budget, and the cap makes the
                     // "stuck" verdict arrive sooner rather than later.
-                    val slotWaitBudget = minOf(nativeSlotAwaitMs, attemptTimeoutMs)
+                    val slotWaitBudget = minOf(nativeSlotAwaitMs(), attemptTimeoutMs())
                     val released = adapter.awaitNativeSlotRelease(slotWaitBudget)
                     if (!released) {
                         // v1.0.37 (AUTOCONNECT-FIX-7, Fix-2): a slot-wait timeout no longer
@@ -1875,7 +1997,7 @@ enum class AttemptOutcome {
                         // its turn rather than being skipped.
                         continue
                     }
-                    val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs)
+                    val retryOutcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs())
                     if (!currentCoroutineContext().isActive) return
                     if (retryOutcome == AttemptOutcome.TUNNEL_UP) {
                         connectedProtocol = protocol
@@ -1930,7 +2052,7 @@ enum class AttemptOutcome {
                 // rotation below (next protocol, then next server) is its recovery.
                 if (outcome == AttemptOutcome.TIMED_OUT) {
                     adapter.log(
-                        "[AUTO] TIMED_OUT after ${attemptTimeoutMs}ms on " +
+                        "[AUTO] TIMED_OUT after ${attemptTimeoutMs()}ms on " +
                                 "${server.hostname ?: server.ip}/${protocol.id}; " +
                                 "cleanup then next protocol (no same-server retry)",
                     )
@@ -1984,7 +2106,7 @@ enum class AttemptOutcome {
                 //
                 // NATIVE_ERROR short-circuits the wait entirely (no slot was ever
                 // acquired), so the cap only affects the outcomes that really hold the slot.
-                val postWaitBudget = minOf(nativeSlotAwaitMs, attemptTimeoutMs)
+                val postWaitBudget = minOf(nativeSlotAwaitMs(), attemptTimeoutMs())
                 val slotReleased =
                     outcome == AttemptOutcome.NATIVE_ERROR ||
                             adapter.awaitNativeSlotRelease(postWaitBudget)
@@ -2065,10 +2187,10 @@ enum class AttemptOutcome {
         adapter.log("[AUTO] All compatible servers failed")
         setState(AutoModeState.Error(ERROR_NO_SERVER)) // no auto loop back to #1
         // v1.0.31 (D-5): the continuation is spent. This is a second, defensive
-        // reset — [resumeFromIndex] is already zeroed when it is consumed above;
-        // zeroing here too means "the list is exhausted" can never leave a
-        // position behind for a later run.
-        resumeFromIndex = 0
+        // reset — [resumeFromServerKey] is already cleared when it is consumed
+        // above; clearing here too means "the list is exhausted" can never leave
+        // a position behind for a later run.
+        resumeFromServerKey = null
         job = null // terminal state: the run is over; next press restarts cleanly
     }
 
@@ -2083,12 +2205,61 @@ enum class AttemptOutcome {
     }
 
     /**
+     * v1.0.42 (§1.6.35 / F1): the live per-attempt timeout.
+     *
+     * Read at attempt time, never cached, so a Settings change applies to the
+     * next attempt.
+     *
+     * The guard is `coerceAtLeast(1L)` — positivity only, deliberately **not** a
+     * second floor. Production's provider is
+     * `du.getAutoModeTimeoutSeconds().toLong() * 1000`, and that getter already
+     * clamps to 5..60 s at the source (`DataUtil.kt:361`), so a corrupt
+     * preference cannot reach this class. A hard floor here would therefore be
+     * invisible in production while silently overriding every test double that
+     * asks for a deliberately short budget (the two `…IsCappedToTheAttemptBudget`
+     * tests use 300 ms to keep the cap assertion cheap and exact).
+     */
+    private fun attemptTimeoutMs(): Long =
+        attemptTimeoutMsProvider().coerceAtLeast(1L)
+
+    /**
+     * v1.0.42 (§1.6.35 / B-3): the live native-slot wait budget.
+     *
+     * Floored at 1 ms and capped at [NATIVE_SLOT_AWAIT_MAX_MS]. Production's
+     * lambda owns the v1.0.36 floor ([NATIVE_SLOT_AWAIT_MS], 30 s) and the D-2
+     * cap, so this helper only has to reject a non-positive value: a second
+     * hard floor here would be invisible in production yet would override every
+     * test double that deliberately asks for a short wait (for example
+     * `AutoModeNativeBusyTest`, whose 200 ms slot wait exists to keep the
+     * "genuinely stuck" cases inside their 15 s bounds). The cap stays because
+     * a provider that ignores it could make the terminal give-up unreachable.
+     */
+    private fun nativeSlotAwaitMs(): Long =
+        nativeSlotAwaitMsProvider().coerceIn(1L, NATIVE_SLOT_AWAIT_MAX_MS)
+
+    /**
      * FIX-3: the ledger key for a candidate.
      *
      * Same shape as the run's de-duplication key (`ip|hostname`), defined once so the ledger
      * and the attempt loop can never disagree about what "this server" means.
      */
-    private fun wedgeKey(server: AutoModeCandidate): String = "${server.ip}|${server.hostname ?: ""}"
+    private fun wedgeKey(server: AutoModeCandidate): String =
+        serverKey(server.ip, server.hostname)
+
+    /**
+     * v1.0.42 (§1.6.35 / F6): the stable identity used by the Next-Server
+     * continuation and by the skip filter.
+     *
+     * Delegates to the same formatter as [wedgeKey] so the continuation, the
+     * skip filter and the wedge ledger can never disagree about what "this
+     * server" means. See [resumeFromServerKey] for why the continuation moved
+     * from an index to an identity.
+     */
+    private fun serverKey(candidate: AutoModeCandidate): String =
+        serverKey(candidate.ip, candidate.hostname)
+
+    /** The one place the `ip|hostname` identity string is formatted. */
+    private fun serverKey(ip: String?, hostname: String?): String = "$ip|${hostname ?: ""}"
 
     /**
      * FIX-3 test seam: the wedge count this controller's ledger holds for [candidate].

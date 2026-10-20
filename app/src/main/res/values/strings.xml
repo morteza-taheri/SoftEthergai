@@ -290,6 +290,7 @@
     <string name="auto_mode_error_no_server">Could not connect to any available server.</string>
     <string name="auto_mode_error_generic">Auto Mode failed. Tap to try again.</string>
     <string name="auto_mode_error_vpn_permission">VPN permission is required for Auto Mode. Please allow it and try again.</string>
+    <string name="auto_mode_error_no_network">No network available. Turn on Wi-Fi or mobile data and try again.</string>
     <string name="auto_mode_try_next_server">Try next server</string>
     <string name="auto_mode_log_title">Log</string>
     <string name="auto_mode_log_copy">Copy</string>

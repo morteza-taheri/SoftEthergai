@@ -115,7 +115,7 @@ class AutoModeReconnectTest {
         adapter = adapter,
         protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP) },
         serverProvider = { servers },
-        attemptTimeoutMs = 500,
+        attemptTimeoutMsProvider = { 500 },
         autoReconnectEnabled = autoReconnectEnabled,
         isTunnelBusy = isTunnelBusy,
         reconnectInitialDelayMs = reconnectInitialDelayMs,

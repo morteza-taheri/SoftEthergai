@@ -57,7 +57,7 @@ class AutoModeServerCursorTest {
         adapter = adapter,
         protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
         serverProvider = { servers },
-        attemptTimeoutMs = 100,
+        attemptTimeoutMsProvider = { 100 },
     )
 
     private suspend fun AutoModeController.awaitDone() {

@@ -178,12 +178,12 @@ class AutoModeNativeBusyTest {
             },
             serverProvider = { servers },
             onSuccess = { _, _ -> },
-            attemptTimeoutMs = 1_000L,
+            attemptTimeoutMsProvider = { 1_000L },
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
             // AUTOCONNECT-AUDIT D-2: a short slot wait so the "genuinely stuck" tests reach
             // the terminal give-up quickly instead of paying the production 30 s bound.
-            nativeSlotAwaitMs = 200L,
+            nativeSlotAwaitMsProvider = { 200L },
             // FIX-3: a fresh ledger per controller, so no test depends on — or disturbs —
             // the process-wide instance. The FIX-3 tests inject their own so they can share
             // it across runs and assert on it directly.
@@ -684,7 +684,7 @@ class AutoModeNativeBusyTest {
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP) },
             serverProvider = { listOf(server("a"), server("b")) },
             onSuccess = { _, _ -> },
-            attemptTimeoutMs = 100L,
+            attemptTimeoutMsProvider = { 100L },
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
         )
@@ -721,7 +721,7 @@ class AutoModeNativeBusyTest {
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP) },
             serverProvider = { listOf(server("a"), server("b"), server("c")) },
             onSuccess = { _, _ -> },
-            attemptTimeoutMs = 100L,
+            attemptTimeoutMsProvider = { 100L },
             reachabilityFilter = null,
             activeRttProvider = { _, _ -> null },
         )

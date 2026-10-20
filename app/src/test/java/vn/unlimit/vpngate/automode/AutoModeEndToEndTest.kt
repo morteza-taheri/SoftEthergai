@@ -89,7 +89,7 @@ class AutoModeEndToEndTest {
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
             emptyServerListMessage = { "Server list is empty. Please update the server list first." },
-            attemptTimeoutMs = 200,
+            attemptTimeoutMsProvider = { 200 },
 
         )
 
@@ -121,7 +121,7 @@ class AutoModeEndToEndTest {
             adapter = adapter,
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
-            attemptTimeoutMs = 200,
+            attemptTimeoutMsProvider = { 200 },
         )
 
         controller.start()
@@ -183,7 +183,7 @@ class AutoModeEndToEndTest {
             adapter = adapter,
             protocolPriorityProvider = { listOf(AutoModeProtocol.SOFTETHER_TCP) },
             serverProvider = { servers },
-            attemptTimeoutMs = 200,
+            attemptTimeoutMsProvider = { 200 },
         )
 
         controller.start()
