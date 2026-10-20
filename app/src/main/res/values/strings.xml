@@ -308,6 +308,10 @@
     <string name="auto_mode_permission_battery_allow">Configure</string>
     <string name="auto_mode_permission_battery_skip">Later</string>
     <string name="auto_mode_connected_secure">Connected &amp; Protected</string>
+    <!-- AUTOCONNECT-DEVICE-BUGS-FIX (BUG-1, spec §1.6.32): shown when the tunnel
+         is up but this screen did not establish it (manual connect / service
+         reconnect), so "Connected" is not read as an Auto Mode result. -->
+    <string name="auto_mode_state_connected_external">Connected (manual)</string>
     <string name="title_home">Server List</string>
     <string name="server_list_count">%1$d servers</string>
     <string name="server_list_last_updated">Last updated: %1$s</string>

@@ -47,6 +47,20 @@ class DataUtil(context: Context?) {
         }
     }
 
+    /**
+     * Test seam: build a [DataUtil] over a supplied preferences store.
+     *
+     * The app module's unit tests run on a plain JVM with no Robolectric, so
+     * there is no `Context` to hand to the primary constructor and
+     * `getSharedPreferences` cannot be reached. Everything the flag accessors
+     * below touch is the preferences store alone, so injecting it makes those
+     * accessors testable without pulling in an Android runtime. Production
+     * always goes through [DataUtil]`(context)`.
+     */
+    internal constructor(sharedPreferences: SharedPreferences) : this(null) {
+        sharedPreferencesSetting = sharedPreferences
+    }
+
     var connectionsCache: VPNGateConnectionList?
         /**
          * Get connection cache from internal Room database
@@ -328,6 +342,20 @@ class DataUtil(context: Context?) {
 
     fun markLocaleAnswered() = setBooleanSetting(SETTING_LOCALE_ANSWERED, true)
 
+    /**
+     * AUTOCONNECT-DEVICE-BUGS-FIX (BUG-3, spec §1.6.32) — true once the battery
+     * optimisation prompt has been shown at least once.
+     *
+     * The gate used to be the live OS state alone
+     * (`isIgnoringBatteryOptimizations`), so a user who declined stayed
+     * un-ignored and got the same dialog on every press. The prompt is now
+     * one-shot: it fires only while this is false.
+     */
+    fun hasAskedBatteryOptimization(): Boolean = getBooleanSetting(SETTING_BATTERY_OPT_ASKED, false)
+
+    /** Marks the battery optimisation prompt as shown; see [hasAskedBatteryOptimization]. */
+    fun setAskedBatteryOptimization() = setBooleanSetting(SETTING_BATTERY_OPT_ASKED, true)
+
     // §3 §4 §5 Auto Mode connection timeout per-server (5–60 seconds, default 12)
     fun getAutoModeTimeoutSeconds(): Int =
         getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12).coerceIn(5, 60)
@@ -532,6 +560,12 @@ class DataUtil(context: Context?) {
 
     /** VpnM Phase 6.3 — set once the user answers the first-run language prompt. */
     const val SETTING_LOCALE_ANSWERED: String = "SETTING_LOCALE_ANSWERED"
+
+    /**
+     * AUTOCONNECT-DEVICE-BUGS-FIX (BUG-3, spec §1.6.32) — set once the battery
+     * optimisation prompt has been shown, so it does not fire on every press.
+     */
+    const val SETTING_BATTERY_OPT_ASKED: String = "SETTING_BATTERY_OPT_ASKED"
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"

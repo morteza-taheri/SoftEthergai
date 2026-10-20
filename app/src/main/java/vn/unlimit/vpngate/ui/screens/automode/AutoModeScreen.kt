@@ -120,9 +120,12 @@ import vn.unlimit.vpngate.automode.AutoModeEngine
 import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
+import vn.unlimit.vpngate.state.VpnConnectionStatus
 import vn.unlimit.vpngate.ui.theme.MonospaceStyle
 import vn.unlimit.vpngate.utils.DataUtil
+import vn.unlimit.vpngate.viewmodels.AutoModeDisplayState
 import vn.unlimit.vpngate.viewmodels.AutoModeViewModel
+import vn.unlimit.vpngate.viewmodels.combineAutoModeState
 
 /**
  * Modern Auto Mode screen with a state-aware animated hero connection button,
@@ -138,6 +141,15 @@ fun AutoModeScreen(
     val scope = rememberCoroutineScope()
     val viewModel: AutoModeViewModel = viewModel()
     val state by viewModel.state.observeAsState(AutoModeState.Disconnected)
+
+    // AUTOCONNECT-DEVICE-BUGS-FIX (BUG-1, spec §1.6.32): the hero button renders
+    // from the Auto Mode state *combined with* the app-wide tunnel tracker, so a
+    // tunnel this run does not own still shows as Connected. `state` above stays
+    // the Auto Mode run state and still drives the log, the error card and the
+    // "Try next server" affordance.
+    val displayState by viewModel.displayState.observeAsState(
+        combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.DISCONNECTED),
+    )
 
     var showBatteryDialog by remember { mutableStateOf(false) }
 
@@ -199,10 +211,16 @@ fun AutoModeScreen(
         }
 
         // 2. Check Battery Optimization exemption
+        //
+        // AUTOCONNECT-DEVICE-BUGS-FIX (BUG-3, spec §1.6.32): the prompt is
+        // one-shot. It used to fire whenever the app was not exempt, which is
+        // the permanent state after the user taps "Later", so every press
+        // re-opened the same dialog. The persisted flag makes it a single ask;
+        // the user can still reach the same screen from system Settings.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
             val isIgnoringBattery = powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
-            if (!isIgnoringBattery) {
+            if (!isIgnoringBattery && !viewModel.hasAskedBatteryOptimization()) {
                 showBatteryDialog = true
                 return
             }
@@ -226,11 +244,30 @@ fun AutoModeScreen(
     }
 
     fun startAutoModeWithAllChecks() {
-        val current = viewModel.state.value
+        // AUTOCONNECT-DEVICE-BUGS-FIX (BUG-1, spec §1.6.32): decide from the same
+        // combined state the button renders, so the tap always matches what the
+        // user sees. Reading the LiveData value here — rather than a value
+        // captured at composition — keeps the decision on the freshest tracker
+        // snapshot at click time.
+        val shown = viewModel.displayState.value
+            ?: combineAutoModeState(
+                viewModel.state.value ?: AutoModeState.Disconnected,
+                VpnConnectionStatus.DISCONNECTED,
+            )
+        val current = shown.display
         val isStart = current is AutoModeState.Disconnected || current is AutoModeState.Error
         if (!isStart) {
-            // Already connecting or connected: toggle/disconnect immediately
-            viewModel.onButtonPressed()
+            if (shown.isExternal) {
+                // The tunnel belongs to something else — a manual connect, or a
+                // service-level reconnect. AutoModeController's D-4 guard refuses
+                // to start in that situation, so pressing here used to do nothing
+                // at all while the button read "Connected". Tear the tunnel down
+                // instead, which is what "Connected" + tap means to the user.
+                viewModel.disconnectExternalTunnel()
+            } else {
+                // Already connecting or connected: toggle/disconnect immediately
+                viewModel.onButtonPressed()
+            }
             return
         }
 
@@ -289,6 +326,8 @@ fun AutoModeScreen(
         AlertDialog(
             onDismissRequest = {
                 showBatteryDialog = false
+                // BUG-3: the prompt is one-shot — record it on every exit path.
+                viewModel.onBatteryDialogDismissed()
                 val prepareIntent = VpnService.prepare(context)
                 if (prepareIntent != null) vpnPermissionLauncher.launch(prepareIntent) else viewModel.onButtonPressed()
             },
@@ -314,6 +353,8 @@ fun AutoModeScreen(
             confirmButton = {
                 Button(onClick = {
                     showBatteryDialog = false
+                    // BUG-3: record the ask before leaving for system Settings.
+                    viewModel.onBatteryDialogDismissed()
                     try {
                         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                             data = Uri.parse("package:${context.packageName}")
@@ -333,6 +374,8 @@ fun AutoModeScreen(
             dismissButton = {
                 TextButton(onClick = {
                     showBatteryDialog = false
+                    // BUG-3: "Later" is an answer — never ask again.
+                    viewModel.onBatteryDialogDismissed()
                     val prepareIntent = VpnService.prepare(context)
                     if (prepareIntent != null) vpnPermissionLauncher.launch(prepareIntent) else viewModel.onButtonPressed()
                 }) {
@@ -357,8 +400,12 @@ fun AutoModeScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // Hero Connection Button
+            //
+            // BUG-1: renders from the combined display state, not the Auto Mode
+            // run state, so a tunnel this run does not own shows as Connected.
             AutoConnectHeroButton(
-                state = state,
+                state = displayState.display,
+                isExternal = displayState.isExternal,
                 onClick = { startAutoModeWithAllChecks() },
             )
 
@@ -562,6 +609,7 @@ fun AutoModeScreen(
 @Composable
 private fun AutoConnectHeroButton(
     state: AutoModeState,
+    isExternal: Boolean = false,
     onClick: () -> Unit,
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "heroAnimations")
@@ -607,7 +655,13 @@ private fun AutoConnectHeroButton(
             glowColor = Color(0x4D10B981),
             icon = Icons.Rounded.Shield,
             titleRes = R.string.auto_mode_state_connected,
-            subtitleRes = R.string.auto_mode_connected_secure,
+            // BUG-1: say so when the tunnel is up but this screen did not
+            // establish it, so "Connected" is not mistaken for an Auto Mode win.
+            subtitleRes = if (isExternal) {
+                R.string.auto_mode_state_connected_external
+            } else {
+                R.string.auto_mode_connected_secure
+            },
         )
         is AutoModeState.Error -> StateConfig(
             color = Color(0xFFEF4444), // Crimson Red
