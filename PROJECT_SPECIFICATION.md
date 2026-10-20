@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `02765a6f2ec0273124e5286dce02c09fd91129dd`
-**Document version:** 1.0.41
+**HEAD:** `c5a7bb5d7b1fea2aaf26d03dedfc8cc21500251c`
+**Document version:** 1.0.42
 **Last updated:** 2026-10-20
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -440,6 +440,8 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > **Push state (v1.0.40).** AUTOCONNECT-DEVICE-BUGS-FIX — the two of the three device-reported Auto Mode bugs that source evidence can settle (spec §1.6.32). **BUG-1** (the hero button read "Disconnected" while the tunnel was up, and the tap then hit the D-4 refusal) is closed structurally: `AutoModeViewModel` publishes a combined `AutoModeDisplayState` built by the pure `combineAutoModeState(modeState, tunnelStatus)` — the same reconciliation `HomeScreen.activeServerOf()` already performed for the list highlight — and `AutoModeScreen` renders the hero button from it, branching the tap on `isExternal` so an externally-owned tunnel is torn down (`stopAndDisconnect`) instead of refused. **BUG-3** (the battery-optimisation dialog on every press) is closed by a persisted `SETTING_BATTERY_OPT_ASKED` flag, following the `SETTING_LOCALE_ANSWERED` precedent, written on all three dialog exits. **BUG-2** (MS-SSTP never attempted) is **NOT** fixed and **NOT** claimed: the evidence needed to distinguish "no SSTP-capable server in the user's dataset" from "the protocol is filtered out before selection" is a device log, and none was taken — see `TRIAGE_AUTOCONNECT_DEVICE_BUGS_REPORT.md` §4. Four authorized files change (`AutoModeViewModel.kt`, `AutoModeScreen.kt`, `DataUtil.kt`, and one additive string in `strings.xml`); `AutoModeController.kt`, `AutoModeEngine.kt`, `GlobalVpnTracker.kt`, `HomeScreen.kt`, `AndroidConnectionAdapter.kt` and the build/manifest files are untouched, so `versionCode 144` / `versionName 2.4.11` are unchanged. 14 new JVM tests (8 display-state + 6 persisted-flag); `:app` **837/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `5bed6128ceb382e9619567eefd2ee989189c26ac2e36fc2efc566ec3bf60c91a`. All three fixes are **NOT device-verified** — this phase ran no device. The header **HEAD** field is the baseline commit `6229a769a8a98397b5acf2e55717b3a248a9a097`, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
 
 > **Push state (v1.0.41).** TRAFFIC-PATH-DYNAMIC phase 1, Option B (operator-authorised; spec §1.6.34). The traffic-path choice now consumes tunnel health: `resolvePrimary()` returns the VPN rung only when `preferVpn && tunnelUsable` (`VpnServerRepository.kt:149–151`), and `productionRouting()` supplies `GlobalVpnTracker.isTunnelUsableForRouting()` (`:123`, `:129`) instead of the weaker `isConnected && currentVpnNetwork() != null` pair. `isTunnelUsableForRouting()` is a grace-period wrapper over the unchanged `isTunnelUsable()`; its pure core `routingUsableFromSignals(...)` is file-scope so the JVM suite can exercise it (`GlobalVpnTracker.kt:797`). `connectedAtMs` is added to the tracker as a diagnostic anchor and is **not** read by the decision (`:311`, `:321`). **FIX-1 was already done**: `TunnelHealth.noteRxAdvance()` is called at `ConnectionController.kt:1157` (one call per received batch, R4b), and the two comments that claimed otherwise (`SoftEtherVpnService.kt:1735–1740`, `GlobalVpnTracker.kt:357–363`) are corrected — comment-only, no code change. **FIX-3 was already done**: the `fetchOnChosenPath` fallback is untouched. 9 new JVM tests in two new files; `:app` **846/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `1340fed9771828d3b9655c4b05c0d2778ed737e9bd18b6363b16c44d2902159f`. Per-source path memory remains phase 2, and the change is **NOT device-verified** — this phase ran no device. §12.5.1 row 10 is stale but FROZEN and is annotated only in §1.6.34. The header **HEAD** field is the baseline commit `02765a6f2ec0273124e5286dce02c09fd91129dd`, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
+
+> **Push state (v1.0.42).** AUTOCONNECT-CORRECTNESS-CLUSTER (spec §1.6.35). Four corrections to the Auto Mode controller, all in one cluster because they share a cause — a value or a position captured once and then treated as if it were still true. **F1**: `attemptTimeoutMs` becomes `attemptTimeoutMsProvider: () -> Long`, read at attempt time, so a Settings change applies to the next attempt instead of to the next process (`AutoModeEngine.ensure()` builds the controller exactly once). **B-3**: `nativeSlotAwaitMs` becomes a provider too, because both budgets derive from the same `SETTING_AUTO_MODE_TIMEOUT_SECONDS` read and fixing one alone would have left the other frozen. **F2**: a new `isNetworkAvailable` seam, `ERROR_NO_NETWORK`, and two guards (before the loop and before each attempt) so an offline run stops instead of marking every server `TIMED_OUT` and giving each a wedge strike; the terminal is mapped to a new `auto_mode_error_no_network` string. **F6**: the Next-Server continuation moves from an integer index to the `ip|hostname` identity — **a deliberate reversal of the v1.0.31 decision**, recorded as such, not as a bug fix (§6.8.5, §11.13.3). 12 new JVM tests in four new files; `:app` **858/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `e8a4bb1400e9046c1c0b4b34218b18da10c127a1992407ead8062f5fd5a67ecd`. `versionCode 144` / `versionName 2.4.11` are unchanged — no build or manifest file was touched. **NOT device-verified** — this phase ran no device. The header **HEAD** field is the baseline commit `c5a7bb5d7b1fea2aaf26d03dedfc8cc21500251c`, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -2684,9 +2686,131 @@ v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
     VPN timeout. This phase ran no device, so the routing change is SOURCE CODE + TEST only.
     Evidence: UNKNOWN.
 11. **No new methodology lessons.** The one process observation worth recording is that the phase
-    brief's problem statement was derived from a stale comment rather than from the call graph: two of
-    its three fixes were already implemented at the baseline. Reading the producer before writing the
-    fix is what turned a three-fix phase into a one-fix phase. Evidence: PRIOR REPORT + INFERENCE.
+   brief's problem statement was derived from a stale comment rather than from the call graph: two of
+   its three fixes were already implemented at the baseline. Reading the producer before writing the
+   fix is what turned a three-fix phase into a one-fix phase. Evidence: PRIOR REPORT + INFERENCE.
+
+#### 1.6.35 AUTOCONNECT-CORRECTNESS-CLUSTER (v1.0.42)
+
+1. **One cause, four symptoms.** Every item in this cluster is a value or a position that the
+   controller captured once and then treated as if it were still true: the per-attempt timeout, the
+   native-slot wait derived from the same preference, the assumption that the device has a network,
+   and the integer index of "the server after this one". Three of them are correctness fixes; the
+   fourth (F6) is a **reversal of a documented decision** and is labelled as such throughout. Evidence:
+   SOURCE CODE + TEST.
+2. **F1 — the timeout was frozen at construction, and the singleton made that permanent.**
+   `AutoModeEngine.ensure()` builds the controller exactly once (`controller?.let { return it }`), while
+   `AndroidConnectionAdapter` re-reads `SETTING_AUTO_MODE_TIMEOUT_SECONDS` on every call. The moment a
+   user changed the setting, the run kept logging the old value and only a process restart reconciled
+   them — device-observed and recorded in `DEVICE_VERIFY_AUTOCONNECT_BUGS_v1.0.41_REPORT.md` §11. The
+   constructor parameter is now `attemptTimeoutMsProvider: () -> Long`, read through
+   `private fun attemptTimeoutMs(): Long` at every point that needs it (the log line, both
+   `awaitArmedOutcome` calls, both `minOf` slot budgets, the `TIMED_OUT` line). The default provider
+   returns `DEFAULT_ATTEMPT_TIMEOUT_MS`, so a caller that does not model the setting keeps the
+   pre-v1.0.42 behaviour exactly. Evidence: SOURCE CODE + PRIOR REPORT.
+3. **B-3 — the slot wait is derived from the same setting, so it had to move too.** Extending F1 to
+   `nativeSlotAwaitMs` was authorised as B-3 precisely because the production derivation is
+   `5 × T` from the *same* preference: fixing only the attempt budget would have left a frozen value
+   in the path that decides how long a wedged native operation may hold the process-wide slot.
+   Production now supplies
+   `(T × 5).coerceAtLeast(NATIVE_SLOT_AWAIT_MS).coerceAtMost(NATIVE_SLOT_AWAIT_MAX_MS)`, preserving
+   the v1.0.36 floor (30 s) and the D-2 cap (60 s) that were previously applied inside the
+   constructor. Evidence: SOURCE CODE.
+4. **The two guards on the new providers are positivity-only, deliberately.** Both helpers are
+   `coerceAtLeast(1L)` (`nativeSlotAwaitMs` keeps its `NATIVE_SLOT_AWAIT_MAX_MS` upper cap so a
+   provider that ignores it cannot make the terminal give-up unreachable). They are **not** a second
+   floor. The first draft used 1 s and 5 s floors; both were removed during this phase because they
+   were redundant in production and destructive in tests: `getAutoModeTimeoutSeconds()` already clamps
+   to 5..60 s at the source (`DataUtil.kt:361`), and the floors silently overrode doubles that ask for
+   a short budget — the 1 s floor broke the two `…IsCappedToTheAttemptBudget` tests (which use 300 ms
+   to make the cap assertion exact), and the 5 s floor would have turned
+   `AutoModeNativeBusyTest`'s 200 ms slot wait into 5000 ms, pushing its "genuinely stuck" cases
+   against their 15 s bounds. A bound that only tests can see is not a safety property. Evidence:
+   SOURCE CODE + TEST.
+5. **F2 — an offline run used to blame every server.** Before v1.0.42 a press with Wi-Fi and data both
+   off walked the whole list, marked each candidate `TIMED_OUT`, and gave each one a
+   `WedgeTracker` strike; after two such runs `EXCLUSION_THRESHOLD` (2) had excluded every healthy
+   server for the rest of the process, so the next online press had nothing left to dial. The
+   controller now takes `isNetworkAvailable: () -> Boolean` (default `true`, so no existing double
+   changes behaviour) and consults it in two places: immediately after the protocol check and **before**
+   the list is resolved or the continuation is consumed, and again inside the loop before each
+   attempt. Both stop with the new `Error(ERROR_NO_NETWORK)` and record no wedge. Evidence: SOURCE
+   CODE + TEST.
+6. **`ERROR_NO_NETWORK` is a system-level terminal with its own sentence.** `ERROR_NO_NETWORK =
+   "no_network"` sits beside `ERROR_NO_ENABLED_PROTOCOL`; §6.8.4 lists it as terminal #8, and §6.7 R7's
+   "system-level terminals" set grows to six. `AutoModeScreen` maps it to a new
+   `auto_mode_error_no_network` string ("No network available. Turn on Wi-Fi or mobile data and try
+   again.") rather than falling through to the generic failure text — the condition is one the user can
+   fix in two taps, which is the reason it is not folded into `ERROR_NO_SERVER`. Evidence: SOURCE CODE.
+7. **`GlobalVpnTracker.isAnyNetworkAvailable()` is deliberately coarse.** It reads
+   `ConnectivityManager.activeNetwork != null` and returns `true` when `appContext` or the service is
+   missing. Both choices fail **open**: a missing context must not manufacture a "no network" terminal,
+   and `activeNetwork != null` is the weakest question that answers "is there any network at all" —
+   the guard's job is to stop a run that cannot possibly succeed, not to judge whether a particular
+   server is reachable (that is `awaitTunnel`'s job). Evidence: SOURCE CODE.
+8. **F6 — the Next-Server continuation is now an identity, and this reverses a v1.0.31 decision.**
+   `resumeFromIndex: Int` (`currentServerIndex + 1`) becomes `resumeFromServerKey: String?`, holding
+   the `ip|hostname` identity of the server that connected — the same key `wedgeKey` gives the wedge
+   ledger, formatted in exactly one place (`serverKey(ip, hostname)`). Continuation is
+   `indexOfFirst { serverKey(it) == key } + 1`. **This is not a bug fix**: the v1.0.31 KDoc explicitly
+   accepted the index drift, on the theory that pinning an identity would "silently skip a candidate
+   that has since become better, and the ordering is the contract (§6.6)". v1.0.42 overrides that
+   theory (operator decision). The trade-off is real and is recorded in the KDoc rather than hidden: a
+   candidate that became better and now sorts *before* the connected server is skipped by this
+   continuation; it is not skipped for ever, because the next fresh press starts from the top.
+   Identity wins because the drift failure mode is worse — the old index silently continues from a
+   position that now names a *different* server, which is the opposite of what the user asked for.
+   Evidence: SOURCE CODE + PRIOR REPORT.
+9. **The vanished-server case is new, and it is logged.** With an index there was no "not found" case;
+   with an identity there is. If the connected server has left the dataset, the run starts at index 0
+   and logs `[AUTO] Previous connected server no longer in the list; starting from the top` — it never
+   restarts silently. The *last* server is still **found**, so that case keeps its v1.0.31 meaning
+   (no attempts, `ERROR_NO_SERVER`), which is why the unchanged
+   `pressingWhileConnectedToTheLastServerEndsWithoutRestarting` still pins it. Evidence: SOURCE CODE +
+   TEST.
+10. **The skip filter now uses the same identity — this one *is* a bug fix.** `skipToNextServer()`'s
+    Connected branch filtered by `it.ip == currentIp`, which also drops a **different** server that
+    happens to share an IP (a NAT or load-balancer shape) and could end the run with `ERROR_NO_SERVER`
+    while a perfectly good candidate was filtered out. It now filters on `serverKey`, i.e. the same
+    key the continuation uses, so the two can never disagree about what "this server" means.
+    Evidence: SOURCE CODE + TEST.
+11. **Tests.** 12 new JVM tests in four new files; no existing test was deleted, and the only edits to
+    existing test files are mechanical (13 constructor call sites in 7 files, `attemptTimeoutMs = x` →
+    `attemptTimeoutMsProvider = { x }`, plus one `nativeSlotAwaitMsProvider`). `AutoModeNetworkGuardTest`
+    (4): offline stops before any attempt, records no wedge, online still dials, and a mid-run loss
+    stops before the next server. `AutoModeNextServerIdentityTest` (4): a re-sort does not shift the
+    continuation, a vanished server restarts at the top and logs it, the skip filters by identity not
+    by IP, and the attempt timeout is read fresh per attempt. `AutoModeSlotWaitBudgetTest` (1): the
+    slot budget is read fresh per attempt, observed through the `awaitNativeSlotRelease` argument.
+    `AutoModeNoNetworkMessageTest` (3): the string resource exists and tells the user what to do, the
+    screen branch maps to it, and the terminal id stays `"no_network"`. The four OP-R6/skip tests from
+    v1.0.31/v1.0.37 and both slot-cap tests pass unchanged. Evidence: TEST.
+12. **JVM and build gate.** `:app` **858 / 0 / 0 / 1** (baseline 846 / 0 / 0 / 1 — the delta is exactly
+    the 12 new tests; the one skip is unchanged, `HtmlParserOracleTest`); `:SoftEtherClient`
+    **173 / 0 / 0 / 0** (unchanged). `:app:assembleProDebug --rerun-tasks --no-build-cache` under
+    `CI=true` → BUILD SUCCESSFUL; APK SHA-256
+    `e8a4bb1400e9046c1c0b4b34218b18da10c127a1992407ead8062f5fd5a67ecd`. `versionCode 144` /
+    `versionName 2.4.11` are unchanged — no build or manifest file was touched. Evidence: TEST.
+13. **The original brief stopped at STEP 2, and the revision is the record of why.** Three of its
+    premises did not hold at `c5a7bb5`: making `attemptTimeoutMs` a lambda was source-incompatible with
+    13 call sites living in six test files outside the single authorised test file; §11.13.3 says "the
+    next server in the **sorted list**", not "the same identity", so F6 was a new decision rather than
+    the enforcement of existing text; and `ERROR_NO_NETWORK` had no user-facing string, so it would
+    have rendered as the generic message. The revised brief authorised the six mechanical test edits
+    (A), extended F1 to `nativeSlotAwaitMs` (B-3), authorised the UI mapping and string (B-4), and
+    required F6 to be reported as a decision revert (this section, §6.8.5, §11.13.3). Evidence: PRIOR
+    REPORT.
+14. **What this phase deliberately did not do.** No change to the wedge thresholds, the retry budget,
+    the R8 Auto-Reconnect path, or the reachability pre-pass. `ERROR_NATIVE_UNRESOLVED` remains
+    unpublished (v1.0.37). The per-source path memory of §11.8 remains phase 2 of the traffic-path
+    work. Evidence: SOURCE CODE.
+15. **Device verification is PENDING — UNKNOWN.** The three checks that would close this phase are:
+    (a) change the Auto Connect timeout in Settings mid-session and confirm the next attempt logs the
+    new value; (b) press Auto Connect with Wi-Fi and data both off and confirm the run stops at once
+    with the "No network available" message and no `TIMED_OUT` lines; (c) re-sort the list (change the
+    sort setting) between two presses and confirm the second run continues after the *same server*,
+    not after the same index. This phase ran no device, so every claim here is SOURCE CODE + TEST.
+    Evidence: UNKNOWN.
 
 ## 2. Architecture Overview
 
@@ -3393,25 +3517,39 @@ because the adapter's documentation and the v1.0.32–v1.0.36 history reference 
 | 5 | VPN permission missing | `Error(ERROR_VPN_PERMISSION)` |
 | 6 | User presses the button while `Connecting` | `Disconnected` (cancel + teardown) |
 | 7 | User presses the button while `Connected` | see §6.8.5 |
+| 8 | No network available — checked before the first attempt and again before every attempt (v1.0.42) | `Error(ERROR_NO_NETWORK)` |
 
-Cases 1–5 are the "system-level terminals" referenced by §6.7 R7. None of them is a server verdict.
+Cases 1–5 and 8 are the "system-level terminals" referenced by §6.7 R7. None of them is a server
+verdict. Case 8 is the one that used to be *missing*: an offline run walked the whole list and
+produced case 1, which reads as "every server failed" when in fact none was ever contacted
+(§1.6.35 bullet 5).
 
 #### 6.8.5 Pressing while `Connected` — continue from the next server (OP-R6)
 
 A press on a **live tunnel** means "move on", not "start over". The controller records the position after the server that connected and starts a fresh run from there:
 
+> **Superseded in v1.0.42 (§1.6.35 bullet 8) — this is a decision reversal, not a correction.**
+> The continuation is no longer an integer index into the previous run's list. It is the **identity**
+> of the server that connected (`ip|hostname`, the same key the wedge ledger uses), looked up in the
+> list the new run resolves. The text below is kept because it is the v1.0.31 contract and the
+> trade-off it names is still the trade-off; read `resumeFromServerKey` where it says
+> `resumeFromIndex`, and `indexOfFirst { serverKey(it) == key } + 1` where it says
+> `currentServerIndex + 1`. The bullets that follow are updated in place; the code block is not,
+> so that the change is visible rather than silently edited away.
+
 ```
-resumeFromIndex = currentServerIndex + 1   // index into the previous run's resolved list
+resumeFromIndex = currentServerIndex + 1   // v1.0.31 — superseded, see the note above
 disconnectNow()                            // teardown requested synchronously
-start()                                    // next run consumes resumeFromIndex once
+start()                                    // next run consumes the position once
 ```
 
 Normative details:
 
-- The continuation is **consumed exactly once**, at the top of the run, and zeroed there. An internal restart the user did not press — the §11.13 Auto-Reconnect path calls `start()` directly — must never inherit a stale index and silently skip servers.
-- A fresh press from `Disconnected`/`Error` zeroes the position, so a later run always starts at the top again.
-- If the position is `>= servers.size` (the user pressed while connected to the **last** server), the run starts no attempt and terminates with `ERROR_NO_SERVER`. It does **not** wrap around to index 0.
-- The index refers to the **previous** run's resolved (filtered + sorted) list — the same list `currentServerIndex` reports. A re-sorted list can therefore shift the position by one or more places. This is accepted: pinning a server identity instead would silently skip a candidate that has since become better, and the ordering is the contract (§6.6).
+- The continuation is **consumed exactly once**, at the top of the run, and cleared there. An internal restart the user did not press — the §11.13 Auto-Reconnect path calls `start()` directly — must never inherit a stale position and silently skip servers.
+- A fresh press from `Disconnected`/`Error` clears the position, so a later run always starts at the top again.
+- If the connected server is the **last** candidate, the run starts no attempt and terminates with `ERROR_NO_SERVER`. It does **not** wrap around to index 0. (This case is unchanged in v1.0.42: the last server is still *found* by identity.)
+- If the connected server is **not found** in the newly resolved list — it left the dataset between the two runs — the run starts at the top and logs that fallback (v1.0.42). It never restarts silently.
+- The position is resolved against the **current** run's resolved (filtered + sorted) list. Since v1.0.42 it is an identity, so a re-sorted list can no longer shift the start position. The v1.0.31 text accepted that drift ("pinning a server identity instead would silently skip a candidate that has since become better, and the ordering is the contract (§6.6)"); v1.0.42 overrides it, and the accepted cost is that a candidate which became better and now sorts *before* the connected server is skipped by this continuation — though not by the next fresh press.
 - Teardown ordering: `disconnectNow()` enqueues the teardown request synchronously before publishing `Disconnected`, and the new run resolves the server list and runs the pre-pass probe before its first `connect()`. The DISCONNECT therefore reaches the service ahead of the new run's first `ACTION_CONNECT` without making the (synchronous) button handler suspend.
 
 #### 6.8.6 The `isTunnelBusy()` guard
@@ -4165,6 +4303,7 @@ A new Settings option controls whether Auto Mode automatically re-establishes a 
 - **Expected behavior:**
   1. The app automatically attempts to reconnect — **first to the same server**, trying the configured protocols in the user's priority order (R6).
   2. If the same server cannot be re-established (its protocol attempts exhausted within the per-protocol timeout, R5), the app proceeds to the **next server in the sorted list** (the same sorted list used by the original AutoConnect run, R3/R4).
+     > **Annotation (v1.0.42, §1.6.35 bullet 8).** The text above is unchanged and remains the requirement: "the next server in the sorted list". It does **not** specify how "the next server" is identified, and v1.0.42 tightens the implementation to resolve it by server **identity** (`ip|hostname`) rather than by list position, so a re-sorted list cannot shift it. This is a tightening of the requirement, recorded here rather than presented as text that was already there.
   3. The reconnection respects the same stop conditions as a fresh AutoConnect run (R7): it continues until a verified tunnel is up, the sorted list is exhausted, or the user presses the AutoConnect button again to stop.
 - **Fallback path:** If reconnection to the same server fails and the sorted list is exhausted, Auto Mode ends with `ERROR_NO_SERVER` (R7a) — no further silent retries beyond the documented list.
 
@@ -4777,6 +4916,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.40 | 2026-10-20 | AUTOCONNECT-DEVICE-BUGS-FIX (device-free; two of the three device-reported Auto Mode bugs, spec §1.6.32) | **Closes the button-state mismatch (BUG-1) and the repeating battery prompt (BUG-3); defers BUG-2.** BUG-1: the hero button was bound exclusively to `AutoModeState`, whose only writer is `AutoModeController.setState` (`Connected` published only at `:2050`), so a manual connect (`DetailActivity.kt:318`) left the button reading "Disconnected" while the D-4 guard (`AutoModeEngine.kt:137`) saw the live tunnel and refused the tap (`AutoModeController.kt:1059–1060`). `AutoModeViewModel` now publishes a combined `AutoModeDisplayState` built by the pure `combineAutoModeState(modeState, tunnelStatus)` — the same reconciliation `HomeScreen.activeServerOf()` already performed (`:693–711`) — from `combine(AutoModeEngine.stateFlow, GlobalVpnTracker.vpnState)`; `AutoModeScreen` renders it and branches the tap on `isExternal`, tearing an externally-owned tunnel down through the new `disconnectExternalTunnel()` → `stopAndDisconnect()` → `disconnectNow()` (the D-4 refusal cannot serve that case). One deliberate divergence from the triage: a live tunnel **outranks** `Error` so the button and the guard agree. Additive string `auto_mode_state_connected_external` ("Connected (manual)"). BUG-3: the gate was the live OS state alone (`AutoModeScreen.kt:201–209`) with a transient `remember` flag and no persisted "asked" preference anywhere, so "Later" re-prompted on every press; `DataUtil` gains `SETTING_BATTERY_OPT_ASKED` + `hasAskedBatteryOptimization()` / `setAskedBatteryOptimization()` (the `SETTING_LOCALE_ANSWERED` precedent), written on every dialog exit, so the prompt is **once per install**. BUG-2 (MS-SSTP never attempted) is **NOT fixed and NOT claimed** — the distinguishing evidence is a device log, and the user's dataset remains **UNKNOWN**. 14 new JVM tests (8 display-state + 6 persisted-flag) using an in-memory `SharedPreferences` seam, because this module has JUnit 4 only; no existing test changed. `:app` **837 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `5bed6128ceb382e9619567eefd2ee989189c26ac2e36fc2efc566ec3bf60c91a`. `AutoModeController.kt`, `AutoModeEngine.kt`, `GlobalVpnTracker.kt`, `HomeScreen.kt` and all build/manifest files untouched. All three bugs remain **NOT device-verified**. No tag was created; §22 byte-identical. |
 
 | 1.0.41 | 2026-10-20 | TRAFFIC-PATH-DYNAMIC phase 1, Option B (device-free; operator-authorised; spec §1.6.34) | **The collector's VPN rung now requires a *usable* tunnel, not merely a CONNECTED one.** `resolvePrimary()` (`VpnServerRepository.kt:149–151`) returns `VPN` only when `preferVpn && tunnelUsable`; an opted-in user whose tunnel is dead goes straight to OPEN instead of paying a full VPN timeout before `fetchOnChosenPath`'s fallback (the fallback itself is untouched). `productionRouting()` (`:119–132`) feeds `GlobalVpnTracker.isTunnelUsableForRouting()` instead of the weaker `isConnected && currentVpnNetwork() != null`, and no longer ORs live tunnel state into `preferVpn` (the v1.0.27 FIX-3a property is preserved and pinned by T-NEW-36). The new `isTunnelUsableForRouting()` (`GlobalVpnTracker.kt:459–467`) is a grace-period wrapper over the **unchanged** `isTunnelUsable()`: connected + OS-bound + (passing traffic right now, or no RX ever observed and no TUN EIO inside `EIO_WINDOW_MS`); the grace branch is gated on `rxCounter == 0`, so it cannot mask a tunnel that carried traffic and then died. Its pure core `routingUsableFromSignals(...)` is file-scope (`:797`) so a plain JVM can test it. `connectedAtMs` (`:311`, getter `:321`, stamped on the CONNECTED transition `:617–625`) is added as a diagnostic anchor and is deliberately **not** read by the decision. **FIX-1 was already done** — `TunnelHealth.noteRxAdvance()` is called at `ConnectionController.kt:1157` (one call per received batch, R4b) — and the two comments that claimed otherwise (`SoftEtherVpnService.kt:1735–1740`, `GlobalVpnTracker.kt:357–363`) are corrected comment-only. 9 new JVM tests (6 `GlobalVpnTrackerRoutingTest` + 3 `VpnServerRepositoryRoutingDynamicTest`); no existing test changed. `:app` **846 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `1340fed9771828d3b9655c4b05c0d2778ed737e9bd18b6363b16c44d2902159f`. Per-source path memory remains **phase 2**, and the change is **NOT device-verified**. §12.5.1 row 10 is stale but FROZEN and is annotated only in §1.6.34. No tag was created; §22 byte-identical. |
+| 1.0.42 | 2026-10-20 | AUTOCONNECT-CORRECTNESS-CLUSTER (device-free; operator-authorised revision; spec §1.6.35) | **Four Auto Mode corrections that share one cause: a value or a position captured once and then treated as still true.** **F1** — `attemptTimeoutMs: Long` becomes `attemptTimeoutMsProvider: () -> Long`, read at attempt time through `attemptTimeoutMs()`, because `AutoModeEngine.ensure()` builds the controller exactly once while `AndroidConnectionAdapter` re-reads `SETTING_AUTO_MODE_TIMEOUT_SECONDS` on every call, so a Settings change used to apply only after a process restart. **B-3** — `nativeSlotAwaitMs` becomes a provider too (production keeps `5 × T`, the v1.0.36 30 s floor and the D-2 60 s cap), because both budgets derive from the same preference and fixing one alone would have left the other frozen. Both helpers are positivity-only guards (`coerceAtLeast(1L)`); the first-draft 1 s / 5 s floors were removed because `getAutoModeTimeoutSeconds()` already clamps to 5..60 s at `DataUtil.kt:361` and the floors only overrode short test budgets. **F2** — a new `isNetworkAvailable: () -> Boolean` seam (default `true`), a new `ERROR_NO_NETWORK = "no_network"` terminal, and two guards (before the loop, before each attempt) stop an offline run instead of marking every server `TIMED_OUT` and giving each a `WedgeTracker` strike — two such runs used to exclude every healthy server for the rest of the process. The terminal is mapped to a new `auto_mode_error_no_network` string in `AutoModeScreen`, and `GlobalVpnTracker.isAnyNetworkAvailable()` supplies it, failing **open** on a missing context. **F6** — the Next-Server continuation moves from `resumeFromIndex: Int` to `resumeFromServerKey: String?` (`ip|hostname`), resolved with `indexOfFirst { … } + 1`, and the skip filter switches from IP to the same identity (that part **is** a bug fix: an IP-only filter also dropped a different server sharing an IP). **F6 is a deliberate reversal of the v1.0.31 decision**, not a bug fix — the v1.0.31 KDoc explicitly accepted index drift; the accepted cost is that a candidate which became better and now sorts before the connected server is skipped by this continuation, though not by the next fresh press. A vanished server now restarts at the top and logs it. 12 new JVM tests in four new files (4 + 4 + 1 + 3); existing test edits are mechanical only (13 constructor call sites in 7 files). `:app` **858 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `e8a4bb1400e9046c1c0b4b34218b18da10c127a1992407ead8062f5fd5a67ecd`. **NOT device-verified.** No tag was created; §22 byte-identical. |
 
 ### Verification Status
 
@@ -4788,6 +4928,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | §1.6.31 — RETENTION-IMPL-PHASE-1 (v1.0.39) | VERIFIED at SOURCE CODE + TEST level — `VPNGateItem` retention fields and Room `version 8` / `MIGRATION_7_8` inspected; `mergeAll` and `retentionHealthScore` inspected; the `8.json` schema matches the DDL; 11 new JVM tests (5 migration + 6 retention) all green; `:app` **823/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `79c10272…3c17`. The 7→8 upgrade is JVM-verified only — a real-device replay is **UNKNOWN**; phases 2–3 (§9.3 prune, max-server cap) are **NOT IMPLEMENTED**. Item G (§12.5.2) is **PARTIAL** |
 | §1.6.32 — AUTOCONNECT-DEVICE-BUGS-FIX (v1.0.40) | VERIFIED at SOURCE CODE + TEST level — `combineAutoModeState` and `AutoModeDisplayState` inspected; the screen's render + tap branch and the three battery-dialog exits inspected; 14 new JVM tests (8 display-state + 6 persisted-flag) all green; `:app` **837/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `5bed6128…c91a`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so BUG-1's display fix and BUG-3's one-shot prompt are SOURCE CODE + TEST only. **BUG-2 (MS-SSTP never attempted) is DEFERRED** — the user's dataset is **UNKNOWN** and no fix is claimed |
 | §1.6.34 — TRAFFIC-PATH-DYNAMIC phase 1 (v1.0.41) | VERIFIED at SOURCE CODE + TEST level — `isTunnelUsableForRouting` and its pure core `routingUsableFromSignals` inspected; `productionRouting` and `resolvePrimary` inspected; the two stale comments corrected comment-only (no code change in `SoftEtherVpnService.kt`); 9 new JVM tests (6 + 3) all green with `VpnServerRepositoryR4bTest` (10), `VpnServerRepositoryRoutingTest` (8), `GlobalVpnTrackerTest` (17) and `RxAdvanceWiringTest` (7) unchanged and passing; `:app` **846/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `1340fed9…159f`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so "opt-in + dead tunnel → OPEN from the first attempt" is SOURCE CODE + TEST only. §12.5.1 row 10 remains FROZEN and stale; it is annotated only in §1.6.34 |
+| §1.6.35 — AUTOCONNECT-CORRECTNESS-CLUSTER (v1.0.42) | VERIFIED at SOURCE CODE + TEST level — `attemptTimeoutMsProvider`, `nativeSlotAwaitMsProvider` and `isNetworkAvailable` inspected in the constructor, and both `coerceAtLeast(1L)` helpers plus the single `serverKey(ip, hostname)` formatter inspected; the two network guards sit after the protocol check and inside the loop, before `wedgeKey`/`attempted`; `ERROR_NO_NETWORK` is published from exactly those two sites and mapped in `AutoModeScreen` to `auto_mode_error_no_network`; `GlobalVpnTracker.isAnyNetworkAvailable()` inspected (fails open on a missing context); `resumeFromServerKey` replaces `resumeFromIndex` at all five read/write sites and the skip filter uses `serverKey`; 12 new JVM tests (4 + 4 + 1 + 3) all green, with the four OP-R6/skip tests from v1.0.31/v1.0.37 and both `…IsCappedToTheAttemptBudget` tests passing unchanged; `:app` **858/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `e8a4bb14…7ecd`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so "Settings change applies to the next attempt", "offline stops at once" and "re-sort does not shift the continuation" are SOURCE CODE + TEST only. §12.5.1 remains FROZEN; §22 byte-identical |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
