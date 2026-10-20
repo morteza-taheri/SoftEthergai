@@ -280,7 +280,16 @@ class OkHttpFetcher(
                     }
                 }
             } catch (e: IOException) {
-                CollectorLog.d("Request failed: ${e.message}")
+                // v1.0.44 (diagnostic placement fix): the EPERM observed on device
+                // (DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8) was produced HERE, at
+                // socket-open time — not at boundToNetwork construction. Production
+                // never calls boundToNetwork (VpnServerRepository.kt:163 uses
+                // boundToSocketFactory directly), so the [bind] diagnostic there never
+                // fires on device. The network handle is already carried in e.message
+                // ("Binding socket to network N failed: EPERM"); we add only the
+                // exception class for attribution. The return below is unchanged.
+                val causeClass = e.javaClass.simpleName
+                CollectorLog.d("Request failed: [exception=$causeClass] ${e.message}")
                 return null
             }
 

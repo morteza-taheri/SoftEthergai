@@ -65,4 +65,18 @@ class HttpFetcherBindDiagnosticTest {
             src.contains("boundToSocketFactory"),
         )
     }
+
+    // ── T-NEW-53: execute() catch logs the exception class for attribution ─
+
+    @Test
+    fun `execute catch logs exception class for attribution`() {
+        val src = httpFetcherSource().readText()
+        assertTrue(
+            "OkHttpFetcher.execute() catch (the actual EPERM site) must log the " +
+                "exception class so the device EPERM can be attributed " +
+                "(diagnostic placement fix v1.0.44)",
+            src.contains("exception=\$causeClass") ||
+                src.contains("exception=\${e.javaClass.simpleName}"),
+        )
+    }
 }
