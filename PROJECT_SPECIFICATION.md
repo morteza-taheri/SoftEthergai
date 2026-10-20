@@ -5,7 +5,7 @@
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
 **HEAD:** `c5a7bb5d7b1fea2aaf26d03dedfc8cc21500251c`
-**Document version:** 1.0.42
+**Document version:** 1.0.43
 **Last updated:** 2026-10-20
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -2812,6 +2812,57 @@ v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
     not after the same index. This phase ran no device, so every claim here is SOURCE CODE + TEST.
     Evidence: UNKNOWN.
 
+#### 1.6.36 ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (v1.0.43)
+
+1. **Two device findings, two additive fixes, no control-flow change.** This phase closes two findings from
+   the v1.0.43 device verification (`DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md`): **M1** — the
+   `vpn_always_prefer_vpn` opt-in had no writer, so the v1.0.41 VPN routing rung was unreachable for every
+   user; and **M2** — a VPN-rung fetch failed with `EPERM (Operation not permitted)` on the device with no
+   attribution. Both fixes are additive, and the M2 fix is diagnostics-only. Nothing in the frozen routing
+   files (`GlobalVpnTracker.kt`, `VpnServerRepository.kt`, `AutoModeController.kt`, `AutoModeEngine.kt`,
+   `AutoModeScreen.kt`, `AutoModeViewModel.kt`) is touched. Evidence: SOURCE CODE + TEST.
+2. **M1 — the opt-in now has a writer and a UI toggle.** `DataUtil.getPrefersVpnForCollector()` /
+   `setPrefersVpnForCollector()` reuse the exact key literal `"vpn_always_prefer_vpn"` (the value of
+   `GlobalVpnTracker.PREF_ALWAYS_PREFER_VPN`, read by `prefersVpnForCollector()` at `GlobalVpnTracker.kt:527`).
+   The literal is duplicated on purpose so the accessor is independent of the frozen file and a source-shape
+   test can assert the exact byte string. `SettingsScreen`'s Auto Mode section gains a `SettingSwitchRow`
+   (`setting_prefer_vpn_collector_label` / `setting_prefer_vpn_collector_summary`, icon `VpnLock`) bound to
+   `dataUtil.get/setPrefersVpnForCollector()`, defaulting off. Evidence: SOURCE CODE + TEST.
+3. **M1 — the toggle is the missing piece, not a behavioural change.** `CollectorRouting.choose()` and
+   `productionRouting()` are unchanged, so the VPN rung still requires `preferVpn && tunnelUsable &&
+   hasBoundNetwork`. The only new behaviour is that a user can now set `preferVpn = true`; until this phase
+   that branch was dead because nothing wrote the key. Evidence: SOURCE CODE + INFERENCE.
+4. **M2 — bind diagnostics, no control-flow change.** `HttpFetcher.boundToNetwork(network)` is wrapped in a
+   `try/catch (Throwable)`: on success it logs `[bind] ok network=…`; on failure it logs
+   `[bind] FAILED network=… errno=…` and re-throws. `throw e` is preserved, so the open → VPN-fallback ordering
+   is untouched. The two log strings are pinned by source-shape tests (T-NEW-50/51) so a refactor cannot
+   silently drop them. Evidence: SOURCE CODE + TEST.
+5. **M2 — the EPERM root cause is explicitly NOT fixed here.** The device line was
+   `Request failed: Binding socket to network 115 failed: EPERM (Operation not permitted)`. That string is
+   produced in `OkHttpFetcher.execute()` at socket-open time (the bound socket factory is used lazily), which
+   is a *different* site from `boundToNetwork`'s construction. This phase adds construction-time visibility
+   only; the socket-open EPERM remains attributed by the pre-existing "Request failed" log. The next device
+   run is expected to disambiguate a stale/revoked `Network` (caught here) from a genuine kernel EPERM on the
+   live tunnel's network (caught later). Evidence: SOURCE CODE + PRIOR REPORT + INFERENCE.
+6. **Tests.** 7 new JVM tests in two new files; no existing test was deleted or edited.
+   `DataUtilPrefersVpnTest` (4): default off (T-NEW-46), set/get round-trip (T-NEW-47), survives a new
+   `DataUtil` over the same store (T-NEW-48), and stored under the exact key literal `"vpn_always_prefer_vpn"`
+   (T-NEW-49). `HttpFetcherBindDiagnosticTest` (3): source-shape — `[bind] ok` present (T-NEW-50),
+   `[bind] FAILED` present (T-NEW-51), `boundToNetwork` still defined and calls `boundToSocketFactory`
+   (T-NEW-52). The in-memory `SharedPreferences` fake is renamed (`PrefersVpnFake*`) to avoid a top-level
+   private-class collision with the same-named fake in `DataUtilBatteryFlagTest.kt`. Evidence: TEST.
+7. **JVM and build gate.** `:app` **865 / 0 / 0 / 1** (baseline 858 / 0 / 0 / 1 — the delta is exactly the
+   7 new tests; the one skip is unchanged, `HtmlParserOracleTest`); `:SoftEtherClient` **173 / 0 / 0 / 0**
+   (unchanged). `:app:testProDebugUnitTest` + `:SoftEtherClient:test` under `CI=true` both green.
+   `:app:assembleProDebug --no-daemon` under `CI=true` → BUILD SUCCESSFUL; APK SHA-256
+   `ed82fc058796a45698cd41a90d4dcb1fb20ecbc05198b30d57eaecf2117bce19`. `versionCode 144` / `versionName 2.4.11`
+   are unchanged — no build or manifest file was touched. Evidence: TEST.
+8. **Device verification is PENDING — UNKNOWN.** The two checks that would close this phase are: (a) enable the
+   new "Route collector traffic via VPN" toggle, bring up a usable tunnel, and confirm a collector fetch takes
+   the VPN rung (and is absent when the tunnel is down); (b) reproduce the VPN-rung `EPERM` on a device and
+   confirm the new `[bind] FAILED` line attributes it to the network. This phase ran no device, so every
+   claim here is SOURCE CODE + TEST. Evidence: UNKNOWN.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -4059,6 +4110,18 @@ The system should retain useful source/path outcome information where appropriat
 > verbatim. Per-source path memory (§11.8, "retain useful source/path outcome information") remains
 > **phase 2**. Evidence: SOURCE CODE + TEST.
 
+> **v1.0.44 update (ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS, §1.6.36).** The v1.0.43 device run surfaced
+> two routing gaps, and this phase closes the reachable one. **M1** — the `vpn_always_prefer_vpn` opt-in that
+> this section describes as the gate for the VPN rung had **no writer** anywhere in the app (the v1.0.41 change
+> read it but nothing set it), so the VPN rung was dead for every user; `DataUtil` now exposes
+> `getPrefersVpnForCollector()` / `setPrefersVpnForCollector()` reusing the exact key literal, and
+> `SettingsScreen` gains a toggle, so the opt-in is finally user-reachable. **M2** — a VPN-rung fetch failed
+> on the device with `EPERM (Operation not permitted)`; the binding site (`HttpFetcher.boundToNetwork`) now
+> logs `[bind] ok` / `[bind] FAILED network=… errno=…` around the construction (control flow unchanged, `throw e`
+> preserved) so the next device run can attribute the failure. The socket-open-time EPERM itself is still
+> surfaced by the pre-existing "Request failed" log in `OkHttpFetcher.execute()`; its root cause is deferred.
+> Evidence: SOURCE CODE + TEST.
+
 ### 11.8.3 Existing path statements in this document
 
 The existing server-collector description in §8 (especially §8.1) documents the original behavior where collection requests ran on the default Android network path; §8.1 is annotated accordingly (v1.0.29). No statement in this document currently asserts that server-list requests must permanently use only the direct path or only the VPN tunnel. Any such future observation must be preserved as current behavior and reconciled with the dynamic-path requirement rather than removed.
@@ -4509,6 +4572,15 @@ The following items are planned for the source-and-path architecture described i
 | G | **Safe merge and persistence** | Preserve manual entries, source provenance, deduplication, and existing historical records. See §11.11. |
 | H | **Tests** | Unit, integration, and Android runtime tests for source/path combinations, fallback, filtering/unreachable sources, malformed input, duplicate handling, and preservation of manual records. See §12.6. |
 
+> **Item A status (v1.0.44 — ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS, §1.6.36):** item **A** was already
+> implemented at the binding level (`a9e16fd`, recorded v1.0.12–v1.0.13) and the OPEN-first / VPN-fallback
+> ordering landed in `c4c0311` (v1.0.27), but the opt-in that selects the VPN rung — `vpn_always_prefer_vpn` —
+> had **no writer**, so the "active VPN path" half of item A was unreachable for users. `DataUtil` +
+> `SettingsScreen` now provide that writer and its toggle, making the opt-in genuinely user-reachable (off by
+> default). Item A moves from "implemented but inert" to "implemented and reachable". The binding remains
+> per-request via `Network.getSocketFactory()` (`boundToSocketFactory`), never `bindProcessToNetwork()`.
+> Evidence: SOURCE CODE + TEST.
+
 > **Item status (v1.0.21 — Z1-IMPL-C):** item **C has landed**. The emergency CSV parser
 > (`parser/EmergencyCsvParser.kt`) and its HTTP boundary
 > (`data/remote/EmergencySourceFetcher.kt`) are implemented against
@@ -4918,6 +4990,8 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.41 | 2026-10-20 | TRAFFIC-PATH-DYNAMIC phase 1, Option B (device-free; operator-authorised; spec §1.6.34) | **The collector's VPN rung now requires a *usable* tunnel, not merely a CONNECTED one.** `resolvePrimary()` (`VpnServerRepository.kt:149–151`) returns `VPN` only when `preferVpn && tunnelUsable`; an opted-in user whose tunnel is dead goes straight to OPEN instead of paying a full VPN timeout before `fetchOnChosenPath`'s fallback (the fallback itself is untouched). `productionRouting()` (`:119–132`) feeds `GlobalVpnTracker.isTunnelUsableForRouting()` instead of the weaker `isConnected && currentVpnNetwork() != null`, and no longer ORs live tunnel state into `preferVpn` (the v1.0.27 FIX-3a property is preserved and pinned by T-NEW-36). The new `isTunnelUsableForRouting()` (`GlobalVpnTracker.kt:459–467`) is a grace-period wrapper over the **unchanged** `isTunnelUsable()`: connected + OS-bound + (passing traffic right now, or no RX ever observed and no TUN EIO inside `EIO_WINDOW_MS`); the grace branch is gated on `rxCounter == 0`, so it cannot mask a tunnel that carried traffic and then died. Its pure core `routingUsableFromSignals(...)` is file-scope (`:797`) so a plain JVM can test it. `connectedAtMs` (`:311`, getter `:321`, stamped on the CONNECTED transition `:617–625`) is added as a diagnostic anchor and is deliberately **not** read by the decision. **FIX-1 was already done** — `TunnelHealth.noteRxAdvance()` is called at `ConnectionController.kt:1157` (one call per received batch, R4b) — and the two comments that claimed otherwise (`SoftEtherVpnService.kt:1735–1740`, `GlobalVpnTracker.kt:357–363`) are corrected comment-only. 9 new JVM tests (6 `GlobalVpnTrackerRoutingTest` + 3 `VpnServerRepositoryRoutingDynamicTest`); no existing test changed. `:app` **846 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `1340fed9771828d3b9655c4b05c0d2778ed737e9bd18b6363b16c44d2902159f`. Per-source path memory remains **phase 2**, and the change is **NOT device-verified**. §12.5.1 row 10 is stale but FROZEN and is annotated only in §1.6.34. No tag was created; §22 byte-identical. |
 | 1.0.42 | 2026-10-20 | AUTOCONNECT-CORRECTNESS-CLUSTER (device-free; operator-authorised revision; spec §1.6.35) | **Four Auto Mode corrections that share one cause: a value or a position captured once and then treated as still true.** **F1** — `attemptTimeoutMs: Long` becomes `attemptTimeoutMsProvider: () -> Long`, read at attempt time through `attemptTimeoutMs()`, because `AutoModeEngine.ensure()` builds the controller exactly once while `AndroidConnectionAdapter` re-reads `SETTING_AUTO_MODE_TIMEOUT_SECONDS` on every call, so a Settings change used to apply only after a process restart. **B-3** — `nativeSlotAwaitMs` becomes a provider too (production keeps `5 × T`, the v1.0.36 30 s floor and the D-2 60 s cap), because both budgets derive from the same preference and fixing one alone would have left the other frozen. Both helpers are positivity-only guards (`coerceAtLeast(1L)`); the first-draft 1 s / 5 s floors were removed because `getAutoModeTimeoutSeconds()` already clamps to 5..60 s at `DataUtil.kt:361` and the floors only overrode short test budgets. **F2** — a new `isNetworkAvailable: () -> Boolean` seam (default `true`), a new `ERROR_NO_NETWORK = "no_network"` terminal, and two guards (before the loop, before each attempt) stop an offline run instead of marking every server `TIMED_OUT` and giving each a `WedgeTracker` strike — two such runs used to exclude every healthy server for the rest of the process. The terminal is mapped to a new `auto_mode_error_no_network` string in `AutoModeScreen`, and `GlobalVpnTracker.isAnyNetworkAvailable()` supplies it, failing **open** on a missing context. **F6** — the Next-Server continuation moves from `resumeFromIndex: Int` to `resumeFromServerKey: String?` (`ip|hostname`), resolved with `indexOfFirst { … } + 1`, and the skip filter switches from IP to the same identity (that part **is** a bug fix: an IP-only filter also dropped a different server sharing an IP). **F6 is a deliberate reversal of the v1.0.31 decision**, not a bug fix — the v1.0.31 KDoc explicitly accepted index drift; the accepted cost is that a candidate which became better and now sorts before the connected server is skipped by this continuation, though not by the next fresh press. A vanished server now restarts at the top and logs it. 12 new JVM tests in four new files (4 + 4 + 1 + 3); existing test edits are mechanical only (13 constructor call sites in 7 files). `:app` **858 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `e8a4bb1400e9046c1c0b4b34218b18da10c127a1992407ead8062f5fd5a67ecd`. **NOT device-verified.** No tag was created; §22 byte-identical. |
 
+| 1.0.43 | 2026-10-20 | ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (device-free; operator-authorised; spec §1.6.36) | **Closes two v1.0.43 device findings.** M1 — the `vpn_always_prefer_vpn` opt-in had no writer (so the v1.0.41 VPN routing rung was unreachable for every user) — `DataUtil` gains `getPrefersVpnForCollector()` / `setPrefersVpnForCollector()` reusing the exact key literal `"vpn_always_prefer_vpn"`, and `SettingsScreen`'s Auto Mode section gains a toggle (off by default). M2 — `HttpFetcher.boundToNetwork` is wrapped in `try/catch (Throwable)` logging `[bind] ok network=…` on success and `[bind] FAILED network=… errno=…` on failure, re-throwing (control flow unchanged). 7 new JVM tests in two new files (4 + 3); `:app` **865/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `ed82fc058796a45698cd41a90d4dcb1fb20ecbc05198b30d57eaecf2117bce19`, version unchanged at `144 / 2.4.11`. **NOT device-verified** — no device run in this phase. §12.5.1 remains FROZEN; §22 byte-identical. No tag was created |
+
 ### Verification Status
 
 | Section | Verification |
@@ -4929,6 +5003,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | §1.6.32 — AUTOCONNECT-DEVICE-BUGS-FIX (v1.0.40) | VERIFIED at SOURCE CODE + TEST level — `combineAutoModeState` and `AutoModeDisplayState` inspected; the screen's render + tap branch and the three battery-dialog exits inspected; 14 new JVM tests (8 display-state + 6 persisted-flag) all green; `:app` **837/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `5bed6128…c91a`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so BUG-1's display fix and BUG-3's one-shot prompt are SOURCE CODE + TEST only. **BUG-2 (MS-SSTP never attempted) is DEFERRED** — the user's dataset is **UNKNOWN** and no fix is claimed |
 | §1.6.34 — TRAFFIC-PATH-DYNAMIC phase 1 (v1.0.41) | VERIFIED at SOURCE CODE + TEST level — `isTunnelUsableForRouting` and its pure core `routingUsableFromSignals` inspected; `productionRouting` and `resolvePrimary` inspected; the two stale comments corrected comment-only (no code change in `SoftEtherVpnService.kt`); 9 new JVM tests (6 + 3) all green with `VpnServerRepositoryR4bTest` (10), `VpnServerRepositoryRoutingTest` (8), `GlobalVpnTrackerTest` (17) and `RxAdvanceWiringTest` (7) unchanged and passing; `:app` **846/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `1340fed9…159f`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so "opt-in + dead tunnel → OPEN from the first attempt" is SOURCE CODE + TEST only. §12.5.1 row 10 remains FROZEN and stale; it is annotated only in §1.6.34 |
 | §1.6.35 — AUTOCONNECT-CORRECTNESS-CLUSTER (v1.0.42) | VERIFIED at SOURCE CODE + TEST level — `attemptTimeoutMsProvider`, `nativeSlotAwaitMsProvider` and `isNetworkAvailable` inspected in the constructor, and both `coerceAtLeast(1L)` helpers plus the single `serverKey(ip, hostname)` formatter inspected; the two network guards sit after the protocol check and inside the loop, before `wedgeKey`/`attempted`; `ERROR_NO_NETWORK` is published from exactly those two sites and mapped in `AutoModeScreen` to `auto_mode_error_no_network`; `GlobalVpnTracker.isAnyNetworkAvailable()` inspected (fails open on a missing context); `resumeFromServerKey` replaces `resumeFromIndex` at all five read/write sites and the skip filter uses `serverKey`; 12 new JVM tests (4 + 4 + 1 + 3) all green, with the four OP-R6/skip tests from v1.0.31/v1.0.37 and both `…IsCappedToTheAttemptBudget` tests passing unchanged; `:app` **858/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `e8a4bb14…7ecd`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so "Settings change applies to the next attempt", "offline stops at once" and "re-sort does not shift the continuation" are SOURCE CODE + TEST only. §12.5.1 remains FROZEN; §22 byte-identical |
+| §1.6.36 — ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (v1.0.43) | VERIFIED at SOURCE CODE + TEST level — `DataUtil.getPrefersVpnForCollector()` / `setPrefersVpnForCollector()` inspected and confirmed to reuse the exact key literal `"vpn_always_prefer_vpn"` (independent of the frozen `GlobalVpnTracker.PREF_ALWAYS_PREFER_VPN`); the `SettingsScreen` Auto Mode `SettingSwitchRow` inspected (binds `dataUtil.get/setPrefersVpnForCollector()`, defaults off); `HttpFetcher.boundToNetwork` inspected — wrapped in `try/catch (Throwable)` logging `[bind] ok network=…` / `[bind] FAILED network=… errno=…` and re-throwing (control flow unchanged); 7 new JVM tests (4 + 3) all green with `DataUtilPrefersVpnTest` and `HttpFetcherBindDiagnosticTest` added and the rest of the suite unchanged; `:app` **865/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `ed82fc058796a45698cd41a90d4dcb1fb20ecbc05198b30d57eaecf2117bce19`, version unchanged at `144 / 2.4.11`. **NOT device-verified** — no device run in this phase, so "the opt-in is now user-reachable" and "the `[bind] FAILED` line attributes an EPERM" are SOURCE CODE + TEST only. §12.5.1 remains FROZEN; §22 byte-identical |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
