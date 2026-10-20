@@ -1732,10 +1732,14 @@ if (sessionPolicy.isRunning) {
  *
  * These counters are the missing input for the already-decided
  * `isTunnelUsable()` contract (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q1,
- * USER-DIRECTED REQUIREMENT). Scope: the counters exist and `noteTunEio`
- * is wired (TunTerminal R5), but `noteRxAdvance` is **not** called by any
- * data-forwarding path in this phase — that wiring is deferred to R4b and
- * must not be inferred from this object's existence.
+ * USER-DIRECTED REQUIREMENT). Scope: the counters exist, `noteTunEio` is
+ * wired (TunTerminal R5), and `noteRxAdvance` **is** called — R4b added the
+ * producer at `ConnectionController.kt:1157`, once per successfully-received
+ * batch. `isTunnelUsable()` therefore reflects real traffic, and v1.0.41
+ * (§1.6.34) consumes it through
+ * `GlobalVpnTracker.isTunnelUsableForRouting()`. The earlier wording ("not
+ * called by any data-forwarding path … deferred to R4b") was accurate when
+ * written and is corrected here.
  */
 object TunnelHealth {
     private val rxCounter = java.util.concurrent.atomic.AtomicLong(0L)

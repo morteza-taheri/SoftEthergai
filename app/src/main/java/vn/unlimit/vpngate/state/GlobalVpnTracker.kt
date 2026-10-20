@@ -290,6 +290,36 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     val isConnecting: Boolean
         get() = _vpnState.value.status == VpnConnectionStatus.CONNECTING
 
+    /**
+     * v1.0.41 (§1.6.34 / operator authorisation A2): wall-clock ms of the
+     * transition **into** [VpnConnectionStatus.CONNECTED]; `0` while no
+     * tunnel is up.
+     *
+     * Stamped only on the transition, not on every republish of a
+     * CONNECTED state: the ledger republishes a surviving stack when the
+     * other stack tears down, and re-stamping there would silently move
+     * the anchor forward.
+     *
+     * **Not consumed by the routing decision.** [isTunnelUsableForRouting]
+     * derives its grace window from "no RX observed yet and no recent
+     * TUN EIO", which needs no start time. This field exists because it is
+     * the correct anchor for a future *time-bounded* grace period and
+     * because a device log wants to show how long a tunnel had been up
+     * when the collector declined to use it. See §1.6.34 bullet 3.
+     */
+    @Volatile
+    private var connectedAtMsValue: Long = 0L
+
+    /**
+     * v1.0.41 (§1.6.34 / A2): when the current CONNECTED state began.
+     *
+     * `internal` rather than `private` because the diagnostic consumer
+     * lives in `VpnServerRepository`, the same module. A `0` return means
+     * "no tunnel is currently connected", which is also what a JVM test
+     * sees without any Android runtime.
+     */
+    internal fun connectedAtMs(): Long = connectedAtMsValue
+
     private var prefs: SharedPreferences? = null
     private var isInitialized = false
 
@@ -354,13 +384,13 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     // dependency direction (SoftEtherClient cannot see `app`). This class
     // delegates and keeps the public API.
     //
-    // IMPORTANT SCOPE: the counters are NOT yet wired to real traffic in
-    // this phase. Nothing calls [noteRxAdvance]; the RX advance must come
-    // from the data-forwarding path (a separate phase that touches
-    // ConnectionController/SoftEtherClient — neither authorized here).
-    // [noteTunEio] IS called — from TunTerminal's new EIO branch (R5).
-    // Until RX is wired, [isTunnelUsable] reports false because no RX
-    // advance has ever been observed, which is the safe direction.
+    // v1.0.41 (§1.6.34): the RX advance IS wired. R4b added
+    // TunnelHealth.noteRxAdvance() at ConnectionController.kt:1157 — one
+    // call per successfully-received batch — so [isTunnelUsable] reflects
+    // real traffic and no longer reports false unconditionally. The note
+    // that stood here from v1.0.11 to v1.0.40 ("Nothing calls
+    // [noteRxAdvance]") was stale and is corrected in this revision.
+    // [noteTunEio] is called from TunTerminal's EIO branch (R5).
     // ─────────────────────────────────────────────────────────────────────
 
     /** Process-wide monotonic RX counter (read-only snapshot). */
@@ -397,6 +427,43 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      */
     fun isTunnelUsable(): Boolean =
         TunnelHealth.isUsable(isConnected, System.currentTimeMillis())
+
+    /**
+     * v1.0.41 (§1.6.34): the traffic-path routing signal.
+     *
+     * [isTunnelUsable] requires an RX advance inside
+     * [TunnelHealth.RX_WINDOW_MS]. Immediately after CONNECTED no frame has
+     * been received yet, so the strict check reports `false` for a tunnel
+     * that is in fact healthy — and routing a user who explicitly opted
+     * into `PREF_ALWAYS_PREFER_VPN` to OPEN in that window is a visible
+     * regression. This wrapper therefore applies the strict check once
+     * traffic has been observed, and a grace period before that.
+     *
+     * Decision order (fail-closed at every branch that lacks evidence):
+     *   1. not connected → false
+     *   2. no OS-bound VPN network → false
+     *   3. [isTunnelUsable] → true (real traffic, no recent EIO)
+     *   4. `rxCounter > 0` → false (traffic was observed, then stopped)
+     *   5. a TUN EIO inside [TunnelHealth.EIO_WINDOW_MS] → false
+     *   6. otherwise → true (grace: nothing observed yet, no EIO)
+     *
+     * Step 4 is what keeps the grace period from masking a tunnel that
+     * came up, carried traffic, and then died: once the counter has moved
+     * the grace branch is no longer reachable, so the only way back to
+     * `true` is a fresh RX advance.
+     *
+     * The decision itself lives in the file-scope pure function
+     * [routingUsableFromSignals] so it is unit-testable on the JVM without
+     * class-loading this Android-dependent object.
+     */
+    fun isTunnelUsableForRouting(): Boolean = routingUsableFromSignals(
+        isConnected = isConnected,
+        hasBoundNetwork = currentVpnNetwork() != null,
+        isUsable = isTunnelUsable(),
+        rxCounter = TunnelHealth.rxCounter(),
+        lastEioAtMs = TunnelHealth.lastEioAtMs(),
+        nowMs = System.currentTimeMillis(),
+    )
 
     /** Exposed for the unit tests written for R4a. */
     internal fun resetHealthCountersForTest() = TunnelHealth.resetHealthCountersForTest()
@@ -539,7 +606,24 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         )
         liveStacks.clear()
         liveStacks.addAll(verdict.live)
-        verdict.publish?.let { _vpnState.value = it }
+        verdict.publish?.let {
+            _vpnState.value = it
+            // v1.0.41 (§1.6.34 / A2): anchor the CONNECTED transition. Only a
+            // *transition* stamps it — the A-3 ledger republishes a surviving
+            // stack when the other one tears down, and re-stamping there would
+            // silently move the anchor forward. Only the timestamp is touched
+            // here; what gets published is still decided entirely by the ledger
+            // above, so A-3's behaviour is unchanged.
+            when (it.status) {
+                VpnConnectionStatus.CONNECTED ->
+                    if (connectedAtMsValue == 0L) {
+                        connectedAtMsValue = System.currentTimeMillis()
+                    }
+                VpnConnectionStatus.DISCONNECTED,
+                VpnConnectionStatus.ERROR -> connectedAtMsValue = 0L
+                else -> Unit
+            }
+        }
     }
 
     /**
@@ -686,3 +770,42 @@ internal const val PREF_ALWAYS_PREFER_VPN = "vpn_always_prefer_vpn"
  * JVM test costs nothing and initializes nothing.
  */
 internal const val VPN_LOST_RECHECK_MS = 50L
+
+/**
+ * v1.0.41 (§1.6.34): the pure decision behind
+ * [GlobalVpnTracker.isTunnelUsableForRouting].
+ *
+ * File-scope rather than a member of the object for the same reason
+ * [VPN_LOST_RECHECK_MS] is file-scope: `GlobalVpnTracker`'s initializer needs
+ * the Android runtime (`Handler(Looper.getMainLooper())`), so a JVM test
+ * cannot call a member without stubbing it. Every input here is a parameter;
+ * nothing is read from global state.
+ *
+ * @param isConnected the tracked connection state is CONNECTED.
+ * @param hasBoundNetwork a VPN `Network` is available for the VPN rung.
+ * @param isUsable [TunnelHealth.isUsable] already answered `true`.
+ * @param rxCounter process-wide RX advance count (`0` = nothing observed yet).
+ * @param lastEioAtMs wall-clock ms of the most recent TUN EIO (`0` = never).
+ * @param nowMs the clock the EIO window is measured against.
+ *
+ * Fail-closed: every branch that lacks evidence returns `false`, except the
+ * explicit grace branch (no RX ever observed *and* no recent EIO), which is
+ * the entire point of the wrapper. The EIO comparison uses `<=` where
+ * [TunnelHealth.isUsable] uses `<`, so at the exact boundary this function is
+ * the stricter of the two — the safe direction.
+ */
+internal fun routingUsableFromSignals(
+    isConnected: Boolean,
+    hasBoundNetwork: Boolean,
+    isUsable: Boolean,
+    rxCounter: Long,
+    lastEioAtMs: Long,
+    nowMs: Long,
+): Boolean {
+    if (!isConnected) return false
+    if (!hasBoundNetwork) return false
+    if (isUsable) return true
+    if (rxCounter > 0L) return false
+    if (lastEioAtMs > 0L && nowMs - lastEioAtMs <= TunnelHealth.EIO_WINDOW_MS) return false
+    return true
+}

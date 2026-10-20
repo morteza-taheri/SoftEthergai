@@ -91,47 +91,64 @@ class VpnServerRepository(
         /**
          * Production routing inputs.
          *
-         * v1.0.27 routing model — OPEN-first, VPN-fallback:
+         * v1.0.41 (§1.6.34) routing model — opt-in **and** health gated:
          *   - [preferVpn] is the user's "always prefer VPN" opt-in
-         *     ([GlobalVpnTracker.prefersVpnForCollector], default false). When
-         *     set it is the PRIMARY order: the VPN rung is taken first and OPEN
-         *     is the fallback.
-         *   - When the opt-in is OFF (the default) the primary rung is OPEN and
-         *     the VPN rung is only a fallback, used when OPEN fails AND a tunnel
-         *     the app itself created is up and OS-bound ([tunnelUsable] /
-         *     [hasBoundNetwork]).
-         *   - [tunnelUsable] / [hasBoundNetwork] describe whether the VPN rung
-         *     is actually reachable right now; they never force the VPN rung on
-         *     their own. The earlier `preferVpn ||= tunnelUp` form wrongly
-         *     preferred the VPN whenever any tunnel was up, wasting tunnel
-         *     bandwidth on directly-reachable lists.
-         *   The decision is consumed by [resolvePrimary] + [fetchOnChosenPath],
-         *     which try the primary rung and fall back to the other only when the
-         *     primary fails and the other rung is reachable.
+         *     ([GlobalVpnTracker.prefersVpnForCollector], default false). It
+         *     carries the user's *intent* only; it no longer decides the rung
+         *     on its own.
+         *   - [tunnelUsable] is the live health signal
+         *     ([GlobalVpnTracker.isTunnelUsableForRouting]): connected,
+         *     OS-bound, and either passing traffic right now or still inside
+         *     the post-connect grace period. This function only *supplies* it;
+         *     the gate itself lives in [resolvePrimary].
+         *   - [hasBoundNetwork] says a VPN `Network` exists to bind with. It
+         *     never forces the VPN rung on its own.
+         *
+         * The VPN rung is chosen only when `preferVpn && tunnelUsable`. With
+         * the opt-in OFF (the default) the primary rung is always OPEN,
+         * whatever the tunnel is doing. With the opt-in ON but the tunnel
+         * dead, OPEN is chosen **directly**: the pre-v1.0.41 code took the VPN
+         * rung anyway and relied on [fetchOnChosenPath] to recover, paying a
+         * full timeout for an attempt that could not succeed.
+         *
+         * The rung is still never forced by tunnel state alone — the earlier
+         * `preferVpn ||= tunnelUp` form did exactly that and wasted tunnel
+         * bandwidth on directly-reachable lists. [resolvePrimary] +
+         * [fetchOnChosenPath] remain the only consumers.
          */
         internal fun productionRouting(): CollectorRoutingInput {
-            val tunnelUp = GlobalVpnTracker.isConnected &&
-                GlobalVpnTracker.currentVpnNetwork() != null
+            // v1.0.41 (§1.6.34): feed the real usability signal. The gate
+            // decision is made in resolvePrimary; this function only supplies
+            // the inputs.
+            val usable = GlobalVpnTracker.isTunnelUsableForRouting()
             return CollectorRoutingInput(
-                // FIX-3a: honour the user opt-in as the PRIMARY order; do NOT OR the
-                // live tunnel state in here. OPEN-first / VPN-fallback is decided by
-                // resolvePrimary + fetchOnChosenPath.
+                // FIX-3a (v1.0.27), kept: honour the user opt-in as the user's
+                // intent; do NOT OR the live tunnel state in here. OPEN-first /
+                // VPN-fallback is decided by resolvePrimary + fetchOnChosenPath.
                 preferVpn = GlobalVpnTracker.prefersVpnForCollector(),
-                tunnelUsable = tunnelUp,
+                tunnelUsable = usable,
                 hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
             )
         }
 
         /**
-         * v1.0.27: the single primary rung for one refresh.
+         * v1.0.27, amended in v1.0.41 (§1.6.34): the single primary rung for
+         * one refresh.
          *
-         * When the user opted in ([preferVpn]) the VPN rung is primary and OPEN
-         * is the fallback; otherwise OPEN is primary and VPN is the fallback.
-         * The fallback is attempted by [fetchOnChosenPath] only when the primary
-         * actually fails and the fallback rung is reachable.
+         * The VPN rung is primary only when the user opted in **and** the
+         * tunnel is currently usable ([CollectorRoutingInput.tunnelUsable]).
+         * Otherwise OPEN is primary; the VPN rung is then only a fallback,
+         * attempted by [fetchOnChosenPath] when OPEN actually fails and a
+         * bound fetcher exists.
+         *
+         * Operator-authorised change (A1): before v1.0.41 this read
+         * `input.preferVpn` alone, so an opted-in user with a dead tunnel took
+         * the VPN rung first and recovered only through the fallback — a full
+         * timeout spent on an attempt that could not succeed.
          */
         internal fun resolvePrimary(input: CollectorRoutingInput): CollectorPath =
-            if (input.preferVpn) CollectorPath.VPN else CollectorPath.OPEN
+            if (input.preferVpn && input.tunnelUsable) CollectorPath.VPN
+            else CollectorPath.OPEN
 
         /**
          * The fetcher the VPN rung binds with, or null.
