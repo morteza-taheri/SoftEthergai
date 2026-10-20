@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `9951c9c9622ff94d694b8ee565dd2e3b318b71f1`
-**Document version:** 1.0.39
-**Last updated:** 2026-10-19
+**HEAD:** `6229a769a8a98397b5acf2e55717b3a248a9a097`
+**Document version:** 1.0.40
+**Last updated:** 2026-10-20
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -436,6 +436,8 @@ reports — see the appended rows below.) The count is the size of the **inclusi
 > commit cannot carry its own hash.
 
 > **Push state (v1.0.39).** RETENTION-IMPL-PHASE-1 — Cumulative Server Retention, foundation only (spec §1.6.31). Three authorized source files change: `VPNGateItem.kt` gains `firstSeenAt` / `lastSeenAt` / `healthScore`; `AppDatabase.kt` moves Room `version 7 → 8` with `MIGRATION_7_8` (three additive `ALTER TABLE VPNGateItem ADD COLUMN … INTEGER NOT NULL DEFAULT 0` statements — no DROP / DELETE / TRUNCATE / CREATE TABLE, so existing rows survive the upgrade); `App.kt` registers the migration; `ServerListUpdates.kt` rewires the single writer so a fresh network observation is **merged** (`mergeAll`) instead of replaced, while a fallback still replaces wholesale via the retained `replaceAll`. `ServerListUpdater` is untouched (the `fetchedFromCache` flag is threaded through `daoStore`). 11 new JVM tests (5 migration + 6 retention); `:app` **823/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `79c102728581023f77f2542053fce11131a0263563f2c86c08c9aa70a6de3c17`. Phases 2–3 (the max-server cap and the §9.3 retention-priority prune, plus the Settings UI) are out of scope. The header **HEAD** field is the code commit of this phase, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
+
+> **Push state (v1.0.40).** AUTOCONNECT-DEVICE-BUGS-FIX — the two of the three device-reported Auto Mode bugs that source evidence can settle (spec §1.6.32). **BUG-1** (the hero button read "Disconnected" while the tunnel was up, and the tap then hit the D-4 refusal) is closed structurally: `AutoModeViewModel` publishes a combined `AutoModeDisplayState` built by the pure `combineAutoModeState(modeState, tunnelStatus)` — the same reconciliation `HomeScreen.activeServerOf()` already performed for the list highlight — and `AutoModeScreen` renders the hero button from it, branching the tap on `isExternal` so an externally-owned tunnel is torn down (`stopAndDisconnect`) instead of refused. **BUG-3** (the battery-optimisation dialog on every press) is closed by a persisted `SETTING_BATTERY_OPT_ASKED` flag, following the `SETTING_LOCALE_ANSWERED` precedent, written on all three dialog exits. **BUG-2** (MS-SSTP never attempted) is **NOT** fixed and **NOT** claimed: the evidence needed to distinguish "no SSTP-capable server in the user's dataset" from "the protocol is filtered out before selection" is a device log, and none was taken — see `TRIAGE_AUTOCONNECT_DEVICE_BUGS_REPORT.md` §4. Four authorized files change (`AutoModeViewModel.kt`, `AutoModeScreen.kt`, `DataUtil.kt`, and one additive string in `strings.xml`); `AutoModeController.kt`, `AutoModeEngine.kt`, `GlobalVpnTracker.kt`, `HomeScreen.kt`, `AndroidConnectionAdapter.kt` and the build/manifest files are untouched, so `versionCode 144` / `versionName 2.4.11` are unchanged. 14 new JVM tests (8 display-state + 6 persisted-flag); `:app` **837/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL, APK SHA-256 `5bed6128ceb382e9619567eefd2ee989189c26ac2e36fc2efc566ec3bf60c91a`. All three fixes are **NOT device-verified** — this phase ran no device. The header **HEAD** field is the baseline commit `6229a769a8a98397b5acf2e55717b3a248a9a097`, the state this revision was verified against; a commit cannot carry its own hash. No tag operation of any kind was performed.
 
 #### 1.6.2 Session outcome in one paragraph
 
@@ -2498,6 +2500,102 @@ v1.0.34. Device-free: **no device, no adb, no C5, no tag**.
    test prove the DDL is correct, but no device has yet replayed `MIGRATION_7_8` against a populated
    database. Evidence: SOURCE CODE + UNKNOWN.
 9. **No new methodology lessons.**
+
+#### 1.6.32 AUTOCONNECT-DEVICE-BUGS-FIX (v1.0.40)
+
+1. **The requirement.** Three Auto Mode defects were reported from hardware
+   (`TRIAGE_AUTOCONNECT_DEVICE_BUGS_REPORT.md`, read-only discovery at `6229a76`): **BUG-1** the hero
+   button read "Disconnected" while a tunnel was up, and the tap then did nothing; **BUG-2** MS-SSTP
+   was never attempted; **BUG-3** the battery-optimisation dialog reappeared on every press. This phase
+   fixes **BUG-1** and **BUG-3** and **defers BUG-2** (bullet 7). Evidence: SOURCE CODE + PHYSICAL
+   DEVICE (the symptom reports).
+2. **BUG-1 — root cause (unchanged from the triage).** The hero button was bound exclusively to
+   `AutoModeState` (`AutoModeScreen.kt:140`, `:360–363`, `:590–597`), whose only writers are
+   `AutoModeController.setState` (`:534–536`, `Connected` published only at `:2050`) →
+   `AutoModeEngine._state` (`:149–150`). A manual connect (`DetailActivity.kt:318`) or a service-level
+   reconnect never invokes any of them, so the button could not reflect it. The D-4 guard reads the
+   *true* state (`isTunnelBusy = { GlobalVpnTracker.isActiveOrBusy }`, `AutoModeEngine.kt:137`) and
+   therefore refused the tap (`AutoModeController.kt:1059–1060`). The reconciliation already existed
+   for the list highlight — `HomeScreen` observes both sources (`:125–128`) and `activeServerOf()`
+   falls back to `GlobalVpnState.status` (`:693–711`) — but the Auto Mode screen did not use it.
+   Evidence: SOURCE CODE.
+3. **BUG-1 — the fix (display aggregation, no state-machine change).** `AutoModeViewModel.kt` gains a
+   `data class AutoModeDisplayState(modeState, tunnelStatus, display, tapMeansDisconnect, isExternal)`
+   and a pure `internal fun combineAutoModeState(modeState, tunnelStatus)`: an Auto Mode run owns the
+   display while it is `Connected` or `Connecting` (even if the tracker has not caught up); otherwise a
+   `CONNECTED` / `CONNECTING` tracker is surfaced as a synthesized `Connected` / `Connecting` with
+   `isExternal = true`; otherwise the run state passes through unchanged. The ViewModel publishes
+   `displayState: LiveData<AutoModeDisplayState>` from
+   `combine(AutoModeEngine.stateFlow, GlobalVpnTracker.vpnState)` — the same two sources
+   `HomeScreen` combines — while `state` keeps its existing meaning. Evidence: SOURCE CODE + TEST.
+4. **BUG-1 — one deliberate divergence from the triage's proposed shape.** The triage suggested using
+   `AutoModeState` when it is `Error`; this phase lets a live external tunnel **outrank** `Error`, so
+   the button shows Connected rather than Error while a tunnel is up (T-NEW-28g). Rationale: the point
+   of the fix is that the button and the D-4 guard must agree — the guard sees a busy tunnel and
+   refuses to start, so an `Error` button that offers "Tap to retry" would re-create the original
+   mismatch in the other direction. The error itself is preserved in `modeState` and still drives the
+   error card. Evidence: SOURCE CODE + TEST + INFERENCE (the guard's behaviour is read from source, not
+   observed on a device in this phase).
+5. **BUG-1 — screen wiring and the external tap.** `AutoModeScreen` renders
+   `AutoConnectHeroButton(state = displayState.display, isExternal = displayState.isExternal, …)` and
+   `startAutoModeWithAllChecks()` now decides from the **same** combined value it renders (read at click
+   time from the LiveData, not from a composition snapshot): `Disconnected`/`Error` → start the normal
+   permission path; otherwise, if `isExternal`, call the new
+   `AutoModeViewModel.disconnectExternalTunnel()` → `AutoModeEngine.stopAndDisconnect()` →
+   `AutoModeController.disconnectNow()`, which issues the teardown unconditionally (its `isRunning`
+   branch is not taken, so it still calls `requestDisconnect()` + `disconnect()`); otherwise keep the
+   existing `onButtonPressed()` toggle. `onButtonPressed()` alone could not serve the external case —
+   its D-4 guard refuses exactly there — so the fix would otherwise have left the user with a
+   "Connected" button and no way out. An additive string `auto_mode_state_connected_external`
+   ("Connected (manual)") marks the external case; other locales fall back to it. `state` is still
+   observed and still drives the developer log, the error card and "Try next server". Evidence: SOURCE
+   CODE.
+6. **BUG-3 — root cause and fix.** The gate was the live OS state alone —
+   `if (!isIgnoringBattery) { showBatteryDialog = true; return }` (`AutoModeScreen.kt:201–209`) — with
+   `showBatteryDialog` a transient `remember` flag (`:142`) and **no** persisted "asked" preference
+   anywhere in the repository. After "Later" (or after a manufacturer that resets the exemption), every
+   press re-read the OS, still found "not exempt", and re-opened the dialog. `DataUtil` now carries
+   `SETTING_BATTERY_OPT_ASKED` plus `hasAskedBatteryOptimization()` / `setAskedBatteryOptimization()`,
+   mirroring the `SETTING_LOCALE_ANSWERED` precedent (`DataUtil.kt:534`, `:327–329`); the gate is
+   `!isIgnoringBattery && !hasAskedBatteryOptimization()`, and the flag is written on **every** dialog
+   exit — Configure, Later, and `onDismissRequest` (back / outside tap). Consequence, stated plainly:
+   the prompt is offered **once per install**, not once per un-exempt episode; a user who later changes
+   their mind reaches the same screen from system Settings. Evidence: SOURCE CODE + TEST.
+7. **BUG-2 is deferred, not fixed and not claimed.** The triage could not decide between "the user's
+   dataset contains no SSTP-capable server" and "MS_SSTP is filtered out before selection": only the
+   HTML source supplies protocol columns (`VpnServerRepository.kt:252–255`), the API and the bundled
+   seed carry none, and the merger *strengthens* SSTP rather than dropping it
+   (`AutoModeController.kt:2236`). The distinguishing evidence is a device log of one Auto Mode run
+   with MS_SSTP enabled; no device run happened in this phase, so the user's dataset remains
+   **UNKNOWN**. Evidence: SOURCE CODE + UNKNOWN.
+8. **Tests.** 14 new JVM tests in two new files, no existing test modified or deleted.
+   `AutoModeDisplayStateTest` (8, T-NEW-28a…h) exercises `combineAutoModeState` directly: quiet case
+   unchanged; external `CONNECTED` shows Connected with `isExternal` and `tapMeansDisconnect`; external
+   `CONNECTING` shows Connecting; `DISCONNECTING` is **not** shown as Connected; a run's own
+   `Connected`/`Connecting` wins over a lagging tracker; a live tunnel outranks `Error`; an `Error`
+   with no tunnel stays an `Error` offering a retry. It also pins that the synthesized state carries
+   **no** fabricated `hostname`/`ip`. `DataUtilBatteryFlagTest` (6, T-NEW-29a…f) covers the flag
+   through `DataUtil`'s preferences accessors: default false; true after set; survives a new `DataUtil`
+   over the same store; stored under the documented key; and no cross-talk in either direction with
+   `SETTING_LOCALE_ANSWERED`. Because this module's unit tests are **JUnit 4 only** (no Robolectric, no
+   Mockito) and `DataUtil`'s primary constructor needs a `Context`, the test injects an in-memory
+   `SharedPreferences` through a new `internal constructor(sharedPreferences)` seam; the flag accessors
+   touch nothing else, so the seam adds no production behaviour. Evidence: TEST.
+9. **JVM and build gate.** `:app` **837 / 0 / 0 / 1** (baseline 823 / 0 / 0 / 1 — the delta is exactly
+   the 14 new tests; the one skip is unchanged, `HtmlParserOracleTest`); `:SoftEtherClient`
+   **173 / 0 / 0 / 0** (unchanged). `:app:assembleProDebug --rerun-tasks --no-build-cache` under
+   `CI=true` → BUILD SUCCESSFUL; `aapt2 dump badging` reports
+   `versionCode='144' versionName='2.4.11-dev'` (the version is **unchanged** — no build or manifest
+   file was touched; `-dev` is the debug-variant append). APK SHA-256
+   `5bed6128ceb382e9619567eefd2ee989189c26ac2e36fc2efc566ec3bf60c91a`. Evidence: TEST.
+10. **Scope, and what is not verified.** Only four authorized files changed
+    (`AutoModeViewModel.kt`, `AutoModeScreen.kt`, `DataUtil.kt`, one additive `strings.xml` entry) plus
+    two new test files. `AutoModeController.kt`, `AutoModeEngine.kt`, `GlobalVpnTracker.kt`,
+    `HomeScreen.kt`, `AndroidConnectionAdapter.kt` and every build/manifest file are untouched, so the
+    Auto Mode state machine and the D-4 refusal are exactly as verified at `6229a76`. **All three bugs
+    remain un-verified on hardware** — this phase ran no device, so BUG-1's fix and BUG-3's one-shot
+    prompt are SOURCE CODE + TEST only, and the device symptom reports are the only PHYSICAL DEVICE
+    evidence in play. Evidence: SOURCE CODE + TEST + UNKNOWN (device).
 
 ## 2. Architecture Overview
 
@@ -4564,6 +4662,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 
 | 1.0.38 | 2026-10-19 | VERSION-BUMP-PAST-2.4.10 (device-free; no source, test, or signing change) | **Resolves the version-identity collision recorded in §1.6.12 bullet 5 (v1.0.19).** HEAD declared `versionCode 143` / `versionName "2.4.10"` — the same identity as tag `p2.4.10` — while it stood 60+ commits ahead of that tag, so every device install since v1.0.19, including the v1.0.37 hardware verification, reported `versionCode 143` and was indistinguishable by version from the `p2.4.10` artifact. `app/build.gradle` now declares **`versionCode 144`** / **`versionName "2.4.11"`** inside the `pro` flavor, the only place in the repository that declares the application version; a two-line comment above the fields cites §1.6.30. Discovery was exhaustive and read-only: no second `build.gradle`/`.properties`/`.json`/`.toml` declares a version, **no test** under `app/src/test/` or `app/src/androidTest/` references `versionCode`/`versionName`/`143`/`2.4.10` (so no test changed and no count moved), and the seven `BuildConfig.VERSION_NAME` / `VERSION_CODE` readers are symbolic, display-only, and follow the bump automatically. One comment in `CollectorSnapshotStore.kt` still says "the 143 / 2.4.10 release line", but it is a historical citation of commit `0714628` used as mapping evidence — not a version declaration — and that file is FROZEN. `aapt2 dump badging` on the rebuilt APK confirms `versionCode='144' versionName='2.4.11'`, so the manifest came from the bumped Gradle values, not a stale cache. JVM unchanged: `:app` **812 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. This does **not** make 2.4.11 releasable: a cut still requires the fail-closed release keystore (§1.6.10 bullet 8 / **RISK-A**), no signing configuration was touched, and **no tag was created** (still five). The v1.0.37 AutoConnect contract (§1.6.29) and its hardware verification are untouched. |
 | 1.0.39 | 2026-10-19 | RETENTION-IMPL-PHASE-1 (device-free; foundation of Cumulative Server Retention, spec §1.6.31) | **Lays the foundation of Cumulative Server Retention (`SERVER_SOURCE_ARCHITECTURE.md` §9.1–§9.2).** At HEAD `fed8787`, `VPNGateItem` carried no retention fields and the single writer replaced the whole table on every accepted refresh. This phase: (a) adds `firstSeenAt` / `lastSeenAt` / `healthScore` to `VPNGateItem` and moves Room `version 7 → 8` via `MIGRATION_7_8` (three additive `ALTER TABLE … ADD COLUMN … INTEGER NOT NULL DEFAULT 0` — no DROP/DELETE/TRUNCATE/CREATE TABLE, so existing rows survive); `App.kt` registers the migration and the KSP-exported `8.json` matches the DDL; (b) rewires `ServerListUpdates.daoStore.replaceAll` to **merge** a fresh network observation (`mergeAll`: new server gets `firstSeenAt = now`, returning server keeps `firstSeenAt` and refreshes `lastSeenAt`, quiet stored servers are retained, manual servers survive the overlay, commit inside `replaceAll`'s `@Transaction`) while a fallback still replaces wholesale via the retained `replaceAll`; `ServerListUpdater` is untouched; (c) the phase-1 `healthScore` is `0 if lastSeenAt==0; 100 if score>0 && ping>0; 50 if score>0 || ping>0; 25 otherwise`. 11 new JVM tests (5 migration + 6 retention); no existing test changed. `:app` **823 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'`, SHA-256 `79c102728581023f77f2542053fce11131a0263563f2c86c08c9aa70a6de3c17`. Roadmap item G is now **PARTIAL** (merge landed; §9.3 retention-priority prune + max-server cap are phases 2–3, NOT IMPLEMENTED). Phases 2–3 and a real-device 7→8 upgrade are **UNKNOWN**. No tag was created; §22 byte-identical. |
+| 1.0.40 | 2026-10-20 | AUTOCONNECT-DEVICE-BUGS-FIX (device-free; two of the three device-reported Auto Mode bugs, spec §1.6.32) | **Closes the button-state mismatch (BUG-1) and the repeating battery prompt (BUG-3); defers BUG-2.** BUG-1: the hero button was bound exclusively to `AutoModeState`, whose only writer is `AutoModeController.setState` (`Connected` published only at `:2050`), so a manual connect (`DetailActivity.kt:318`) left the button reading "Disconnected" while the D-4 guard (`AutoModeEngine.kt:137`) saw the live tunnel and refused the tap (`AutoModeController.kt:1059–1060`). `AutoModeViewModel` now publishes a combined `AutoModeDisplayState` built by the pure `combineAutoModeState(modeState, tunnelStatus)` — the same reconciliation `HomeScreen.activeServerOf()` already performed (`:693–711`) — from `combine(AutoModeEngine.stateFlow, GlobalVpnTracker.vpnState)`; `AutoModeScreen` renders it and branches the tap on `isExternal`, tearing an externally-owned tunnel down through the new `disconnectExternalTunnel()` → `stopAndDisconnect()` → `disconnectNow()` (the D-4 refusal cannot serve that case). One deliberate divergence from the triage: a live tunnel **outranks** `Error` so the button and the guard agree. Additive string `auto_mode_state_connected_external` ("Connected (manual)"). BUG-3: the gate was the live OS state alone (`AutoModeScreen.kt:201–209`) with a transient `remember` flag and no persisted "asked" preference anywhere, so "Later" re-prompted on every press; `DataUtil` gains `SETTING_BATTERY_OPT_ASKED` + `hasAskedBatteryOptimization()` / `setAskedBatteryOptimization()` (the `SETTING_LOCALE_ANSWERED` precedent), written on every dialog exit, so the prompt is **once per install**. BUG-2 (MS-SSTP never attempted) is **NOT fixed and NOT claimed** — the distinguishing evidence is a device log, and the user's dataset remains **UNKNOWN**. 14 new JVM tests (8 display-state + 6 persisted-flag) using an in-memory `SharedPreferences` seam, because this module has JUnit 4 only; no existing test changed. `:app` **837 / 0 / 0 / 1**, `:SoftEtherClient` **173 / 0 / 0 / 0**. `:app:assembleProDebug` SUCCESSFUL under `CI=true`; APK `versionCode='144' versionName='2.4.11-dev'` (**version unchanged**), SHA-256 `5bed6128ceb382e9619567eefd2ee989189c26ac2e36fc2efc566ec3bf60c91a`. `AutoModeController.kt`, `AutoModeEngine.kt`, `GlobalVpnTracker.kt`, `HomeScreen.kt` and all build/manifest files untouched. All three bugs remain **NOT device-verified**. No tag was created; §22 byte-identical. |
 
 ### Verification Status
 
@@ -4573,6 +4672,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | §1.6.29 — AUTOCONNECT-FIX-7 (v1.0.37) | VERIFIED at SOURCE CODE + TEST level — adapter `lastArmedBusyRefused` and both controller branches inspected; `:app` **812/0/0/1**, `:SoftEtherClient` **173/0/0/0**; 8 tests rewritten and 4 added. **NOT device-verified** — no device run in this phase; Fix-A remains UNVERIFIED |
 | §1.6.30 — VERSION-BUMP-PAST-2.4.10 (v1.0.38) | HISTORICAL — the collision and the bump are source-verifiable (`app/build.gradle` is the only version declaration; no test pins it); APK `versionCode='144' versionName='2.4.11'` confirmed by `aapt2 dump badging`; JVM unchanged at `:app` **812/0/0/1**, `:SoftEtherClient` **173/0/0/0**. Release-readiness (RISK-A keystore) is **INFERENCE** from §1.6.10 bullet 8 — no release build was attempted and no tag exists |
 | §1.6.31 — RETENTION-IMPL-PHASE-1 (v1.0.39) | VERIFIED at SOURCE CODE + TEST level — `VPNGateItem` retention fields and Room `version 8` / `MIGRATION_7_8` inspected; `mergeAll` and `retentionHealthScore` inspected; the `8.json` schema matches the DDL; 11 new JVM tests (5 migration + 6 retention) all green; `:app` **823/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `79c10272…3c17`. The 7→8 upgrade is JVM-verified only — a real-device replay is **UNKNOWN**; phases 2–3 (§9.3 prune, max-server cap) are **NOT IMPLEMENTED**. Item G (§12.5.2) is **PARTIAL** |
+| §1.6.32 — AUTOCONNECT-DEVICE-BUGS-FIX (v1.0.40) | VERIFIED at SOURCE CODE + TEST level — `combineAutoModeState` and `AutoModeDisplayState` inspected; the screen's render + tap branch and the three battery-dialog exits inspected; 14 new JVM tests (8 display-state + 6 persisted-flag) all green; `:app` **837/0/0/1**, `:SoftEtherClient` **173/0/0/0**; `:app:assembleProDebug` SUCCESSFUL under `CI=true`, APK SHA-256 `5bed6128…c91a`, version unchanged at `144 / 2.4.11-dev`. **NOT device-verified** — no device run in this phase, so BUG-1's display fix and BUG-3's one-shot prompt are SOURCE CODE + TEST only. **BUG-2 (MS-SSTP never attempted) is DEFERRED** — the user's dataset is **UNKNOWN** and no fix is claimed |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
