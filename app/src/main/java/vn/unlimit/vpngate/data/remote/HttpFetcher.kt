@@ -138,8 +138,29 @@ fun boundToSocketFactory(socketFactory: SocketFactory): OkHttpClient =
  * @param network typically `GlobalVpnTracker.currentVpnNetwork()` — the
  *   system VPN network the tracker's watcher observed.
  */
+/**
+ * ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M2, spec §1.6.36) — diagnostics-only
+ * wrapper around the VPN-network binding.
+ *
+ * On the device (DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8) a VPN-rung fetch failed
+ * with `EPERM (Operation not permitted)` while binding a socket to the VPN network.
+ * The binding itself is narrow (`Network.getSocketFactory()`, never
+ * `bindProcessToNetwork()` — see SERVER_SOURCE_ARCHITECTURE.md §7 Q2), but the failure
+ * was previously only visible as a generic "Request failed". These two log lines make
+ * the bind attempt and its failure attribute to a network, so the next device run can
+ * tell a *construction-time* failure (a stale/revoked `Network`, surfaced here) from a
+ * *socket-open-time* EPERM (surfaced later in `OkHttpFetcher.execute`). Control flow
+ * is unchanged: every exception is re-thrown.
+ */
 fun boundToNetwork(network: Network): OkHttpClient =
-    boundToSocketFactory(network.socketFactory)
+    try {
+        val client = boundToSocketFactory(network.socketFactory)
+        CollectorLog.d("[bind] ok network=$network")
+        client
+    } catch (e: Throwable) {
+        CollectorLog.d("[bind] FAILED network=$network errno=${e.message}")
+        throw e
+    }
 
 class OkHttpFetcher(
     private val client: OkHttpClient = defaultCollectorClient(),

@@ -190,6 +190,10 @@ fun SettingsScreen(
     var autoTimeout by remember { mutableStateOf(dataUtil.getAutoModeTimeoutSeconds()) }
     // R8 (§11.13): Auto-Reconnect in Auto Mode toggle state.
     var autoReconnect by remember { mutableStateOf(dataUtil.getAutoReconnectInAutoMode()) }
+    // ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, §1.6.36): the "always prefer
+    // VPN" collector-routing opt-in. Off by default — turning it on lets the
+    // collector ride the system VPN tunnel when a usable one exists.
+    var prefersVpn by remember { mutableStateOf(dataUtil.getPrefersVpnForCollector()) }
     var softetherMaxConnections by remember { mutableStateOf(dataUtil.getSoftEtherMaxConnections()) }
     var cacheExpires by remember { mutableStateOf(dataUtil.connectionCacheExpires) }
     // Scheduled server list refresh interval, in hours (1..24, default 12).
@@ -539,6 +543,22 @@ fun SettingsScreen(
                         onChecked = {
                             autoReconnect = it
                             dataUtil.setAutoReconnectInAutoMode(it)
+                        },
+                    )
+                    SettingDivider()
+                    // ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, §1.6.36): opt-in to
+                    // route collector traffic through the system VPN when a usable tunnel
+                    // exists. Writes the same key GlobalVpnTracker.prefersVpnForCollector()
+                    // reads ("vpn_always_prefer_vpn") — until this phase nothing wrote it,
+                    // so the v1.0.41 VPN rung was unreachable (DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8).
+                    SettingSwitchRow(
+                        title = stringResource(R.string.setting_prefer_vpn_collector_label),
+                        subtitle = stringResource(R.string.setting_prefer_vpn_collector_summary),
+                        icon = Icons.Outlined.VpnLock,
+                        checked = prefersVpn,
+                        onChecked = {
+                            prefersVpn = it
+                            dataUtil.setPrefersVpnForCollector(it)
                         },
                     )
                     SettingDivider()

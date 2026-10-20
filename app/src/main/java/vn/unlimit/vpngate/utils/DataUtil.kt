@@ -382,6 +382,30 @@ class DataUtil(context: Context?) {
     }
 
     /**
+     * ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, spec §1.6.36) — the
+     * "always prefer VPN" collector-routing opt-in.
+     *
+     * `GlobalVpnTracker.prefersVpnForCollector()` reads the SAME preference key
+     * (`"vpn_always_prefer_vpn"`, the value of its internal
+     * `PREF_ALWAYS_PREFER_VPN`) but, until this phase, nothing ever wrote it —
+     * so the v1.0.41 VPN routing rung was unreachable for every user (see
+     * `DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8`). This is the single writer
+     * the Settings toggle calls.
+     *
+     * The key literal is repeated here on purpose rather than referencing
+     * `GlobalVpnTracker.PREF_ALWAYS_PREFER_VPN`: it keeps this accessor
+     * independent of that (frozen) file, and lets a source-shape unit test
+     * assert the exact byte string `"vpn_always_prefer_vpn"`.
+     */
+    fun getPrefersVpnForCollector(): Boolean =
+        getBooleanSetting("vpn_always_prefer_vpn", false)
+
+    /** @see getPrefersVpnForCollector */
+    fun setPrefersVpnForCollector(enabled: Boolean) {
+        setBooleanSetting("vpn_always_prefer_vpn", enabled)
+    }
+
+    /**
      * Auto Mode protocol priority profile: ordered ids of ENABLED protocols
      * (priority = list order).
      *

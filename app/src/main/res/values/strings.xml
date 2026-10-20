@@ -266,6 +266,8 @@
     <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
     <string name="setting_auto_reconnect_label">Auto-Reconnect in Auto Mode</string>
     <string name="setting_auto_reconnect_hint">Automatically try to reconnect after an unexpected disconnect while Auto Mode is active.</string>
+    <string name="setting_prefer_vpn_collector_label">Route collector traffic via VPN</string>
+    <string name="setting_prefer_vpn_collector_summary">When a VPN tunnel is active, send server-list and status requests through it instead of the open network.</string>
     <string name="error_reconnect_limit">Reconnect limit reached — stopping</string>
     <string name="setting_softether_max_connections_label">SoftEther Max Connections</string>
     <string name="setting_softether_max_connections_value">%1$d connections</string>
