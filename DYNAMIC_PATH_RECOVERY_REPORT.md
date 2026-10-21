@@ -178,7 +178,7 @@ Key properties:
 - `resolvePrimary()` is now `routeLadder(input).first()` — one source of truth.
 - `fetchOnChosenPath` falls back to the opposite main rung only when reachable; a `TUNNEL` primary with no bound fetcher degrades to `PHYSICAL` and **says so** (`path=physical (tunnel rung unavailable)`) rather than claiming a fallback it did not perform.
 - **DB preservation is explicit**: every-rung-fails logs `[ladder] all rungs failed; preserving DB` and returns the last-known-good snapshot. Nothing truncates or clears the store.
-- `EMERGENCY` is modelled but **inert** in this build (`hasEmergencySources() = false`); the skip is logged.
+- `EMERGENCY` is modelled but **inert in the collector** (`hasEmergencySources()` is a stub returning `false`); the skip is logged. Emergency sources do exist elsewhere in the pipeline — `ServerListUpdates` consumes them through `EmergencySourceFetcher`, and a background publisher refreshes `emergency-sources/servers.csv` — but the ladder does not read them.
 
 ### 4.5 FIX-5 — bounded budgets
 
@@ -350,7 +350,7 @@ Spec edits actually applied:
 | **P3 root cause** (`EPERM`) | **UNKNOWN.** Diagnostics exist; the answer needs a device log. |
 | **App self-exclusion confirmation** | **UNKNOWN.** The exclusion list is inside the frozen `SoftEtherVpnService`; `SelfExclusion` returns `UNKNOWN` until that boundary is authorised to expose it. |
 | **Per-source path memory** | **NOT IMPLEMENTED** — the spec's §11.8 "retain useful source/path outcome information" is still phase 2; the ladder is stateless per refresh. |
-| **Emergency `servers.csv` publication** | **NOT IMPLEMENTED** — the `EMERGENCY` rung is modelled but has no configured source, so it is inert by construction (and logs the skip). |
+| **Emergency source wiring into the ladder** | **NOT IMPLEMENTED** — `VpnServerRepository.hasEmergencySources()` is a stub returning `false`, so the ladder's `EMERGENCY` rung is inert and logs the skip. Emergency publication/consumption already exist **outside** the collector: a background publisher refreshes `emergency-sources/servers.csv` + `emergency_defaults.xml`, and `ServerListUpdates` consumes sources via `EmergencySourceFetcher`. |
 | **Retention phases 2–3** | **NOT IMPLEMENTED** (§9.3 retention-priority prune + max-server cap). |
 | **Physical path with only an unvalidated network** | **UNTESTED** — `currentPhysicalNetwork()` requires `NET_CAPABILITY_VALIDATED`, so such a device finds no PHYSICAL rung and degrades to the injected fetcher. |
 
@@ -426,6 +426,22 @@ The most plausible mechanism is that adding 21 tests (and renaming ~31) shifts J
 ### 12.3 Environment note
 
 The gate also hit `java.net.BindException: Address already in use: Cannot bind` at Gradle service creation in four separate invocations (no `java.exe` running at the time). These aborted **before** any task ran and were simply retried; they are not test results and are excluded from the table above.
+
+### 12.4 Concurrent repository activity (not part of this block)
+
+While the gate was running, a **background publisher** committed to `main` three times, advancing `HEAD` past this block's commits:
+
+```
+fea61a7 chore(emergency): update servers.csv (80 servers)
+aac5603 chore(emergency): update servers.csv (80 servers)
+59ecc0c chore(emergency): update servers.csv (81 servers)
+```
+
+These touch `emergency-sources/servers.csv` and `app/src/main/res/values/emergency_defaults.xml` only. **They were not created, staged or amended by this block**, and no file of this block was modified by them: `git diff a740cc5..HEAD -- app/ PROJECT_SPECIFICATION.md` shows only `emergency_defaults.xml` (+4 lines). The block's own content is intact at `0b2d91c`.
+
+The working tree also carries an uncommitted `vpngate_collector.py` modification made by that publisher. It is **not** this block's change and was deliberately left untouched and uncommitted.
+
+Consequence for §10: the claim that emergency *publication* was missing is wrong — publication and consumption already exist outside the collector. What is missing is wiring those sources into `VpnServerRepository`'s `EMERGENCY` rung; the §10 row was corrected accordingly.
 
 ---
 
