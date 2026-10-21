@@ -122,28 +122,24 @@ object ServerListUpdates {
     }
 
     /**
-     * The emergency rung's dataset: the enabled user-configured sources,
-     * fetched and parsed into the same `List<VPNGateItem>` the primary fetch
-     * produces.
+     * v1.0.49 (§1.6.42): the validated emergency records, or null.
      *
-     * It is the **last** rung, exactly as `SERVER_SOURCE_ARCHITECTURE.md`
-     * §2.5 orders them. [fetch][ServerListUpdater] already covers the open
-     * and VPN rungs and the repository's own snapshot / stored / bundled-seed
-     * fallbacks, so by the time this runs every in-app source has answered
-     * "nothing" and only a source the user configured by hand is left.
+     * Single source of truth for the EMERGENCY rung's data. It reuses the
+     * v1.0.21 fetch path — [EmergencySourceFetcher] (the 1 MiB /
+     * [EmergencySourceFetcher.MAX_BODY_CHARS] body cap and the redirect
+     * authority check) and [EmergencyCsvParser] — and runs the same
+     * merge -> validate -> score the live collector does. Nothing is written
+     * here.
      *
-     * Returns `null` — never an empty list — whenever there is nothing to
-     * say: no enabled source, an unusable URL, a refused or oversized body,
-     * a body the parser rejects whole, or no record that survives
-     * `validateServers`. `null` is what makes `ServerListUpdater` fall
-     * through to `Preserved`, which keeps the stored list untouched.
-     *
-     * The pipeline is the live one, unchanged (§3.12): parse → merge →
-     * validate → score → map. Nothing is written here — `ServerListUpdater`
-     * owns the single write, and `DatasetIntegrity` judges the result
-     * against what is already stored before it is allowed to happen.
+     * Two callers consume it:
+     *  - [emergencyDataset] maps it to `List<VPNGateItem>` for
+     *    `ServerListUpdater`'s emergency rung (the legacy hook, unchanged).
+     *  - `VpnServerRepository.refreshLocked` folds it into the *same*
+     *    `collected` pipeline as PHYSICAL/TUNNEL, so the ladder itself
+     *    attempts the EMERGENCY rung (not only when the snapshot is empty)
+     *    and the records still pass through `DatasetIntegrity` on write.
      */
-    private suspend fun emergencyDataset(): List<VPNGateItem>? {
+    internal suspend fun emergencyRecords(): List<VpnServerRecord>? {
         val dao = try {
             vn.unlimit.vpngate.App.instance?.emergencySourceConfigDao
         } catch (e: Exception) {
@@ -207,10 +203,36 @@ object ServerListUpdates {
         if (valid.isEmpty()) return null
 
         ServerQualityCalculator.scoreAll(valid)
+        return valid
+    }
 
+    /**
+     * The emergency rung's dataset: the enabled user-configured sources,
+     * fetched and parsed into the same `List<VPNGateItem>` the primary fetch
+     * produces. v1.0.49 (§1.6.42): delegates the validated records to
+     * [emergencyRecords] and maps them to items for `ServerListUpdater`.
+     *
+     * It is the **last** rung, exactly as `SERVER_SOURCE_ARCHITECTURE.md`
+     * §2.5 orders them. [fetch][ServerListUpdater] already covers the open
+     * and VPN rungs and the repository's own snapshot / stored / bundled-seed
+     * fallbacks, so by the time this runs every in-app source has answered
+     * "nothing" and only a source the user configured by hand is left.
+     *
+     * Returns `null` — never an empty list — whenever there is nothing to
+     * say: no enabled source, an unusable URL, a refused or oversized body,
+     * a body the parser rejects whole, or no record that survives
+     * `validateServers`. `null` is what makes `ServerListUpdater` fall
+     * through to `Preserved`, which keeps the stored list untouched.
+     *
+     * The pipeline is the live one, unchanged (§3.12): parse → merge →
+     * validate → score → map. Nothing is written here — `ServerListUpdater`
+     * owns the single write, and `DatasetIntegrity` judges the result
+     * against what is already stored before it is allowed to happen.
+     */
+    private suspend fun emergencyDataset(): List<VPNGateItem>? {
+        val valid = emergencyRecords() ?: return null
         val connectionList = VpnConnectionMapper.toConnectionList(valid)
         if (connectionList.size() == 0) return null
-
         return connectionList.toVPNGateItems()
     }
 

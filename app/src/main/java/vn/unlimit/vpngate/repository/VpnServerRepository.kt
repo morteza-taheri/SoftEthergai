@@ -366,11 +366,39 @@ class VpnServerRepository(
         }
 
         if (records.isEmpty()) {
-            // v1.0.45: EMERGENCY is the last rung; skipped when no emergency
-            // sources are configured (none are wired in this build).
-            if (!hasEmergencySources()) {
+            // v1.0.49 (§1.6.42): attempt the EMERGENCY rung before falling
+            // back to the last-known-good snapshot. The operator's requirement
+            // is PHYSICAL -> TUNNEL -> EMERGENCY: if the network rungs cannot
+            // deliver a dataset, the bundled/seed servers.csv must be tried.
+            //
+            // Before this revision `hasEmergencySources()` was a stub returning
+            // `false`, so this branch only ever logged the skip and the rung
+            // was never attempted. The snapshot (returned just below) is
+            // non-null whenever one exists, so ServerListUpdater's
+            // emergencyFetch — the only other place that reaches
+            // emergencyDataset() — was almost never reached either: the
+            // snapshot intercepted the fallthrough.
+            //
+            // The rung calls the existing v1.0.21 fetch path via
+            // `ServerListUpdates.emergencyRecords()` (which reuses
+            // EmergencySourceFetcher + EmergencyCsvParser); no fetch logic is
+            // duplicated, and the records fold into the SAME `collected`
+            // pipeline as PHYSICAL/TUNNEL, so DatasetIntegrity still gates the
+            // eventual write.
+            if (hasEmergencySources()) {
+                val emergency = ServerListUpdates.emergencyRecords()
+                if (!emergency.isNullOrEmpty()) {
+                    fetchLog("[ladder] path=emergency source=${emergency.size}")
+                    records.addAll(emergency)
+                } else {
+                    fetchLog("[ladder] skip=EMERGENCY (fetch produced no usable records)")
+                }
+            } else {
                 fetchLog("[ladder] skip=EMERGENCY (none configured)")
             }
+        }
+
+        if (records.isEmpty()) {
             fetchLog(
                 "[ladder] ${primary.name} failed (no result) " +
                     "network=${networkLabel(primary)} " +
@@ -441,11 +469,22 @@ class VpnServerRepository(
     private fun bindHttpFetcher(): HttpFetcher? = boundFetcherFactory()
 
     /**
-     * v1.0.45: whether any emergency source is configured. No emergency source
-     * is wired in this build, so EMERGENCY is skipped (logged) and the DB is
-     * preserved by the last-known-good snapshot.
+     * v1.0.49 (§1.6.42): whether any emergency source is configured.
+     *
+     * Previously a stub returning `false`, which made the ladder log
+     * `skip=EMERGENCY (none configured)` on every refresh even when the
+     * v1.0.46 startup seed had written an enabled default row into
+     * `emergency_source_config`. Now it consults that DAO directly. The
+     * surrounding [refreshLocked] is a suspend function, so the DAO's
+     * `listEnabled()` is called directly rather than through `runBlocking`.
      */
-    private fun hasEmergencySources(): Boolean = false
+    private suspend fun hasEmergencySources(): Boolean =
+        runCatching {
+            vn.unlimit.vpngate.App.instance
+                ?.emergencySourceConfigDao
+                ?.listEnabled()
+                ?.isNotEmpty() == true
+        }.getOrDefault(false)
 
     /** v1.0.45: a readable network handle for a rung, for failure diagnostics. */
     private fun networkLabel(path: CollectorPath): String = when (path) {
