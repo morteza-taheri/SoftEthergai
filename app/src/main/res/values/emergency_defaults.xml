@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="default_emergency_source_url" translatable="false">https://raw.githubusercontent.com/morteza-taheri/SoftEthergai/main/emergency-sources/servers.csv</string>
+</resources>
