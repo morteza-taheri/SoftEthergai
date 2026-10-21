@@ -1395,13 +1395,26 @@ if (sessionPolicy.isRunning) {
         }
 
         // Exclude apps from VPN tunnel (they will use normal network instead)
-        config.excludedApps.forEach { packageName ->
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: PackageManager.NameNotFoundException) {
-                Log.w(TAG, "Excluded app not found, skipping: $packageName")
+        //
+        // v1.0.47 (§1.6.40): the app's OWN package is skipped. App
+        // `initializeDefaultExcludedApps()` inserts a hidden "Self" row into
+        // `excluded_app`, so `config.excludedApps` always contains this very
+        // package; applying it made every socket the collector bound to the
+        // VPN network fail with `EPERM (Operation not permitted)`, which is
+        // why the TUNNEL rung could never deliver data. Per-request binding
+        // (v1.0.45 productionBoundFetcher / productionTunnelFetcher) already
+        // isolates management traffic, so the app may use its own tunnel.
+        // User-added exclusions are applied unchanged.
+        val selfPackage = packageName
+        config.excludedApps
+            .filterNot { it == selfPackage }
+            .forEach { excludedPackage ->
+                try {
+                    builder.addDisallowedApplication(excludedPackage)
+                } catch (e: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "Excluded app not found, skipping: $excludedPackage")
+                }
             }
-        }
 
         // Configure as metered/unmetered
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

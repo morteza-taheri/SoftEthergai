@@ -146,9 +146,17 @@ internal class IPTerminal(private val bridge: SharedBridge) {
     }
 
     private fun addExcludedAppRules() {
-        bridge.excludedApps.forEach {
-            bridge.builder.addDisallowedApplication(it)
-        }
+        // v1.0.47 (§1.6.40): the app's OWN package is skipped. The
+        // `ROUTE_EXCLUDED_APPS` set is written from the `excluded_app` table,
+        // which always contains the hidden "Self" row; applying it made every
+        // socket the collector bound to the VPN network fail with
+        // `EPERM (Operation not permitted)`. Per-request binding (v1.0.45)
+        // already isolates management traffic. User-added exclusions are
+        // applied unchanged.
+        val selfPackage = bridge.service.packageName
+        bridge.excludedApps
+            .filterNot { it == selfPackage }
+            .forEach { bridge.builder.addDisallowedApplication(it) }
     }
 
     private suspend fun addCustomRoutes(): Boolean {
