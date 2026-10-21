@@ -603,6 +603,68 @@ class SoftEtherVpnService : VpnService() {
         attemptConnectingEnteredAtMs = 0L
     }
 
+/**
+ * v1.0.48 (§1.6.41) FIX-2: claim the process-wide native slot, with one bounded,
+ * attributed recovery attempt when the current holder is a stale TEARDOWN.
+ *
+ * ## Why this exists at all
+ *
+ * [NativeLifetimeRegistry.tryAcquire] already runs the TEARDOWN soft-bound, so on a
+ * healthy registry a refusal here means "the bound has genuinely not elapsed yet" and
+ * this method simply reports that. The reason it exists is the *diagnosis* half of the
+ * T5-SLOT residual: the device refusal said
+ * `attempt=1 phase=TEARDOWN, reporting deadline expired (still blocked)` and nothing
+ * else — no age, no statement of whether a release had been attempted, and no way to
+ * tell "about to recover" from "will never recover". This method turns that silence into
+ * one attributed line per refusal.
+ *
+ * ## What it deliberately does NOT do
+ *
+ * It does not invent a release rule. The only release it can trigger is
+ * [NativeLifetimeRegistry.forceReleaseStaleTeardown], which applies the registry's own
+ * preconditions and its own bound. A genuinely stuck operation still blocks a new
+ * attempt for the configured timeout; the recovery is attempted *after* the registry has
+ * already refused, and only succeeds when the registry's own conditions are met.
+ *
+ * @return a lease when the slot was free, or was reclaimed; `null` when the caller must
+ *   stay refused.
+ */
+private fun acquireNativeSlotOrRecover(): NativeLifetimeRegistry.Lease? {
+    val direct = NativeLifetimeRegistry.process.tryAcquire()
+    if (direct != null) return direct
+
+    // The registry refused. Record the holder's age before asking for a release, so the
+    // diagnostic names the state that caused the refusal rather than the state after it.
+    val heldMs = NativeLifetimeRegistry.process.teardownHeldMs()
+    val released = NativeLifetimeRegistry.process.forceReleaseStaleTeardown()
+
+    if (!released) {
+        Log.w(
+            TAG,
+            "[REGISTRY-RECOVERY] refusal is not stale yet: heldFor=${heldMs}ms, " +
+                    "bound=${NativeLifetimeRegistry.NATIVE_SLOT_FORCE_RELEASE_AFTER_MS}ms " +
+                    "(${NativeLifetimeRegistry.process.describe()})",
+        )
+        return null
+    }
+
+    val reclaimed = NativeLifetimeRegistry.process.tryAcquire()
+    if (reclaimed != null) {
+        Log.w(
+            TAG,
+            "[REGISTRY-RECOVERY] reclaimed the native slot after ${heldMs}ms in TEARDOWN " +
+                    "(forced release, attempt=${reclaimed.attemptId})",
+        )
+    } else {
+        Log.w(
+            TAG,
+            "[REGISTRY-RECOVERY] released a stale TEARDOWN holder after ${heldMs}ms but the " +
+                    "re-acquire was still refused (${NativeLifetimeRegistry.process.describe()})",
+        )
+    }
+    return reclaimed
+}
+
 private fun startVpn(config: ConnectionConfig) {
         // Stage 2F-F.28 Fix A + Stage 2F-F.28C (A-2): the start guard is
         // RESOURCE-AWARE and total.
@@ -668,17 +730,21 @@ private fun startVpn(config: ConnectionConfig) {
         // Placed after the refusal block above so a refused start cannot claim the
         // slot, and before `onSessionStart()` so a slot cannot be claimed by a session
         // that then fails to start.
-        val nativeLease = NativeLifetimeRegistry.process.tryAcquire()
+        val nativeLease = acquireNativeSlotOrRecover()
         if (nativeLease == null) {
             // Fail closed. A refusal here is not an error: it is the correct answer
             // while a previous attempt's native operation is unresolved. Nothing is
             // queued and nothing is retried — the next start attempt will be judged
             // again against the same registry, and will succeed once the blocking
             // call returns and its controller releases the slot.
+            // v1.0.48 (§1.6.41) FIX-2: name the holder's AGE, not only its phase. The
+            // v1.0.47 device run produced this line without an age and it was impossible
+            // to tell "the bound is 4 s away" from "the bound will never be reached".
+            val heldMs = NativeLifetimeRegistry.process.teardownHeldMs()
             Log.w(
                 TAG,
                 "Start refused: native slot still held by an unresolved attempt " +
-                        "(${NativeLifetimeRegistry.process.describe()})",
+                        "(${NativeLifetimeRegistry.process.describe()}, heldFor=${heldMs}ms)",
             )
             // Stage 2F-F.28AA: make the refusal observable.
             //
@@ -692,7 +758,10 @@ private fun startVpn(config: ConnectionConfig) {
             // A refusal is not a server failure and must never be reported as one. Scoped
             // to the session being started, so a refusal for an obsolete session cannot
             // disturb a newer attempt that is already under way.
-            notifyNativeBusy(sessionPolicy.sessionGeneration, NativeLifetimeRegistry.process.describe())
+            notifyNativeBusy(
+                sessionPolicy.sessionGeneration,
+                "${NativeLifetimeRegistry.process.describe()}, heldFor=${heldMs}ms",
+            )
             return
         }
 

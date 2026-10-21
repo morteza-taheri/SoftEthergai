@@ -286,7 +286,24 @@ class NativeLifetimeRegistry(
      */
     fun markTeardownRequested(lease: Lease?) = mutate(lease) {
         it.activePhase = Phase.TEARDOWN
-        it.teardownRequestedAtMs = nowMs()
+        // v1.0.48 (§1.6.41) FIX-1: stamp only the FIRST teardown request for this
+        // attempt.
+        //
+        // `destroyResources()` is documented as idempotent ("safe even if the controller
+        // already tore itself down") and is reached from at least three places —
+        // `SoftEtherVpnService.onDestroy`, the cancel path, and `stopVpn` — while Auto
+        // Mode calls `adapter.disconnect()` on every NATIVE_BUSY refusal. While this
+        // method re-stamped on each of those calls, every one of them restarted the
+        // `NATIVE_SLOT_FORCE_RELEASE_AFTER_MS` window, so the bound could never be
+        // reached: the retry loop that was trying to recover kept pushing the release
+        // further away. That is why the slot read as permanently held on device even
+        // though `describe()` reported "reporting deadline expired (still blocked)".
+        //
+        // Keeping the first stamp makes the bound measure what its KDoc says it
+        // measures — "how long has this attempt been in TEARDOWN" — rather than "how
+        // long since the most recent teardown request". The fail-closed guarantee is
+        // unchanged: before the bound elapses the slot is still refused.
+        if (it.teardownRequestedAtMs == 0L) it.teardownRequestedAtMs = nowMs()
     }
 
     /**
@@ -378,6 +395,46 @@ class NativeLifetimeRegistry(
             val suffix = if (deadlineExpired) ", reporting deadline expired (still blocked)" else ""
             "attempt=$activeAttemptId phase=$activePhase$suffix"
         }
+    }
+
+    /**
+     * How long the current holder has been in [Phase.TEARDOWN], or `0` when it is not.
+     *
+     * v1.0.48 (§1.6.41) FIX-2: read by `SoftEtherVpnService` so a refusal can name the
+     * holder's **age**, not just its phase. Purely observational — it mutates no state
+     * and takes no decision, so it cannot affect admission.
+     */
+    fun teardownHeldMs(): Long = synchronized(lock) {
+        if (activeAttemptId == NO_ATTEMPT) return@synchronized 0L
+        if (activePhase != Phase.TEARDOWN) return@synchronized 0L
+        if (teardownRequestedAtMs == 0L) return@synchronized 0L
+        nowMs() - teardownRequestedAtMs
+    }
+
+    /**
+     * Public entry point for the TEARDOWN soft-bound, for callers that are not asking
+     * for admission.
+     *
+     * v1.0.48 (§1.6.41) FIX-2: [tryAcquire] already runs this same check, so a caller
+     * that was *just* refused gains no new decision from calling it. The point is to
+     * give the service one named place to ask "is the holder stale now?" and to emit the
+     * identical audit line the admission path emits, instead of the service inventing a
+     * second, differently-shaped release rule.
+     *
+     * It applies **exactly** the preconditions of [forceReleaseIfTimedOutLocked] — an
+     * expired reporting deadline, [Phase.TEARDOWN], a recorded teardown request, and an
+     * elapsed time of at least [NATIVE_SLOT_FORCE_RELEASE_AFTER_MS] — and therefore can
+     * never release a holder that [tryAcquire] would have kept. The fail-closed
+     * guarantee is untouched: this is the *only* release this method can perform, and it
+     * happens only after the documented bound.
+     *
+     * @return true only when this call actually released the slot.
+     */
+    fun forceReleaseStaleTeardown(): Boolean {
+        var message: String? = null
+        synchronized(lock) { message = forceReleaseIfTimedOutLocked() }
+        message?.let { logSink(it) }
+        return message != null
     }
 
     /**
