@@ -14,28 +14,33 @@ import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.RedirectPolicy
 
 /**
- * v1.0.27 — OPEN-first / VPN-fallback routing regression.
+ * v1.0.45 — the PHYSICAL / TUNNEL route ladder (was v1.0.27 OPEN-first /
+ * VPN-fallback).
  *
- * This pins the fix for the bug where `productionRouting()` did
- * `preferVpn ||= tunnelUp`, so the app *preferred* the VPN rung whenever any
- * tunnel was up, wasting tunnel bandwidth on a directly-reachable server list.
+ * The v1.0.27 contract this file used to pin was "OPEN first, VPN only as a
+ * fallback", where `OPEN` meant *unbound*. v1.0.45 established that an unbound
+ * client is not "outside the tunnel": with the app's own tunnel up it silently
+ * follows the OS default, i.e. it goes *through* the tunnel. So the two rungs
+ * are now explicit and bound — `PHYSICAL` (a NOT_VPN network) and `TUNNEL` (the
+ * app's VPN network) — and the opt-in only *reorders* them.
  *
  * The contract under test (see [VpnServerRepository.fetchOnChosenPath]):
- *   - The PRIMARY rung is OPEN unless the user opted in (PREF_ALWAYS_PREFER_VPN);
- *     the tunnel being up never promotes VPN to primary on its own.
- *   - The VPN rung is only a FALLBACK, tried when OPEN fails AND a bound network
- *     is reachable.
- *   - When the user opted in, VPN is primary and OPEN is the fallback.
- *   - When the user opted in but no tunnel is bound, the VPN rung is simply
- *     unavailable and we degrade straight to OPEN (no claimed fallback).
+ *   - The PRIMARY rung is PHYSICAL unless the user opted in
+ *     (`PREF_ALWAYS_PREFER_VPN`) **and** the tunnel is usable; a tunnel that is
+ *     merely up never promotes TUNNEL to primary on its own.
+ *   - The TUNNEL rung is a FALLBACK, tried when PHYSICAL fails **and** a bound
+ *     network is reachable.
+ *   - When the user opted in, TUNNEL is primary and PHYSICAL is the fallback.
+ *   - When TUNNEL is primary but no tunnel is bound, the rung is simply
+ *     unavailable and we degrade straight to PHYSICAL (no claimed fallback).
  *
  * The `[fetch] path=...` diagnostics (tag `VpnServerFetch`) are asserted here so
- * a future regression that silently re-prefers VPN is caught: the very first
- * `[fetch] path=...` line in every no-opt-in case must be `path=open`.
+ * a future regression that silently re-prefers the tunnel is caught: the very
+ * first `[fetch] path=...` line in every no-opt-in case must be `path=physical`.
  *
- * No Android, no tracker, no socket: the open and bound fetchers are identity
- * tokens the `fetch` lambda branches on, so OPEN and VPN outcomes are simulated
- * without any network.
+ * No Android, no tracker, no socket: the physical and bound fetchers are
+ * identity tokens the `fetch` lambda branches on, so both outcomes are
+ * simulated without any network.
  */
 class VpnServerRepositoryRoutingTest {
 
@@ -52,9 +57,9 @@ class VpnServerRepositoryRoutingTest {
         override suspend fun get(url: String, redirectPolicy: RedirectPolicy?): Nothing? = null
     }
 
-    /** Identity tokens: the `fetch` lambda returns OPEN/VPN outcomes by reference. */
-    private val openFetcher = EmptyFetcher()
-    private val vpnFetcher = EmptyFetcher()
+    /** Identity tokens: the `fetch` lambda returns PHYSICAL/TUNNEL outcomes by reference. */
+    private val physicalFetcher = EmptyFetcher()
+    private val tunnelFetcher = EmptyFetcher()
 
     /**
      * Build a repo and run one [VpnServerRepository.fetchOnChosenPath] call.
@@ -62,18 +67,18 @@ class VpnServerRepositoryRoutingTest {
      * @param path the primary rung chosen for this call (normally derived from
      *   [CollectorRoutingInput.preferVpn]; passed explicitly so each permutation
      *   is independent of the routing decision.
-     * @param boundFetcher the VPN-bound fetcher, or null when the tunnel is down.
-     * @param openResult what the OPEN rung yields (null = failure).
-     * @param vpnResult what the VPN rung yields (null = failure).
+     * @param boundFetcher the TUNNEL-bound fetcher, or null when the tunnel is down.
+     * @param physicalResult what the PHYSICAL rung yields (null = failure).
+     * @param tunnelResult what the TUNNEL rung yields (null = failure).
      */
     private suspend fun runFetch(
         path: CollectorPath,
         boundFetcher: HttpFetcher?,
-        openResult: String? = "OPEN_OK",
-        vpnResult: String? = "VPN_OK",
+        physicalResult: String? = "PHYSICAL_OK",
+        tunnelResult: String? = "TUNNEL_OK",
     ): String? {
         val repo = VpnServerRepository(
-            fetcher = openFetcher,
+            fetcher = physicalFetcher,
             cacheDir = tempFolder.newFolder(),
             boundFetcherFactory = { boundFetcher },
             pathLog = { collectorLogs.add(it) },
@@ -83,206 +88,212 @@ class VpnServerRepositoryRoutingTest {
             sourceTag = "html",
             path = path,
             boundFetcher = boundFetcher,
-            succeeded = { it != null },
+            // The lambda returns null on failure, and fetchOnChosenPath already
+            // treats a null primary result as a failure, so any non-null body
+            // counts as success here.
+            succeeded = { true },
+            physicalFetcher = physicalFetcher,
         ) { f ->
             when (f) {
-                openFetcher -> openResult
-                vpnFetcher -> vpnResult
+                physicalFetcher -> physicalResult
+                tunnelFetcher -> tunnelResult
                 else -> null
             }
         }
     }
 
     // ── Permutation 1 ────────────────────────────────────────────────────────
-    // tunnel DOWN + OPEN succeeds → returns OPEN result, VPN never attempted.
+    // tunnel DOWN + PHYSICAL succeeds → returns PHYSICAL result, TUNNEL never attempted.
     @Test
-    fun `tunnel down plus OPEN succeeds returns OPEN and never touches VPN`() = runBlocking {
+    fun `tunnel down plus PHYSICAL succeeds returns PHYSICAL and never touches TUNNEL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
-        val result = runFetch(CollectorPath.OPEN, boundFetcher = null, openResult = "OPEN_OK")
+        val result = runFetch(CollectorPath.PHYSICAL, boundFetcher = null, physicalResult = "PHYSICAL_OK")
 
-        assertEquals("OPEN_OK", result)
-        assertEquals(listOf("[fetch] path=open source=html"), fetchLogs.toList())
-        assertEquals(listOf("[collector] path=open source=html"), collectorLogs.toList())
+        assertEquals("PHYSICAL_OK", result)
+        assertEquals(listOf("[fetch] path=physical source=html"), fetchLogs.toList())
+        assertEquals(listOf("[collector] path=physical source=html"), collectorLogs.toList())
         assertTrue(
-            "VPN must not be attempted when the tunnel is down: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=vpn") },
+            "TUNNEL must not be attempted when the tunnel is down: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=tunnel") },
         )
     }
 
     // ── Permutation 2 ────────────────────────────────────────────────────────
-    // tunnel DOWN + OPEN fails → no fallback possible (VPN rung unavailable).
+    // tunnel DOWN + PHYSICAL fails → no fallback possible (TUNNEL rung unavailable).
     @Test
-    fun `tunnel down plus OPEN fails has no fallback`() = runBlocking {
+    fun `tunnel down plus PHYSICAL fails has no fallback`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
-        val result = runFetch(CollectorPath.OPEN, boundFetcher = null, openResult = null)
+        val result = runFetch(CollectorPath.PHYSICAL, boundFetcher = null, physicalResult = null)
 
         assertNull(result)
         assertEquals(
             listOf(
-                "[fetch] path=open source=html",
-                "[fetch] path=open failed (no result); no fallback (tunnel down)",
+                "[fetch] path=physical source=html",
+                "[fetch] path=physical failed (no result); no fallback (tunnel down)",
             ),
             fetchLogs.toList(),
         )
-        assertEquals(listOf("[collector] path=open source=html"), collectorLogs.toList())
+        assertEquals(listOf("[collector] path=physical source=html"), collectorLogs.toList())
         assertTrue(
-            "VPN must not be attempted when the tunnel is down: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=vpn") },
+            "TUNNEL must not be attempted when the tunnel is down: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=tunnel") },
         )
     }
 
     // ── Permutation 3 ────────────────────────────────────────────────────────
-    // tunnel UP + OPEN ok → VPN is NOT tried (OPEN-first, primary succeeds).
+    // tunnel UP + PHYSICAL ok → TUNNEL is NOT tried (PHYSICAL-first, primary succeeds).
     @Test
-    fun `tunnel up plus OPEN succeeds does not try VPN`() = runBlocking {
+    fun `tunnel up plus PHYSICAL succeeds does not try TUNNEL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
-        val result = runFetch(CollectorPath.OPEN, boundFetcher = vpnFetcher, openResult = "OPEN_OK")
+        val result = runFetch(CollectorPath.PHYSICAL, boundFetcher = tunnelFetcher, physicalResult = "PHYSICAL_OK")
 
-        assertEquals("OPEN_OK", result)
-        assertEquals(listOf("[fetch] path=open source=html"), fetchLogs.toList())
-        assertEquals(listOf("[collector] path=open source=html"), collectorLogs.toList())
+        assertEquals("PHYSICAL_OK", result)
+        assertEquals(listOf("[fetch] path=physical source=html"), fetchLogs.toList())
+        assertEquals(listOf("[collector] path=physical source=html"), collectorLogs.toList())
         assertTrue(
-            "VPN must NOT be the fallback when OPEN already succeeded: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=vpn") },
+            "TUNNEL must NOT be the fallback when PHYSICAL already succeeded: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=tunnel") },
         )
     }
 
     // ── Permutation 4 ────────────────────────────────────────────────────────
-    // tunnel UP + OPEN fails + VPN ok → falls back to VPN, returns VPN result.
+    // tunnel UP + PHYSICAL fails + TUNNEL ok → falls back to TUNNEL (the P2 recovery).
     @Test
-    fun `tunnel up plus OPEN fails falls back to VPN and succeeds`() = runBlocking {
+    fun `tunnel up plus PHYSICAL fails falls back to TUNNEL and succeeds`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
-            CollectorPath.OPEN,
-            boundFetcher = vpnFetcher,
-            openResult = null,
-            vpnResult = "VPN_OK",
+            CollectorPath.PHYSICAL,
+            boundFetcher = tunnelFetcher,
+            physicalResult = null,
+            tunnelResult = "TUNNEL_OK",
         )
 
-        assertEquals("VPN_OK", result)
+        assertEquals("TUNNEL_OK", result)
         assertEquals(
             listOf(
-                "[fetch] path=open source=html",
-                "[fetch] path=open failed (no result); falling back to vpn",
-                "[fetch] path=vpn succeeded after open failed",
+                "[fetch] path=physical source=html",
+                "[fetch] path=physical failed (no result); falling back to tunnel",
+                "[fetch] path=tunnel succeeded after physical failed",
             ),
             fetchLogs.toList(),
         )
         assertEquals(
             listOf(
-                "[collector] path=open source=html",
-                "[collector] path=fallback-to-vpn source=html",
+                "[collector] path=physical source=html",
+                "[collector] path=fallback-to-tunnel source=html",
             ),
             collectorLogs.toList(),
         )
     }
 
     // ── Permutation 5 ────────────────────────────────────────────────────────
-    // tunnel UP + OPEN fails + VPN fails → both fail, returns null.
+    // tunnel UP + PHYSICAL fails + TUNNEL fails → both fail, returns null.
     @Test
-    fun `tunnel up plus OPEN and VPN both fail returns null`() = runBlocking {
+    fun `tunnel up plus PHYSICAL and TUNNEL both fail returns null`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
-            CollectorPath.OPEN,
-            boundFetcher = vpnFetcher,
-            openResult = null,
-            vpnResult = null,
+            CollectorPath.PHYSICAL,
+            boundFetcher = tunnelFetcher,
+            physicalResult = null,
+            tunnelResult = null,
         )
 
         assertNull(result)
         assertEquals(
             listOf(
-                "[fetch] path=open source=html",
-                "[fetch] path=open failed (no result); falling back to vpn",
-                "[fetch] path=vpn failed (no result)",
+                "[fetch] path=physical source=html",
+                "[fetch] path=physical failed (no result); falling back to tunnel",
+                "[fetch] path=tunnel failed (no result)",
             ),
             fetchLogs.toList(),
         )
         assertEquals(
             listOf(
-                "[collector] path=open source=html",
-                "[collector] path=fallback-to-vpn source=html",
+                "[collector] path=physical source=html",
+                "[collector] path=fallback-to-tunnel source=html",
             ),
             collectorLogs.toList(),
         )
     }
 
     // ── Permutation 6 ────────────────────────────────────────────────────────
-    // userPreferVpn=true + tunnel UP → VPN is PRIMARY (opt-in honoured first).
+    // userPreferVpn=true + tunnel UP → TUNNEL is PRIMARY (opt-in reorders the ladder).
     @Test
-    fun `user opt-in makes VPN the primary rung`() = runBlocking {
+    fun `user opt-in makes TUNNEL the primary rung`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
-            CollectorPath.VPN,
-            boundFetcher = vpnFetcher,
-            openResult = null,
-            vpnResult = "VPN_OK",
+            CollectorPath.TUNNEL,
+            boundFetcher = tunnelFetcher,
+            physicalResult = null,
+            tunnelResult = "TUNNEL_OK",
         )
 
-        assertEquals("VPN_OK", result)
-        assertEquals(listOf("[fetch] path=vpn source=html"), fetchLogs.toList())
-        assertEquals(listOf("[collector] path=vpn source=html"), collectorLogs.toList())
+        assertEquals("TUNNEL_OK", result)
+        assertEquals(listOf("[fetch] path=tunnel source=html"), fetchLogs.toList())
+        assertEquals(listOf("[collector] path=tunnel source=html"), collectorLogs.toList())
         assertTrue(
-            "OPEN must not be tried first when the user opted into VPN: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=open") },
+            "PHYSICAL must not be tried first when the user opted into the tunnel: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=physical") },
         )
     }
 
     // ── Permutation 7 ────────────────────────────────────────────────────────
-    // userPreferVpn=true + tunnel DOWN → VPN rung unavailable, degrade to OPEN.
+    // userPreferVpn=true + tunnel DOWN → TUNNEL rung unavailable, degrade to PHYSICAL.
     @Test
-    fun `user opt-in with tunnel down degrades straight to OPEN`() = runBlocking {
+    fun `user opt-in with tunnel down degrades straight to PHYSICAL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
-            CollectorPath.VPN,
+            CollectorPath.TUNNEL,
             boundFetcher = null,
-            openResult = "OPEN_OK",
-            vpnResult = null,
+            physicalResult = "PHYSICAL_OK",
+            tunnelResult = null,
         )
 
-        assertEquals("OPEN_OK", result)
+        assertEquals("PHYSICAL_OK", result)
         assertEquals(
-            listOf("[fetch] path=open (vpn rung unavailable)"),
+            listOf("[fetch] path=physical (tunnel rung unavailable)"),
             fetchLogs.toList(),
         )
-        assertEquals(listOf("[collector] path=open source=html"), collectorLogs.toList())
+        assertEquals(listOf("[collector] path=physical source=html"), collectorLogs.toList())
         assertTrue(
-            "No VPN primary attempt may be logged when the tunnel is down: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=vpn") },
+            "No TUNNEL primary attempt may be logged when the tunnel is down: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=tunnel") },
         )
     }
 
-    // ── Integration: refresh() honours OPEN-first even with a tunnel up ───────
+    // ── Integration: refresh() is PHYSICAL-first even with a tunnel up ────────
     // The original bug lived in productionRouting(): it did `preferVpn ||= tunnelUp`,
-    // so refresh() tried VPN first whenever any tunnel was up. This proves the new
-    // model tries OPEN first (and only falls back to VPN) when the user has NOT
-    // opted in, regardless of tunnel state.
+    // so refresh() tried the tunnel first whenever any tunnel was up. This proves the
+    // new ladder tries PHYSICAL first (and only falls back to TUNNEL) when the user
+    // has NOT opted in, regardless of tunnel state.
     @Test
-    fun `refresh tries OPEN first even when a tunnel is up and no opt-in`() = runBlocking {
+    fun `refresh tries PHYSICAL first even when a tunnel is up and no opt-in`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val repo = VpnServerRepository(
-            fetcher = openFetcher,
+            fetcher = physicalFetcher,
             cacheDir = tempFolder.newFolder(),
             // No opt-in, tunnel reported up (bound fetcher available), both fail.
             routing = { CollectorRoutingInput(false, true, true) },
-            boundFetcherFactory = { vpnFetcher },
+            boundFetcherFactory = { tunnelFetcher },
             pathLog = { collectorLogs.add(it) },
             fetchLog = { fetchLogs.add(it) },
         )
         repo.refresh()
 
+        // The ladder order line is emitted before any attempt; skip it.
+        val firstAttempt = fetchLogs.first { it.startsWith("[fetch]") }
         assertTrue(
-            "the very first routing attempt must be OPEN, not VPN: $fetchLogs",
-            fetchLogs.first().contains("path=open"),
+            "the very first routing attempt must be PHYSICAL, not TUNNEL: $fetchLogs",
+            firstAttempt.contains("path=physical"),
         )
         assertTrue(
-            "VPN must never be the PRIMARY rung without opt-in (only a fallback): $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=vpn source") },
+            "TUNNEL must never be the PRIMARY rung without opt-in (only a fallback): $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=tunnel source") },
         )
         assertTrue(
-            "every VPN attempt must be a fallback after an OPEN failure: $fetchLogs",
-            fetchLogs.filter { it.startsWith("[fetch] path=vpn") }
-                .all { it.contains("after open failed") || it.contains("failed (no result)") },
+            "every TUNNEL attempt must be a fallback after a PHYSICAL failure: $fetchLogs",
+            fetchLogs.filter { it.startsWith("[fetch] path=tunnel") }
+                .all { it.contains("after physical failed") || it.contains("failed (no result)") },
         )
     }
 }

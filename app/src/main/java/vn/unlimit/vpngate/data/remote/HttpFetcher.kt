@@ -162,6 +162,27 @@ fun boundToNetwork(network: Network): OkHttpClient =
         throw e
     }
 
+/**
+ * v1.0.45 (§1.6.38) — an explicit non-VPN client.
+ *
+ * The old `path=open` was *unbound*: it followed whatever network the OS had as
+ * default, which is the app's own tunnel whenever that tunnel is up and the app
+ * is not self-excluded. So "open" was never "outside the tunnel". This helper
+ * binds to a NOT_VPN + INTERNET network (see
+ * [GlobalVpnTracker.currentPhysicalNetwork]) so the request really leaves over
+ * Wi-Fi or cellular. The log lines mirror [boundToNetwork] so a device run can
+ * tell a construction-time failure from a socket-open-time EPERM.
+ */
+fun boundToPhysicalNetwork(network: Network): OkHttpClient =
+    try {
+        val client = boundToSocketFactory(network.socketFactory)
+        CollectorLog.d("[bind-physical] ok network=$network")
+        client
+    } catch (e: Throwable) {
+        CollectorLog.d("[bind-physical] FAILED network=$network errno=${e.message}")
+        throw e
+    }
+
 class OkHttpFetcher(
     private val client: OkHttpClient = defaultCollectorClient(),
     private val requestDelayMs: Long = 0,
@@ -321,26 +342,38 @@ class OkHttpFetcher(
 // inputs and [CollectorRouting.choose] says which transport to use.
 // ─────────────────────────────────────────────────────────────────────
 
-/** Which transport a collector request should be sent on. */
+/**
+ * Which transport a collector request should be sent on.
+ *
+ * v1.0.45 (§1.6.38): the two honest, explicit transports replace the old
+ * `OPEN`/`VPN` pair. `OPEN` was unbound, so when the app's own tunnel was up it
+ * silently followed the OS default — which IS the tunnel. `PHYSICAL` is bound
+ * to a NOT_VPN + INTERNET network; `TUNNEL` is bound to the app's VPN network.
+ * `EMERGENCY` is the last rung (bundled servers.csv) and carries no network.
+ */
 enum class CollectorPath {
-    /** The default system network — unchanged behaviour. */
-    OPEN,
+    /** An explicit non-VPN network (Wi-Fi/cellular), bound per request. */
+    PHYSICAL,
 
-    /** The system VPN network the tracker observed while the tunnel is usable. */
-    VPN,
+    /** The app's own VPN network, bound per request. */
+    TUNNEL,
+
+    /** Bundled/emergency servers.csv source; no network binding. */
+    EMERGENCY,
 }
 
 /**
  * The three inputs the routing decision needs. All three must hold for the
- * VPN rung to be taken:
+ * TUNNEL rung to be offered:
  *
- *  1. [preferVpn] — the user opted in ("always prefer VPN").
+ *  1. [preferVpn] — the user opted in ("try the tunnel first"). Since v1.0.45
+ *     this only *reorders* the ladder; it never gates reachability.
  *  2. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsable()` (§7 Q1), i.e. a
  *     tunnel that is CONNECTED *and* forwarding, not a half-up one.
  *  3. [hasBoundNetwork] — a system VPN Network is actually at hand.
  *
- * Anything missing keeps the request on [CollectorPath.OPEN], which is the
- * fail-safe direction: it is the behaviour that existed before R4b.
+ * Anything missing keeps the request on [CollectorPath.PHYSICAL] — an explicit
+ * non-VPN network, never the unbound OS default.
  */
 data class CollectorRoutingInput(
     val preferVpn: Boolean,
@@ -351,16 +384,18 @@ data class CollectorRoutingInput(
 object CollectorRouting {
 
     /**
-     * The whole decision, as one expression.
+     * The two-transport decision, as one expression.
      *
-     * Deliberately an AND of all three: an opt-in that is silently defeated
-     * by a stale tracker, or a usable tunnel that is silently used without
-     * the user asking, would both be worse than staying on open.
+     * Deliberately an AND of all three: a tunnel used without the user asking,
+     * or a usable-looking tunnel that has no bound network, would both be worse
+     * than staying on the physical path. `EMERGENCY` is never chosen here — it
+     * is the ladder's last rung, appended by
+     * `VpnServerRepository.routeLadder`.
      */
     fun choose(input: CollectorRoutingInput): CollectorPath =
         if (input.preferVpn && input.tunnelUsable && input.hasBoundNetwork) {
-            CollectorPath.VPN
+            CollectorPath.TUNNEL
         } else {
-            CollectorPath.OPEN
+            CollectorPath.PHYSICAL
         }
 }

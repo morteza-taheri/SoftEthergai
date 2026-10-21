@@ -5,6 +5,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import vn.unlimit.vpngate.collector.CollectorDebugDump
 import vn.unlimit.vpngate.data.model.CollectorLog
@@ -20,7 +22,8 @@ import vn.unlimit.vpngate.data.remote.OkHttpFetcher
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
 import vn.unlimit.vpngate.data.remote.VpnGateHtmlSource
 import vn.unlimit.vpngate.data.remote.VpnGateMirrorSource
-import vn.unlimit.vpngate.data.remote.boundToSocketFactory
+import vn.unlimit.vpngate.data.remote.boundToNetwork
+import vn.unlimit.vpngate.data.remote.boundToPhysicalNetwork
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
@@ -60,9 +63,9 @@ class VpnServerRepository(
      * real [OkHttpFetcher] here would make live requests to vpngate.net, which
      * both makes the suite slow and makes it pass or fail depending on whether
      * the build machine happens to have a network. Production uses
-     * [productionBoundFetcher].
+     * [productionTunnelFetcher] (v1.0.45).
      */
-    private val boundFetcherFactory: () -> HttpFetcher? = { productionBoundFetcher() },
+    private val boundFetcherFactory: () -> HttpFetcher? = { productionTunnelFetcher() },
     /**
      * R4b: where the `[collector] path=...` line goes. Default is INFO on a
      * device. Wrapped in runCatching because this class's unit tests run on a
@@ -77,6 +80,13 @@ class VpnServerRepository(
      */
     private val fetchLog: (String) -> Unit = { runCatching { Log.d("VpnServerFetch", it) } },
 ) {
+    /**
+     * v1.0.45 (§1.6.38): single-flight guard. At most one refresh runs at a
+     * time; a second caller waits for the first rather than starting a parallel
+     * collection (which the old code allowed, doubling the request volume).
+     */
+    private val refreshMutex = Mutex()
+
     companion object {
         private const val MAIN_TIMEOUT_MS = 45_000L
         private const val MIRROR_TIMEOUT_MS = 30_000L
@@ -132,35 +142,71 @@ class VpnServerRepository(
         }
 
         /**
-         * v1.0.27, amended in v1.0.41 (§1.6.34): the single primary rung for
-         * one refresh.
+         * v1.0.45 (§1.6.38): the automatic route ladder for one refresh.
          *
-         * The VPN rung is primary only when the user opted in **and** the
-         * tunnel is currently usable ([CollectorRoutingInput.tunnelUsable]).
-         * Otherwise OPEN is primary; the VPN rung is then only a fallback,
-         * attempted by [fetchOnChosenPath] when OPEN actually fails and a
-         * bound fetcher exists.
+         * Replaces the v1.0.27/v1.0.41 single-primary model. Every rung is now
+         * an explicit, bound transport:
          *
-         * Operator-authorised change (A1): before v1.0.41 this read
-         * `input.preferVpn` alone, so an opted-in user with a dead tunnel took
-         * the VPN rung first and recovered only through the fallback — a full
-         * timeout spent on an attempt that could not succeed.
+         *  - `PHYSICAL` is always the base rung and is *bound* to a NOT_VPN +
+         *    INTERNET network, so it really leaves outside the tunnel. The old
+         *    `OPEN` was unbound and therefore silently followed the OS default,
+         *    which IS the app's own tunnel whenever that tunnel is up.
+         *  - `TUNNEL` is inserted only when the tunnel is usable **and** a VPN
+         *    network handle exists ([CollectorRoutingInput.hasBoundNetwork]) —
+         *    the same three-way AND the v1.0.41 gate used, so reachability is
+         *    unchanged; only the transport is now honest.
+         *  - `EMERGENCY` (bundled `servers.csv`) is always the last rung; the
+         *    caller logs a skip when no emergency source is configured.
+         *
+         * The user opt-in (`preferVpn`) no longer *gates* the tunnel, it only
+         * **reorders** the ladder: with the opt-in ON and a usable tunnel the
+         * TUNNEL rung moves to the front. That is the whole point of v1.0.45 —
+         * a blocked physical path recovers through the app's own tunnel
+         * automatically, with no manual toggle and no DB wipe.
          */
+        internal fun routeLadder(input: CollectorRoutingInput): List<CollectorPath> {
+            val tunnelRungAvailable = input.tunnelUsable && input.hasBoundNetwork
+            val ladder = mutableListOf(CollectorPath.PHYSICAL)
+            if (tunnelRungAvailable) ladder += CollectorPath.TUNNEL
+            ladder += CollectorPath.EMERGENCY
+            if (input.preferVpn && tunnelRungAvailable) {
+                ladder.remove(CollectorPath.TUNNEL)
+                ladder.add(0, CollectorPath.TUNNEL)
+            }
+            return ladder
+        }
+
+        /** The first rung of [routeLadder]; kept as a named seam for tests. */
         internal fun resolvePrimary(input: CollectorRoutingInput): CollectorPath =
-            if (input.preferVpn && input.tunnelUsable) CollectorPath.VPN
-            else CollectorPath.OPEN
+            routeLadder(input).first()
 
         /**
-         * The fetcher the VPN rung binds with, or null.
+         * v1.0.45 (§1.6.38): the PHYSICAL rung fetcher — bound to an explicit
+         * NOT_VPN + INTERNET network (never the unbound default). Null when no
+         * physical network exists; the caller then degrades to the injected
+         * `fetcher` so a JVM test or airplane-mode run still has a transport.
          *
-         * This is the only place the [androidNetwork][android.net.Network] is
-         * touched, and only to ask it for its [SocketFactory] — never
+         * This is one of only two places an [android.net.Network] is touched,
+         * and only to ask it for its `SocketFactory` — never
          * `bindProcessToNetwork()` (`SERVER_SOURCE_ARCHITECTURE.md` §7 Q2).
          */
         internal fun productionBoundFetcher(): HttpFetcher? {
+            val network = GlobalVpnTracker.currentPhysicalNetwork() ?: return null
+            return runCatching {
+                OkHttpFetcher(client = boundToPhysicalNetwork(network))
+            }.getOrNull()
+        }
+
+        /**
+         * v1.0.45 (§1.6.38): the TUNNEL rung fetcher — bound to the app's own
+         * VPN network. Same narrow per-request binding as before (never
+         * `bindProcessToNetwork`). Null when there is no VPN network to bind to.
+         */
+        internal fun productionTunnelFetcher(): HttpFetcher? {
             val network = GlobalVpnTracker.currentVpnNetwork() ?: return null
-            val socketFactory = runCatching { network.socketFactory }.getOrNull() ?: return null
-            return OkHttpFetcher(client = boundToSocketFactory(socketFactory))
+            return runCatching {
+                OkHttpFetcher(client = boundToNetwork(network))
+            }.getOrNull()
         }
     }
 
@@ -212,17 +258,40 @@ class VpnServerRepository(
      * construction precisely so the chosen fetcher can differ between runs.
      */
     suspend fun refresh(): CollectResult? = withContext(Dispatchers.IO) {
+        // v1.0.45 (§1.6.38) FIX-5: single-flight + a total refresh deadline.
+        // `completed` distinguishes a genuine null result from a timeout, since
+        // withTimeoutOrNull returns null for both.
+        refreshMutex.withLock {
+            var completed = false
+            val result = withTimeoutOrNull(MAIN_TIMEOUT_MS) {
+                refreshLocked().also { completed = true }
+            }
+            if (!completed) {
+                fetchLog("[ladder] deadline exceeded (${MAIN_TIMEOUT_MS}ms); preserving DB")
+            }
+            result
+        }
+    }
+
+    /**
+     * v1.0.45 (§1.6.38): the body of [refresh], run under the single-flight
+     * guard and the total deadline. Kept separate so the wrapper stays readable.
+     */
+    private suspend fun refreshLocked(): CollectResult? {
         // Set once the parallel fetches have resolved; it describes what this
         // run's sources could provide, and is reported with the dataset.
         var collectedCapability = SourceCapability.UNKNOWN
 
-        // R4b: re-read per refresh, never cached across runs, so a tunnel that
-        // comes up between two refreshes is honoured by the next one.
-        // v1.0.27: OPEN-first, VPN-fallback. The primary rung is derived from the
-        // routing inputs; fetchOnChosenPath tries it and falls back to the other
-        // rung only when the primary fails and the other is reachable.
+        // v1.0.45: re-read per refresh, never cached across runs, so a tunnel
+        // that comes up between two refreshes is honoured by the next one. The
+        // ladder is PHYSICAL -> TUNNEL (if usable) -> EMERGENCY; the toggle only
+        // reorders it (TUNNEL first when opted in).
         val input = routing()
-        val primary = resolvePrimary(input)
+        val ladder = routeLadder(input)
+        fetchLog("[ladder] order=${ladder.joinToString(",") { it.name }}")
+        val primary = ladder.first()
+        val physicalFetcher: HttpFetcher =
+            runCatching { productionBoundFetcher() }.getOrNull() ?: fetcher
         val boundFetcher: HttpFetcher? = bindHttpFetcher()
 
         val records = coroutineScope {
@@ -231,7 +300,7 @@ class VpnServerRepository(
             }.getOrDefault(emptyList())
 
             val mirrorsDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_MIRROR, primary, boundFetcher, { it.isNotEmpty() }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_MIRROR, primary, boundFetcher, { it.isNotEmpty() }, physicalFetcher) { f ->
                     VpnGateMirrorSource(f).discoverMirrors(cachedMirrors)
                 }
             }
@@ -248,12 +317,12 @@ class VpnServerRepository(
                 // Canonical CSV only: a mirror's CSV schema is undefined
                 // for this project, so it is never fed to the API parser.
                 // A null result IS the failure signal for this source.
-                fetchOnChosenPath(SOURCE_TAG_API, primary, boundFetcher, { true }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_API, primary, boundFetcher, { true }, physicalFetcher) { f ->
                     VpnGateApiSource(f).fetch()
                 }
             }
             val htmlDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_HTML, primary, boundFetcher, { true }) { f ->
+                fetchOnChosenPath(SOURCE_TAG_HTML, primary, boundFetcher, { true }, physicalFetcher) { f ->
                     VpnGateHtmlSource(f).fetch(mirrors)
                 }
             }
@@ -297,8 +366,19 @@ class VpnServerRepository(
         }
 
         if (records.isEmpty()) {
+            // v1.0.45: EMERGENCY is the last rung; skipped when no emergency
+            // sources are configured (none are wired in this build).
+            if (!hasEmergencySources()) {
+                fetchLog("[ladder] skip=EMERGENCY (none configured)")
+            }
+            fetchLog(
+                "[ladder] ${primary.name} failed (no result) " +
+                    "network=${networkLabel(primary)} " +
+                    "selfExcluded=${selfExclusionLabel()}",
+            )
+            fetchLog("[ladder] all rungs failed; preserving DB")
             CollectorLog.d("No records collected; trying last-known-good snapshot")
-            return@withContext loadSnapshot()
+            return loadSnapshot()
         }
 
         val merged = VpnServerMerger.mergeRecords(records)
@@ -306,7 +386,7 @@ class VpnServerRepository(
 
         if (valid.isEmpty()) {
             CollectorLog.d("No valid servers after merge; trying last-known-good snapshot")
-            return@withContext loadSnapshot()
+            return loadSnapshot()
         }
 
         ServerQualityCalculator.scoreAll(valid)
@@ -316,7 +396,7 @@ class VpnServerRepository(
 
         val connectionList = VpnConnectionMapper.toConnectionList(valid)
         if (connectionList.size() == 0) {
-            return@withContext loadSnapshot()
+            return loadSnapshot()
         }
 
         val now = System.currentTimeMillis()
@@ -326,7 +406,7 @@ class VpnServerRepository(
         // Writing it here is what allowed a degraded dataset to overwrite the
         // last-known-good fallback before anything had judged it.
         CollectorLog.d("Collected ${connectionList.size()} servers (capability=$collectedCapability)")
-        CollectResult(
+        return CollectResult(
             connectionList,
             valid.size,
             fromCache = false,
@@ -336,15 +416,16 @@ class VpnServerRepository(
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // R4b transport routing.
+    // R4b transport routing, v1.0.45 ladder.
     //
     // `SERVER_SOURCE_ARCHITECTURE.md` §7 Q2 binds a request by handing
     // `network.socketFactory` to that request's own client — never
     // `bindProcessToNetwork()`, which would capture every other socket in the
-    // process. §7 Q3's ordering is honoured in its first two rungs only: open
-    // is the default, VPN is auto-selected whenever the app's own tunnel is up
-    // and OS-bound (see [productionRouting]) and still falls back to open on
-    // failure. Emergency and manual sources are out of scope for this phase.
+    // process. Since v1.0.45 both network rungs are explicit and bound:
+    // PHYSICAL is a NOT_VPN network, TUNNEL is the app's own VPN network, and
+    // EMERGENCY (bundled servers.csv) carries no network at all. The old
+    // unbound `OPEN` is gone precisely because it was never "outside the
+    // tunnel" when the tunnel was up.
     // ─────────────────────────────────────────────────────────────────────
 
     /**
@@ -358,6 +439,32 @@ class VpnServerRepository(
      * creating a single connection pool instead of three.
      */
     private fun bindHttpFetcher(): HttpFetcher? = boundFetcherFactory()
+
+    /**
+     * v1.0.45: whether any emergency source is configured. No emergency source
+     * is wired in this build, so EMERGENCY is skipped (logged) and the DB is
+     * preserved by the last-known-good snapshot.
+     */
+    private fun hasEmergencySources(): Boolean = false
+
+    /** v1.0.45: a readable network handle for a rung, for failure diagnostics. */
+    private fun networkLabel(path: CollectorPath): String = when (path) {
+        CollectorPath.PHYSICAL ->
+            runCatching { GlobalVpnTracker.currentPhysicalNetwork()?.toString() }.getOrNull() ?: "none"
+        CollectorPath.TUNNEL ->
+            runCatching { GlobalVpnTracker.currentVpnNetwork()?.toString() }.getOrNull() ?: "none"
+        CollectorPath.EMERGENCY -> "none"
+    }
+
+    /**
+     * v1.0.45: the self-exclusion diagnostic as a log-safe string.
+     *
+     * Wrapped because this class's unit tests run on a plain JVM where
+     * [GlobalVpnTracker] cannot initialise; a diagnostic must never be the
+     * reason a refresh throws.
+     */
+    private fun selfExclusionLabel(): String =
+        runCatching { GlobalVpnTracker.isSelfExcludedFromOwnTunnel().name }.getOrNull() ?: "UNKNOWN"
 
     /**
      * Runs one source's fetch on the transport [path] chose for this run.
@@ -381,54 +488,53 @@ class VpnServerRepository(
         path: CollectorPath,
         boundFetcher: HttpFetcher?,
         succeeded: (T) -> Boolean,
+        physicalFetcher: HttpFetcher = fetcher,
         fetch: suspend (HttpFetcher) -> T?,
     ): T? {
-        // A VPN attempt needs a bound network. If none is available the rung is
-        // simply unusable, so degrade to OPEN without claiming a fallback we did
-        // not perform.
-        if (path == CollectorPath.VPN && boundFetcher == null) {
-            fetchLog("[fetch] path=open (vpn rung unavailable)")
-            pathLog("[collector] path=open source=$sourceTag")
-            return fetch(fetcher)
+        // A TUNNEL attempt needs a bound VPN network. If none is available the
+        // rung is unusable, so degrade to PHYSICAL without claiming a fallback
+        // we did not perform.
+        if (path == CollectorPath.TUNNEL && boundFetcher == null) {
+            fetchLog("[fetch] path=physical (tunnel rung unavailable)")
+            pathLog("[collector] path=physical source=$sourceTag")
+            return fetch(physicalFetcher)
         }
 
         // --- primary rung ---
-        val primaryResult = if (path == CollectorPath.VPN) {
-            fetchLog("[fetch] path=vpn source=$sourceTag")
-            pathLog("[collector] path=vpn source=$sourceTag")
+        val primaryResult = if (path == CollectorPath.TUNNEL) {
+            fetchLog("[fetch] path=tunnel source=$sourceTag")
+            pathLog("[collector] path=tunnel source=$sourceTag")
             fetch(boundFetcher!!)
         } else {
-            fetchLog("[fetch] path=open source=$sourceTag")
-            pathLog("[collector] path=open source=$sourceTag")
-            fetch(fetcher)
+            fetchLog("[fetch] path=physical source=$sourceTag")
+            pathLog("[collector] path=physical source=$sourceTag")
+            fetch(physicalFetcher)
         }
         if (primaryResult != null && succeeded(primaryResult)) return primaryResult
 
-        // --- fallback to the opposite rung, only when it is reachable ---
-        val fallback = if (path == CollectorPath.OPEN) CollectorPath.VPN else CollectorPath.OPEN
+        // --- fallback to the opposite main rung, only when it is reachable ---
+        val fallback =
+            if (path == CollectorPath.PHYSICAL) CollectorPath.TUNNEL else CollectorPath.PHYSICAL
         val canFallback = when (fallback) {
-            CollectorPath.VPN -> boundFetcher != null
-            CollectorPath.OPEN -> true
+            CollectorPath.TUNNEL -> boundFetcher != null
+            CollectorPath.PHYSICAL -> true
+            CollectorPath.EMERGENCY -> false
         }
         if (!canFallback) {
             // Diagnostic only — the `[collector]` stream stays clean so existing
             // per-source log assertions are unaffected.
-            // v1.0.27 — D-2 fix: here path is always OPEN (VPN-only fallback is
-            // unreachable without a bound network), so log it lowercase to match
-            // the OPEN-first diagnostic contract.
-            fetchLog("[fetch] path=open failed (no result); no fallback (tunnel down)")
+            fetchLog("[fetch] path=physical failed (no result); no fallback (tunnel down)")
             return null
         }
 
-        // v1.0.27 — D-2 fix: emit the rung names lowercase so the [fetch]
-        // diagnostics read `path=open` / `path=vpn` / `fallback-to-open`
-        // consistently with the primary-attempt lines.
+        // Emit the rung names lowercase so the [fetch] diagnostics read
+        // `path=physical` / `path=tunnel` / `fallback-to-*` consistently.
         fetchLog("[fetch] path=${path.name.lowercase()} failed (no result); falling back to ${fallback.name.lowercase()}")
         pathLog("[collector] path=fallback-to-${fallback.name.lowercase()} source=$sourceTag")
-        val fallbackResult = if (fallback == CollectorPath.VPN) {
+        val fallbackResult = if (fallback == CollectorPath.TUNNEL) {
             fetch(boundFetcher!!)
         } else {
-            fetch(fetcher)
+            fetch(physicalFetcher)
         }
         if (fallbackResult != null && succeeded(fallbackResult)) {
             fetchLog("[fetch] path=${fallback.name.lowercase()} succeeded after ${path.name.lowercase()} failed")
@@ -437,8 +543,6 @@ class VpnServerRepository(
         fetchLog("[fetch] path=${fallback.name.lowercase()} failed (no result)")
         return null
     }
-
-    /** Visible for tests; builds the R4b fetcher actually used by a run. */
 
     /**
      * §33: locate the merged record behind a displayed server and

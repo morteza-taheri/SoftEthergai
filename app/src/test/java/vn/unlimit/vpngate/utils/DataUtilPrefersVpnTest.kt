@@ -1,6 +1,7 @@
 package vn.unlimit.vpngate.utils
 
 import android.content.SharedPreferences
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -72,6 +73,75 @@ class DataUtilPrefersVpnTest {
             "a different key would silently defeat the v1.0.41 routing read",
             prefs.contains("vpn_always_prefer_vpn"),
         )
+    }
+
+    // ── T-NEW-54 (v1.0.45): the write reaches the store the READER uses ───
+    //
+    // v1.0.44 Phase B T6b proved the toggle was inert on device: this class
+    // wrote "vpn_setting_data_<flavor>" while
+    // GlobalVpnTracker.prefersVpnForCollector() reads
+    // PreferenceManager.getDefaultSharedPreferences — same key, different
+    // files. These three tests pin the two-store write that closes that gap.
+
+    @Test
+    fun `T-NEW-54a setting the opt-in writes BOTH preference stores`() {
+        val dataUtilStore = PrefersVpnFakeSharedPreferences()
+        val readerStore = PrefersVpnFakeSharedPreferences()
+        val util = DataUtil(dataUtilStore, readerStore)
+
+        util.setPrefersVpnForCollector(true)
+
+        assertTrue(
+            "the DataUtil store must keep the value (existing contract)",
+            dataUtilStore.getBoolean("vpn_always_prefer_vpn", false),
+        )
+        assertTrue(
+            "the reader's store must also get the value, or the toggle stays inert",
+            readerStore.getBoolean("vpn_always_prefer_vpn", false),
+        )
+    }
+
+    @Test
+    fun `T-NEW-54b clearing the opt-in clears BOTH preference stores`() {
+        val dataUtilStore = PrefersVpnFakeSharedPreferences()
+        val readerStore = PrefersVpnFakeSharedPreferences()
+        val util = DataUtil(dataUtilStore, readerStore)
+
+        util.setPrefersVpnForCollector(true)
+        util.setPrefersVpnForCollector(false)
+
+        assertEquals(false, dataUtilStore.getBoolean("vpn_always_prefer_vpn", true))
+        assertEquals(
+            "turning the toggle off must reach the reader too",
+            false,
+            readerStore.getBoolean("vpn_always_prefer_vpn", true),
+        )
+    }
+
+    @Test
+    fun `T-NEW-54c the getter still reads the DataUtil store`() {
+        // The getter is deliberately unchanged: SettingsScreen re-reads it to
+        // paint the switch, and moving it to the default store would change
+        // what the UI shows for users who toggled before this fix.
+        val dataUtilStore = PrefersVpnFakeSharedPreferences()
+        val readerStore = PrefersVpnFakeSharedPreferences()
+        val util = DataUtil(dataUtilStore, readerStore)
+
+        util.setPrefersVpnForCollector(true)
+
+        assertTrue(util.getPrefersVpnForCollector())
+    }
+
+    @Test
+    fun `T-NEW-54d a DataUtil with no default store still writes without throwing`() {
+        // The single-argument seam (and any Context-less path) has no default
+        // store; the write must degrade silently rather than crash Settings.
+        val dataUtilStore = PrefersVpnFakeSharedPreferences()
+        val util = DataUtil(dataUtilStore)
+
+        util.setPrefersVpnForCollector(true)
+
+        assertTrue(dataUtilStore.getBoolean("vpn_always_prefer_vpn", false))
     }
 }
 

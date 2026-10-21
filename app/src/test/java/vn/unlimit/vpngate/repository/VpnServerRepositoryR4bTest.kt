@@ -14,8 +14,14 @@ import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.RedirectPolicy
 
 /**
- * R4b — the repository's open-vs-VPN routing, its per-source logging, and its
- * fallback behaviour.
+ * R4b — the repository's PHYSICAL-vs-TUNNEL routing, its per-source logging,
+ * and its fallback behaviour.
+ *
+ * v1.0.45 renamed the two rungs: the old `OPEN` was unbound (so it silently
+ * followed the OS default, i.e. the app's own tunnel when that was up) and is
+ * now `PHYSICAL`, an explicitly bound NOT_VPN network. `VPN` became `TUNNEL`.
+ * The assertions below moved with the labels; the mechanics they pin are the
+ * same ones R4b established.
  *
  * The fetcher is a fake and the routing/bind/log lambdas are injected, so the
  * whole decision is exercised without Android, a tracker or a network. The
@@ -51,12 +57,12 @@ class VpnServerRepositoryR4bTest {
         }
     }
 
-    // v1.0.27: with the default (no opt-in) the primary rung is OPEN and the VPN
-    // rung is only a fallback. "Open path, no tunnel" is modelled with a down
-    // tunnel (false, false, false); a usable tunnel is exercised via vpnInput's
-    // fallback direction and via VpnServerRepositoryRoutingTest.
-    private val openInput = CollectorRoutingInput(false, false, false)
-    private val vpnInput = CollectorRoutingInput(true, true, true)
+    // With the default (no opt-in) the primary rung is PHYSICAL and the TUNNEL
+    // rung is only a fallback. "Physical path, no tunnel" is modelled with a
+    // down tunnel (false, false, false); a usable tunnel is exercised via
+    // tunnelInput's fallback direction and via VpnServerRepositoryRoutingTest.
+    private val physicalInput = CollectorRoutingInput(false, false, false)
+    private val tunnelInput = CollectorRoutingInput(true, true, true)
 
     /**
      * The bound fetcher is injected, not built from a socket factory, so no
@@ -65,10 +71,10 @@ class VpnServerRepositoryR4bTest {
      */
     private fun repository(
         routingInput: CollectorRoutingInput,
-        openFetcher: HttpFetcher,
+        physicalFetcher: HttpFetcher,
         boundFetcher: HttpFetcher? = EmptyFetcher(),
     ): VpnServerRepository = VpnServerRepository(
-        fetcher = openFetcher,
+        fetcher = physicalFetcher,
         cacheDir = tempFolder.newFolder(),
         routing = { routingInput },
         boundFetcherFactory = { boundFetcher },
@@ -76,52 +82,55 @@ class VpnServerRepositoryR4bTest {
     )
 
     @Test
-    fun `open path is logged per source`() = runBlocking {
-        // v1.0.27 — D-2 fix (bucket A): openInput is (false,false,false) — no
-        // opt-in, no usable tunnel, no bound network. The OPEN primary therefore
-        // has no VPN rung to fall back to, so we pass a null bound fetcher to
-        // model that faithfully; the [collector] stream then carries exactly one
-        // `path=open` line per source and no fallback line.
+    fun `physical path is logged per source`() = runBlocking {
+        // v1.0.27 — D-2 fix (bucket A): physicalInput is (false,false,false) — no
+        // opt-in, no usable tunnel, no bound network. The PHYSICAL primary
+        // therefore has no TUNNEL rung to fall back to, so we pass a null bound
+        // fetcher to model that faithfully; the [collector] stream then carries
+        // exactly one `path=physical` line per source and no fallback line.
         logs.clear()
-        repository(openInput, EmptyFetcher(), boundFetcher = null).refresh()
+        repository(physicalInput, EmptyFetcher(), boundFetcher = null).refresh()
 
         assertEquals(
             listOf(
-                "[collector] path=open source=mirror",
-                "[collector] path=open source=api",
-                "[collector] path=open source=html",
+                "[collector] path=physical source=mirror",
+                "[collector] path=physical source=api",
+                "[collector] path=physical source=html",
             ).sorted(),
             logs.sorted(),
         )
         assertTrue(
-            "no VPN rung may be taken when there is no bound network",
-            logs.none { it.contains("path=vpn") },
+            "no TUNNEL rung may be taken when there is no bound network",
+            logs.none { it.contains("path=tunnel") },
         )
         assertTrue(
-            "no fallback line may appear when the VPN rung was never taken",
-            logs.none { it.contains("fallback-to-open") },
+            "no fallback line may appear when the TUNNEL rung was never taken",
+            logs.none { it.contains("fallback-to-physical") },
         )
     }
 
     @Test
-    fun `vpn path is chosen when every input holds`() = runBlocking {
+    fun `tunnel path is chosen when every input holds`() = runBlocking {
         logs.clear()
-        repository(vpnInput, EmptyFetcher()).refresh()
+        repository(tunnelInput, EmptyFetcher()).refresh()
 
-        // html and api fail on the VPN rung (the fake returns nothing) and
-        // retry on open. The mirror rung does not retry — see
+        // html and api fail on the TUNNEL rung (the fake returns nothing) and
+        // retry on PHYSICAL. The mirror rung does not retry — see
         // `mirror discovery never reports empty because of the bootstrap list`.
         assertEquals(
             listOf(
-                "[collector] path=fallback-to-open source=api",
-                "[collector] path=fallback-to-open source=html",
-                "[collector] path=vpn source=api",
-                "[collector] path=vpn source=html",
-                "[collector] path=vpn source=mirror",
+                "[collector] path=fallback-to-physical source=api",
+                "[collector] path=fallback-to-physical source=html",
+                "[collector] path=tunnel source=api",
+                "[collector] path=tunnel source=html",
+                "[collector] path=tunnel source=mirror",
             ),
             logs.sorted(),
         )
-        assertTrue("no plain open line may appear", logs.none { it == "[collector] path=open source=api" })
+        assertTrue(
+            "no plain physical line may appear",
+            logs.none { it == "[collector] path=physical source=api" },
+        )
     }
 
     /**
@@ -137,24 +146,24 @@ class VpnServerRepositoryR4bTest {
      * a rare, unexplained suite failure.
      */
     @Test
-    fun `vpn-path-logs-are-never-lost-under-concurrent-fetch`() = runBlocking {
+    fun `tunnel-path-logs-are-never-lost-under-concurrent-fetch`() = runBlocking {
         val iterations = 50
-        val repo = repository(vpnInput, EmptyFetcher())
+        val repo = repository(tunnelInput, EmptyFetcher())
 
         logs.clear()
         repeat(iterations) { repo.refresh() }
 
-        // Every run on the VPN rung with a failing bound fetcher emits, per
-        // source: mirror -> a single `path=vpn` line (the bootstrap mirrors make
-        // it succeed, so it never falls back); api and html -> one `path=vpn`
-        // line each plus one `path=fallback-to-open` line each. Five lines per
-        // run, so any dropped `add` shortens the total.
+        // Every run on the TUNNEL rung with a failing bound fetcher emits, per
+        // source: mirror -> a single `path=tunnel` line (the bootstrap mirrors
+        // make it succeed, so it never falls back); api and html -> one
+        // `path=tunnel` line each plus one `path=fallback-to-physical` line
+        // each. Five lines per run, so any dropped `add` shortens the total.
         val perRun = listOf(
-            "[collector] path=vpn source=mirror",
-            "[collector] path=vpn source=api",
-            "[collector] path=vpn source=html",
-            "[collector] path=fallback-to-open source=api",
-            "[collector] path=fallback-to-open source=html",
+            "[collector] path=tunnel source=mirror",
+            "[collector] path=tunnel source=api",
+            "[collector] path=tunnel source=html",
+            "[collector] path=fallback-to-physical source=api",
+            "[collector] path=fallback-to-physical source=html",
         )
 
         assertEquals(
@@ -181,80 +190,80 @@ class VpnServerRepositoryR4bTest {
     fun `mirror discovery never reports empty because of the bootstrap list`() = runBlocking {
         logs.clear()
         // Even a fetcher that always fails leaves the bootstrap mirrors.
-        repository(vpnInput, EmptyFetcher()).refresh()
+        repository(tunnelInput, EmptyFetcher()).refresh()
 
         assertTrue(
             "mirror must not claim a fallback it never made: $logs",
             logs.none { it.contains("source=mirror") && it.contains("fallback") },
         )
         assertEquals(
-            listOf("[collector] path=vpn source=mirror"),
+            listOf("[collector] path=tunnel source=mirror"),
             logs.filter { it.endsWith("source=mirror") },
         )
     }
 
     @Test
-    fun `missing bind factory degrades to open rather than to the vpn rung`() = runBlocking {
+    fun `missing bind factory degrades to PHYSICAL rather than to the TUNNEL rung`() = runBlocking {
         logs.clear()
-        repository(vpnInput, EmptyFetcher(), boundFetcher = null).refresh()
+        repository(tunnelInput, EmptyFetcher(), boundFetcher = null).refresh()
 
         assertTrue(
-            "expected open when nothing can be bound, got $logs",
-            logs.isNotEmpty() && logs.all { it.startsWith("[collector] path=open") },
+            "expected PHYSICAL when nothing can be bound, got $logs",
+            logs.isNotEmpty() && logs.all { it.startsWith("[collector] path=physical") },
         )
     }
 
     @Test
-    fun `a failed vpn fetch falls back to open and actually retries on the open fetcher`() = runBlocking {
-        // html and api fail on the VPN rung; the open fetcher counts its calls,
-        // so the retry is provable rather than merely logged.
-        val open = CountingFetcher()
+    fun `a failed tunnel fetch falls back to physical and actually retries on the physical fetcher`() = runBlocking {
+        // html and api fail on the TUNNEL rung; the physical fetcher counts its
+        // calls, so the retry is provable rather than merely logged.
+        val physical = CountingFetcher()
         logs.clear()
-        repository(vpnInput, open).refresh()
+        repository(tunnelInput, physical).refresh()
 
         for (tag in listOf("html", "api")) {
             assertEquals(
                 "wrong log sequence for $tag",
                 listOf(
-                    "[collector] path=vpn source=$tag",
-                    "[collector] path=fallback-to-open source=$tag",
+                    "[collector] path=tunnel source=$tag",
+                    "[collector] path=fallback-to-physical source=$tag",
                 ),
                 logs.filter { it.endsWith("source=$tag") },
             )
         }
-        // Both fallbacks must have re-issued the request on the open fetcher.
-        assertTrue("open fetcher was never retried (calls=${open.calls})", open.calls >= 2)
+        // Both fallbacks must have re-issued the request on the physical fetcher.
+        assertTrue("physical fetcher was never retried (calls=${physical.calls})", physical.calls >= 2)
     }
 
     @Test
-    fun `a successful vpn fetch is not retried on open`() = runBlocking {
+    fun `a successful tunnel fetch is not retried on physical`() = runBlocking {
         val repo = VpnServerRepository(
             fetcher = EmptyFetcher(),
             cacheDir = tempFolder.newFolder(),
-            routing = { vpnInput },
+            routing = { tunnelInput },
             boundFetcherFactory = { EmptyFetcher() },
             pathLog = { logs.add(it) },
         )
         logs.clear()
         val won = repo.fetchOnChosenPath(
             sourceTag = "html",
-            path = CollectorPath.VPN,
+            path = CollectorPath.TUNNEL,
             boundFetcher = EmptyFetcher(),
             succeeded = { true },
         ) { "body" }
 
         assertEquals("body", won)
-        assertEquals(listOf("[collector] path=vpn source=html"), logs)
+        assertEquals(listOf("[collector] path=tunnel source=html"), logs)
     }
 
     @Test
-    fun `an empty mirror list counts as failure and retries on open`() = runBlocking {
+    fun `an empty mirror list counts as failure and retries on physical`() = runBlocking {
         // discoverMirrors() reports failure as an empty list, not null — the
         // case a plain `result == null` fallback would silently have missed.
         val repo = VpnServerRepository(
             fetcher = EmptyFetcher(),
             cacheDir = tempFolder.newFolder(),
-            routing = { vpnInput },
+            routing = { tunnelInput },
             boundFetcherFactory = { EmptyFetcher() },
             pathLog = { logs.add(it) },
         )
@@ -262,20 +271,20 @@ class VpnServerRepositoryR4bTest {
         logs.clear()
         val mirrors = repo.fetchOnChosenPath(
             sourceTag = "mirror",
-            path = CollectorPath.VPN,
+            path = CollectorPath.TUNNEL,
             boundFetcher = EmptyFetcher(),
             succeeded = { it.isNotEmpty() },
         ) { emptyList<String>() }
 
-        // v1.0.27 — D-2 fix: a total failure (primary VPN + OPEN fallback both
-        // empty) returns null; the caller treats null as empty via `.orEmpty()`.
-        // The user-visible behaviour — retry on open — is asserted by the log
-        // lines below.
+        // v1.0.27 — D-2 fix: a total failure (primary TUNNEL + PHYSICAL fallback
+        // both empty) returns null; the caller treats null as empty via
+        // `.orEmpty()`. The user-visible behaviour — retry on PHYSICAL — is
+        // asserted by the log lines below.
         assertNull(mirrors)
         assertEquals(
             listOf(
-                "[collector] path=vpn source=mirror",
-                "[collector] path=fallback-to-open source=mirror",
+                "[collector] path=tunnel source=mirror",
+                "[collector] path=fallback-to-physical source=mirror",
             ),
             logs,
         )
@@ -283,7 +292,7 @@ class VpnServerRepositoryR4bTest {
 
     @Test
     fun `routing is re-read per refresh rather than frozen at construction`() {
-        var input = openInput
+        var input = physicalInput
         val repo = VpnServerRepository(
             fetcher = EmptyFetcher(),
             cacheDir = tempFolder.newFolder(),
@@ -295,31 +304,31 @@ class VpnServerRepositoryR4bTest {
         logs.clear()
         runBlocking { repo.refresh() }
         val firstRun = logs.toList()
-        // v1.0.27 — D-2 fix: with a bound tunnel the OPEN primary now falls back
-        // to VPN on failure, so the first run (openInput, no opt-in) logs
-        // `path=open` as its primary plus `fallback-to-vpn` lines. Assert the
-        // primary rung taken was OPEN.
+        // v1.0.27 — D-2 fix: with a bound tunnel the PHYSICAL primary now falls
+        // back to TUNNEL on failure, so the first run (physicalInput, no opt-in)
+        // logs `path=physical` as its primary plus `fallback-to-tunnel` lines.
+        // Assert the primary rung taken was PHYSICAL.
         assertTrue(
-            "first refresh did not take the OPEN rung: $firstRun",
-            firstRun.isNotEmpty() && firstRun.any { it.contains("path=open") },
+            "first refresh did not take the PHYSICAL rung: $firstRun",
+            firstRun.isNotEmpty() && firstRun.any { it.contains("path=physical") },
         )
 
         // Tunnel comes up and the user opts in: the next run must follow.
-        input = vpnInput
+        input = tunnelInput
         logs.clear()
         runBlocking { repo.refresh() }
         assertTrue(
             "second refresh ignored the changed inputs: $logs",
-            logs.any { it.contains("path=vpn") },
+            logs.any { it.contains("path=tunnel") },
         )
     }
 
     @Test
-    fun `a null vpn result is treated as failure`() = runBlocking {
+    fun `a null tunnel result is treated as failure`() = runBlocking {
         val repo = VpnServerRepository(
             fetcher = EmptyFetcher(),
             cacheDir = tempFolder.newFolder(),
-            routing = { vpnInput },
+            routing = { tunnelInput },
             boundFetcherFactory = { EmptyFetcher() },
             pathLog = { logs.add(it) },
         )
@@ -327,7 +336,7 @@ class VpnServerRepositoryR4bTest {
 
         val result = repo.fetchOnChosenPath<String>(
             sourceTag = "api",
-            path = CollectorPath.VPN,
+            path = CollectorPath.TUNNEL,
             boundFetcher = EmptyFetcher(),
             succeeded = { true },
         ) { null }
@@ -335,8 +344,8 @@ class VpnServerRepositoryR4bTest {
         assertNull(result)
         assertEquals(
             listOf(
-                "[collector] path=vpn source=api",
-                "[collector] path=fallback-to-open source=api",
+                "[collector] path=tunnel source=api",
+                "[collector] path=fallback-to-physical source=api",
             ),
             logs,
         )

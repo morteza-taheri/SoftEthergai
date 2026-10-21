@@ -527,6 +527,42 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         runCatching { prefs?.getBoolean(PREF_ALWAYS_PREFER_VPN, false) == true }
             .getOrDefault(false)
 
+    /**
+     * v1.0.45 (§1.6.38): the explicit PHYSICAL network — a NOT_VPN network with
+     * INTERNET + VALIDATED capability, preferring Wi-Fi then cellular.
+     *
+     * Read-only. It is never a routing-decision input; the ladder only *binds*
+     * a request to it ([boundToPhysicalNetwork]). Returns null when no such
+     * network exists (airplane mode, or only a VPN is up).
+     */
+    fun currentPhysicalNetwork(): Network? {
+        val ctx = appContext ?: return null
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        val candidates = cm.allNetworks.filter { net ->
+            val caps = cm.getNetworkCapabilities(net) ?: return@filter false
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        return candidates.firstOrNull { net ->
+            cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } ?: candidates.firstOrNull { net ->
+            cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        } ?: candidates.firstOrNull()
+    }
+
+    /**
+     * v1.0.45 (§1.6.38): diagnostics-only self-exclusion probe.
+     *
+     * The exclusion list is built in `SoftEtherVpnService` (a different module)
+     * from `config.excludedApps`; it is not reachable from here without
+     * touching that frozen file, so this reports [SelfExclusion.UNKNOWN]. The
+     * ladder logs this value on every failure so a device run can correlate an
+     * EPERM with the exclusion state.
+     */
+    fun isSelfExcludedFromOwnTunnel(): SelfExclusion = SelfExclusion.UNKNOWN
+
     fun init(context: Context) {
         if (isInitialized) return
         isInitialized = true
@@ -769,6 +805,12 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         }
     }
 }
+
+/**
+ * v1.0.45 (§1.6.38): read-only tri-state for "is this app excluded from its own
+ * tunnel". Used ONLY for diagnostics, never as a control-flow input.
+ */
+enum class SelfExclusion { UNKNOWN, NOT_EXCLUDED, EXCLUDED }
 
 /**
  * R4b preference key: always prefer VPN for collector requests.

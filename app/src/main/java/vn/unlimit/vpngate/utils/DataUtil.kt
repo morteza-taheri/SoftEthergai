@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
+import androidx.preference.PreferenceManager
 import com.google.gson.reflect.TypeToken
 import com.google.gson.Gson
 import com.google.gson.stream.JsonReader
@@ -34,6 +35,14 @@ class DataUtil(context: Context?) {
     private var sharedPreferencesSetting: SharedPreferences? = null
     private var gson: Gson? = null
 
+    /**
+     * v1.0.45 (§1.6.38): the store [GlobalVpnTracker.prefersVpnForCollector]
+     * reads (`PreferenceManager.getDefaultSharedPreferences`). Production
+     * resolves it lazily from [mContext]; the JVM test seam injects it so the
+     * two-store write can be asserted without an Android runtime.
+     */
+    private var defaultPreferences: SharedPreferences? = null
+
     init {
         try {
             mContext = context
@@ -59,6 +68,19 @@ class DataUtil(context: Context?) {
      */
     internal constructor(sharedPreferences: SharedPreferences) : this(null) {
         sharedPreferencesSetting = sharedPreferences
+    }
+
+    /**
+     * v1.0.45 (§1.6.38) test seam: inject BOTH the DataUtil store and the
+     * default-preferences store so [setPrefersVpnForCollector]'s two-store
+     * write can be asserted on a plain JVM.
+     */
+    internal constructor(
+        sharedPreferences: SharedPreferences,
+        defaultPreferences: SharedPreferences,
+    ) : this(null) {
+        sharedPreferencesSetting = sharedPreferences
+        this.defaultPreferences = defaultPreferences
     }
 
     var connectionsCache: VPNGateConnectionList?
@@ -402,7 +424,21 @@ class DataUtil(context: Context?) {
 
     /** @see getPrefersVpnForCollector */
     fun setPrefersVpnForCollector(enabled: Boolean) {
+        // v1.0.45 (§1.6.38): write to BOTH stores. Before this the toggle wrote
+        // only to this DataUtil store ("vpn_setting_data_<flavor>"), while
+        // GlobalVpnTracker.prefersVpnForCollector() reads
+        // PreferenceManager.getDefaultSharedPreferences — same key, different
+        // files, so the toggle was inert and the v1.0.41 VPN rung unreachable
+        // (v1.0.44 Phase B T6b).
         setBooleanSetting("vpn_always_prefer_vpn", enabled)
+        runCatching {
+            val target = defaultPreferences
+                ?: mContext?.let { PreferenceManager.getDefaultSharedPreferences(it) }
+            target?.edit()?.putBoolean("vpn_always_prefer_vpn", enabled)?.apply()
+        }.onFailure {
+            // Never crash the settings screen if the default store is
+            // unavailable (e.g. the JVM test seam with no context).
+        }
     }
 
     /**

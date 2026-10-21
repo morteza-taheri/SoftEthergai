@@ -24,9 +24,9 @@ class HttpFetcherR4bTest {
     // ── the decision ───────────────────────────────────────────────────
 
     @Test
-    fun `open when the user has not opted in`() {
+    fun `physical when the user has not opted in`() {
         assertEquals(
-            CollectorPath.OPEN,
+            CollectorPath.PHYSICAL,
             CollectorRouting.choose(
                 CollectorRoutingInput(preferVpn = false, tunnelUsable = true, hasBoundNetwork = true),
             ),
@@ -34,9 +34,9 @@ class HttpFetcherR4bTest {
     }
 
     @Test
-    fun `open when the tunnel is not usable even with opt-in and a network`() {
+    fun `physical when the tunnel is not usable even with opt-in and a network`() {
         assertEquals(
-            CollectorPath.OPEN,
+            CollectorPath.PHYSICAL,
             CollectorRouting.choose(
                 CollectorRoutingInput(preferVpn = true, tunnelUsable = false, hasBoundNetwork = true),
             ),
@@ -44,9 +44,9 @@ class HttpFetcherR4bTest {
     }
 
     @Test
-    fun `open when there is no VPN network to bind to`() {
+    fun `physical when there is no VPN network to bind to`() {
         assertEquals(
-            CollectorPath.OPEN,
+            CollectorPath.PHYSICAL,
             CollectorRouting.choose(
                 CollectorRoutingInput(preferVpn = true, tunnelUsable = true, hasBoundNetwork = false),
             ),
@@ -54,9 +54,9 @@ class HttpFetcherR4bTest {
     }
 
     @Test
-    fun `vpn only when all three inputs hold`() {
+    fun `tunnel only when all three inputs hold`() {
         assertEquals(
-            CollectorPath.VPN,
+            CollectorPath.TUNNEL,
             CollectorRouting.choose(
                 CollectorRoutingInput(preferVpn = true, tunnelUsable = true, hasBoundNetwork = true),
             ),
@@ -64,17 +64,17 @@ class HttpFetcherR4bTest {
     }
 
     @Test
-    fun `every single-input case fails open`() {
+    fun `every single-input case falls back to physical`() {
         val all = listOf(true, false)
-        val openCount = all.flatMap { p ->
+        val physicalCount = all.flatMap { p ->
             all.flatMap { u -> all.map { n -> Triple(p, u, n) } }
         }.count { (p, u, n) ->
             CollectorRouting.choose(
                 CollectorRoutingInput(p, u, n),
-            ) == CollectorPath.OPEN
+            ) == CollectorPath.PHYSICAL
         }
-        // 7 of the 8 combinations must stay open; only (true, true, true) is VPN.
-        assertEquals(7, openCount)
+        // 7 of the 8 combinations must stay physical; only (true, true, true) is tunnel.
+        assertEquals(7, physicalCount)
     }
 
     // ── the bound client ──────────────────────────────────────────────
