@@ -378,13 +378,32 @@ class DataUtil(context: Context?) {
     /** Marks the battery optimisation prompt as shown; see [hasAskedBatteryOptimization]. */
     fun setAskedBatteryOptimization() = setBooleanSetting(SETTING_BATTERY_OPT_ASKED, true)
 
-    // §3 §4 §5 Auto Mode connection timeout per-server (5–60 seconds, default 12)
+    // §3 §4 §5 Auto Mode connection timeout per-server (8–60 seconds, default 12)
+    //
+    // v1.0.46: minimum raised from 5 to 8 seconds (operator requirement);
+    // default (12) and max (60) unchanged. Both the reader and the writer clamp,
+    // so a value stored by an older build at 5 or 6 or 7 reads back as 8.
     fun getAutoModeTimeoutSeconds(): Int =
-        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12).coerceIn(5, 60)
+        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12).coerceIn(8, 60)
 
     fun setAutoModeTimeoutSeconds(seconds: Int) {
-        setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(5, 60))
+        setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(8, 60))
     }
+
+    /**
+     * v1.0.46 (§1.6.39) — true once the default emergency source has been
+     * seeded into `emergency_source_config`.
+     *
+     * This flag, not the table contents, is what makes the seed **once only**.
+     * A user who deletes the seeded row has made an explicit choice, so an
+     * empty table after the flag is set must NOT be re-seeded.
+     */
+    fun hasSeededEmergencyDefault(): Boolean =
+        getBooleanSetting(SETTING_EMERGENCY_DEFAULT_SEEDED, false)
+
+    /** Marks the default emergency source as seeded; see [hasSeededEmergencyDefault]. */
+    fun markEmergencyDefaultSeeded() =
+        setBooleanSetting(SETTING_EMERGENCY_DEFAULT_SEEDED, true)
 
     /**
      * R8 (§11.13): whether Auto Mode automatically re-establishes a tunnel
@@ -629,6 +648,14 @@ class DataUtil(context: Context?) {
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
+
+        /**
+         * v1.0.46 (§1.6.39): set once the default emergency source URL from
+         * `R.string.default_emergency_source_url` has been written into
+         * `emergency_source_config`. See [hasSeededEmergencyDefault].
+         */
+        internal const val SETTING_EMERGENCY_DEFAULT_SEEDED: String =
+            "SETTING_EMERGENCY_DEFAULT_SEEDED"
 
         /**
          * R8 (§11.13): Auto-Reconnect in Auto Mode. Default ENABLED — see

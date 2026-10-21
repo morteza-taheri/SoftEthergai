@@ -2662,7 +2662,8 @@ val sstp = AutoModeCandidate(
      * `DEFAULT_ATTEMPT_TIMEOUT_MS`, 12 s in `DataUtil`, 5 s in the spec — and
      * nothing pinned any of them, so the drift was invisible to CI. This pins
      * the two that are reachable from the JVM; the spec figure is asserted by
-     * §6.7 R5 / §6.8 themselves.
+     * §6.7 R5 / §6.8 themselves. (v1.0.46: the *range floor* moved 5 → 8; the
+     * default asserted below is still 12.)
      */
     @Test
     fun defaultAttemptTimeoutMatchesTheSettingsDefault() {
@@ -2677,8 +2678,9 @@ val sstp = AutoModeCandidate(
             dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
         )
         assertTrue(
-            "the timeout must stay clamped to the documented 5..60 range",
-            dataUtil.contains(".coerceIn(5, 60)"),
+            "the timeout must stay clamped to the documented 8..60 range " +
+                "(v1.0.46 raised the floor from 5 to 8)",
+            dataUtil.contains(".coerceIn(8, 60)"),
         )
     }
 

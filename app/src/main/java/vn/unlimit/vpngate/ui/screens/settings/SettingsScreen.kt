@@ -1032,7 +1032,12 @@ fun SettingsScreen(
     }
 
     if (showAutoTimeoutPicker) {
-        val values = (5..60).toList()
+        // v1.0.46 (§1.6.39) CHANGE B: floor raised 5 -> 8 (operator
+        // requirement). Default (12) and max (60) are unchanged. `autoTimeout`
+        // comes from DataUtil.getAutoModeTimeoutSeconds(), which clamps on
+        // read, so a value stored by an older build at 5..7 arrives here as 8
+        // and `indexOf` always finds it.
+        val values = (8..60).toList()
         SingleChoiceDialog(
             title = stringResource(R.string.setting_auto_timeout_label),
             options = values.map { "$it seconds" },

@@ -8,10 +8,18 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.room.Room
 import de.blinkt.openvpn.core.OpenVPNService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import vn.unlimit.vpngate.activities.DetailActivity
 import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
+import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
 import vn.unlimit.vpngate.data.remote.ManualServerDao
+import vn.unlimit.vpngate.data.remote.SourceKind
+import vn.unlimit.vpngate.data.remote.SourceUrl
 import vn.unlimit.vpngate.db.AppDatabase
 import vn.unlimit.vpngate.db.ExcludedAppDao
 import vn.unlimit.vpngate.db.VPNGateItemDao
@@ -29,6 +37,15 @@ class App : Application() {
 
     // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
     lateinit var manualServerDao: ManualServerDao
+
+    /**
+     * v1.0.46 (§1.6.39): process-lifetime scope for one-shot startup work.
+     *
+     * Same shape as `ServerListUpdateScheduler`'s private scope
+     * (`CoroutineScope(SupervisorJob() + Dispatchers.IO)`). Used only for the
+     * emergency-default seed, which must never block [onCreate].
+     */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -65,6 +82,19 @@ class App : Application() {
         instance = this
         dataUtil = DataUtil(this)
         isImportToOpenVPN = AppConfig.getBoolean("vpn_import_open_vpn")
+
+        // v1.0.46 (§1.6.39) CHANGE A: seed the default emergency source from
+        // R.string.default_emergency_source_url (written by
+        // emergency_csv_publisher.py). Fire-and-forget on IO so startup is
+        // never blocked, and wrapped so a seed failure cannot prevent the app
+        // from starting. The "once only" decision lives inside
+        // [seedEmergencyDefaultIfNeeded]; this block only supplies the inputs.
+        appScope.launch {
+            runCatching {
+                val url = getString(R.string.default_emergency_source_url)
+                seedEmergencyDefaultIfNeeded(dataUtil!!, emergencySourceConfigDao, url)
+            }.onFailure { logW("Default emergency source seed failed", it) }
+        }
 
         // Apply the user-selected appearance (System / Light / Dark) before any
         // activity is created so the whole app follows Theme.Material3.DayNight.
@@ -160,6 +190,100 @@ class App : Application() {
 
         fun getResourceString(resId: Int): String {
             return instance!!.getString(resId)
+        }
+
+        /**
+         * v1.0.46 (§1.6.39) — seed the default emergency source exactly once.
+         *
+         * The publisher writes the URL into
+         * `R.string.default_emergency_source_url`, but before this phase no
+         * Kotlin code read it, so a fresh install had an empty
+         * `emergency_source_config` table and `ServerListUpdates`'s
+         * `emergencyDataset()` (which calls `dao.listEnabled()`) never had a
+         * source to fetch.
+         *
+         * Contract:
+         *  - **Once only.** Guarded by
+         *    [DataUtil.hasSeededEmergencyDefault]. A user who deletes the
+         *    seeded row has made an explicit choice, so an empty table after
+         *    the flag is set is NOT re-seeded.
+         *  - **Non-destructive.** If the table already holds any row (enabled
+         *    or not — a user may have disabled their own source), nothing is
+         *    inserted and only the flag is set.
+         *  - **Idempotent.** Re-running with the flag set is a no-op, so a
+         *    duplicate row can never be created.
+         *  - **Non-fatal.** Never throws; a failure leaves the flag unset so
+         *    the next start retries.
+         *
+         * Deliberately takes its three collaborators as parameters so a plain
+         * JVM test can drive it with a fake DAO and the in-memory preference
+         * seam, without an `Application`, a `Context` or Room.
+         *
+         * @return true only when this call inserted the row.
+         */
+        internal suspend fun seedEmergencyDefaultIfNeeded(
+            dataUtil: DataUtil,
+            dao: EmergencySourceConfigDao,
+            url: String,
+            now: Long = System.currentTimeMillis(),
+        ): Boolean = try {
+            if (dataUtil.hasSeededEmergencyDefault()) {
+                false
+            } else {
+                val candidate = url.trim()
+                when {
+                    candidate.isEmpty() -> {
+                        // Publisher has not run yet, or the resource was cleared.
+                        false
+                    }
+                    SourceUrl.parse(candidate, SourceKind.EMERGENCY_CSV) == null -> {
+                        logW("Default emergency URL is not valid; skipping seed")
+                        false
+                    }
+                    else -> {
+                        val existing = dao.observeAll().first()
+                        if (existing.isNotEmpty()) {
+                            // The user already has a source; never overwrite it.
+                            dataUtil.markEmergencyDefaultSeeded()
+                            logD("Emergency source already configured; default not seeded")
+                            false
+                        } else {
+                            dao.upsert(
+                                EmergencySourceConfigEntity(
+                                    url = candidate,
+                                    label = DEFAULT_EMERGENCY_LABEL,
+                                    enabled = true,
+                                    createdAt = now,
+                                    updatedAt = now,
+                                ),
+                            )
+                            dataUtil.markEmergencyDefaultSeeded()
+                            logD("Seeded default emergency source")
+                            true
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Never let a seed failure stop the app from starting.
+            logW("Default emergency source seed failed", e)
+            false
+        }
+
+        /** Label written on the seeded row, so the UI can tell it from user rows. */
+        internal const val DEFAULT_EMERGENCY_LABEL: String = "Default"
+
+        /**
+         * `android.util.Log` is a throwing stub on a plain JVM (this module's
+         * unit tests have no `returnDefaultValues`), so every log call in the
+         * seeder is wrapped: a diagnostic must never change the outcome.
+         */
+        private fun logD(message: String) {
+            runCatching { Log.d(TAG, message) }
+        }
+
+        private fun logW(message: String, error: Throwable? = null) {
+            runCatching { if (error != null) Log.w(TAG, message, error) else Log.w(TAG, message) }
         }
         // Default VpnProfileCompat mode for openvpn2.4.x compatibility with softether vpn server
         const val VPN_PROFILE_COMPAT_MODE_24X = 20400
