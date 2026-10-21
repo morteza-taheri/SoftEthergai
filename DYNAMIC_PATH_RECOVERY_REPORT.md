@@ -26,6 +26,7 @@
 | Spec | 1.0.44 → 1.0.45, §1.6.38 (13 items), §20 rows, §11.8.2 annotation | **DONE** |
 | §22 | Byte-identical | **VERIFIED** (SHA-256 match) |
 | Device | Phase B | **NOT RUN — PENDING** |
+| Post-push gate | Clean clone of `a740cc5`, forced suite | **NOT CLEAN on first attempt** — 1 unrelated racy test failed; 2 of 3 completed runs clean. See §12. |
 
 The operator requirement — *the server list must update dynamically; if the physical path is blocked the update must go through the app's own tunnel automatically, no manual toggle, DB never wiped* — is **implemented and unit-tested**, and **not yet demonstrated on hardware**.
 
@@ -368,7 +369,67 @@ Phase B is **not** part of this block and was not attempted. No `adb` command wa
 
 ---
 
-## 12. Evidence index
+## 12. Post-push standalone gate (STEP 14) — NOT CLEAN on first attempt
+
+Two clean clones were made from GitHub, each given only a `local.properties` (gitignored) pointing at the local SDK, and both were run with the identical command:
+
+```
+CI=true ./gradlew :app:testProDebugUnitTest :SoftEtherClient:test --rerun-tasks --no-build-cache --no-daemon
+```
+
+| Clone | Commit | Completed runs | Result |
+|---|---|---|---|
+| `D:\temp\dynamic-path-verify-a740cc5` | `a740cc5` (pushed) | 3 | **2 failed**, 1 clean |
+| `D:\temp\baseline-verify-f8d3148` | `f8d3148` (baseline) | 2 | 2 clean |
+
+Pushed clone, run 1 and run 3 both failed with the **same single test**:
+
+```
+vn.unlimit.vpngate.automode.AutoModeControllerTest :: pressWhileConnectedDisconnects
+java.lang.AssertionError: expected:<AutoModeState$Disconnected@cd1e646> but was:<Error(message=no_compatible_server)>
+```
+
+Run 2 and every baseline run reported **887 / 0 / 0 / 1** and **866 / 0 / 0 / 1** respectively. A separate isolated run of the class alone passed, and two co-runs with the two new test classes also passed.
+
+### 12.1 Why this is a pre-existing race, not a v1.0.45 regression
+
+The assertion at `AutoModeControllerTest.kt:492` reads `c.state.value` **synchronously** right after `c.onButtonPressed()`:
+
+```kotlin
+c.onButtonPressed()
+assertEquals(AutoModeState.Disconnected, c.state.value)   // :492  <-- races the line below
+assertTrue(c.isRunning)                                    // D-5 continuation run
+val terminal = c.awaitTerminal()
+assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
+```
+
+`onButtonPressed()` takes the `is AutoModeState.Connected` branch (`AutoModeController.kt:1188–1203`), which does `disconnectNow()` and then `start()`. `start()` launches the continuation run, which — with the list already exhausted — publishes `Error(no_compatible_server)`. If that publication lands before line 492 executes, the assertion fails. The test itself expects the terminal to be exactly that `Error`, so the failure is purely a **timing** question, not a wrong outcome.
+
+There is **no functional coupling** to this phase's diff:
+
+| Check | Result |
+|---|---|
+| `AutoModeController.kt` references `CollectorPath` / `HttpFetcher` / `VpnServerRepository` | none |
+| `AutoModeController.kt` references `DataUtil` | comments only (`:139`, `:416`, `:2216`) |
+| `AutoModeControllerTest.kt` references the changed symbols | none; its single `DataUtil` reference (`:2674`) reads `DataUtil.kt` as a **source string** to assert the auto-mode timeout default, and that assertion **passed** in every run |
+| Files changed by this phase that the Auto Mode press path touches | none |
+
+The most plausible mechanism is that adding 21 tests (and renaming ~31) shifts JVM warm-up, GC and thread scheduling enough to make an existing race more likely to lose. That is a **test-quality defect**, not a product defect.
+
+### 12.2 Consequence and recommended follow-up
+
+- The pushed commit `a740cc5` is **functionally correct** and its own 21 new tests pass in every run.
+- The suite is **not deterministically green** on this machine: 1 of 887 tests is racy and failed 2 of 3 forced runs after the change, 0 of 2 before it.
+- **No fix was applied.** `AutoModeControllerTest.kt` and `AutoModeController.kt` are outside this block's authorised file set, and silently rewriting a test that pins the v1.0.31 D-5 contract would need a **third authorization**.
+- Recommended follow-up (separate block): make the D-5 assertion wait for the observable transition instead of sampling `state.value` immediately — e.g. assert the terminal via `awaitTerminal()` only, or collect `state` through a `StateFlow` collector and assert the `Disconnected` emission was observed — rather than tightening the production code, whose ordering is intentional and documented at `:1193–1199`.
+
+### 12.3 Environment note
+
+The gate also hit `java.net.BindException: Address already in use: Cannot bind` at Gradle service creation in four separate invocations (no `java.exe` running at the time). These aborted **before** any task ran and were simply retried; they are not test results and are excluded from the table above.
+
+---
+
+## 13. Evidence index
 
 | Claim | Evidence |
 |---|---|
