@@ -4033,6 +4033,36 @@ int softether_additional_connect(softether_connection_t* conn) {
         return -1;
     }
 
+    // v1.0.51 (ADDITIONAL-CONNECT-PROTECT): bind this socket to the host's
+    // underlying network BEFORE dialling it.
+    //
+    // This call runs after tun0 exists (the additional connection is only
+    // started once state == STATE_CONNECTED), so without protection the
+    // connect() below is routed into the tunnel it is trying to build: tun0
+    // cannot forward until this very connect completes, the connect blocks
+    // until its timeout, and the session dies with a frozen stats counter and
+    // a "Keepalive missed" teardown. Kotlin's periodic
+    // protectAdditionalSockets() cannot help here — it only sees the fd after
+    // this function has already returned, i.e. after the damage is done.
+    //
+    // Fail closed: if a protector is registered and it fails, the attempt is
+    // abandoned instead of dialling an unprotected socket. No protector
+    // registered (native test harness, non-VPN hosts) keeps the legacy
+    // behaviour so those builds continue to work.
+    if (conn->protect_socket_fn != NULL) {
+        if (conn->protect_socket_fn(conn->protect_socket_ctx, sock->fd) != 0) {
+            LOGE("additional_connect: socket protect failed (fd=%d); aborting before connect",
+                 sock->fd);
+            socket_destroy(sock);
+            conn->additional_failed_count++;
+            return -1;
+        }
+        LOGD("additional_connect: socket fd=%d protected before connect", sock->fd);
+    } else {
+        LOGD("additional_connect: no socket protector registered (fd=%d); "
+             "connecting unprotected", sock->fd);
+    }
+
     if (socket_connect_timeout(sock, conn->server_ip, conn->server_port, conn->timeout_ms) != 0) {
         LOGE("additional_connect: TCP connect failed");
         socket_destroy(sock);
@@ -4430,7 +4460,6 @@ int softether_get_active_socket_fds(softether_connection_t* conn, int* fds, int 
 }
 
 // Reconnection support - Enable/disable automatic reconnection
-// Reconnection support - Enable/disable automatic reconnection
 void softether_set_reconnect_enabled(softether_connection_t* conn, int enabled) {
     if (conn == NULL) {
         return;
@@ -4438,6 +4467,28 @@ void softether_set_reconnect_enabled(softether_connection_t* conn, int enabled) 
 
     // Store reconnection preference (implementation can be extended)
     LOGD("Reconnection %s", enabled ? "enabled" : "disabled");
+}
+
+// v1.0.51 (ADDITIONAL-CONNECT-PROTECT): register the host socket protector.
+//
+// The hook is stored on the connection so softether_additional_connect() can
+// bind a freshly created socket to the host's underlying network BEFORE it is
+// dialled. Registration is expected once per connection, before connect; a
+// later call simply replaces the previous hook. Passing a NULL `fn` restores
+// the legacy unprotected behaviour (native test harness / non-VPN hosts).
+int softether_set_socket_protector(softether_connection_t* conn,
+                                   int (*fn)(void* ctx, int fd), void* ctx) {
+    if (conn == NULL) return -1;
+    conn->protect_socket_fn = fn;
+    conn->protect_socket_ctx = ctx;
+    LOGD("Socket protector %s", fn != NULL ? "registered" : "cleared");
+    return 0;
+}
+
+void softether_clear_socket_protector(softether_connection_t* conn) {
+    if (conn == NULL) return;
+    conn->protect_socket_fn = NULL;
+    conn->protect_socket_ctx = NULL;
 }
 
 void softether_set_client_mac(softether_connection_t* conn, const uint8_t mac[6]) {

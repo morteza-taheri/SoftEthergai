@@ -78,6 +78,30 @@ class SoftEtherClient {
     }
 
     /**
+     * v1.0.51 (ADDITIONAL-CONNECT-PROTECT): arm the per-connection socket
+     * protector used by the native additional-connect path.
+     *
+     * The additional TCP sockets are created in native code *after* tun0
+     * exists, and the previous implementation only protected them from the
+     * receive loop — i.e. after `connect()` had already been routed into the
+     * tunnel it was building. Registering the host here lets native code call
+     * [protect] on the fd between socket creation and connect.
+     *
+     * [protector] must expose `boolean protect(int)`; the app passes its
+     * `SoftEtherVpnService`. It is typed as [Any] on purpose so this class
+     * stays free of Android framework types (it is unit-tested on the JVM).
+     *
+     * @param handle the native connection handle owned by the caller.
+     * @return true when the hook is armed. A false result means additional
+     *   connections must be treated as unprotected — callers on the VPN path
+     *   must fail closed instead of connecting.
+     */
+    fun setSocketProtector(handle: Long, protector: Any?): Boolean {
+        if (handle == 0L || protector == null) return false
+        return nativeSetSocketProtector(handle, protector)
+    }
+
+    /**
      * Send data through the VPN tunnel
      *
      * @param data Data to send
@@ -254,6 +278,7 @@ class SoftEtherClient {
     external fun nativeSetHalfConnection(handle: Long, halfConnection: Boolean)
     external fun nativeGetNumConnections(handle: Long): Int
     external fun nativeGetAllSocketFds(handle: Long): IntArray?
+    external fun nativeSetSocketProtector(handle: Long, protector: Any?): Boolean
     external fun nativeForceCloseSocket(handle: Long)
     external fun nativeGetClientMac(handle: Long): ByteArray?
     external fun nativeSetClientMac(handle: Long, mac: ByteArray)

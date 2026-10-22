@@ -15,6 +15,14 @@ JNIEXPORT jlong JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeC
 JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeDestroy(
     JNIEnv *env, jobject thiz, jlong handle);
 
+// v1.0.51 (ADDITIONAL-CONNECT-PROTECT): arm the per-connection socket
+// protector used by softether_additional_connect() before it dials a new TCP
+// socket. `protector` must expose `boolean protect(int)` (the app's
+// SoftEtherVpnService). Returns JNI_TRUE when the hook is armed.
+JNIEXPORT jboolean JNICALL
+Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetSocketProtector(
+    JNIEnv *env, jobject thiz, jlong handle, jobject protector);
+
 JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeConnect(
     JNIEnv *env, jobject thiz, jlong handle, jstring host, jint port, 
     jstring username, jstring password);

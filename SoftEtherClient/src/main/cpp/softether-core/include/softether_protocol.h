@@ -242,6 +242,14 @@ typedef struct softether_connection {
     int additional_connecting;   // 1 if background thread is running
     int additional_connect_slot; // which slot the background thread is targeting
     int additional_connect_result; // result from background thread (0=success, -1=fail)
+    // v1.0.51 (ADDITIONAL-CONNECT-PROTECT): host-side socket-protection hook.
+    // Read by softether_additional_connect() on the connecting thread between
+    // socket_create() and socket_connect_timeout(); see
+    // softether_set_socket_protector(). NULL means "no host protection
+    // available" (native test harness / non-VPN builds) and keeps the legacy
+    // behaviour. Written only before a connect can start, so no lock is needed.
+    int (*protect_socket_fn)(void* ctx, int fd);
+    void* protect_socket_ctx;
     int send_rr_idx;              // round-robin index for send socket selection
     uint64_t next_tcp_keepalive_time;  // monotonic timestamp for next periodic TCP keepalive sweep (ms)
     // Phase 13C: preallocated TX staging buffer laid out as
@@ -349,6 +357,23 @@ int softether_select_send_socket(softether_connection_t* conn);
 int softether_get_num_connections(softether_connection_t* conn);
 int softether_get_active_socket_fds(softether_connection_t* conn, int* fds, int max_fds);
 void softether_additional_thread_wait(softether_connection_t* conn);
+
+// v1.0.51 (ADDITIONAL-CONNECT-PROTECT): host-side socket-protection hook.
+//
+// softether_additional_connect() calls `fn(ctx, fd)` on the thread that is
+// performing the connect, AFTER socket_create() and BEFORE the fd is dialled.
+// Returning 0 means "the fd is now bound to the host's underlying network";
+// any non-zero value aborts that additional connection before connect() runs,
+// so an unprotected socket is never dialled while a protector is registered
+// (fail closed). `fn` must be safe to call from any thread, must not block
+// indefinitely, and must never call back into the connection.
+//
+// Registering a NULL `fn` restores the legacy unprotected behaviour used by
+// the native test harness and by non-VPN hosts; the primary connection path is
+// unaffected either way (it is protected by the host before tun0 exists).
+int softether_set_socket_protector(softether_connection_t* conn,
+                                   int (*fn)(void* ctx, int fd), void* ctx);
+void softether_clear_socket_protector(softether_connection_t* conn);
 
 // Force-close sockets without mutex — used to interrupt a blocking connect
 // held by softether_connect_with_hub so softether_destroy can proceed.

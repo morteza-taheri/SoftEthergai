@@ -443,6 +443,18 @@ class ConnectionController(
                 throw Exception("Failed to create native connection")
             }
 
+            // v1.0.51 (ADDITIONAL-CONNECT-PROTECT): arm the native socket
+            // protector BEFORE any connect can start. The additional TCP
+            // sockets are created in native code after tun0 exists, so they
+            // must be protected at creation time — the periodic
+            // protectAdditionalSockets() safety net only sees an fd after its
+            // connect() has already been routed into the tunnel.
+            // Fail closed: without an armed protector the additional connects
+            // would dial unprotected sockets, which is the v1.0.47 defect.
+            if (!client.setSocketProtector(created, service)) {
+                throw Exception("Failed to arm the additional-connect socket protector")
+            }
+
             performConnectInner()
         } catch (e: Throwable) {
             Log.d(TAG, "Connect flow ended (${e.javaClass.simpleName}), tearing down native handle")
@@ -1347,6 +1359,14 @@ class ConnectionController(
             nativeHandle = created
             if (created == 0L) {
                 throw Exception("Failed to create native connection for reconnect")
+            }
+
+            // v1.0.51 (ADDITIONAL-CONNECT-PROTECT): a reconnect builds a brand
+            // new native connection, so the socket protector must be re-armed
+            // on the fresh handle before nativeConnectWithHub can create any
+            // additional socket. Fail closed, exactly as on the initial path.
+            if (!client.setSocketProtector(created, service)) {
+                throw Exception("Failed to arm the additional-connect socket protector for reconnect")
             }
 
             client.setTimeout(nativeHandle, config.connectTimeoutMs)

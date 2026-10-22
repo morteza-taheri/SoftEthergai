@@ -18,8 +18,122 @@ extern int ssl_get_peer_cert_fingerprint(ssl_context_t* ctx, uint8_t* out_sha256
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// ---------------------------------------------------------------------------
+// v1.0.51 (ADDITIONAL-CONNECT-PROTECT): native -> Kotlin socket protector.
+//
+// softether_additional_connect() runs on a background pthread and creates the
+// additional TCP socket AFTER tun0 exists. Without VpnService.protect() before
+// connect(), that connect() is routed into the tunnel it is building and the
+// session dies. Kotlin therefore registers the VpnService instance once per
+// connection; the hook below is what the C core calls between socket_create()
+// and socket_connect_timeout().
+//
+// Lifetime: the struct is owned by the connection (conn->protect_socket_ctx)
+// and freed only in nativeDestroy, AFTER softether_destroy() has joined the
+// background additional-connect thread — so no upcall can be in flight when
+// the mutex is destroyed or the struct is freed. `released` makes a late or
+// concurrent call fail closed rather than touch a cleared service ref.
+//
+// Threading: the additional-connect thread is a plain pthread that is NOT
+// attached to the JVM, so every upcall resolves JNIEnv via GetEnv and attaches
+// only when detached, detaching again before returning (a leaked attachment
+// would keep the thread alive across teardown).
+// ---------------------------------------------------------------------------
+typedef struct {
+    JavaVM* vm;
+    jobject service;      // global ref to the host VpnService
+    int released;         // 1 once the owner has detached this protector
+    pthread_mutex_t lock; // guards `service` and `released`
+} jni_socket_protector_t;
+
+static JavaVM* g_vm = NULL;
+
+// Calls VpnService.protect(int) on the registered host object.
+// Returns 0 when the fd is protected, non-zero to abort the connect.
+static int jni_protect_upcall(jni_socket_protector_t* p, int fd) {
+    if (p == NULL || p->vm == NULL || fd < 0) return -1;
+
+    JNIEnv* env = NULL;
+    int attached_here = 0;
+    jint get = (*p->vm)->GetEnv(p->vm, (void**)&env, JNI_VERSION_1_6);
+    if (get == JNI_EDETACHED) {
+        if ((*p->vm)->AttachCurrentThread(p->vm, (void**)&env, NULL) != JNI_OK) {
+            LOGE("protect: AttachCurrentThread failed (fd=%d)", fd);
+            return -1;
+        }
+        attached_here = 1;
+    } else if (get != JNI_OK || env == NULL) {
+        LOGE("protect: GetEnv failed (rc=%d, fd=%d)", (int)get, fd);
+        return -1;
+    }
+
+    int result = -1;
+
+    // Take a local ref under the lock: the owner may DeleteGlobalRef() the
+    // service concurrently, and an object stays reachable while any local or
+    // global reference to it exists.
+    pthread_mutex_lock(&p->lock);
+    jobject service = NULL;
+    if (!p->released && p->service != NULL) {
+        service = (*env)->NewLocalRef(env, p->service);
+    }
+    pthread_mutex_unlock(&p->lock);
+
+    if (service == NULL) {
+        LOGE("protect: no host service registered (fd=%d)", fd);
+    } else {
+        jclass cls = (*env)->GetObjectClass(env, service);
+        if (cls == NULL) {
+            LOGE("protect: GetObjectClass failed (fd=%d)", fd);
+        } else {
+            jmethodID mid = (*env)->GetMethodID(env, cls, "protect", "(I)Z");
+            if (mid == NULL) {
+                LOGE("protect: VpnService.protect(int) not found (fd=%d)", fd);
+            } else {
+                jboolean protected_ok = (*env)->CallBooleanMethod(env, service, mid, (jint)fd);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    LOGE("protect: VpnService.protect threw (fd=%d)", fd);
+                } else {
+                    result = (protected_ok == JNI_TRUE) ? 0 : -1;
+                }
+            }
+            (*env)->DeleteLocalRef(env, cls);
+        }
+        (*env)->DeleteLocalRef(env, service);
+    }
+
+    if (attached_here) {
+        (*p->vm)->DetachCurrentThread(p->vm);
+    }
+    return result;
+}
+
+static int jni_protect_socket_cb(void* ctx, int fd) {
+    return jni_protect_upcall((jni_socket_protector_t*)ctx, fd);
+}
+
+// Detach and free a protector. Must only be called after the connection's
+// background additional-connect thread has been joined.
+static void jni_socket_protector_release(JNIEnv* env, jni_socket_protector_t* p) {
+    if (p == NULL) return;
+
+    pthread_mutex_lock(&p->lock);
+    jobject service = p->service;
+    p->service = NULL;
+    p->released = 1;
+    pthread_mutex_unlock(&p->lock);
+
+    if (service != NULL) {
+        (*env)->DeleteGlobalRef(env, service);
+    }
+    pthread_mutex_destroy(&p->lock);
+    free(p);
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     (void)reserved;
+    g_vm = vm;
     signal(SIGPIPE, SIG_IGN);
     LOGD("JNI_OnLoad: SIGPIPE ignored");
     return JNI_VERSION_1_6;
@@ -54,9 +168,75 @@ JNIEXPORT void JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeDe
     // Get state before destroying for logging
     softether_state_t state = softether_get_state(conn);
     LOGD("Destroying connection in state: %s", softether_state_string(state));
-    
+
+    // v1.0.51: detach the socket protector BEFORE the connection is freed, but
+    // only release the host ref AFTER softether_destroy() has joined the
+    // background additional-connect thread — otherwise that thread could still
+    // be inside the upcall when the struct goes away.
+    jni_socket_protector_t* protector = (jni_socket_protector_t*)conn->protect_socket_ctx;
+    softether_clear_socket_protector(conn);
+
     softether_destroy(conn);
+    jni_socket_protector_release(env, protector);
     LOGD("nativeDestroy completed");
+}
+
+// v1.0.51 (ADDITIONAL-CONNECT-PROTECT): register the host VpnService instance
+// as the per-connection socket protector. `protector` only has to expose
+// `boolean protect(int)` — the app passes its SoftEtherVpnService.
+// Returns true when the hook is armed; false means the caller must NOT dial an
+// additional connection (the C core stays fail-closed either way).
+JNIEXPORT jboolean JNICALL
+Java_vn_unlimit_softether_client_SoftEtherClient_nativeSetSocketProtector(
+    JNIEnv *env, jobject thiz, jlong handle, jobject protector) {
+    if (handle == 0 || protector == NULL) {
+        LOGE("nativeSetSocketProtector: invalid handle/protector");
+        return JNI_FALSE;
+    }
+    if (g_vm == NULL) {
+        LOGE("nativeSetSocketProtector: JavaVM unavailable");
+        return JNI_FALSE;
+    }
+
+    softether_connection_t* conn = (softether_connection_t*)handle;
+
+    jni_socket_protector_t* p = (jni_socket_protector_t*)conn->protect_socket_ctx;
+    if (p == NULL) {
+        p = (jni_socket_protector_t*)calloc(1, sizeof(jni_socket_protector_t));
+        if (p == NULL) {
+            LOGE("nativeSetSocketProtector: out of memory");
+            return JNI_FALSE;
+        }
+        if (pthread_mutex_init(&p->lock, NULL) != 0) {
+            LOGE("nativeSetSocketProtector: mutex init failed");
+            free(p);
+            return JNI_FALSE;
+        }
+        p->vm = g_vm;
+    }
+
+    jobject global = (*env)->NewGlobalRef(env, protector);
+    if (global == NULL) {
+        LOGE("nativeSetSocketProtector: NewGlobalRef failed");
+        return JNI_FALSE;
+    }
+
+    pthread_mutex_lock(&p->lock);
+    jobject old = p->service;
+    p->service = global;
+    p->released = 0;
+    pthread_mutex_unlock(&p->lock);
+    if (old != NULL) {
+        (*env)->DeleteGlobalRef(env, old);
+    }
+
+    if (softether_set_socket_protector(conn, jni_protect_socket_cb, p) != 0) {
+        LOGE("nativeSetSocketProtector: softether_set_socket_protector failed");
+        return JNI_FALSE;
+    }
+
+    LOGD("nativeSetSocketProtector: additional-connect protection armed");
+    return JNI_TRUE;
 }
 
 JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeConnect(
