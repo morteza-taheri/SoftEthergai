@@ -35,13 +35,12 @@ class DataUtil(context: Context?) {
     private var sharedPreferencesSetting: SharedPreferences? = null
     private var gson: Gson? = null
 
-    /**
-     * v1.0.45 (§1.6.38): the store [GlobalVpnTracker.prefersVpnForCollector]
-     * reads (`PreferenceManager.getDefaultSharedPreferences`). Production
-     * resolves it lazily from [mContext]; the JVM test seam injects it so the
-     * two-store write can be asserted without an Android runtime.
-     */
-    private var defaultPreferences: SharedPreferences? = null
+    // v1.0.52 (§1.6.44): the `defaultPreferences` field and the two-argument
+    // test seam that injected it are GONE. They existed only so the retired
+    // collector-routing preference write could reach both stores and be
+    // asserted on a plain JVM; with collector routing now fully automatic there
+    // is no second store to inject, and the field had become write-only.
+    // [DataUtil]`(sharedPreferences)` below is the only test seam left.
 
     init {
         try {
@@ -68,19 +67,6 @@ class DataUtil(context: Context?) {
      */
     internal constructor(sharedPreferences: SharedPreferences) : this(null) {
         sharedPreferencesSetting = sharedPreferences
-    }
-
-    /**
-     * v1.0.45 (§1.6.38) test seam: inject BOTH the DataUtil store and the
-     * default-preferences store so [setPrefersVpnForCollector]'s two-store
-     * write can be asserted on a plain JVM.
-     */
-    internal constructor(
-        sharedPreferences: SharedPreferences,
-        defaultPreferences: SharedPreferences,
-    ) : this(null) {
-        sharedPreferencesSetting = sharedPreferences
-        this.defaultPreferences = defaultPreferences
     }
 
     var connectionsCache: VPNGateConnectionList?
@@ -378,13 +364,17 @@ class DataUtil(context: Context?) {
     /** Marks the battery optimisation prompt as shown; see [hasAskedBatteryOptimization]. */
     fun setAskedBatteryOptimization() = setBooleanSetting(SETTING_BATTERY_OPT_ASKED, true)
 
-    // §3 §4 §5 Auto Mode connection timeout per-server (8–60 seconds, default 12)
+    // §3 §4 §5 Auto Mode connection timeout per-server (8–60 seconds, default 8)
     //
-    // v1.0.46: minimum raised from 5 to 8 seconds (operator requirement);
-    // default (12) and max (60) unchanged. Both the reader and the writer clamp,
-    // so a value stored by an older build at 5 or 6 or 7 reads back as 8.
+    // v1.0.46: minimum raised from 5 to 8 seconds (operator requirement).
+    // v1.0.52 (§1.6.44) TASK B.2: the DEFAULT moves 12 -> 8 seconds, so the
+    // default is now the floor: a fresh install gives each protocol attempt
+    // 8 s, and Auto Connect walks protocols and servers faster. The maximum
+    // (60) is unchanged. Both the reader and the writer clamp, so a value
+    // stored by an older build at 5/6/7 reads back as 8 and any stored value
+    // in 8..60 keeps working untouched.
     fun getAutoModeTimeoutSeconds(): Int =
-        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12).coerceIn(8, 60)
+        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8).coerceIn(8, 60)
 
     fun setAutoModeTimeoutSeconds(seconds: Int) {
         setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(8, 60))
@@ -422,43 +412,12 @@ class DataUtil(context: Context?) {
         setBooleanSetting(SETTING_AUTO_RECONNECT_IN_AUTO_MODE, enabled)
     }
 
-    /**
-     * ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, spec §1.6.36) — the
-     * "always prefer VPN" collector-routing opt-in.
-     *
-     * `GlobalVpnTracker.prefersVpnForCollector()` reads the SAME preference key
-     * (`"vpn_always_prefer_vpn"`, the value of its internal
-     * `PREF_ALWAYS_PREFER_VPN`) but, until this phase, nothing ever wrote it —
-     * so the v1.0.41 VPN routing rung was unreachable for every user (see
-     * `DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8`). This is the single writer
-     * the Settings toggle calls.
-     *
-     * The key literal is repeated here on purpose rather than referencing
-     * `GlobalVpnTracker.PREF_ALWAYS_PREFER_VPN`: it keeps this accessor
-     * independent of that (frozen) file, and lets a source-shape unit test
-     * assert the exact byte string `"vpn_always_prefer_vpn"`.
-     */
-    fun getPrefersVpnForCollector(): Boolean =
-        getBooleanSetting("vpn_always_prefer_vpn", false)
-
-    /** @see getPrefersVpnForCollector */
-    fun setPrefersVpnForCollector(enabled: Boolean) {
-        // v1.0.45 (§1.6.38): write to BOTH stores. Before this the toggle wrote
-        // only to this DataUtil store ("vpn_setting_data_<flavor>"), while
-        // GlobalVpnTracker.prefersVpnForCollector() reads
-        // PreferenceManager.getDefaultSharedPreferences — same key, different
-        // files, so the toggle was inert and the v1.0.41 VPN rung unreachable
-        // (v1.0.44 Phase B T6b).
-        setBooleanSetting("vpn_always_prefer_vpn", enabled)
-        runCatching {
-            val target = defaultPreferences
-                ?: mContext?.let { PreferenceManager.getDefaultSharedPreferences(it) }
-            target?.edit()?.putBoolean("vpn_always_prefer_vpn", enabled)?.apply()
-        }.onFailure {
-            // Never crash the settings screen if the default store is
-            // unavailable (e.g. the JVM test seam with no context).
-        }
-    }
+    // v1.0.52 (§1.6.44): `getPrefersVpnForCollector()` / `setPrefersVpnForCollector()`
+    // were REMOVED here. Collector routing is fully automatic, so there is no
+    // user preference left to read or write. The key
+    // `"vpn_always_prefer_vpn"` may still exist in an upgraded install's
+    // SharedPreferences; it is inert because no code reads it, and no
+    // migration is performed (deleting it would be an unrequested data change).
 
     /**
      * Auto Mode protocol priority profile: ordered ids of ENABLED protocols

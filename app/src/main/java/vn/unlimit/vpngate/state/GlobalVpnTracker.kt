@@ -434,10 +434,14 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      * [isTunnelUsable] requires an RX advance inside
      * [TunnelHealth.RX_WINDOW_MS]. Immediately after CONNECTED no frame has
      * been received yet, so the strict check reports `false` for a tunnel
-     * that is in fact healthy — and routing a user who explicitly opted
-     * into `PREF_ALWAYS_PREFER_VPN` to OPEN in that window is a visible
-     * regression. This wrapper therefore applies the strict check once
-     * traffic has been observed, and a grace period before that.
+     * that is in fact healthy — and reporting a freshly established tunnel as
+     * unusable is a visible regression: it demotes the TUNNEL rung in
+     * `VpnServerRepository.routeLadder` and sends the collector out on the
+     * physical path for no reason. (Before v1.0.52 §1.6.44 the same window
+     * also affected a user who had explicitly opted into the tunnel; that
+     * opt-in is gone and the signal is now consumed only as a measurement.)
+     * This wrapper therefore applies the strict check once traffic has been
+     * observed, and a grace period before that.
      *
      * Decision order (fail-closed at every branch that lacks evidence):
      *   1. not connected → false
@@ -514,18 +518,16 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      */
     fun currentVpnNetwork(): Network? = systemVpnNetwork
 
-    /**
-     * The R4b user opt-in: send collector requests over the VPN when one is
-     * usable. **Default false**, which keeps open as the default transport
-     * exactly as it was before R4b.
-     *
-     * Read as a raw preference rather than through `AppConfig` so it can be
-     * flipped without shipping a config value, and read defensively so a JVM
-     * unit test — where [prefs] is null — simply reports "not opted in".
-     */
-    fun prefersVpnForCollector(): Boolean =
-        runCatching { prefs?.getBoolean(PREF_ALWAYS_PREFER_VPN, false) == true }
-            .getOrDefault(false)
+    // v1.0.52 (§1.6.44): `prefersVpnForCollector()` was REMOVED here, together
+    // with the Settings switch, the DataUtil accessors and the `preferVpn`
+    // routing input. Collector routing is now fully automatic — the ladder is
+    // derived from the live health signals above plus the collector's own
+    // bounded path memory (`VpnServerRepository.PathMemory`).
+    //
+    // The old preference key `vpn_always_prefer_vpn` is deliberately left in
+    // place in SharedPreferences: nothing reads it any more, so a stale stored
+    // value is inert. No migration or cleanup write is needed, and deleting a
+    // key on upgrade would be a data change this phase does not require.
 
     /**
      * v1.0.45 (§1.6.38): the explicit PHYSICAL network — a NOT_VPN network with
@@ -812,14 +814,10 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
  */
 enum class SelfExclusion { UNKNOWN, NOT_EXCLUDED, EXCLUDED }
 
-/**
- * R4b preference key: always prefer VPN for collector requests.
- *
- * Absent or false means open, which is the pre-R4b default. Declared at file
- * scope rather than in a companion because `GlobalVpnTracker` is a standalone
- * `object` and cannot carry one.
- */
-internal const val PREF_ALWAYS_PREFER_VPN = "vpn_always_prefer_vpn"
+// v1.0.52 (§1.6.44): the `PREF_ALWAYS_PREFER_VPN` constant was removed
+// together with its only reader. The literal "vpn_always_prefer_vpn" may still
+// exist in an upgraded install's SharedPreferences; it is inert because
+// nothing reads it, and no migration is needed to clean it up.
 
 /**
  * A-2 (§3.2): grace period before `GlobalVpnTracker`'s system-VPN watcher

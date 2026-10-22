@@ -31,6 +31,13 @@ import vn.unlimit.vpngate.data.remote.RedirectPolicy
  */
 class VpnServerRepositoryR4bTest {
 
+    /**
+     * v1.0.52 (§1.6.44): `PathMemory` is declared inside `VpnServerRepository`'s
+     * companion object, so the qualified path from outside is
+     * `VpnServerRepository.Companion.PathMemory`.
+     */
+    private typealias PathMemory = VpnServerRepository.Companion.PathMemory
+
     @get:Rule
     val tempFolder = TemporaryFolder()
 
@@ -57,12 +64,13 @@ class VpnServerRepositoryR4bTest {
         }
     }
 
-    // With the default (no opt-in) the primary rung is PHYSICAL and the TUNNEL
-    // rung is only a fallback. "Physical path, no tunnel" is modelled with a
-    // down tunnel (false, false, false); a usable tunnel is exercised via
-    // tunnelInput's fallback direction and via VpnServerRepositoryRoutingTest.
-    private val physicalInput = CollectorRoutingInput(false, false, false)
-    private val tunnelInput = CollectorRoutingInput(true, true, true)
+    // v1.0.52 (§1.6.44): the routing input is two measurements, not three —
+    // the user-facing "prefer the tunnel" term is gone. "Physical path, no
+    // tunnel" is modelled as (usable=false, bound=false); a usable bound tunnel
+    // as (true, true). Which of the two leads the ladder is decided by
+    // VpnServerRepository.routeLadder and pinned by VpnServerRepositoryLadderTest.
+    private val physicalInput = CollectorRoutingInput(tunnelUsable = false, hasBoundNetwork = false)
+    private val tunnelInput = CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true)
 
     /**
      * The bound fetcher is injected, not built from a socket factory, so no
@@ -73,13 +81,35 @@ class VpnServerRepositoryR4bTest {
         routingInput: CollectorRoutingInput,
         physicalFetcher: HttpFetcher,
         boundFetcher: HttpFetcher? = EmptyFetcher(),
+        memory: PathMemory = PathMemory(),
     ): VpnServerRepository = VpnServerRepository(
         fetcher = physicalFetcher,
         cacheDir = tempFolder.newFolder(),
         routing = { routingInput },
         boundFetcherFactory = { boundFetcher },
         pathLog = { logs.add(it) },
+        pathMemory = memory,
     )
+
+    /**
+     * A repository whose ladder puts TUNNEL first.
+     *
+     * v1.0.52 (§1.6.44) removed the user-facing "prefer the VPN" switch: a
+     * usable tunnel is now only *offered* as the second rung, and it is
+     * *promoted* to first only on evidence. The tests below drive runs that
+     * start on the TUNNEL rung, so they seed that evidence explicitly — a
+     * recorded PHYSICAL failure is exactly what the real ladder acts on after
+     * a blocked physical path, so this is the production mechanism, not a
+     * shortcut around it.
+     */
+    private fun tunnelRepository(
+        physicalFetcher: HttpFetcher,
+        boundFetcher: HttpFetcher? = EmptyFetcher(),
+    ): VpnServerRepository {
+        val memory = PathMemory()
+        memory.recordFailure(CollectorPath.PHYSICAL)
+        return repository(tunnelInput, physicalFetcher, boundFetcher, memory)
+    }
 
     @Test
     fun `physical path is logged per source`() = runBlocking {
@@ -112,7 +142,7 @@ class VpnServerRepositoryR4bTest {
     @Test
     fun `tunnel path is chosen when every input holds`() = runBlocking {
         logs.clear()
-        repository(tunnelInput, EmptyFetcher()).refresh()
+        tunnelRepository(EmptyFetcher()).refresh()
 
         // html and api fail on the TUNNEL rung (the fake returns nothing) and
         // retry on PHYSICAL. The mirror rung does not retry — see
@@ -148,7 +178,7 @@ class VpnServerRepositoryR4bTest {
     @Test
     fun `tunnel-path-logs-are-never-lost-under-concurrent-fetch`() = runBlocking {
         val iterations = 50
-        val repo = repository(tunnelInput, EmptyFetcher())
+        val repo = tunnelRepository(EmptyFetcher())
 
         logs.clear()
         repeat(iterations) { repo.refresh() }
@@ -190,7 +220,7 @@ class VpnServerRepositoryR4bTest {
     fun `mirror discovery never reports empty because of the bootstrap list`() = runBlocking {
         logs.clear()
         // Even a fetcher that always fails leaves the bootstrap mirrors.
-        repository(tunnelInput, EmptyFetcher()).refresh()
+        tunnelRepository(EmptyFetcher()).refresh()
 
         assertTrue(
             "mirror must not claim a fallback it never made: $logs",
@@ -205,7 +235,7 @@ class VpnServerRepositoryR4bTest {
     @Test
     fun `missing bind factory degrades to PHYSICAL rather than to the TUNNEL rung`() = runBlocking {
         logs.clear()
-        repository(tunnelInput, EmptyFetcher(), boundFetcher = null).refresh()
+        tunnelRepository(EmptyFetcher(), boundFetcher = null).refresh()
 
         assertTrue(
             "expected PHYSICAL when nothing can be bound, got $logs",
@@ -219,7 +249,7 @@ class VpnServerRepositoryR4bTest {
         // calls, so the retry is provable rather than merely logged.
         val physical = CountingFetcher()
         logs.clear()
-        repository(tunnelInput, physical).refresh()
+        tunnelRepository(physical).refresh()
 
         for (tag in listOf("html", "api")) {
             assertEquals(

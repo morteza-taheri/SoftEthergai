@@ -319,7 +319,7 @@ class AutoModeControllerTest {
      * available", which keeps each test's intent to the values it actually sets.
      */
     private fun candidateWith(
-        host: String,
+        host: String?,
         ip: String = "10.1.0.${serverFactoryIp.getAndIncrement()}",
         speed: Long = 10_000_000,
         ping: Int = 50,
@@ -2656,31 +2656,36 @@ val sstp = AutoModeCandidate(
 
     /**
      * T-NEW-1 (D-1): the documented default, the Settings default and the
-     * pure-JVM fallback all agree on 12 s.
+     * pure-JVM fallback all agree on one figure.
      *
      * Before v1.0.31 three figures described this one setting — 25 s in
      * `DEFAULT_ATTEMPT_TIMEOUT_MS`, 12 s in `DataUtil`, 5 s in the spec — and
      * nothing pinned any of them, so the drift was invisible to CI. This pins
      * the two that are reachable from the JVM; the spec figure is asserted by
-     * §6.7 R5 / §6.8 themselves. (v1.0.46: the *range floor* moved 5 → 8; the
-     * default asserted below is still 12.)
+     * §6.7 R5 / §6.8 themselves. (v1.0.46: the *range floor* moved 5 → 8;
+     * v1.0.52 §1.6.44 TASK B.2: the *default* moved 12 → 8, i.e. down to that
+     * floor, so the asserted figure is now 8 on both sides.)
      */
     @Test
     fun defaultAttemptTimeoutMatchesTheSettingsDefault() {
         assertEquals(
-            "the controller fallback must equal the shipped Settings default (12 s)",
-            12_000L,
+            "the controller fallback must equal the shipped Settings default (8 s)",
+            8_000L,
             AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS,
         )
         val dataUtil = sourceOf("src/main/java/vn/unlimit/vpngate/utils/DataUtil.kt")
         assertTrue(
-            "DataUtil must default SETTING_AUTO_MODE_TIMEOUT_SECONDS to 12",
-            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
+            "DataUtil must default SETTING_AUTO_MODE_TIMEOUT_SECONDS to 8",
+            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8)"),
         )
         assertTrue(
             "the timeout must stay clamped to the documented 8..60 range " +
                 "(v1.0.46 raised the floor from 5 to 8)",
             dataUtil.contains(".coerceIn(8, 60)"),
+        )
+        assertFalse(
+            "no stale 12 s default may survive in DataUtil: $dataUtil",
+            dataUtil.contains("SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
         )
     }
 
@@ -3544,6 +3549,102 @@ val sstp = AutoModeCandidate(
         assertTrue(
             "the attempt must have timed out, not been refused: ${adapter.logs}",
             adapter.logs.any { it.contains("TIMED_OUT after") },
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // v1.0.52 (§1.6.44) TASK B — Auto Connect ownership and cursor identity
+    //
+    // TASK B.3 fixed three defects in one place: the run had no single owner,
+    // a CancellationException was converted into a failed attempt, and the
+    // Next-Server cursor used a different identity than the rest of the
+    // controller. The two tests below pin the two observable consequences;
+    // the single-owner invariant is additionally pinned structurally (the
+    // `transitionLock` critical sections) because "job is never null between
+    // two runs" is not observable from outside.
+    // ------------------------------------------------------------------
+
+    /**
+     * TASK B.3(c): the Next-Server cursor must use the SAME identity as the
+     * continuation and the wedge ledger.
+     *
+     * `serverKey` is `"$ip|${hostname ?: ""}"`, so a null hostname and an empty
+     * one are the same server. The pre-v1.0.52 comparison in
+     * `rememberRemaining` was `it.ip == current.ip && it.hostname ==
+     * current.hostname`, where `null != ""` — the connected server could not be
+     * found in its own list, the "remaining" tail fell back to the WHOLE list,
+     * and Next Server re-dialled the server the user had just left.
+     */
+    @Test
+    fun nextServerCursorMatchesByIdentityWhenHostnameIsNullVersusEmpty() = runBlocking {
+        val first = candidateWith(
+            host = null, ip = "10.9.0.1", score = 3000, seTcp = 443, seUdpSupported = true,
+        )
+        val second = candidateWith(
+            host = "", ip = "10.9.0.2", score = 2000, seTcp = 443, seUdpSupported = true,
+        )
+        val third = candidateWith(
+            host = "third", ip = "10.9.0.3", score = 1000, seTcp = 443, seUdpSupported = true,
+        )
+
+        val c = controller(servers = listOf(first, second, third))
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val beforeSkip = c.state.value
+        val dialsBefore = adapter.connects.size
+
+        c.skipToNextServer()
+
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
+        assertTrue("expected Connected after the skip, got $final", final is AutoModeState.Connected)
+
+        val afterSkip = adapter.connects.drop(dialsBefore)
+        assertTrue("the skip must start a new run: $afterSkip", afterSkip.isNotEmpty())
+        assertEquals(
+            "the first dial after the skip must be the NEXT server (hostname \"\"), not a restart",
+            "",
+            afterSkip.first().first,
+        )
+        assertTrue(
+            "the server that was just left (hostname null) must not be dialled again: $afterSkip",
+            afterSkip.none { it.first == null },
+        )
+    }
+
+    /**
+     * TASK B.3(a): two presses in a row must not produce two competing loops.
+     *
+     * The v1.0.52 fix publishes the skip continuation as the current job and
+     * swaps it for the real run inside the same critical section, so `job`
+     * never passes through null. Without that, the second press found no
+     * owner, launched its own run, and both loops walked the same list.
+     *
+     * The observable signature of that bug is a server being dialled twice in
+     * one skip burst, so that is what is asserted.
+     */
+    @Test
+    fun twoImmediateSkipsNeverDialTheSameServerTwice() = runBlocking {
+        val c = controller(servers = listOf(server("s1"), server("s2"), server("s3")))
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val beforeSkip = c.state.value
+        val dialsBefore = adapter.connects.size
+
+        c.skipToNextServer()
+        c.skipToNextServer()
+
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
+        assertTrue(
+            "expected a terminal state after the double press, got $final",
+            final is AutoModeState.Connected || final is AutoModeState.Error,
+        )
+
+        val afterSkip = adapter.connects.drop(dialsBefore)
+        val dialled = afterSkip.map { it.first }
+        assertEquals(
+            "a double press must never dial the same server twice: $afterSkip",
+            dialled.distinct(),
+            dialled,
         )
     }
 

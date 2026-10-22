@@ -1,12 +1,15 @@
 package vn.unlimit.vpngate.automode
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import vn.unlimit.softether.NativeLifetimeRegistry
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 
@@ -413,20 +416,25 @@ enum class AttemptOutcome {
         /**
          * v1.0.31 (AUTOCONNECT-FIX, D-1): the pure-JVM fallback for
          * [attemptTimeoutMs], aligned with the shipped Settings default —
-         * `DataUtil.getAutoModeTimeoutSeconds()` returns 12 s
-         * (`SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped to 5..60).
+         * `DataUtil.getAutoModeTimeoutSeconds()` returns **8 s**
+         * (`SETTING_AUTO_MODE_TIMEOUT_SECONDS`, clamped to 8..60).
+         *
+         * v1.0.52 (§1.6.44) TASK B.2: the default moved 12 s -> 8 s, so this
+         * constant, the shipped Settings default and the documented default are
+         * one number again. It is now also the clamp floor, which means a
+         * fresh install gives each protocol attempt exactly 8 s and Auto
+         * Connect walks protocols and servers faster.
          *
          * Before v1.0.31 this read `25_000L`, a third figure that agreed with
          * neither the Settings default (12 s) nor the documented default (5 s).
          * Three numbers described one setting, and no test pinned any of them,
-         * so the drift was invisible to CI. Now all three agree on 12 s
-         * (§6.7 R5, §6.8).
+         * so the drift was invisible to CI.
          *
          * Production never reaches this value: `AutoModeEngine.ensure()` always
          * injects the user's setting explicitly. It exists for direct
          * construction (tests, library callers).
          */
-        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 12_000L
+        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 8_000L
 
         /**
          * v1.0.32 (AUTOCONNECT-FIX-2, BUG-B): how many `NATIVE_BUSY` refusals on the
@@ -595,8 +603,41 @@ enum class AttemptOutcome {
     var job: Job? = null
         private set
 
+    /**
+     * v1.0.52 (§1.6.44) TASK B.3(a): the single-owner transition lock.
+     *
+     * `start()`, `stop()` and the skip/relaunch path used to be check-then-act:
+     * each read `isRunning` (i.e. `job?.isActive`) and then assigned `job`. Two
+     * callers arriving together — a double press, a UI press racing an
+     * Auto-Reconnect, or a skip racing a press — could both read `false` and
+     * both launch a run, which meant two loops dialling the same list and two
+     * owners of one tunnel.
+     *
+     * Every mutation of [job] now happens while holding this monitor, so the
+     * read and the write are one atomic transition. It is a plain monitor
+     * rather than a `Mutex` on purpose: `start()`/`stop()` are called from the
+     * UI thread and must stay non-suspending (the button contract asserts the
+     * state immediately after the call returns).
+     */
+    private val transitionLock = Any()
+
     val isRunning: Boolean
         get() = job?.isActive == true
+
+    /**
+     * v1.0.52: [start]'s body, requiring [transitionLock] to be held.
+     *
+     * Extracted so the skip path can publish its continuation as the current
+     * job in the same critical section — that is what closes the window between
+     * `job = null` and the relaunch.
+     */
+    private fun startLocked() {
+        if (isRunning) {
+            adapter.log("[AUTO] start ignored: already running")
+            return
+        }
+        job = scope.launch { runAutoMode() }
+    }
 
     /**
      * VpnM Phase 3 "Cursor": 0-based position of the server currently being
@@ -707,29 +748,42 @@ enum class AttemptOutcome {
             val currentKey = connectedCandidate?.let { serverKey(it) }
                 ?: connectedState?.let { serverKey(it.ip, it.hostname) }
             adapter.log("[AUTO] Connected server skipped by user; trying next")
-            connectedWatcher?.cancel()
-            connectedWatcher = null
-            // R8: disarm BEFORE tearing down — this is a deliberate user move,
-            // never an unexpected drop (path F).
-            TunnelStateWatcher.onTunnelLost = null
-            stopLivenessProbe()
-            connectedCandidate = null
-            job?.cancel()
-            job = null
-            scope.launch {
-                adapter.disconnect()
-                val remaining = remainingCandidates.ifEmpty {
-                    val all = (overrideServers ?: serverProvider())
-                        .withActiveRtt(protocolPriorityProvider())
-                        .sortedForAutoConnect()
-                    if (currentKey != null) all.filterNot { serverKey(it) == currentKey } else all
-                }
-                if (remaining.isEmpty()) {
-                    adapter.log("[AUTO] No more servers to try")
-                    setState(AutoModeState.Error(ERROR_NO_SERVER))
-                } else {
-                    overrideServers = remaining
-                    start()
+            synchronized(transitionLock) {
+                connectedWatcher?.cancel()
+                connectedWatcher = null
+                // R8: disarm BEFORE tearing down — this is a deliberate user move,
+                // never an unexpected drop (path F).
+                TunnelStateWatcher.onTunnelLost = null
+                stopLivenessProbe()
+                connectedCandidate = null
+                job?.cancel()
+                // v1.0.52 (§1.6.44) TASK B.3(a): the continuation is published as
+                // the CURRENT job inside this critical section, so `job` is never
+                // null while the skip is being prepared. Before this revision the
+                // slot sat empty until the coroutine below called start(), which
+                // left a window in which a second press could launch its own run —
+                // two loops dialling the same list.
+                job = scope.launch {
+                    adapter.disconnect()
+                    val remaining = remainingCandidates.ifEmpty {
+                        val all = (overrideServers ?: serverProvider())
+                            .withActiveRtt(protocolPriorityProvider())
+                            .sortedForAutoConnect()
+                        if (currentKey != null) all.filterNot { serverKey(it) == currentKey } else all
+                    }
+                    if (remaining.isEmpty()) {
+                        adapter.log("[AUTO] No more servers to try")
+                        setState(AutoModeState.Error(ERROR_NO_SERVER))
+                        synchronized(transitionLock) { job = null }
+                    } else {
+                        synchronized(transitionLock) {
+                            overrideServers = remaining
+                            // Replace the continuation with the actual run while
+                            // still holding the lock: `job` goes from one live job
+                            // straight to another, never through null.
+                            job = scope.launch { runAutoMode() }
+                        }
+                    }
                 }
             }
             return
@@ -738,12 +792,15 @@ enum class AttemptOutcome {
         if (isError) {
             adapter.log("[AUTO] Error state: advancing to next server")
             val remaining = remainingCandidates
-            if (remaining.isNotEmpty()) {
-                overrideServers = remaining
-                start()
-            } else {
+            if (remaining.isEmpty()) {
                 adapter.log("[AUTO] No remaining servers; restarting from top")
-                start()
+            }
+            // v1.0.52 (§1.6.44) TASK B.3(a): override + start are one transition,
+            // so a concurrent press cannot consume the override and then let this
+            // one start a second run.
+            synchronized(transitionLock) {
+                overrideServers = if (remaining.isNotEmpty()) remaining else null
+                startLocked()
             }
         }
     }
@@ -1067,47 +1124,47 @@ enum class AttemptOutcome {
     }
 
     fun start() {
-        if (isRunning) {
-            adapter.log("[AUTO] start ignored: already running")
-            return
-        }
-        job = scope.launch { runAutoMode() }
+        // v1.0.52 (§1.6.44) TASK B.3(a): the check and the assignment are one
+        // atomic transition — see [transitionLock].
+        synchronized(transitionLock) { startLocked() }
     }
 
     /** Â§12: cancel everything; the loop stops at the next suspension point. */
     fun stop() {
-        connectedWatcher?.cancel()
-        connectedWatcher = null
-        TunnelStateWatcher.onTunnelLost = null
-        stopLivenessProbe()
-        skipRequested.set(false)
-        overrideServers = null
-        // R8: a user stop ends the ownership record; no reconnect may name it.
-        connectedCandidate = null
-        pendingReconnectServer = null
-        if (!isRunning) {
+        synchronized(transitionLock) {
+            connectedWatcher?.cancel()
+            connectedWatcher = null
+            TunnelStateWatcher.onTunnelLost = null
+            stopLivenessProbe()
+            skipRequested.set(false)
+            overrideServers = null
+            // R8: a user stop ends the ownership record; no reconnect may name it.
+            connectedCandidate = null
+            pendingReconnectServer = null
+            if (!isRunning) {
+                setState(AutoModeState.Disconnected)
+                return
+            }
+            adapter.log("[AUTO] User requested stop")
+            job?.cancel()
+            job = null
+            // Stage 2F-F.28 Fix E: request REAL teardown before publishing the
+            // terminal state.
+            //
+            // stop() previously only cancelled the run coroutine and set
+            // Disconnected. It never told any VPN service to tear down, so stopping
+            // while Connecting could leave a half-established or fully established
+            // tunnel running while the UI claimed Disconnected — exactly the
+            // divergence reproduced on device in Stage 2F-F.26-ALT (F.27 RC-2).
+            //
+            // requestDisconnect() is non-suspending, so the teardown intents are
+            // genuinely enqueued before setState runs. The ordering this stage
+            // requires (request teardown, then publish Disconnected) therefore
+            // holds, while the synchronous-state contract of onButtonPressed() is
+            // preserved.
+            adapter.requestDisconnect()
             setState(AutoModeState.Disconnected)
-            return
         }
-        adapter.log("[AUTO] User requested stop")
-        job?.cancel()
-        job = null
-        // Stage 2F-F.28 Fix E: request REAL teardown before publishing the
-        // terminal state.
-        //
-        // stop() previously only cancelled the run coroutine and set
-        // Disconnected. It never told any VPN service to tear down, so stopping
-        // while Connecting could leave a half-established or fully established
-        // tunnel running while the UI claimed Disconnected — exactly the
-        // divergence reproduced on device in Stage 2F-F.26-ALT (F.27 RC-2).
-        //
-        // requestDisconnect() is non-suspending, so the teardown intents are
-        // genuinely enqueued before setState runs. The ordering this stage
-        // requires (request teardown, then publish Disconnected) therefore
-        // holds, while the synchronous-state contract of onButtonPressed() is
-        // preserved.
-        adapter.requestDisconnect()
-        setState(AutoModeState.Disconnected)
     }
 
     /** Â§3 button semantics across the four states. */
@@ -1550,6 +1607,12 @@ enum class AttemptOutcome {
             )
             try {
                 reachabilityFilter.invoke(targets)
+            } catch (e: CancellationException) {
+                // v1.0.52 (§1.6.44) TASK B.3(b): cancellation is NOT a probe
+                // failure. Swallowing it here turned a user stop (or a scope
+                // cancel) into "no evidence, keep the full list", so the run
+                // carried on dialling after it had been cancelled.
+                throw e
             } catch (e: Exception) {
                 // A probe that failed to run has measured nothing, which is not a
                 // verdict. Null means "no evidence", never "all down".
@@ -1730,9 +1793,19 @@ enum class AttemptOutcome {
                     setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
                     job = null
                     return
+                } catch (e: CancellationException) {
+                    // v1.0.52 (§1.6.44) TASK B.3(b): a cancelled connect is not a
+                    // protocol failure. Rethrowing lets the run unwind as
+                    // cancelled instead of being reported as "this protocol
+                    // threw" and rotating to the next one.
+                    throw e
                 } catch (e: Exception) {
                     adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
-                    adapter.disconnect()
+                    // v1.0.52 TASK B.3(b): teardown must survive the cancellation
+                    // that caused this catch — `disconnect()` suspends, and a
+                    // cancelled context would abort it before the teardown ran,
+                    // leaving the half-established attempt behind.
+                    withContext(NonCancellable) { adapter.disconnect() }
                     // v1.0.31 (AUTOCONNECT-FIX, D-2 / OP-R4): a thrown exception
                     // is one (server, protocol) failing, so it advances to the
                     // NEXT PROTOCOL — the same transition as every other
@@ -1988,9 +2061,15 @@ enum class AttemptOutcome {
                         setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
                         job = null
                         return
+                    } catch (e: CancellationException) {
+                        // v1.0.52 (§1.6.44) TASK B.3(b): same rule as the first
+                        // dial — cancellation is not a protocol failure.
+                        throw e
                     } catch (e: Exception) {
                         adapter.log("[AUTO] Connect threw ${e.javaClass.simpleName}: ${e.message}")
-                        adapter.disconnect()
+                        // v1.0.52 TASK B.3(b): teardown under NonCancellable, or a
+                        // cancelled context would skip it.
+                        withContext(NonCancellable) { adapter.disconnect() }
                         // v1.0.31 (D-2): same transition as the first dial above
                         // — the exception belongs to this (server, protocol)
                         // pair, so the next protocol on this server still gets
@@ -2196,7 +2275,15 @@ enum class AttemptOutcome {
 
     /** Store the not-yet-attempted tail so user skip continues from the next server. */
     private fun rememberRemaining(servers: List<AutoModeCandidate>, current: AutoModeCandidate) {
-        val idx = servers.indexOfFirst { it.ip == current.ip && it.hostname == current.hostname }
+        // v1.0.52 (§1.6.44) TASK B.3(c): use the SAME identity the continuation
+        // and the wedge ledger use. The previous comparison was
+        // `it.ip == current.ip && it.hostname == current.hostname`, which
+        // disagrees with [serverKey] whenever a hostname is null in one source
+        // and "" in the other (`null != ""`), so the cursor could silently land
+        // on the wrong entry — or on none, making the skip fall back to the
+        // whole list and re-try servers already attempted.
+        val key = serverKey(current)
+        val idx = servers.indexOfFirst { serverKey(it) == key }
         remainingCandidates = if (idx in 0 until servers.lastIndex) {
             servers.subList(idx + 1, servers.size)
         } else {

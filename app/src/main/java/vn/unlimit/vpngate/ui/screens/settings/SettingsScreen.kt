@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -47,7 +46,6 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Translate
-import androidx.compose.material.icons.outlined.VpnLock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -188,12 +186,14 @@ fun SettingsScreen(
     var excludedAppsCount by remember { mutableStateOf(excludeAppsManager.getExcludedAppsCount()) }
     var showExcludedApps by remember { mutableStateOf(false) }
     var autoTimeout by remember { mutableStateOf(dataUtil.getAutoModeTimeoutSeconds()) }
-    // R8 (§11.13): Auto-Reconnect in Auto Mode toggle state.
-    var autoReconnect by remember { mutableStateOf(dataUtil.getAutoReconnectInAutoMode()) }
-    // ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, §1.6.36): the "always prefer
-    // VPN" collector-routing opt-in. Off by default — turning it on lets the
-    // collector ride the system VPN tunnel when a usable one exists.
-    var prefersVpn by remember { mutableStateOf(dataUtil.getPrefersVpnForCollector()) }
+    // v1.0.52 (§1.6.44) TASK B.1: the "Auto-Reconnect in Auto Mode" switch moved
+    // to the Auto Connect screen (AutoModeScreen.kt). It keeps the same
+    // persisted key and the same default, so this is a move, not a behaviour
+    // change — and a value already stored by the user keeps applying.
+    //
+    // v1.0.52 TASK A.1: the "try tunnel first for server-list update" switch was
+    // REMOVED. Collector routing is fully automatic; the collector measures
+    // which transport works instead of asking the user to declare it.
     var softetherMaxConnections by remember { mutableStateOf(dataUtil.getSoftEtherMaxConnections()) }
     var cacheExpires by remember { mutableStateOf(dataUtil.connectionCacheExpires) }
     // Scheduled server list refresh interval, in hours (1..24, default 12).
@@ -534,34 +534,12 @@ fun SettingsScreen(
                         onClick = { showAutoTimeoutPicker = true },
                     )
                     SettingDivider()
-                    // R8 (§11.13): Auto-Reconnect in Auto Mode.
-                    SettingSwitchRow(
-                        title = stringResource(R.string.setting_auto_reconnect_label),
-                        subtitle = stringResource(R.string.setting_auto_reconnect_hint),
-                        icon = Icons.Outlined.Autorenew,
-                        checked = autoReconnect,
-                        onChecked = {
-                            autoReconnect = it
-                            dataUtil.setAutoReconnectInAutoMode(it)
-                        },
-                    )
-                    SettingDivider()
-                    // ROUTING-REACHABILITY-AND-EPERM-DIAGNOSTICS (M1, §1.6.36): opt-in to
-                    // route collector traffic through the system VPN when a usable tunnel
-                    // exists. Writes the same key GlobalVpnTracker.prefersVpnForCollector()
-                    // reads ("vpn_always_prefer_vpn") — until this phase nothing wrote it,
-                    // so the v1.0.41 VPN rung was unreachable (DEVICE_VERIFY_CLUSTER_v1.0.43_REPORT.md §8).
-                    SettingSwitchRow(
-                        title = stringResource(R.string.setting_prefer_vpn_collector_label),
-                        subtitle = stringResource(R.string.setting_prefer_vpn_collector_summary),
-                        icon = Icons.Outlined.VpnLock,
-                        checked = prefersVpn,
-                        onChecked = {
-                            prefersVpn = it
-                            dataUtil.setPrefersVpnForCollector(it)
-                        },
-                    )
-                    SettingDivider()
+                    // v1.0.52 (§1.6.44) TASK B.1: "Auto-Reconnect in Auto Mode"
+                    // moved to the Auto Connect screen, where the behaviour it
+                    // governs actually happens. Same key, same default.
+                    //
+                    // v1.0.52 TASK A.1: the "try tunnel first for server-list
+                    // update" switch was removed — the collector routes itself.
                     SettingValueRow(
                         title = stringResource(R.string.setting_softether_max_connections_label),
                         value = stringResource(
@@ -1041,7 +1019,7 @@ fun SettingsScreen(
         SingleChoiceDialog(
             title = stringResource(R.string.setting_auto_timeout_label),
             options = values.map { "$it seconds" },
-            selectedIndex = values.indexOf(autoTimeout).let { if (it < 0) values.indexOf(12) else it },
+            selectedIndex = values.indexOf(autoTimeout).let { if (it < 0) values.indexOf(8) else it },
             onSelect = { index ->
                 autoTimeout = values[index]
                 dataUtil.setAutoModeTimeoutSeconds(values[index])

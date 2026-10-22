@@ -337,9 +337,13 @@ class OkHttpFetcher(
 // `VpnServerRepository.productionRouting`) and falls back to open, and
 // emergency/manual sources are out of scope for this phase.
 //
-// The decision is a pure value + a pure function so it can be unit-tested
-// without Android, a Looper or a live tunnel: the caller gathers the three
-// inputs and [CollectorRouting.choose] says which transport to use.
+// The decision is a pure value so it can be unit-tested without Android, a
+// Looper or a live tunnel: the caller gathers the inputs into
+// [CollectorRoutingInput] and `VpnServerRepository.routeLadder` orders the
+// rungs from them. v1.0.52 (§1.6.44) removed the standalone routing helper
+// that used to live here together with its third input, the user's manual
+// preference: the ladder is now derived from measured signals only, so there
+// is no preference left to fold in at this layer.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -363,39 +367,26 @@ enum class CollectorPath {
 }
 
 /**
- * The three inputs the routing decision needs. All three must hold for the
- * TUNNEL rung to be offered:
+ * The two inputs the routing decision needs.
  *
- *  1. [preferVpn] — the user opted in ("try the tunnel first"). Since v1.0.45
- *     this only *reorders* the ladder; it never gates reachability.
- *  2. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsable()` (§7 Q1), i.e. a
+ * v1.0.52 (§1.6.44): the user-facing "try the tunnel first" opt-in is **gone**.
+ * Routing is fully automatic — the ladder is derived from measured signals
+ * only: whether the tunnel is usable right now, whether a VPN `Network` handle
+ * exists to bind with, and (in `VpnServerRepository`) the in-process path
+ * memory that records which transport last worked. A stale stored
+ * `vpn_always_prefer_vpn` value is simply never read again.
+ *
+ * Both must hold for the `TUNNEL` rung to be *offered*:
+ *
+ *  1. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsableForRouting()`, i.e. a
  *     tunnel that is CONNECTED *and* forwarding, not a half-up one.
- *  3. [hasBoundNetwork] — a system VPN Network is actually at hand.
+ *  2. [hasBoundNetwork] — a system VPN Network is actually at hand.
  *
- * Anything missing keeps the request on [CollectorPath.PHYSICAL] — an explicit
+ * Anything missing keeps the request on `CollectorPath.PHYSICAL` — an explicit
  * non-VPN network, never the unbound OS default.
  */
 data class CollectorRoutingInput(
-    val preferVpn: Boolean,
     val tunnelUsable: Boolean,
     val hasBoundNetwork: Boolean,
 )
 
-object CollectorRouting {
-
-    /**
-     * The two-transport decision, as one expression.
-     *
-     * Deliberately an AND of all three: a tunnel used without the user asking,
-     * or a usable-looking tunnel that has no bound network, would both be worse
-     * than staying on the physical path. `EMERGENCY` is never chosen here — it
-     * is the ladder's last rung, appended by
-     * `VpnServerRepository.routeLadder`.
-     */
-    fun choose(input: CollectorRoutingInput): CollectorPath =
-        if (input.preferVpn && input.tunnelUsable && input.hasBoundNetwork) {
-            CollectorPath.TUNNEL
-        } else {
-            CollectorPath.PHYSICAL
-        }
-}

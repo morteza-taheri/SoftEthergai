@@ -266,8 +266,6 @@
     <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
     <string name="setting_auto_reconnect_label">Auto-Reconnect in Auto Mode</string>
     <string name="setting_auto_reconnect_hint">Automatically try to reconnect after an unexpected disconnect while Auto Mode is active.</string>
-    <string name="setting_prefer_vpn_collector_label">Try tunnel first for server-list update</string>
-    <string name="setting_prefer_vpn_collector_summary">When a VPN tunnel is active, try it before the Wi-Fi/mobile network. If the direct network is blocked, the update uses the tunnel automatically.</string>
     <string name="error_collector_all_paths_failed">Server-list update failed on every path — keeping the saved list</string>
     <string name="error_collector_deadline_exceeded">Server-list update timed out — keeping the saved list</string>
     <string name="error_reconnect_limit">Reconnect limit reached — stopping</string>

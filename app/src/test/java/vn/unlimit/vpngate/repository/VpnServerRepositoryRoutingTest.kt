@@ -15,28 +15,29 @@ import vn.unlimit.vpngate.data.remote.RedirectPolicy
 
 /**
  * v1.0.45 — the PHYSICAL / TUNNEL route ladder (was v1.0.27 OPEN-first /
- * VPN-fallback).
+ * VPN-fallback). Updated in v1.0.52 (§1.6.44) TASK A, which removed the manual
+ * "prefer the VPN for the collector" opt-in.
  *
  * The v1.0.27 contract this file used to pin was "OPEN first, VPN only as a
  * fallback", where `OPEN` meant *unbound*. v1.0.45 established that an unbound
  * client is not "outside the tunnel": with the app's own tunnel up it silently
  * follows the OS default, i.e. it goes *through* the tunnel. So the two rungs
  * are now explicit and bound — `PHYSICAL` (a NOT_VPN network) and `TUNNEL` (the
- * app's VPN network) — and the opt-in only *reorders* them.
+ * app's VPN network).
  *
- * The contract under test (see [VpnServerRepository.fetchOnChosenPath]):
- *   - The PRIMARY rung is PHYSICAL unless the user opted in
- *     (`PREF_ALWAYS_PREFER_VPN`) **and** the tunnel is usable; a tunnel that is
- *     merely up never promotes TUNNEL to primary on its own.
- *   - The TUNNEL rung is a FALLBACK, tried when PHYSICAL fails **and** a bound
- *     network is reachable.
- *   - When the user opted in, TUNNEL is primary and PHYSICAL is the fallback.
- *   - When TUNNEL is primary but no tunnel is bound, the rung is simply
- *     unavailable and we degrade straight to PHYSICAL (no claimed fallback).
+ * The contract under test (see [VpnServerRepository.fetchOnChosenPath]) is the
+ * *mechanics of a chosen path*, deliberately independent of how the path was
+ * chosen — that decision is `VpnServerRepository.routeLadder` and is pinned by
+ * `VpnServerRepositoryLadderTest`. Here the path is always passed explicitly:
+ *   - The PRIMARY rung is whatever `path` says. A TUNNEL primary needs a bound
+ *     fetcher; without one the rung is unavailable and we degrade straight to
+ *     PHYSICAL (no claimed fallback).
+ *   - The opposite rung is the FALLBACK, tried only when the primary produced
+ *     nothing and the fallback is reachable.
+ *   - EMERGENCY is never a fallback: it carries no network.
  *
  * The `[fetch] path=...` diagnostics (tag `VpnServerFetch`) are asserted here so
- * a future regression that silently re-prefers the tunnel is caught: the very
- * first `[fetch] path=...` line in every no-opt-in case must be `path=physical`.
+ * a future regression that silently changes a rung is caught.
  *
  * No Android, no tracker, no socket: the physical and bound fetchers are
  * identity tokens the `fetch` lambda branches on, so both outcomes are
@@ -64,9 +65,9 @@ class VpnServerRepositoryRoutingTest {
     /**
      * Build a repo and run one [VpnServerRepository.fetchOnChosenPath] call.
      *
-     * @param path the primary rung chosen for this call (normally derived from
-     *   [CollectorRoutingInput.preferVpn]; passed explicitly so each permutation
-     *   is independent of the routing decision.
+     * @param path the primary rung chosen for this call (normally the first rung
+     *   of [VpnServerRepository.routeLadder]; passed explicitly so each
+     *   permutation is independent of the routing decision).
      * @param boundFetcher the TUNNEL-bound fetcher, or null when the tunnel is down.
      * @param physicalResult what the PHYSICAL rung yields (null = failure).
      * @param tunnelResult what the TUNNEL rung yields (null = failure).
@@ -217,9 +218,10 @@ class VpnServerRepositoryRoutingTest {
     }
 
     // ── Permutation 6 ────────────────────────────────────────────────────────
-    // userPreferVpn=true + tunnel UP → TUNNEL is PRIMARY (opt-in reorders the ladder).
+    // TUNNEL chosen as primary (the ladder promotes it when PHYSICAL is cooling
+    // down or the tunnel is the proven transport) + tunnel UP → TUNNEL only.
     @Test
-    fun `user opt-in makes TUNNEL the primary rung`() = runBlocking {
+    fun `a promoted TUNNEL primary rung succeeds without touching PHYSICAL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
             CollectorPath.TUNNEL,
@@ -232,15 +234,16 @@ class VpnServerRepositoryRoutingTest {
         assertEquals(listOf("[fetch] path=tunnel source=html"), fetchLogs.toList())
         assertEquals(listOf("[collector] path=tunnel source=html"), collectorLogs.toList())
         assertTrue(
-            "PHYSICAL must not be tried first when the user opted into the tunnel: $fetchLogs",
+            "PHYSICAL must not be tried first when the ladder promoted TUNNEL: $fetchLogs",
             fetchLogs.none { it.startsWith("[fetch] path=physical") },
         )
     }
 
     // ── Permutation 7 ────────────────────────────────────────────────────────
-    // userPreferVpn=true + tunnel DOWN → TUNNEL rung unavailable, degrade to PHYSICAL.
+    // TUNNEL primary but the tunnel went down between the decision and the
+    // fetch → the rung is unavailable, degrade to PHYSICAL.
     @Test
-    fun `user opt-in with tunnel down degrades straight to PHYSICAL`() = runBlocking {
+    fun `a TUNNEL primary with the tunnel down degrades straight to PHYSICAL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val result = runFetch(
             CollectorPath.TUNNEL,
@@ -261,19 +264,19 @@ class VpnServerRepositoryRoutingTest {
         )
     }
 
-    // ── Integration: refresh() is PHYSICAL-first even with a tunnel up ────────
+    // ── Integration: refresh() is PHYSICAL-first with no memory evidence ─────
     // The original bug lived in productionRouting(): it did `preferVpn ||= tunnelUp`,
     // so refresh() tried the tunnel first whenever any tunnel was up. This proves the
-    // new ladder tries PHYSICAL first (and only falls back to TUNNEL) when the user
-    // has NOT opted in, regardless of tunnel state.
+    // v1.0.52 ladder tries PHYSICAL first (and only falls back to TUNNEL) when the
+    // path memory holds no evidence, regardless of tunnel state.
     @Test
-    fun `refresh tries PHYSICAL first even when a tunnel is up and no opt-in`() = runBlocking {
+    fun `refresh tries PHYSICAL first even when a tunnel is up and memory is empty`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val repo = VpnServerRepository(
             fetcher = physicalFetcher,
             cacheDir = tempFolder.newFolder(),
-            // No opt-in, tunnel reported up (bound fetcher available), both fail.
-            routing = { CollectorRoutingInput(false, true, true) },
+            // No memory evidence; the tunnel reports usable and bound; both fail.
+            routing = { CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true) },
             boundFetcherFactory = { tunnelFetcher },
             pathLog = { collectorLogs.add(it) },
             fetchLog = { fetchLogs.add(it) },
@@ -287,13 +290,55 @@ class VpnServerRepositoryRoutingTest {
             firstAttempt.contains("path=physical"),
         )
         assertTrue(
-            "TUNNEL must never be the PRIMARY rung without opt-in (only a fallback): $fetchLogs",
+            "TUNNEL must never be the PRIMARY rung without memory evidence: $fetchLogs",
             fetchLogs.none { it.startsWith("[fetch] path=tunnel source") },
         )
         assertTrue(
             "every TUNNEL attempt must be a fallback after a PHYSICAL failure: $fetchLogs",
             fetchLogs.filter { it.startsWith("[fetch] path=tunnel") }
                 .all { it.contains("after physical failed") || it.contains("failed (no result)") },
+        )
+        // And the ladder really did advertise the tunnel as a rung.
+        assertTrue(
+            "the ladder order line must list PHYSICAL,TUNNEL,EMERGENCY: $fetchLogs",
+            fetchLogs.any { it == "[ladder] order=PHYSICAL,TUNNEL,EMERGENCY" },
+        )
+    }
+
+    // ── v1.0.52: a PHYSICAL failure teaches the ladder for the NEXT run ──────
+    // The replacement for the removed manual switch: the collector measures the
+    // physical path failing, and the next refresh promotes TUNNEL on its own.
+    @Test
+    fun `a failed refresh makes the next refresh try TUNNEL first`() = runBlocking {
+        collectorLogs.clear(); fetchLogs.clear()
+        val repo = VpnServerRepository(
+            fetcher = physicalFetcher,
+            cacheDir = tempFolder.newFolder(),
+            routing = { CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true) },
+            boundFetcherFactory = { tunnelFetcher },
+            pathLog = { collectorLogs.add(it) },
+            fetchLog = { fetchLogs.add(it) },
+        )
+
+        // Run 1: both rungs fail, so PHYSICAL is recorded as failing.
+        repo.refresh()
+        assertTrue(
+            "run 1 must have started PHYSICAL-first: $fetchLogs",
+            fetchLogs.contains("[ladder] order=PHYSICAL,TUNNEL,EMERGENCY"),
+        )
+
+        fetchLogs.clear()
+
+        // Run 2: the cooldown from run 1 is still active, so TUNNEL leads.
+        repo.refresh()
+        assertTrue(
+            "run 2 must have promoted TUNNEL from the recorded failure: $fetchLogs",
+            fetchLogs.contains("[ladder] order=TUNNEL,PHYSICAL,EMERGENCY"),
+        )
+        val firstAttempt = fetchLogs.first { it.startsWith("[fetch]") }
+        assertTrue(
+            "the first attempt of run 2 must be TUNNEL: $fetchLogs",
+            firstAttempt.contains("path=tunnel"),
         )
     }
 }

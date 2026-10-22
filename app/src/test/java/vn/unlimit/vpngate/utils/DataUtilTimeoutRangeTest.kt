@@ -6,10 +6,12 @@ import org.junit.Test
 
 /**
  * v1.0.46 (§1.6.39) — T-NEW-70..72: the Auto Mode timeout range is 8..60.
+ * Updated in v1.0.52 (§1.6.44) TASK B.2, which moved the DEFAULT from 12 to 8.
  *
- * CHANGE B raises the floor from 5 to 8 seconds. The default (12) and the
- * maximum (60) are deliberately unchanged, so this file pins all three numbers:
- * the default, the floor and the ceiling.
+ * CHANGE B (v1.0.46) raised the floor from 5 to 8 seconds. The maximum (60) is
+ * unchanged, so this file pins all three numbers: the default, the floor and the
+ * ceiling. v1.0.52 lowered the default to the floor, so the default is now 8 and
+ * "no stored value" and "a value below the floor" converge on the same number.
  *
  * The clamp lives in **both** the reader and the writer. Clamping on read is
  * what makes the change safe for an existing install: a value of 5, 6 or 7
@@ -22,14 +24,26 @@ class DataUtilTimeoutRangeTest {
 
     private fun dataUtil() = DataUtil(TimeoutFakeSharedPreferences())
 
-    // ── T-NEW-70: the default is unchanged at 12 ──────────────────────────
+    // ── T-NEW-70: the default is now 8 (was 12 before v1.0.52) ────────────
 
     @Test
-    fun `T-NEW-70 the default timeout with no stored value is 12 seconds`() {
+    fun `T-NEW-70 the default timeout with no stored value is 8 seconds`() {
         assertEquals(
-            "v1.0.46 changed the floor only — the default must still be 12 s",
-            12,
+            "v1.0.52 (§1.6.44) TASK B.2 lowered the default from 12 to the 8 s floor",
+            8,
             dataUtil().getAutoModeTimeoutSeconds(),
+        )
+    }
+
+    @Test
+    fun `T-NEW-70b the default equals the controller fallback`() {
+        // The two numbers used to be able to drift apart silently (25 / 12 / 5
+        // before v1.0.31). Pinning them against each other here means a future
+        // change to either one fails this file as well as the controller test.
+        assertEquals(
+            "the Settings default must equal AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS",
+            vn.unlimit.vpngate.automode.AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS,
+            dataUtil().getAutoModeTimeoutSeconds() * 1_000L,
         )
     }
 
@@ -78,7 +92,7 @@ class DataUtilTimeoutRangeTest {
 
         dataUtil.setAutoModeTimeoutSeconds(8)
         assertEquals(
-            "8 s is inside the range and must be stored verbatim, not nudged to 12",
+            "8 s is inside the range and must be stored verbatim",
             8,
             dataUtil.getAutoModeTimeoutSeconds(),
         )

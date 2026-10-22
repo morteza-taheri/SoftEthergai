@@ -52,6 +52,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -126,6 +127,7 @@ import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.viewmodels.AutoModeDisplayState
 import vn.unlimit.vpngate.viewmodels.AutoModeViewModel
 import vn.unlimit.vpngate.viewmodels.combineAutoModeState
+import vn.unlimit.vpngate.ui.screens.settings.SettingSwitchRow
 
 /**
  * Modern Auto Mode screen with a state-aware animated hero connection button,
@@ -152,6 +154,15 @@ fun AutoModeScreen(
     )
 
     var showBatteryDialog by remember { mutableStateOf(false) }
+
+    // v1.0.52 (§1.6.44) TASK B.1: "Auto-Reconnect in Auto Mode" moved here from
+    // Settings. Same persisted key (`SETTING_AUTO_RECONNECT_IN_AUTO_MODE`) and
+    // same default (true), so a user's existing choice keeps applying and no
+    // migration is needed — only the control's location changed, to the screen
+    // whose behaviour it governs.
+    var autoReconnect by remember {
+        mutableStateOf(viewModel.dataUtil.getAutoReconnectInAutoMode())
+    }
 
     // Developer mode and log text
     var developerMode by remember {
@@ -525,6 +536,28 @@ fun AutoModeScreen(
                     )
                 }
                 else -> Unit
+            }
+
+            // v1.0.52 (§1.6.44) TASK B.1: the Auto-Reconnect switch lives on the
+            // Auto Connect screen now — next to the run it affects, instead of
+            // buried in Settings. Same key and default as before.
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp),
+            ) {
+                SettingSwitchRow(
+                    title = stringResource(R.string.setting_auto_reconnect_label),
+                    subtitle = stringResource(R.string.setting_auto_reconnect_hint),
+                    icon = Icons.Outlined.Autorenew,
+                    checked = autoReconnect,
+                    onChecked = {
+                        autoReconnect = it
+                        viewModel.dataUtil.setAutoReconnectInAutoMode(it)
+                    },
+                )
             }
 
             // Developer Log Panel

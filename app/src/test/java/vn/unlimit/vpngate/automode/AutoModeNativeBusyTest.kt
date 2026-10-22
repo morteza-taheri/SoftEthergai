@@ -586,12 +586,19 @@ class AutoModeNativeBusyTest {
         // on the adapter's dispatcher; nothing in the contract requires them to share a
         // thread. Keeping the default intact preserves "a genuine failure still waits".
         //
-        // v1.0.31 (AUTOCONNECT-FIX, D-1): the fallback is now 12_000L, the shipped
+        // v1.0.31 (AUTOCONNECT-FIX, D-1): the fallback became 12_000L, the shipped
         // Settings default, instead of 25_000L. Three figures used to describe this one
         // setting (25 s here, 12 s in DataUtil, 5 s in the spec) and nothing pinned any
         // of them, so the drift was invisible. The assertion is kept — with the corrected
         // value — precisely so it stays a guard against the three drifting apart again.
-        assertEquals(12_000L, AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS)
+        //
+        // v1.0.52 (§1.6.44) TASK B.2: the shipped default moved 12 s -> 8 s, so this
+        // guard now pins 8_000L. 8 s is the floor of the documented 8..60 range: a dead
+        // server is abandoned at the earliest point the user can still express as a
+        // preference, and the Settings screen can no longer show a value the controller
+        // does not use. AutoModeControllerTest#defaultAttemptTimeoutMatchesTheSettingsDefault
+        // pins the DataUtil side of the same number.
+        assertEquals(8_000L, AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS)
     }
 
     // ------------------------------------- Stage 2F-F.28AL-AUTOCONNECT-BUG-FIX (BUG 2)

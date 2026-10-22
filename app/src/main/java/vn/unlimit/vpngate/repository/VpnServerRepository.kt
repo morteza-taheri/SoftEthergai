@@ -15,7 +15,6 @@ import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.data.persistence.CollectorSnapshotStore
 import vn.unlimit.vpngate.data.remote.CollectorPath
-import vn.unlimit.vpngate.data.remote.CollectorRouting
 import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
 import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
@@ -79,6 +78,15 @@ class VpnServerRepository(
      * [pathLog]; tests inject a recorder to assert on routing decisions.
      */
     private val fetchLog: (String) -> Unit = { runCatching { Log.d("VpnServerFetch", it) } },
+    /**
+     * v1.0.52 (§1.6.44) TASK A.5: the bounded, in-process memory of which
+     * transport last worked. Injected rather than constructed inline for the
+     * same reason as [boundFetcherFactory]: a test that needs the TUNNEL rung
+     * to lead the ladder has to be able to seed the evidence that promotes it,
+     * and a test that needs the one-shot retry has to be able to observe the
+     * memory the run wrote. Production always gets a fresh instance.
+     */
+    private val pathMemory: PathMemory = PathMemory(),
 ) {
     /**
      * v1.0.45 (§1.6.38): single-flight guard. At most one refresh runs at a
@@ -87,11 +95,57 @@ class VpnServerRepository(
      */
     private val refreshMutex = Mutex()
 
+    // v1.0.52 (§1.6.44): `pathMemory` is now a constructor parameter (see the
+    // class header) so a test can seed the evidence that promotes the TUNNEL
+    // rung; it used to be constructed inline here.
+
+    /**
+     * v1.0.52 (§1.6.44) TASK A.4: at most **one** one-shot TUNNEL retry per
+     * "no usable tunnel" episode.
+     *
+     * Armed (true) while no retry is outstanding. [refreshLocked] re-arms it as
+     * soon as a run *starts* with a usable tunnel, so the next time the tunnel
+     * is lost and comes back the recovery is available again. Spending it is a
+     * CAS, so two concurrent callers can never both retry, and because the
+     * wrapper never retries twice in a row this cannot become a loop.
+     */
+    private val tunnelRetryAvailable = java.util.concurrent.atomic.AtomicBoolean(true)
+
+    /**
+     * v1.0.52 (§1.6.44) TASK A.4: set by [refreshLocked] when a run ended with
+     * no records **and** no usable tunnel — i.e. the exact situation a later
+     * tunnel can rescue. Read by [refresh]'s one-shot branch.
+     */
+    @Volatile
+    private var lastRunFailedWithoutTunnel: Boolean = false
+
     companion object {
         private const val MAIN_TIMEOUT_MS = 45_000L
         private const val MIRROR_TIMEOUT_MS = 30_000L
         private const val RAW_CAPTURE_LIMIT = 512 * 1024
         private const val TAG = "VpnServerRepository"
+
+        /**
+         * v1.0.52 (§1.6.44): how long a successful transport stays "proven".
+         * 30 minutes is long enough to keep a blocked-physical/tunnel-up
+         * session on the tunnel across many refreshes, and short enough that a
+         * stale success cannot outlive the network it described.
+         */
+        internal const val PATH_MEMORY_SUCCESS_TTL_MS = 30 * 60_000L
+
+        /**
+         * v1.0.52 (§1.6.44): how long a failed transport is skipped. Two
+         * minutes covers a refresh burst (pull-to-refresh, retry, auto-mode
+         * connect) without pinning the ladder for the rest of the session.
+         */
+        internal const val PATH_MEMORY_FAILURE_COOLDOWN_MS = 2 * 60_000L
+
+        /**
+         * v1.0.52 (§1.6.44): the budget of the single one-shot TUNNEL retry.
+         * Deliberately smaller than [MAIN_TIMEOUT_MS]: it is a recovery
+         * attempt, not a second full refresh.
+         */
+        internal const val TUNNEL_RETRY_TIMEOUT_MS = 20_000L
 
         /** Source tags used in the R4b `[collector] path=...` log lines. */
         internal const val SOURCE_TAG_HTML = "html"
@@ -101,77 +155,143 @@ class VpnServerRepository(
         /**
          * Production routing inputs.
          *
-         * v1.0.41 (§1.6.34) routing model — opt-in **and** health gated:
-         *   - [preferVpn] is the user's "always prefer VPN" opt-in
-         *     ([GlobalVpnTracker.prefersVpnForCollector], default false). It
-         *     carries the user's *intent* only; it no longer decides the rung
-         *     on its own.
-         *   - [tunnelUsable] is the live health signal
+         * v1.0.52 (§1.6.44): routing is **fully automatic**. The user-facing
+         * "try the tunnel first" opt-in (`preferVpn`) was removed in this
+         * revision, together with its Settings switch, its `DataUtil`
+         * accessors and `GlobalVpnTracker.prefersVpnForCollector()`. A stale
+         * stored `vpn_always_prefer_vpn` value is therefore ignored safely:
+         * nothing reads it any more, and nothing has to migrate it away.
+         *
+         * What is left are two *measurements*, not preferences:
+         *   - [CollectorRoutingInput.tunnelUsable] is the live health signal
          *     ([GlobalVpnTracker.isTunnelUsableForRouting]): connected,
          *     OS-bound, and either passing traffic right now or still inside
-         *     the post-connect grace period. This function only *supplies* it;
-         *     the gate itself lives in [resolvePrimary].
-         *   - [hasBoundNetwork] says a VPN `Network` exists to bind with. It
-         *     never forces the VPN rung on its own.
+         *     the post-connect grace period.
+         *   - [CollectorRoutingInput.hasBoundNetwork] says a VPN `Network`
+         *     exists to bind with. It never forces the VPN rung on its own.
          *
-         * The VPN rung is chosen only when `preferVpn && tunnelUsable`. With
-         * the opt-in OFF (the default) the primary rung is always OPEN,
-         * whatever the tunnel is doing. With the opt-in ON but the tunnel
-         * dead, OPEN is chosen **directly**: the pre-v1.0.41 code took the VPN
-         * rung anyway and relied on [fetchOnChosenPath] to recover, paying a
-         * full timeout for an attempt that could not succeed.
-         *
-         * The rung is still never forced by tunnel state alone — the earlier
-         * `preferVpn ||= tunnelUp` form did exactly that and wasted tunnel
-         * bandwidth on directly-reachable lists. [resolvePrimary] +
-         * [fetchOnChosenPath] remain the only consumers.
+         * The tunnel is never *promoted* by these inputs alone — promotion
+         * happens in [routeLadder] and only on evidence recorded by
+         * [PathMemory] (the physical path is failing, or the tunnel is the
+         * transport that last delivered a dataset).
          */
         internal fun productionRouting(): CollectorRoutingInput {
-            // v1.0.41 (§1.6.34): feed the real usability signal. The gate
-            // decision is made in resolvePrimary; this function only supplies
-            // the inputs.
             val usable = GlobalVpnTracker.isTunnelUsableForRouting()
             return CollectorRoutingInput(
-                // FIX-3a (v1.0.27), kept: honour the user opt-in as the user's
-                // intent; do NOT OR the live tunnel state in here. OPEN-first /
-                // VPN-fallback is decided by resolvePrimary + fetchOnChosenPath.
-                preferVpn = GlobalVpnTracker.prefersVpnForCollector(),
                 tunnelUsable = usable,
                 hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
             )
         }
 
         /**
-         * v1.0.45 (§1.6.38): the automatic route ladder for one refresh.
+         * v1.0.52 (§1.6.44) — bounded, in-process memory of which transport last
+         * worked, and which one just failed.
          *
-         * Replaces the v1.0.27/v1.0.41 single-primary model. Every rung is now
-         * an explicit, bound transport:
+         * This is what replaces the removed manual toggle: instead of asking
+         * the user to declare "my physical path is blocked", the collector
+         * *measures* it. A PHYSICAL attempt that produced nothing starts a
+         * short cooldown; while that cooldown is active and a usable tunnel
+         * exists, the ladder puts TUNNEL first. A successful path is
+         * remembered for [successTtlMs] and wins ties.
          *
-         *  - `PHYSICAL` is always the base rung and is *bound* to a NOT_VPN +
-         *    INTERNET network, so it really leaves outside the tunnel. The old
-         *    `OPEN` was unbound and therefore silently followed the OS default,
-         *    which IS the app's own tunnel whenever that tunnel is up.
-         *  - `TUNNEL` is inserted only when the tunnel is usable **and** a VPN
-         *    network handle exists ([CollectorRoutingInput.hasBoundNetwork]) —
-         *    the same three-way AND the v1.0.41 gate used, so reachability is
-         *    unchanged; only the transport is now honest.
-         *  - `EMERGENCY` (bundled `servers.csv`) is always the last rung; the
-         *    caller logs a skip when no emergency source is configured.
+         * **Bounded by construction.** The key space is the three-value
+         * [CollectorPath] enum, so at most three success timestamps and three
+         * failure timestamps are ever held, regardless of how long the process
+         * runs. No eviction policy is needed because no unbounded key can be
+         * created.
          *
-         * The user opt-in (`preferVpn`) no longer *gates* the tunnel, it only
-         * **reorders** the ladder: with the opt-in ON and a usable tunnel the
-         * TUNNEL rung moves to the front. That is the whole point of v1.0.45 —
-         * a blocked physical path recovers through the app's own tunnel
-         * automatically, with no manual toggle and no DB wipe.
+         * **No personal data.** Entries are `(enum, epochMillis)` pairs. No
+         * credentials, no hostnames, no IPs, no SSIDs, no user identifiers —
+         * nothing is written to disk and a process restart clears everything.
+         *
+         * The clock is injectable so the cooldown and TTL can be tested
+         * without sleeping.
          */
-        internal fun routeLadder(input: CollectorRoutingInput): List<CollectorPath> {
+        class PathMemory(
+            private val clock: () -> Long = { System.currentTimeMillis() },
+            private val successTtlMs: Long = PATH_MEMORY_SUCCESS_TTL_MS,
+            private val failureCooldownMs: Long = PATH_MEMORY_FAILURE_COOLDOWN_MS,
+        ) {
+            private val lock = Any()
+            private val lastSuccessAt = HashMap<CollectorPath, Long>()
+            private val lastFailureAt = HashMap<CollectorPath, Long>()
+
+            /** Records that [path] delivered a dataset; clears its cooldown. */
+            fun recordSuccess(path: CollectorPath) {
+                synchronized(lock) {
+                    lastSuccessAt[path] = clock()
+                    lastFailureAt.remove(path)
+                }
+            }
+
+            /** Records that [path] produced nothing; starts its cooldown. */
+            fun recordFailure(path: CollectorPath) {
+                synchronized(lock) { lastFailureAt[path] = clock() }
+            }
+
+            /** True while [path] is inside its post-failure cooldown. */
+            fun isCoolingDown(path: CollectorPath): Boolean {
+                synchronized(lock) {
+                    val failedAt = lastFailureAt[path] ?: return false
+                    return clock() - failedAt < failureCooldownMs
+                }
+            }
+
+            /** The most recent still-fresh success, or null when none is known. */
+            fun preferred(): CollectorPath? {
+                synchronized(lock) {
+                    val now = clock()
+                    return lastSuccessAt.entries
+                        .filter { now - it.value < successTtlMs }
+                        .maxByOrNull { it.value }
+                        ?.key
+                }
+            }
+
+            /** Test/teardown seam: forget everything. */
+            fun clear() {
+                synchronized(lock) {
+                    lastSuccessAt.clear()
+                    lastFailureAt.clear()
+                }
+            }
+        }
+
+        /**
+         * v1.0.52 (§1.6.44): the automatic route ladder for one refresh.
+         *
+         * Replaces the v1.0.45 ladder-with-user-reorder. Every rung is an
+         * explicit, bound transport:
+         *
+         *  - `PHYSICAL` is the base rung and is *bound* to a NOT_VPN +
+         *    INTERNET network, so it really leaves outside the tunnel.
+         *  - `TUNNEL` is offered only when the tunnel is usable **and** a VPN
+         *    network handle exists.
+         *  - `EMERGENCY` (bundled `servers.csv`) is always the last rung and is
+         *    **never** promoted.
+         *
+         * TUNNEL moves to the front only on **evidence** from [memory]:
+         * PHYSICAL is inside its failure cooldown, or TUNNEL is the transport
+         * that last delivered a dataset. That is the whole replacement for the
+         * removed manual switch — the collector decides from measurements, the
+         * user no longer has to.
+         */
+        internal fun routeLadder(
+            input: CollectorRoutingInput,
+            memory: PathMemory? = null,
+        ): List<CollectorPath> {
             val tunnelRungAvailable = input.tunnelUsable && input.hasBoundNetwork
             val ladder = mutableListOf(CollectorPath.PHYSICAL)
             if (tunnelRungAvailable) ladder += CollectorPath.TUNNEL
             ladder += CollectorPath.EMERGENCY
-            if (input.preferVpn && tunnelRungAvailable) {
-                ladder.remove(CollectorPath.TUNNEL)
-                ladder.add(0, CollectorPath.TUNNEL)
+
+            if (tunnelRungAvailable && memory != null) {
+                val physicalBlocked = memory.isCoolingDown(CollectorPath.PHYSICAL)
+                val tunnelProven = memory.preferred() == CollectorPath.TUNNEL
+                if (physicalBlocked || tunnelProven) {
+                    ladder.remove(CollectorPath.TUNNEL)
+                    ladder.add(0, CollectorPath.TUNNEL)
+                }
             }
             return ladder
         }
@@ -251,9 +371,9 @@ class VpnServerRepository(
      * as `"html"`/`"api"`, and a mirror as its own `mirror_<n>` tag, so a
      * mirror body can never be attributed to the canonical source.
      *
-     * R4b: the transport is chosen once per run (see
-     * [CollectorRouting.choose]) and applied per source, so each source's
-     * `[collector] path=...` line names the transport it actually used. The
+     * R4b: the transport is chosen once per run (see [routeLadder]) and
+     * applied per source, so each source's `[collector] path=...` line names
+     * the transport it actually used. The
      * three sources are built inside the run rather than once at
      * construction precisely so the chosen fetcher can differ between runs.
      */
@@ -268,6 +388,39 @@ class VpnServerRepository(
             }
             if (!completed) {
                 fetchLog("[ladder] deadline exceeded (${MAIN_TIMEOUT_MS}ms); preserving DB")
+                return@withLock result
+            }
+
+            // v1.0.52 (§1.6.44) TASK A.4 — exactly one bounded retry.
+            //
+            // The trigger is the case the ladder cannot cover by itself: the
+            // run had no usable tunnel at all (so TUNNEL was never offered) and
+            // failed, and by now a tunnel has become usable. The retry is
+            // spent once per episode (CAS), runs inside the same
+            // `refreshMutex` (so it is single-flight against every other
+            // caller) and is bounded by [TUNNEL_RETRY_TIMEOUT_MS]. It cannot
+            // loop: `tunnelRetryAvailable` is only re-armed by a run that
+            // *starts* with a usable tunnel, never by a failure.
+            if (result == null && lastRunFailedWithoutTunnel &&
+                tunnelRetryAvailable.compareAndSet(true, false)
+            ) {
+                val usableNow = runCatching {
+                    GlobalVpnTracker.isTunnelUsableForRouting() &&
+                        GlobalVpnTracker.currentVpnNetwork() != null
+                }.getOrDefault(false)
+                if (usableNow) {
+                    fetchLog("[ladder] one-shot retry: a tunnel became usable; retrying through TUNNEL")
+                    val retried = withTimeoutOrNull(TUNNEL_RETRY_TIMEOUT_MS) {
+                        refreshLocked()
+                    }
+                    if (retried == null) {
+                        fetchLog(
+                            "[ladder] one-shot retry produced nothing " +
+                                "(${TUNNEL_RETRY_TIMEOUT_MS}ms); preserving DB",
+                        )
+                    }
+                    return@withLock retried
+                }
             }
             result
         }
@@ -283,11 +436,20 @@ class VpnServerRepository(
         var collectedCapability = SourceCapability.UNKNOWN
 
         // v1.0.45: re-read per refresh, never cached across runs, so a tunnel
-        // that comes up between two refreshes is honoured by the next one. The
-        // ladder is PHYSICAL -> TUNNEL (if usable) -> EMERGENCY; the toggle only
-        // reorders it (TUNNEL first when opted in).
+        // that comes up between two refreshes is honoured by the next one.
+        //
+        // v1.0.52 (§1.6.44): the ladder is PHYSICAL -> TUNNEL (when usable and
+        // bound) -> EMERGENCY, and the only thing that can promote TUNNEL is
+        // [pathMemory] evidence — there is no user toggle any more.
         val input = routing()
-        val ladder = routeLadder(input)
+        // Re-arm the one-shot retry whenever a run starts with a usable tunnel:
+        // the recovery it guards is "the tunnel came back", so its availability
+        // is tied to the tunnel being present, never to a previous failure.
+        if (input.tunnelUsable && input.hasBoundNetwork) {
+            tunnelRetryAvailable.set(true)
+        }
+        lastRunFailedWithoutTunnel = false
+        val ladder = routeLadder(input, pathMemory)
         fetchLog("[ladder] order=${ladder.joinToString(",") { it.name }}")
         val primary = ladder.first()
         val physicalFetcher: HttpFetcher =
@@ -399,6 +561,10 @@ class VpnServerRepository(
         }
 
         if (records.isEmpty()) {
+            // v1.0.52 (§1.6.44) TASK A.4: remember *why* this run failed. Only
+            // a failure with no usable tunnel can be rescued by a tunnel that
+            // appears later, so only that case arms the one-shot retry.
+            lastRunFailedWithoutTunnel = !input.tunnelUsable
             fetchLog(
                 "[ladder] ${primary.name} failed (no result) " +
                     "network=${networkLabel(primary)} " +
@@ -549,7 +715,14 @@ class VpnServerRepository(
             pathLog("[collector] path=physical source=$sourceTag")
             fetch(physicalFetcher)
         }
-        if (primaryResult != null && succeeded(primaryResult)) return primaryResult
+        if (primaryResult != null && succeeded(primaryResult)) {
+            // v1.0.52 (§1.6.44): remember the transport that actually worked.
+            pathMemory.recordSuccess(path)
+            return primaryResult
+        }
+        // The primary transport produced nothing for this source: start its
+        // cooldown so the NEXT ladder can skip it in favour of the tunnel.
+        pathMemory.recordFailure(path)
 
         // --- fallback to the opposite main rung, only when it is reachable ---
         val fallback =
@@ -576,9 +749,12 @@ class VpnServerRepository(
             fetch(physicalFetcher)
         }
         if (fallbackResult != null && succeeded(fallbackResult)) {
+            // v1.0.52 (§1.6.44): the fallback transport is now the proven one.
+            pathMemory.recordSuccess(fallback)
             fetchLog("[fetch] path=${fallback.name.lowercase()} succeeded after ${path.name.lowercase()} failed")
             return fallbackResult
         }
+        pathMemory.recordFailure(fallback)
         fetchLog("[fetch] path=${fallback.name.lowercase()} failed (no result)")
         return null
     }
