@@ -25,6 +25,27 @@ data class AutoModeCandidate(
     val seUdpSupported: Boolean,
     val openVpnTcpPort: Int,
     val openVpnUdpPort: Int,
+    /**
+     * v1.0.53 (§1.6.45) TASK A: whether this server's OpenVPN **config bytes**
+     * are actually in hand.
+     *
+     * OpenVPN is the one protocol whose port is not enough to dial it: the
+     * adapter builds an `.ovpn` profile from `VPNGateConnection
+     * .openVpnConfigData` (see `AndroidConnectionAdapter.connectOpenVpn`) and
+     * has nothing to dial without it. The manual path has always required both
+     * (`DetailActivity.protocolOptions` gates on `openVpnConfigData != null &&
+     * port > 0`); Auto Connect did not, so it dialled servers that could only
+     * ever time out.
+     *
+     * A `do_openvpn` link on the HTML page is **not** enough: nothing in the
+     * app ever downloads that link, so a link-only server has no bytes and is
+     * not usable here.
+     *
+     * Defaults to `false` deliberately — fail closed. A candidate built without
+     * this fact is treated as having no config, so a forgotten construction
+     * site loses a protocol instead of burning a timeout.
+     */
+    val openVpnConfigAvailable: Boolean = false,
     val l2tpSupported: Boolean,
     val sstpSupported: Boolean,
     /**

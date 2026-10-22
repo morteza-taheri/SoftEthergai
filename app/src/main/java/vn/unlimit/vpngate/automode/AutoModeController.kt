@@ -410,6 +410,36 @@ enum class AttemptOutcome {
      * that AUTOCONNECT-AUDIT D-6 asks to be separated from a genuine attempt.
      */
     NATIVE_ERROR,
+
+    /**
+     * v1.0.53 (§1.6.45) TASK B.6: the attempt could not be dialled at all because the
+     * data it was selected on does not carry what the protocol needs. Today that is one
+     * case: an OpenVPN server whose `.ovpn` profile bytes are absent.
+     *
+     * ## Why this is its own outcome
+     *
+     * The adapter used to `return` silently when the profile was missing. The connect
+     * call therefore *looked* like it succeeded, `awaitArmedOutcome` waited out the full
+     * per-attempt budget, and the attempt was reported as [TIMED_OUT] — which the
+     * controller treats as evidence *about the server* (it records a wedge, see
+     * AUTOCONNECT-AUDIT D-5). A stripped config is evidence about **our data**, not about
+     * the endpoint, so a timeout was the wrong signal in both directions: it cost a full
+     * budget and it blamed a server that was never contacted.
+     *
+     * ## What it must NOT do
+     *
+     * This is an ordinary attempt failure. It is **not** a cancellation and **not** a
+     * terminal state: the run keeps its v1.0.37 no-terminal contract, rotates to the next
+     * protocol on the same server, and never records a wedge for it. It also carries no
+     * per-attempt timeout semantics of its own — the outcome is known before any wait
+     * starts, so the budget is not consumed at all.
+     *
+     * Since TASK A gates OpenVPN usability on `openVpnConfigAvailable`, a production run
+     * should never reach this outcome. It exists as defence in depth: if a future
+     * selection path forgets the gate, the failure is immediate and correctly labelled
+     * instead of silently expensive.
+     */
+    MISSING_CONFIG,
 }
 
     companion object {
@@ -1833,6 +1863,27 @@ enum class AttemptOutcome {
                     break
                 }
 
+                // v1.0.53 (§1.6.45) TASK B.6: the data does not carry what this
+                // protocol needs, so nothing was dialled and nothing was waited for.
+                //
+                // Handled before the NATIVE_BUSY branch because it is a distinct,
+                // cheap verdict: there is no slot to wait for (no native attempt was
+                // started) and no own-tunnel re-check to do (nothing could have come
+                // up). It rotates to the NEXT PROTOCOL on the same server — the
+                // server itself may be perfectly reachable over SSTP or SoftEther —
+                // and it records NO wedge, because a stripped config says nothing
+                // about the endpoint. That is the same transition as every other
+                // non-timeout failure (v1.0.31 D-2), so the no-terminal contract of
+                // v1.0.37 is untouched.
+                if (outcome == AttemptOutcome.MISSING_CONFIG) {
+                    adapter.log(
+                        "[AUTO] MISSING_CONFIG on ${server.hostname ?: server.ip}/" +
+                                "${protocol.id}; no profile bytes for this protocol, " +
+                                "moving to the next protocol (no wedge, no wait)",
+                    )
+                    continue
+                }
+
                 // Stage 2F-F.28AA: the start was refused because this application's own
                 // previous native operation is still unresolved.
                 //
@@ -2480,8 +2531,21 @@ enum class AttemptOutcome {
         // R4/R6.
         AutoModeProtocol.SOFTETHER_UDP ->
             (c.seUdpSupported || c.seUdpPort > 0) && c.seTcpPort > 0
-        AutoModeProtocol.OPENVPN_TCP -> c.openVpnTcpPort > 0
-        AutoModeProtocol.OPENVPN_UDP -> c.openVpnUdpPort > 0
+        // v1.0.53 (§1.6.45) TASK A: a port is not a transport. OpenVPN needs
+        // the `.ovpn` profile bytes, and a server whose config was stripped
+        // (the emergency publisher drops configs to stay under the 1 MiB body
+        // cap — the great majority of published rows: 166 of 229, 72.5%, in the
+        // snapshot this was audited against) advertises a port it cannot dial.
+        // The adapter then had nothing to build a profile from and returned
+        // silently, so the attempt burned a full per-attempt timeout and was
+        // recorded as TIMED_OUT — a dead-server signal for a data problem.
+        //
+        // This mirrors the rule the manual path has always used
+        // (`DetailActivity.protocolOptions`: `openVpnConfigData != null &&
+        // tcpPort > 0`). Port facts stay in the record; only usability is
+        // gated. A `do_openvpn` link is NOT a config: nothing downloads it.
+        AutoModeProtocol.OPENVPN_TCP -> c.openVpnConfigAvailable && c.openVpnTcpPort > 0
+        AutoModeProtocol.OPENVPN_UDP -> c.openVpnConfigAvailable && c.openVpnUdpPort > 0
         AutoModeProtocol.L2TP_IPSEC -> c.l2tpSupported
         // Stage 2F-F.2 (Q-6): capability alone is not enough. A server that
         // confirms SSTP but publishes no port, and carries no DEFAULT

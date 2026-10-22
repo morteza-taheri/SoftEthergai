@@ -331,6 +331,17 @@ class AutoModeControllerTest {
         seUdpSupported: Boolean = false,
         ovpnTcp: Int = 0,
         ovpnUdp: Int = 0,
+        /**
+         * v1.0.53 (§1.6.45) TASK A: whether the `.ovpn` profile bytes are in hand.
+         *
+         * Defaults to `null`, which means "the same thing the ports say": a test
+         * that declares an OpenVPN port is describing a server it expects Auto
+         * Connect to be able to dial, and since v1.0.53 that requires a config.
+         * That keeps every pre-existing test's intent — setting a port meant
+         * "this transport is available" before the gate existed too — while a
+         * test that wants the stripped shape passes `false` explicitly.
+         */
+        ovpnConfig: Boolean? = null,
         l2tp: Boolean = false,
         sstp: Boolean = false,
         sstpConnectPort: Int = 0,
@@ -341,6 +352,7 @@ class AutoModeControllerTest {
         sessions = sessions, score = score, sources = sources,
         seTcpPort = seTcp, seUdpPort = seUdpPort, seUdpSupported = seUdpSupported,
         openVpnTcpPort = ovpnTcp, openVpnUdpPort = ovpnUdp,
+        openVpnConfigAvailable = ovpnConfig ?: (ovpnTcp > 0 || ovpnUdp > 0),
         l2tpSupported = l2tp, sstpSupported = sstp,
         sstpConnectPort = sstpConnectPort,
         activeRttMs = rtt,
@@ -459,6 +471,11 @@ class AutoModeControllerTest {
             sessions = 10, score = 900, sources = 1,
             seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
             openVpnTcpPort = 0, openVpnUdpPort = 1194,
+            // v1.0.53 (§1.6.45) TASK A: a port alone is no longer a transport.
+            // The candidate this test has always described DOES carry a config —
+            // that is what made it dialable — so the fact is now stated instead
+            // of assumed by the gate.
+            openVpnConfigAvailable = true,
             l2tpSupported = false, sstpSupported = false,
         )
         val c = controller(protocol = AutoModeProtocol.OPENVPN_UDP, servers = listOf(se, ovpn))
@@ -468,6 +485,142 @@ class AutoModeControllerTest {
         assertTrue(c.awaitTerminal() is AutoModeState.Connected)
         assertTrue(adapter.logs.contains("connect:ovpn-server"))
         assertTrue(adapter.logs.none { it == "connect:se-server" })
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK A: the exact defect this block exists to fix.
+     *
+     * A server can publish `OpenVPN_TCP_Port` / `OpenVPN_UDP_Port` while its
+     * `OpenVPN_ConfigData_Base64` is empty — the emergency publisher strips
+     * configs to stay under the 1 MiB body cap, which is true of 209 of the 271
+     * rows in the shipped snapshot (77%). Before the gate, Auto Connect selected
+     * such a server, the adapter found nothing to build a profile from and
+     * returned silently, and the attempt burned the full per-attempt budget and
+     * was recorded as TIMED_OUT — a wedge against a server that was never
+     * contacted.
+     */
+    @Test
+    fun configLessOpenVpnServerIsNeverSelected() = runBlocking {
+        val noConfig = AutoModeCandidate(
+            hostname = "no-config", ip = "10.0.0.10", speed = 9_000_000, ping = 10,
+            sessions = 10, score = 900, sources = 1,
+            seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+            // Both ports published, no profile bytes: exactly the stripped shape.
+            openVpnTcpPort = 1534, openVpnUdpPort = 1278,
+            openVpnConfigAvailable = false,
+            l2tpSupported = false, sstpSupported = false,
+        )
+        val c = controller(
+            protocol = AutoModeProtocol.OPENVPN_TCP,
+            servers = listOf(noConfig),
+            timeout = 2_000,
+        )
+        assertEquals(
+            emptyList<AutoModeCandidate>(),
+            c.compatibleServers(listOf(noConfig), AutoModeProtocol.OPENVPN_TCP),
+        )
+        assertEquals(
+            emptyList<AutoModeCandidate>(),
+            c.compatibleServers(listOf(noConfig), AutoModeProtocol.OPENVPN_UDP),
+        )
+
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertTrue(terminal is AutoModeState.Error)
+        assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
+        // The decisive assertion: no connect() was ever issued, so no timeout was
+        // spent and no wedge was recorded.
+        assertEquals(emptyList<Pair<String?, AutoModeProtocol>>(), adapter.connects)
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK A: a `do_openvpn` link is not a config.
+     *
+     * The HTML parser sets `configAvailable` from the link, but nothing in the
+     * app ever downloads it, so a link-only server has no bytes. The gate keys
+     * on `openVpnConfigData` (real bytes), which is why this server stays
+     * unusable even though the page advertises OpenVPN.
+     */
+    @Test
+    fun htmlLinkOnlyServerIsNotUsableForOpenVpn() {
+        val conn = vn.unlimit.vpngate.models.VPNGateConnection().apply {
+            hostName = "vpn-link-only"
+            ip = "10.0.0.11"
+            tcpPort = 1534
+            udpPort = 1278
+            // No openVpnConfigData: the page only offered a download link.
+        }
+        val candidate = with(AutoModeEngine) { conn.toCandidate() }
+        assertFalse(candidate.openVpnConfigAvailable)
+        assertEquals(1534, candidate.openVpnTcpPort) // the port fact is preserved
+
+        val c = controller(protocol = AutoModeProtocol.OPENVPN_TCP, servers = emptyList())
+        assertEquals(
+            emptyList<AutoModeCandidate>(),
+            c.compatibleServers(listOf(candidate), AutoModeProtocol.OPENVPN_TCP),
+        )
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK A: the port facts survive the gate.
+     *
+     * "Port facts stay in the record" is half of the operator's decision; the
+     * other half is that usability is what changes. This pins both at once.
+     */
+    @Test
+    fun theGateDoesNotEraseThePortFacts() {
+        val withConfig = AutoModeCandidate(
+            hostname = "with-config", ip = "10.0.0.12", speed = 1_000_000, ping = 50,
+            sessions = 1, score = 1, sources = 1,
+            seTcpPort = 0, seUdpPort = 0, seUdpSupported = false,
+            openVpnTcpPort = 1558, openVpnUdpPort = 0,
+            openVpnConfigAvailable = true,
+            l2tpSupported = false, sstpSupported = false,
+        )
+        assertEquals(1558, withConfig.openVpnTcpPort)
+        val c = controller(protocol = AutoModeProtocol.OPENVPN_TCP, servers = emptyList())
+        assertEquals(
+            listOf("with-config"),
+            c.compatibleServers(listOf(withConfig), AutoModeProtocol.OPENVPN_TCP)
+                .map { it.hostname },
+        )
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK B.6: `MISSING_CONFIG` is an ordinary attempt failure.
+     *
+     * It must rotate to the next PROTOCOL on the same server — the server itself
+     * may be perfectly reachable over SoftEther — and it must not become a
+     * terminal state, a cancellation, or a wedge. This is the defence-in-depth
+     * path: the TASK A gate means production should never select such a server,
+     * so this test scripts the outcome directly.
+     */
+    @Test
+    fun missingConfigRotatesToTheNextProtocolOnTheSameServer() = runBlocking {
+        val s = AutoModeCandidate(
+            hostname = "s1", ip = "10.0.0.13", speed = 1_000_000, ping = 50,
+            sessions = 1, score = 1, sources = 1,
+            seTcpPort = 443, seUdpPort = 0, seUdpSupported = false,
+            openVpnTcpPort = 1534, openVpnUdpPort = 0,
+            openVpnConfigAvailable = true,
+            l2tpSupported = false, sstpSupported = false,
+        )
+        adapter.protocolOutcomeQueues["s1" to AutoModeProtocol.OPENVPN_TCP] =
+            ArrayDeque(listOf(AutoModeController.AttemptOutcome.MISSING_CONFIG))
+
+        val c = controller(
+            servers = listOf(s),
+            priorities = listOf(AutoModeProtocol.OPENVPN_TCP, AutoModeProtocol.SOFTETHER_TCP),
+        )
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        // Same server, next protocol — not the next server, not a terminal.
+        assertEquals(
+            listOf("s1" to AutoModeProtocol.OPENVPN_TCP, "s1" to AutoModeProtocol.SOFTETHER_TCP),
+            adapter.connects,
+        )
+        assertTrue(adapter.logs.any { it.contains("MISSING_CONFIG") })
     }
 
     // Test 9: rapid double press does not create two jobs

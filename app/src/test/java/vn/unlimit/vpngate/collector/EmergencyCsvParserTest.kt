@@ -2,9 +2,12 @@ package vn.unlimit.vpngate.collector
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import vn.unlimit.vpngate.automode.AutoModeEngine
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
@@ -14,6 +17,7 @@ import vn.unlimit.vpngate.parser.EmergencyCsvParser
 import vn.unlimit.vpngate.parser.EmergencyCsvParser.Issue
 import vn.unlimit.vpngate.parser.EmergencyCsvParser.Result
 import vn.unlimit.vpngate.parser.VpnGateApiParser
+import vn.unlimit.vpngate.repository.VpnConnectionMapper
 
 /**
  * `EmergencyCsvParser` against `SERVER_SOURCE_ARCHITECTURE.md` §10 — the
@@ -598,5 +602,163 @@ class EmergencyCsvParserTest {
         val text = EmergencyCsvParser.ALL_COLUMNS.joinToString(",") + "\n,,,,\n\n"
 
         assertTrue(EmergencyCsvParser.parse(text) is Result.Malformed)
+    }
+
+    // ── v1.0.53 (§1.6.45): OpenVPN port authority + SSTP host:port ───────
+
+    /**
+     * TASK B.3: the endpoint the embedded config dials is authoritative.
+     *
+     * The reproduced case is `123.48.124.169`: the CSV column said 1534 while
+     * the embedded profile dials 1558. Here the same disagreement is built from
+     * the conforming fixture (config dials 443) with the column overridden.
+     */
+    @Test
+    fun `an openvpn column that disagrees with the config loses to the config`() {
+        val result = EmergencyCsvParser.parse(
+            body(row("OpenVPN_TCP_Port" to "1534")),
+        )
+        val record = validRecords(result).single()
+        val openvpn = VpnRecords.protocol(record, "openvpn")
+
+        assertEquals(443, VpnUtil.toInt(VpnRecords.transport(openvpn, "tcp")["port"]))
+        assertTrue(VpnRecords.bool(VpnRecords.transport(openvpn, "tcp")["supported"]))
+        assertEquals(1, issuesOf(result)[Issue.OPENVPN_PORT_CONFLICT_CONFIG_WINS])
+    }
+
+    /**
+     * TASK B.3 + TASK A: a port with no config bytes is kept as a fact but
+     * never claimed as a usable transport.
+     *
+     * This is the row shape Auto Connect used to select and then wait out: the
+     * publisher strips configs to stay under the 1 MiB body cap, which is true
+     * of 209 of the 271 rows in the shipped snapshot (77%).
+     */
+    @Test
+    fun `an openvpn port without a config keeps the port but claims no support`() {
+        val result = EmergencyCsvParser.parse(
+            body(
+                row(
+                    "OpenVPN_ConfigData_Base64" to "",
+                    "OpenVPN_TCP_Port" to "1534",
+                    "OpenVPN_UDP_Port" to "1278",
+                ),
+            ),
+        )
+        val record = validRecords(result).single()
+        val openvpn = VpnRecords.protocol(record, "openvpn")
+
+        // The facts survive verbatim...
+        assertEquals(1534, VpnUtil.toInt(VpnRecords.transport(openvpn, "tcp")["port"]))
+        assertEquals(1278, VpnUtil.toInt(VpnRecords.transport(openvpn, "udp")["port"]))
+        // ...but nothing is dialable without the profile bytes.
+        assertFalse(VpnRecords.bool(VpnRecords.transport(openvpn, "tcp")["supported"]))
+        assertFalse(VpnRecords.bool(VpnRecords.transport(openvpn, "udp")["supported"]))
+        assertFalse(VpnRecords.bool(openvpn["configAvailable"]))
+        assertEquals(2, issuesOf(result)[Issue.OPENVPN_PORT_WITHOUT_CONFIG])
+    }
+
+    /**
+     * TASK B.4: `SSTP_Hostname` may carry a `:port` suffix when the port is not
+     * 443, with the `SSTP_Port` column left at 0.
+     *
+     * The values are the real historical row (`123.200.94.11`,
+     * `vpn943218848.opengw.net:1956`, `SSTP_Port` 0, `SE_TCP_Port` 1956) taken
+     * from `emergency-sources/servers.csv` at commit 0387d37. It is no longer
+     * present in the shipped snapshot, which is exactly why it is pinned here.
+     */
+    @Test
+    fun `an sstp hostname carrying a port is split into host and port`() {
+        val result = EmergencyCsvParser.parse(
+            body(
+                row(
+                    "HostName" to "vpn943218848",
+                    "IP" to "123.200.94.11",
+                    "SSTP_Hostname" to "vpn943218848.opengw.net:1956",
+                    "SSTP_Port" to "0",
+                    "SE_TCP_Port" to "1956",
+                ),
+            ),
+        )
+        val record = validRecords(result).single()
+        val sstp = VpnRecords.protocol(record, "sstp")
+
+        assertEquals("vpn943218848.opengw.net", sstp["hostname"])
+        assertEquals(1956, VpnUtil.toInt(sstp["port"]))
+        assertEquals(VpnPortSource.EXPLICIT, sstp["portSource"])
+    }
+
+    /**
+     * TASK B.4: the explicit column wins when both forms are present.
+     */
+    @Test
+    fun `an explicit sstp port column wins over the hostname suffix`() {
+        val result = EmergencyCsvParser.parse(
+            body(
+                row(
+                    "SSTP_Hostname" to "vpn943218848.opengw.net:1956",
+                    "SSTP_Port" to "443",
+                ),
+            ),
+        )
+        val record = validRecords(result).single()
+        val sstp = VpnRecords.protocol(record, "sstp")
+
+        assertEquals("vpn943218848.opengw.net", sstp["hostname"])
+        assertEquals(443, VpnUtil.toInt(sstp["port"]))
+    }
+
+    /**
+     * TASK B.4: a plain hostname is untouched, and the documented 443 default
+     * still applies rather than a port being invented here.
+     */
+    @Test
+    fun `a plain sstp hostname is left alone`() {
+        val result = EmergencyCsvParser.parse(
+            body(row("SSTP_Hostname" to "vpn1.opengw.net", "SSTP_Port" to "0")),
+        )
+        val record = validRecords(result).single()
+        val sstp = VpnRecords.protocol(record, "sstp")
+
+        assertEquals("vpn1.opengw.net", sstp["hostname"])
+        assertNull(sstp["port"])
+    }
+
+    /**
+     * TASK A, the operator's "merged API + emergency rows" case.
+     *
+     * The emergency row is the stripped shape (port column, no config); the API
+     * row carries the profile, whose `remote` line dials 1558 while the
+     * emergency column said 1534. After the merge the connection must have BOTH
+     * the bytes and the config's port, and the candidate built from it must be
+     * usable — that is the whole chain the gate depends on.
+     */
+    @Test
+    fun `a merged api and emergency row is usable for auto connect`() {
+        val emergency = validRecords(
+            EmergencyCsvParser.parse(
+                body(row("OpenVPN_ConfigData_Base64" to "", "OpenVPN_TCP_Port" to "1534")),
+            ),
+        ).single()
+
+        val cfg = "# OpenVPN\nclient\nproto tcp\nremote 219.100.37.165 1558\n"
+        val api = VpnGateApiParser.parseApi(
+            "*vpn_servers\n" + CollectorTestFixtures.makeApiRow(
+                mapOf("OpenVPN_ConfigData_Base64" to b64(cfg)),
+            ),
+            "api",
+        )[0]
+
+        val merged = VpnServerMerger.validateServers(
+            VpnServerMerger.mergeRecords(listOf(emergency, api)),
+        ).single()
+
+        val conn = VpnConnectionMapper.toConnection(merged)!!
+        assertEquals(1558, conn.tcpPort)          // the config's endpoint won
+        assertNotNull(conn.openVpnConfigData)     // and the bytes survived
+
+        val candidate = with(AutoModeEngine) { conn.toCandidate() }
+        assertTrue(candidate.openVpnConfigAvailable)
+        assertEquals(1558, candidate.openVpnTcpPort)
     }
 }

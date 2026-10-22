@@ -240,6 +240,14 @@ object AutoModeEngine {
         seUdpSupported = seUdpSupported,
         openVpnTcpPort = tcpPort,
         openVpnUdpPort = udpPort,
+        // v1.0.53 (§1.6.45) TASK A: carry the one fact that decides whether
+        // those two ports are dialable. `openVpnConfigData` is the decoded
+        // `.ovpn` profile the adapter needs; `openVpnConfigDataUdp` is derived
+        // from it (`OpenVpnConfigTransform.forUdp` returns the same profile,
+        // rewritten, and only null when this is null), so ONE flag covers both
+        // transports. The ports themselves are still carried verbatim: this is
+        // a usability gate, not a data edit.
+        openVpnConfigAvailable = !openVpnConfigData.isNullOrBlank(),
         l2tpSupported = isL2TPSupport == 1,
         sstpSupported = isSSTPSupport == 1,
         // Stage 2F-F.2 (Q-6): carry SSTP's own port and provenance so Auto

@@ -1,10 +1,12 @@
 package vn.unlimit.vpngate.merger
 
+import vn.unlimit.vpngate.data.model.OpenVpnRemote
 import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnProtocolDefaults
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.model.VpnUtil
+import vn.unlimit.vpngate.parser.OpenVpnConfigParser
 
 /**
  * Conflict-aware multi-source merge — mechanical port of the Python
@@ -277,6 +279,84 @@ object VpnServerMerger {
         return database.values.toList()
     }
 
+    /**
+     * v1.0.53 (§1.6.45) TASK B.3: make the embedded config's endpoint authoritative.
+     *
+     * ## The rule
+     *
+     * A record can carry an OpenVPN port from three places: the port inside the
+     * embedded `.ovpn` profile (`remote <host> <port>` plus `proto`), an
+     * `OpenVPN_TCP_Port` / `OpenVPN_UDP_Port` CSV column, and a `do_openvpn` URL
+     * parameter on the HTML page. Only the first is an endpoint this application can
+     * actually dial — the app builds its profile from the embedded bytes and never
+     * fetches the link. So when the config declares a transport, its port wins, and a
+     * disagreement is recorded rather than silently resolved (§38).
+     *
+     * ## Where this is *not* needed
+     *
+     * Across sources the existing [SOURCE_PRIORITY] already produces this result: the
+     * API parser writes the config's port at `api` authority (0), which beats an
+     * `html` (10) URL parameter. And `EmergencyCsvParser.applyOpenVpnColumnPort`
+     * resolves the within-row case at the source. This function is the invariant that
+     * makes both of those guarantees checkable in one place, so a future parser that
+     * assembles a record differently cannot reintroduce the split.
+     *
+     * ## Shapes handled
+     *
+     * `configs` holds [vn.unlimit.vpngate.data.model.OpenVpnRemote] instances when a
+     * record was just parsed, and plain maps when a record was round-tripped through
+     * persistence. Both are read here; anything else is ignored, never guessed at.
+     */
+    private fun enforceConfigAuthoritativePorts(
+        server: VpnServerRecord,
+        ov: MutableMap<String, Any?>,
+    ) {
+        val configs = ov["configs"] as? List<*> ?: return
+        if (configs.isEmpty()) return
+
+        for (transportName in listOf("tcp", "udp")) {
+            val configPort = configs.firstNotNullOfOrNull { remote ->
+                val proto = remoteField(remote, "proto").lowercase()
+                val port = VpnUtil.toInt(remoteField(remote, "port"))
+                val familyMatches = if (transportName == "tcp") {
+                    OpenVpnConfigParser.isTcpFamily(proto)
+                } else {
+                    OpenVpnConfigParser.isUdpFamily(proto)
+                }
+                if (familyMatches && VpnUtil.validPort(port)) port else null
+            } ?: continue
+
+            val transport = VpnRecords.transport(ov, transportName)
+            val current = VpnRecords.int(transport["port"])
+            if (current == configPort) continue
+
+            if (VpnUtil.validPort(current)) {
+                recordConflict(
+                    server,
+                    "protocols.openvpn.$transportName.port",
+                    current,
+                    configPort,
+                    "column-or-link",
+                    "config",
+                )
+            }
+            transport["port"] = configPort
+            transport["portSource"] = VpnPortSource.EXPLICIT
+            transport["supported"] = true
+        }
+    }
+
+    /** Read one field from a config remote in either of the two shapes it can take. */
+    private fun remoteField(remote: Any?, name: String): String = when (remote) {
+        is OpenVpnRemote -> when (name) {
+            "proto" -> remote.proto
+            "port" -> remote.port?.toString().orEmpty()
+            else -> ""
+        }
+        is Map<*, *> -> VpnRecords.str(remote[name])
+        else -> ""
+    }
+
     /** Normalize one record; returns false when it must be dropped. */
     fun normalizeServer(server: VpnServerRecord): Boolean {
         val identity = VpnRecords.identity(server)
@@ -302,6 +382,12 @@ object VpnServerMerger {
         ov["supported"] = VpnRecords.bool(VpnRecords.transport(ov, "tcp")["supported"]) ||
             VpnRecords.bool(VpnRecords.transport(ov, "udp")["supported"]) ||
             VpnRecords.bool(ov["configAvailable"])
+
+        // v1.0.53 (§1.6.45) TASK B.3: the endpoint the embedded config dials is
+        // authoritative over any port claimed elsewhere (an `OpenVPN_*_Port` CSV
+        // column, a `do_openvpn` URL parameter). Runs before port validation so the
+        // authoritative value is the one validated.
+        enforceConfigAuthoritativePorts(server, ov)
 
         // Validate ports. A port that fails validation loses its
         // provenance too: a null port is never "explicit".

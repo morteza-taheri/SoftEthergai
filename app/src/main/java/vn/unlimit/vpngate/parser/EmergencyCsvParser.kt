@@ -129,6 +129,28 @@ object EmergencyCsvParser {
         /** `OpenVPN_ConfigData_Base64` did not decode; OpenVPN marked unsupported (§10.4). */
         OPENVPN_CONFIG_UNDECODABLE(false),
 
+        /**
+         * v1.0.53 (§1.6.45): an `OpenVPN_*_Port` column disagreed with the port the
+         * embedded config dials.
+         *
+         * Not a rejection: the config is authoritative and its endpoint was kept. The
+         * issue exists so the disagreement is visible instead of being silently
+         * resolved — §38 requires a conflict to be auditable. Reproduced on the
+         * shipped snapshot by `123.48.124.169` (column 1534, config 1558).
+         */
+        OPENVPN_PORT_CONFLICT_CONFIG_WINS(false),
+
+        /**
+         * v1.0.53 (§1.6.45): an `OpenVPN_*_Port` column published a port for a row
+         * that carries no OpenVPN config bytes.
+         *
+         * The port is kept — it is a real fact about the server — but no usability is
+         * claimed, because this app dials OpenVPN with the embedded profile and has
+         * nothing to dial without it. This is the row shape Auto Connect used to
+         * select and then wait out; see `AutoModeController.usableProtocols`.
+         */
+        OPENVPN_PORT_WITHOUT_CONFIG(false),
+
         /** A boolean column held a token other than `true`/`false` (§10.3). */
         NON_BOOLEAN_TOKEN(false),
 
@@ -418,27 +440,23 @@ object EmergencyCsvParser {
             issues.add(Issue.UDP_PORT_WITHOUT_DECLARED_SUPPORT)
         }
 
-        applyPort(field("OpenVPN_TCP_Port"), issues) { port ->
-            VpnRecords.setField(server, "protocols.openvpn.tcp.supported", true, SOURCE_TAG)
-            VpnRecords.setField(server, "protocols.openvpn.tcp.port", port, SOURCE_TAG)
-            VpnRecords.setField(
-                server,
-                "protocols.openvpn.tcp.portSource",
-                VpnPortSource.EXPLICIT,
-                SOURCE_TAG,
-            )
-        }
-
-        applyPort(field("OpenVPN_UDP_Port"), issues) { port ->
-            VpnRecords.setField(server, "protocols.openvpn.udp.supported", true, SOURCE_TAG)
-            VpnRecords.setField(server, "protocols.openvpn.udp.port", port, SOURCE_TAG)
-            VpnRecords.setField(
-                server,
-                "protocols.openvpn.udp.portSource",
-                VpnPortSource.EXPLICIT,
-                SOURCE_TAG,
-            )
-        }
+        // ---- OpenVPN ports: the config wins, the column fills the gap ------
+        //
+        // v1.0.53 (§1.6.45) TASK B.3. The two columns were applied
+        // unconditionally, so a row whose embedded config dialled 1558 was
+        // published as 1534 and the record carried the wrong endpoint. The
+        // rule is now the operator's: the endpoint the embedded config dials
+        // is authoritative, and the column is used only when the config
+        // supplies no port for that transport.
+        //
+        // The conflict is not silent (§38): it is recorded as an issue. The
+        // port fact itself is never erased — when there is no config, the
+        // column's port is still written, because it is real information
+        // about the server. What is withheld is the *usability* claim
+        // (`supported`), which requires the profile bytes this app dials
+        // with; Auto Connect gates on exactly the same fact.
+        applyOpenVpnColumnPort(server, "tcp", field("OpenVPN_TCP_Port"), issues)
+        applyOpenVpnColumnPort(server, "udp", field("OpenVPN_UDP_Port"), issues)
 
         applyBool(field("L2TP_Supported"), issues) { supported ->
             if (supported) {
@@ -662,6 +680,71 @@ object EmergencyCsvParser {
     private fun applyPort(raw: String, issues: IssueCounter, write: (Int) -> Unit) {
         val port = portValue(raw, issues)
         if (port > 0) write(port)
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK B.3: reconcile an `OpenVPN_*_Port` column against the
+     * port the embedded config already dials.
+     *
+     * [applyOpenVpnConfig] runs before this and writes the config's own port for the
+     * transport it declares, so "a valid port is already present" is exactly the
+     * statement "the config supplied this transport's endpoint". That ordering is
+     * what makes the authority check a read rather than a re-parse.
+     *
+     * Three cases, in order:
+     *
+     * 1. **Config supplies a port.** It wins. A differing column value is recorded as
+     *    [Issue.OPENVPN_PORT_CONFLICT_CONFIG_WINS] and the config's port is kept.
+     *    `supported` is already `true` from the config branch.
+     * 2. **No config port, but a valid column port.** The port is written verbatim
+     *    with `EXPLICIT` provenance — it is a fact about the server and must not be
+     *    lost. `supported` is claimed **only** when the profile bytes exist, because
+     *    this app cannot dial OpenVPN without them. Otherwise
+     *    [Issue.OPENVPN_PORT_WITHOUT_CONFIG] is recorded and the port stays.
+     * 3. **Neither.** Nothing to write.
+     */
+    private fun applyOpenVpnColumnPort(
+        server: VpnServerRecord,
+        transportName: String,
+        rawPort: String,
+        issues: IssueCounter,
+    ) {
+        val ov = VpnRecords.protocol(server, "openvpn")
+        val configAvailable = VpnRecords.bool(ov["configAvailable"])
+        val configPort = VpnRecords.int(VpnRecords.transport(ov, transportName)["port"])
+        val columnPort = portValue(rawPort, issues)
+
+        if (configPort > 0) {
+            if (columnPort > 0 && columnPort != configPort) {
+                issues.add(Issue.OPENVPN_PORT_CONFLICT_CONFIG_WINS)
+            }
+            return
+        }
+
+        if (columnPort <= 0) return
+
+        VpnRecords.setField(
+            server,
+            "protocols.openvpn.$transportName.port",
+            columnPort,
+            SOURCE_TAG,
+        )
+        VpnRecords.setField(
+            server,
+            "protocols.openvpn.$transportName.portSource",
+            VpnPortSource.EXPLICIT,
+            SOURCE_TAG,
+        )
+        if (configAvailable) {
+            VpnRecords.setField(
+                server,
+                "protocols.openvpn.$transportName.supported",
+                true,
+                SOURCE_TAG,
+            )
+        } else {
+            issues.add(Issue.OPENVPN_PORT_WITHOUT_CONFIG)
+        }
     }
 
     private fun applyInt(raw: String, issues: IssueCounter, write: (Int) -> Unit) {

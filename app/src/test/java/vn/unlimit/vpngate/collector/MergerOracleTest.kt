@@ -4,8 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import vn.unlimit.vpngate.data.model.OpenVpnRemote
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.data.model.VpnRecords
 import vn.unlimit.vpngate.data.model.VpnServerRecord
+import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.merger.Provenance
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.parser.VpnGateApiParser
@@ -214,5 +217,76 @@ class MergerOracleTest {
         assertTrue("speed conflict not recorded", speedConflict != null)
         assertEquals(659.456803, VpnRecords.num(speedConflict!!.values["api"]), 1e-9)
         assertEquals(111.0, VpnRecords.num(speedConflict.values["mirror_1"]), 1e-9)
+    }
+
+    // ── v1.0.53 (§1.6.45) TASK B.3: the embedded config owns the endpoint ──
+
+    /**
+     * The endpoint the embedded profile dials is authoritative over a port
+     * claimed by a link or column, and the disagreement is recorded (§38).
+     *
+     * The reproduced case is `123.48.124.169`: the link/column said 1534 while
+     * the profile dials 1558. Here the same shape is built on the conforming
+     * fixture, with the config's remote port changed to 1558 and the record's
+     * port set to the link's 1534.
+     */
+    @Test
+    fun normalizeServerMakesTheConfigPortAuthoritative() {
+        val record = VpnRecords.newServer()
+        VpnRecords.setField(record, "identity.hostname", "public-vpn-206.opengw.net", "html")
+        VpnRecords.setField(record, "identity.ip", "219.100.37.165", "html")
+        VpnRecords.setField(record, "protocols.openvpn.tcp.supported", true, "html")
+        VpnRecords.setField(record, "protocols.openvpn.tcp.port", 1534, "html")
+        VpnRecords.setField(
+            record, "protocols.openvpn.tcp.portSource", VpnPortSource.EXPLICIT, "html",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val configs = VpnRecords.protocol(record, "openvpn")["configs"] as MutableList<Any?>
+        configs.add(OpenVpnRemote("219.100.37.165", 1558, "tcp"))
+
+        assertTrue(VpnServerMerger.normalizeServer(record))
+
+        val ov = VpnRecords.protocol(record, "openvpn")
+        assertEquals(1558, VpnUtil.toInt(VpnRecords.transport(ov, "tcp")["port"]))
+        assertEquals(
+            VpnPortSource.EXPLICIT,
+            VpnRecords.transport(ov, "tcp")["portSource"],
+        )
+        @Suppress("UNCHECKED_CAST")
+        val conflicts = record["conflicts"] as List<Map<String, Any?>>
+        assertTrue(conflicts.any { it["field"] == "protocols.openvpn.tcp.port" })
+    }
+
+    /**
+     * A merged API + HTML record keeps the config's endpoint. This already held
+     * through source priority (api 0 < html 10); the test pins it so a future
+     * priority change cannot silently reintroduce the split.
+     */
+    @Test
+    fun mergedApiAndHtmlRowsKeepTheConfigPort() {
+        val cfg = "# OpenVPN\nclient\ndev tun\nproto tcp\nremote 219.100.37.165 1558\n"
+        val b64 = java.util.Base64.getEncoder()
+            .encodeToString(cfg.toByteArray(Charsets.UTF_8))
+        val apiRecord = VpnGateApiParser.parseApi(
+            "*vpn_servers\n" + CollectorTestFixtures.makeApiRow(
+                mapOf("OpenVPN_ConfigData_Base64" to b64),
+            ),
+            "api",
+        )[0]
+
+        val htmlRecord = htmlRecordFor206()
+        VpnRecords.setField(htmlRecord, "protocols.openvpn.tcp.supported", true, "html")
+        VpnRecords.setField(htmlRecord, "protocols.openvpn.tcp.port", 1534, "html")
+        VpnRecords.setField(
+            htmlRecord, "protocols.openvpn.tcp.portSource", VpnPortSource.EXPLICIT, "html",
+        )
+        VpnRecords.sourceAdd(htmlRecord, "html")
+
+        val merged = VpnServerMerger.validateServers(
+            VpnServerMerger.mergeRecords(listOf(apiRecord, htmlRecord)),
+        ).single()
+
+        val ov = VpnRecords.protocol(merged, "openvpn")
+        assertEquals(1558, VpnUtil.toInt(VpnRecords.transport(ov, "tcp")["port"]))
     }
 }

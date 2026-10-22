@@ -349,6 +349,11 @@ class AndroidConnectionAdapter(
         // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): the refusal verdict is per-attempt too, so a
         // stale `true` from a previous attempt can never classify this one.
         lastArmedBusyRefused = false
+        // v1.0.53 (§1.6.45) TASK B.6: same per-attempt discipline for the missing-config
+        // verdict. `connect()` sets it, `awaitArmedOutcome()` reads it, and every
+        // `armTunnelWatch()` clears it, so a profile-less attempt can never label a
+        // later, unrelated one.
+        lastMissingConfig = false
         val failed = CompletableDeferred<Boolean>()
         armedAttemptFailed = failed
         TunnelStateWatcher.onAttemptFailed = { failed.complete(true) }
@@ -477,6 +482,22 @@ class AndroidConnectionAdapter(
     private var lastArmedBusyRefused = false
 
     /**
+     * v1.0.53 (§1.6.45) TASK B.6: did the attempt that just ended fail because the
+     * protocol had no data to dial?
+     *
+     * Set by [connectOpenVpn] when the `.ovpn` profile is absent, read by
+     * [awaitArmedOutcome] before it waits, and cleared by every [armTunnelWatch].
+     *
+     * A field rather than a thrown exception on purpose. Throwing would make the
+     * controller's generic `catch (e: Exception)` path run `adapter.disconnect()` — a
+     * teardown of a tunnel this attempt never started — and would still not produce a
+     * distinguishable [AutoModeController.AttemptOutcome]. A flag lets the outcome be
+     * reported as its own value, with no teardown and no wait.
+     */
+    @Volatile
+    private var lastMissingConfig = false
+
+    /**
      * Stage 2F-F.28AA: report *why* an armed attempt ended, so Auto Mode can distinguish
      * "the server did not come up" from "our own previous native operation is still
      * running".
@@ -488,24 +509,73 @@ class AndroidConnectionAdapter(
         protocol: AutoModeProtocol,
         timeoutMs: Long,
     ): AutoModeController.AttemptOutcome {
+        // v1.0.53 (§1.6.45) TASK B.6: a protocol with no data to dial has already
+        // failed, before any wait starts. Checking here (rather than after
+        // awaitArmedTunnel) is the whole point: there is nothing to wait for, so the
+        // per-attempt budget must not be spent on it. This is the exact defect the
+        // old silent `return` in connectOpenVpn produced — a full timeout billed to a
+        // server that was never contacted, reported as TIMED_OUT.
+        if (lastMissingConfig) {
+            logClassification(protocol, AutoModeController.AttemptOutcome.MISSING_CONFIG)
+            return AutoModeController.AttemptOutcome.MISSING_CONFIG
+        }
         val up = awaitArmedTunnel(protocol, timeoutMs)
-        if (up) return AutoModeController.AttemptOutcome.TUNNEL_UP
-        // AUTOCONNECT-AUDIT D-4: the stack reported a terminal failure while this attempt
-        // was armed. That is a verdict about the endpoint, not an expired budget, and it is
-        // checked before the slot because a finished operation cannot still own it.
-        if (lastArmedFailure) return AutoModeController.AttemptOutcome.NATIVE_ERROR
-        // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): classify on whether the REFUSAL fired, not on
-        // whether the slot happens to be busy now.
-        //
-        // `isNativeSlotBusy()` answers "yes" both when a previous operation holds the slot
-        // (a genuine refusal) and when our own attempt is still unwinding after its timeout
-        // (not a refusal at all). Using it here is what turned a slow-but-recoverable
-        // endpoint into `ERROR_NATIVE_UNRESOLVED` twice in the v1.0.36 device run, 7.7 s
-        // before the native stack reached its own verdict
-        // (DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md §7.1). The deferred is the exact fact:
-        // it completes only when the service refused the start.
-        if (lastArmedBusyRefused) return AutoModeController.AttemptOutcome.NATIVE_BUSY
-        return AutoModeController.AttemptOutcome.TIMED_OUT
+        val outcome = when {
+            up -> AutoModeController.AttemptOutcome.TUNNEL_UP
+            // AUTOCONNECT-AUDIT D-4: the stack reported a terminal failure while this
+            // attempt was armed. That is a verdict about the endpoint, not an expired
+            // budget, and it is checked before the slot because a finished operation
+            // cannot still own it.
+            lastArmedFailure -> AutoModeController.AttemptOutcome.NATIVE_ERROR
+            // v1.0.37 (AUTOCONNECT-FIX-7, Fix-1): classify on whether the REFUSAL fired,
+            // not on whether the slot happens to be busy now.
+            //
+            // `isNativeSlotBusy()` answers "yes" both when a previous operation holds the
+            // slot (a genuine refusal) and when our own attempt is still unwinding after
+            // its timeout (not a refusal at all). Using it here is what turned a
+            // slow-but-recoverable endpoint into `ERROR_NATIVE_UNRESOLVED` twice in the
+            // v1.0.36 device run, 7.7 s before the native stack reached its own verdict
+            // (DEVICE_VERIFY_AUTOCONNECT_FIX_6_REPORT.md §7.1). The deferred is the exact
+            // fact: it completes only when the service refused the start.
+            lastArmedBusyRefused -> AutoModeController.AttemptOutcome.NATIVE_BUSY
+            else -> AutoModeController.AttemptOutcome.TIMED_OUT
+        }
+        logClassification(protocol, outcome)
+        return outcome
+    }
+
+    /**
+     * v1.0.53 (§1.6.45) TASK B.6: one developer-log line per attempt, naming what the
+     * outcome *means* rather than only what it is called.
+     *
+     * ## What this can and cannot separate
+     *
+     * The classification is built **only** from evidence this adapter actually holds:
+     * the armed-attempt verdicts (`lastArmedFailure`, `lastArmedBusyRefused`), the
+     * missing-config flag, and the outcome itself. It deliberately does not guess.
+     *
+     * That is why four of the brief's categories collapse into
+     * [AutoConnectAttemptClass.ENDPOINT_REJECTED]: a refused TCP connect, a rejected
+     * TLS handshake, a non-SoftEther reply to the VPNCONNECT watermark, and an auth
+     * rejection all arrive here as [AutoModeController.AttemptOutcome.NATIVE_ERROR],
+     * because `TunnelStateWatcher` maps SoftEther `STATE_ERROR` and OpenVPN
+     * `LEVEL_AUTH_FAILED` to the same `onAttemptFailed` callback and does not forward
+     * the stack's `logmessage`. Separating them needs a `TunnelStateWatcher` change,
+     * which is outside this phase's authorized file set — so the log names the one
+     * honest fact and lists the possibilities it stands for, instead of inventing a
+     * distinction the data does not support.
+     *
+     * Likewise [AutoConnectAttemptClass.WRONG_DATA_SUSPECT] is never emitted here: it
+     * is a property of the server record (a port with no config, an SSTP flag with no
+     * port), not of an attempt, and it is reported by the data audit rather than
+     * asserted from a single dial.
+     */
+    private fun logClassification(
+        protocol: AutoModeProtocol,
+        outcome: AutoModeController.AttemptOutcome,
+    ) {
+        val cls = classifyAttempt(outcome)
+        log("[AUTO] ATTEMPT_CLASS ${cls.name} outcome=${outcome.name} protocol=${protocol.id}")
     }
 
     /**
@@ -754,7 +824,25 @@ class AndroidConnectionAdapter(
         }
         val data = if (useUdp) conn.openVpnConfigDataUdp else conn.openVpnConfigData
         if (data.isNullOrEmpty()) {
-            Log.w(TAG, "No OpenVPN config payload for ${conn.hostName}")
+            // v1.0.53 (§1.6.45) TASK B.6: this used to `return` silently, which made the
+            // attempt indistinguishable from a connect that had been issued: nothing
+            // failed, nothing was dialled, and the controller waited out the full
+            // per-attempt budget before calling it TIMED_OUT. That billed a data defect
+            // to the server and recorded a wedge against it.
+            //
+            // The flag is read by awaitArmedOutcome BEFORE it waits, so the attempt ends
+            // here, as an ordinary attempt failure with its own outcome. No exception is
+            // thrown: a throw would take the controller's generic catch and run a
+            // teardown for a tunnel this attempt never started.
+            //
+            // Production should not reach this line at all — TASK A gates OpenVPN
+            // usability on `openVpnConfigAvailable` — so reaching it is worth a warning.
+            lastMissingConfig = true
+            Log.w(
+                TAG,
+                "No OpenVPN config payload for ${conn.hostName} " +
+                        "(useUdp=$useUdp); reporting MISSING_CONFIG instead of waiting",
+            )
             return
         }
         try {
@@ -853,4 +941,57 @@ class AndroidConnectionAdapter(
                 ?: "8.8.4.4"
         else -> "8.8.4.4"
     }
+}
+
+/**
+ * v1.0.53 (§1.6.45) TASK B.6: what one Auto Connect attempt outcome *means*, for the
+ * developer log.
+ *
+ * The names describe a cause, not a state, because the point of the line is to let a
+ * device log be read without the controller's internal vocabulary. The mapping is
+ * deliberately lossy in exactly one place — see
+ * [AndroidConnectionAdapter.logClassification] for why the stack's finer distinctions
+ * (refused port / TLS / protocol / auth) cannot be recovered at this seam.
+ */
+internal enum class AutoConnectAttemptClass {
+    /** A verified tunnel came up. */
+    CONNECTED,
+
+    /**
+     * The START was refused: this application's own previous native operation still
+     * held the process-wide slot, so the server was never contacted. Says nothing
+     * about the endpoint.
+     */
+    REFUSED_START,
+
+    /**
+     * The budget expired with no verdict. A silent or filtered endpoint looks exactly
+     * like a dead one, so this is "no answer", not "proven dead".
+     */
+    TIMEOUT_NO_VERDICT,
+
+    /**
+     * The stack delivered a terminal failure: refused port, rejected TLS handshake,
+     * an answer to the VPNCONNECT watermark that is not a SoftEther Hello, or an auth
+     * rejection. These are one class here because the watcher does not forward the
+     * stack's message to this seam.
+     */
+    ENDPOINT_REJECTED,
+
+    /**
+     * The protocol had no data to dial (an OpenVPN server with no `.ovpn` bytes).
+     * A defect in the data, never in the endpoint.
+     */
+    MISSING_CONFIG,
+}
+
+/** The one mapping from an armed outcome to its logged class. Pure and exhaustive. */
+internal fun classifyAttempt(
+    outcome: AutoModeController.AttemptOutcome,
+): AutoConnectAttemptClass = when (outcome) {
+    AutoModeController.AttemptOutcome.TUNNEL_UP -> AutoConnectAttemptClass.CONNECTED
+    AutoModeController.AttemptOutcome.NATIVE_BUSY -> AutoConnectAttemptClass.REFUSED_START
+    AutoModeController.AttemptOutcome.TIMED_OUT -> AutoConnectAttemptClass.TIMEOUT_NO_VERDICT
+    AutoModeController.AttemptOutcome.NATIVE_ERROR -> AutoConnectAttemptClass.ENDPOINT_REJECTED
+    AutoModeController.AttemptOutcome.MISSING_CONFIG -> AutoConnectAttemptClass.MISSING_CONFIG
 }
