@@ -27,6 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.models.VPNGateItem
 import vn.unlimit.vpngate.repository.ManualServerStore
 import vn.unlimit.vpngate.repository.ServerListUpdates
+import vn.unlimit.vpngate.repository.withManualRows
 import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
 import vn.unlimit.vpngate.repository.ServerListUpdater
 import vn.unlimit.vpngate.repository.VpnServerRepository
@@ -44,6 +45,9 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     init {
         vpnGateConnectionList.value = dataUtil.connectionsCache
         lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
+        // v1.0.54 (§1.6.49) PART 4: load the imported CSV rows once, off the
+        // main thread. A missing or corrupt file reads as empty.
+        refreshImportedServers()
     }
     private var isRetried = false
     var isError: MutableLiveData<Boolean> = MutableLiveData(false)
@@ -249,6 +253,108 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         }
     }
 
+    // ---------------------------------------------------------------------
+    // v1.0.54 (§1.6.49) PART 4: servers imported from a CSV (file or paste).
+    //
+    // Storage is [ManualImportStore] (a JSON file), not `manual_server` — see
+    // that class for the schema argument. The two sources coexist: rows created
+    // by the old manual form stay in Room and still appear here, so the rewrite
+    // loses nobody's data.
+    // ---------------------------------------------------------------------
+
+    private val importStore: vn.unlimit.vpngate.repository.ManualImportStore?
+        get() = App.instance?.manualImportStore
+
+    private val _importedServers = MutableStateFlow<List<VPNGateItem>>(emptyList())
+
+    /** The imported rows, newest write wins. Drives the Settings list. */
+    val importedServers: StateFlow<List<VPNGateItem>> = _importedServers
+
+    /**
+     * Parses [text], stores the accepted rows and writes them through to the
+     * server list.
+     *
+     * Suspending and IO-bound: the caller runs it off the main thread. Returns
+     * the parser's verdict unchanged so the UI can show counts and the first
+     * few reject reasons — the parse result is the only thing that can tell a
+     * user why their file did nothing.
+     */
+    suspend fun importManualCsv(text: String): vn.unlimit.vpngate.repository.ManualCsvImport.Result {
+        val store = importStore
+            ?: return vn.unlimit.vpngate.repository.ManualCsvImport.Result.Failure(
+                vn.unlimit.vpngate.repository.ManualCsvImport.Reason.PARSE_ERROR,
+                "storage unavailable",
+            )
+        val result = withContext(Dispatchers.IO) {
+            vn.unlimit.vpngate.repository.ManualCsvImport.parse(text, System.currentTimeMillis())
+        }
+        if (result is vn.unlimit.vpngate.repository.ManualCsvImport.Result.Success) {
+            withContext(Dispatchers.IO) {
+                store.add(result.items)
+                materializeImported()
+                _importedServers.value = store.items()
+            }
+        }
+        return result
+    }
+
+    /**
+     * Deletes one imported row and re-materialises the list.
+     *
+     * The row is removed from the dataset by its Room identity. If the same
+     * host is also served by the network, it returns on the next accepted
+     * refresh — which is the frozen `api/html` outranks `manual` policy, not a
+     * deletion of somebody else's data.
+     */
+    fun removeImportedServer(hostName: String) {
+        val store = importStore ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                if (!store.remove(hostName)) return@withContext
+                val itemDao = App.instance?.vpnGateItemDao
+                if (itemDao != null) {
+                    val remaining = itemDao.getAll().filterNot { it.hostName.trim() == hostName.trim() }
+                    if (remaining.isNotEmpty()) itemDao.replaceAll(remaining)
+                    vpnGateConnectionList.value = VPNGateConnectionList().fromVPNGateItems(remaining)
+                }
+                _importedServers.value = store.items()
+            }
+        }
+    }
+
+    /** Reloads the imported rows from disk (called once at construction). */
+    fun refreshImportedServers() {
+        viewModelScope.launch {
+            _importedServers.value = withContext(Dispatchers.IO) {
+                importStore?.items().orEmpty()
+            }
+        }
+    }
+
+    /**
+     * Writes every user-owned row back into the dataset: the imported rows plus
+     * any surviving `manual_server` rows. Deliberately the same
+     * [withManualRows] the refresh path uses, so there is one preservation
+     * policy rather than two.
+     */
+    private suspend fun materializeImported() {
+        val itemDao = App.instance?.vpnGateItemDao ?: return
+        val store = importStore ?: return
+        val current = itemDao.getAll()
+        val legacy = manualServerDao
+        val legacyRows = if (legacy == null) {
+            emptyList()
+        } else {
+            ManualServerStore(legacy).toItems(
+                legacy.listEnabled().map { ManualServer.fromEntity(it) },
+            )
+        }
+        val merged = withManualRows(current, legacyRows + store.items())
+        if (merged.isEmpty()) return
+        itemDao.replaceAll(merged)
+        vpnGateConnectionList.value = VPNGateConnectionList().fromVPNGateItems(merged)
+    }
+
     /** §33: provenance dump + raw sources for the debug panel. */
     fun debugPayload(conn: VPNGateConnection): VpnServerRepository.DebugPayload? =
         vpnServerRepository.debugPayload(conn.ip ?: "", conn.hostName ?: "")
@@ -314,7 +420,12 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                             // claiming the list was just updated.
                             if (!outcome.sourcedFromCache) {
                                 dataUtil.setConnectionCacheUpdatedAt(savedAt)
-                                dataUtil.markConnectionsCacheFresh()
+                                // v1.0.54 (§1.6.47) PART 2.3: the legacy
+                                // on-disk cache-expiry marker write
+                                // (`markConnectionsCacheFresh`) is gone with the
+                                // "Cache save time" setting. The persisted
+                                // timestamp above is what the scheduler and the
+                                // "last updated" label actually read.
                             }
                             val snapshotNote = when {
                                 outcome.sourcedFromCache -> "snapshot kept"

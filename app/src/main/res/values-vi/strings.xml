@@ -66,23 +66,10 @@
     </string-array>
     <string name="enable_notification_speed">Bật hiển thị tốc độ/thống kê ở thông báo</string>
     <string name="enable_notification_speed_hint">Hiển thị tốc độ/thống kê lưu lượng ở bảng thông báo. Nếu tắt chỉ trạng thái kết nối được hiển thị và tiêu thụ pin có thể giảm một chút.</string>
-    <string name="setting_cache_label">Thời gian lưu đệm</string>
-    <string name="setting_cache_subtitle">Là thời gian dữ liệu được lưu vào bộ nhớ máy sau khi lấy dữ liệu từ máy chủ</string>
-    <string name="setting_cache_auto_clear_label">Bộ nhớ đệm sẽ tự xóa vào lúc:</string>
+    <string name="setting_cache_label">Bộ nhớ đệm</string>
     <string name="setting_cache_clear">Xóa ngay</string>
     <string name="setting_clear_cache_success">Xóa bộ nhớ đệm thành công</string>
     <string name="setting_clear_cache_error">Có lỗi xảy ra. Bộ nhớ đệm chưa được xóa</string>
-    <string-array name="setting_cache_time">
-        <item>15 phút</item>
-        <item>30 phút</item>
-        <item>1 giờ</item>
-        <item>2 giờ</item>
-        <item>4 giờ</item>
-        <item>6 giờ</item>
-        <item>12 giờ</item>
-        <item>24 giờ</item>
-        <item>Không bao giờ</item>
-    </string-array>
     <string name="setting_developer_mode_label">Chế độ nhà phát triển (nhật ký)</string>
     <string name="setting_developer_mode_summary">Giữ nhật ký chẩn đoán bật để khắc phục sự cố. Tắt để có tốc độ tối đa.</string>
     <string name="setting_language_label">Ngôn ngữ</string>
@@ -157,10 +144,6 @@
     <string name="disconnected">Đã ngắt kết nối</string>
     <string name="state_connected">Đã kết nối</string>
     <string name="feature_available_in_pro">Tính năng này chỉ khả dụng trên phiên bản Pro</string>
-    <string name="block_ads_setting_label">Chặn quảng cáo (Chỉ bản Pro)</string>
-    <string name="block_ads_setting_hint">Chặn quảng cáo trên tất cả ứng dụng, trình duyệt khi VPN được kết nối sử dụng DNS</string>
-    <string name="udp_setting_label">Bao gồm cả các máy chủ UDP</string>
-    <string name="udp_setting_hint">Bao gồm cả các máy chủ UDP trong danh sách máy chủ</string>
     <string name="setting_apply_on_next_connection_time">Cài đặt sẽ được áp dụng vào lần kết nối tiếp theo</string>
     <string name="dns_setting_label">Dùng DNS tuỳ chỉnh</string>
     <string name="dns_setting_hint">Dùng DNS tuỳ chỉnh thay thế Google DNS (8.8.8.8/8.8.4.4) mặc định khi kết nối VPN.\nNếu bật cài đặt này sẽ tắt cài đặt chặn quảng cáo</string>
@@ -304,4 +287,5 @@
     <string name="setting_server_update_interval_hours">Every %1$d hours</string>
     <string name="setting_server_update_interval_1h">Every hour</string>
     <string name="setting_server_update_interval_24h">Every day</string>
+
 </resources>

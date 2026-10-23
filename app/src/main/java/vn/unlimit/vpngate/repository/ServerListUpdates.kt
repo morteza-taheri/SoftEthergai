@@ -342,21 +342,40 @@ private class LastManualRows {
 
 /** The enabled manual servers as rows of the server list; never throws. */
 private suspend fun manualServerRows(): List<VPNGateItem> {
-    val dao = try {
-        vn.unlimit.vpngate.App.instance?.manualServerDao
+    val app = try {
+        vn.unlimit.vpngate.App.instance
     } catch (e: Exception) {
         null
     } ?: return emptyList()
+
+    // v1.0.54 (§1.6.49) PART 4: imported CSV rows are a second, richer source of
+    // user-owned servers. They are re-emitted here — at the single write — for
+    // exactly the same reason the DAO rows are: a refresh replaces the stored
+    // list wholesale, so anything not re-emitted would be deleted by the very
+    // update that succeeded.
+    val imported = try {
+        app.manualImportStore?.items().orEmpty()
+    } catch (e: Exception) {
+        CollectorLog.d("Imported server list unavailable: ${e.message}")
+        emptyList()
+    }
+
+    val dao = try {
+        app.manualServerDao
+    } catch (e: Exception) {
+        null
+    }
+    if (dao == null) return imported
 
     val enabled = try {
         dao.listEnabled()
     } catch (e: Exception) {
         CollectorLog.d("Manual server list unavailable: ${e.message}")
-        return emptyList()
+        return imported
     }
-    if (enabled.isEmpty()) return emptyList()
+    if (enabled.isEmpty()) return imported
 
-    return ManualServerStore(dao).toItems(enabled.map { ManualServer.fromEntity(it) })
+    return ManualServerStore(dao).toItems(enabled.map { ManualServer.fromEntity(it) }) + imported
 }
 
 /**

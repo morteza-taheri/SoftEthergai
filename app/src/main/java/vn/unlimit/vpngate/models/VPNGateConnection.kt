@@ -407,20 +407,20 @@ class VPNGateConnection : Parcelable {
         if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) {
             address = "$hostName.opengw.net"
         }
-        if (instance!!.dataUtil!!.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)) {
-            val tcp = if (useSoftEther && seTcpPort > 0) seTcpPort else tcpPort
-            val udp = if (useSoftEther && seUdpPort > 0) seUdpPort else udpPort
-            if (tcp == 0 && udp == 0) {
-                return String.format("%s[%s]", countryLong, address)
-            }
-            val portStr = if (useUdp || tcp == 0) {
-                "UDP:$udp"
-            } else {
-                "TCP:$tcp"
-            }
-            return String.format("%s[%s][%s]", countryLong, address, portStr)
+        // v1.0.54 (§1.6.47) PART 2.1: the "Include UDP server" branch is gone.
+        // The switch defaulted to true, so its `true` path IS the behaviour now:
+        // the port is always rendered when one is known.
+        val tcp = if (useSoftEther && seTcpPort > 0) seTcpPort else tcpPort
+        val udp = if (useSoftEther && seUdpPort > 0) seUdpPort else udpPort
+        if (tcp == 0 && udp == 0) {
+            return String.format("%s[%s]", countryLong, address)
         }
-        return String.format("%s[%s]", countryLong, address)
+        val portStr = if (useUdp || tcp == 0) {
+            "UDP:$udp"
+        } else {
+            "TCP:$tcp"
+        }
+        return String.format("%s[%s][%s]", countryLong, address, portStr)
     }
 
     fun isL2TPSupport(): Boolean {
@@ -469,11 +469,11 @@ class VPNGateConnection : Parcelable {
                 vpnGateConnection.setOperatorString(properties[index++])
                 vpnGateConnection.message = properties[index++]
                 vpnGateConnection.setOpenVpnConfigDataString(properties[index])
-                if (instance!!.dataUtil!!.getBooleanSetting(
-                        DataUtil.INCLUDE_UDP_SERVER,
-                        true
-                    ) && properties.size >= index + 2
-                ) {
+                // v1.0.54 (§1.6.47) PART 2.1: the port columns are always read.
+                // The removed "Include UDP server" switch defaulted to true, and
+                // its `false` branch zeroed every port — a behaviour nobody
+                // opted into by default.
+                if (properties.size >= index + 2) {
                     vpnGateConnection.tcpPort = properties[++index].toInt()
                     vpnGateConnection.udpPort = properties[++index].toInt()
                     if (properties.size > index + 1) {

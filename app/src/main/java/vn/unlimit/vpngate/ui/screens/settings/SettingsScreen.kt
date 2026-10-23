@@ -14,7 +14,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,7 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Dns
@@ -40,10 +38,8 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Launch
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Reorder
-import androidx.compose.material.icons.outlined.Router
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.AlertDialog
@@ -82,7 +78,6 @@ import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.preference.PreferenceManager
 import de.blinkt.openvpn.core.OpenVPNService
-import vn.unlimit.vpngate.utils.DateTimeFormatterUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -93,10 +88,9 @@ import vn.unlimit.vpngate.activities.MainActivity
 import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.data.model.CollectorLog
-import vn.unlimit.vpngate.data.model.VpnProtocolNames
 import vn.unlimit.vpngate.provider.BaseProvider
+import vn.unlimit.vpngate.repository.ManualCsvImport
 import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
-import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.utils.DnsPresets
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
@@ -135,22 +129,20 @@ fun SettingsScreen(
     var emergencyUrlInput by remember { mutableStateOf("") }
     var emergencyLabelInput by remember { mutableStateOf("") }
 
-    // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers. Unlike an
-    // emergency source these are never fetched — they are the user's own rows,
-    // re-emitted into the server list on every accepted update.
+    // Z1-IMPL-D (Roadmap §12.5.2 item D): rows created by the old manual-add
+    // form. v1.0.54 (§1.6.49) PART 4 replaced that form with CSV import, but
+    // these rows are still listed here so nobody's data disappears.
     val manualServers by connectionListViewModel.manualServers.collectAsState()
-    var manualHostInput by remember { mutableStateOf("") }
-    var manualPortInput by remember { mutableStateOf("") }
-    var manualProtocolInput by remember { mutableStateOf(VpnProtocolNames.SSTP) }
-    var manualLabelInput by remember { mutableStateOf("") }
-    var manualNotesInput by remember { mutableStateOf("") }
+    // v1.0.54 (§1.6.49) PART 4: imported CSV servers.
+    val importedServers by connectionListViewModel.importedServers.collectAsState()
+    var csvTextInput by remember { mutableStateOf("") }
+    var importSummary by remember { mutableStateOf<String?>(null) }
+    var importBusy by remember { mutableStateOf(false) }
 
     // ---- Setting states
     var notifySpeed by remember {
         mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED))
     }
-    var blockAds by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false)) }
-    var includeUdp by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)) }
     var useCustomDns by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)) }
     // Defaults shown for the fields when nothing is stored yet. These are only
     // *applied* to the tunnel when Custom DNS is ON, so a fresh install keeps
@@ -164,9 +156,6 @@ fun SettingsScreen(
     // Which preset the current address pair corresponds to (CUSTOM when hand-typed).
     var dnsPresetId by remember { mutableStateOf(DnsPresets.idFor(dns1, dns2)) }
     var useDomain by remember { mutableStateOf(dataUtil.getBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, false)) }
-    var cacheTimeIndex by remember {
-        mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_CACHE_TIME_KEY, DataUtil.DEFAULT_CACHE_TIME_INDEX).coerceIn(0, 8))
-    }
     var startupScreenIndex by remember {
         mutableStateOf(dataUtil.getIntSetting(DataUtil.SETTING_STARTUP_SCREEN, 0).coerceIn(0, 2))
     }
@@ -195,7 +184,6 @@ fun SettingsScreen(
     // REMOVED. Collector routing is fully automatic; the collector measures
     // which transport works instead of asking the user to declare it.
     var softetherMaxConnections by remember { mutableStateOf(dataUtil.getSoftEtherMaxConnections()) }
-    var cacheExpires by remember { mutableStateOf(dataUtil.connectionCacheExpires) }
     // Scheduled server list refresh interval, in hours (1..24, default 12).
     var serverUpdateInterval by remember {
         mutableStateOf(dataUtil.getServerListUpdateIntervalHours())
@@ -205,7 +193,6 @@ fun SettingsScreen(
     var showThemePicker by remember { mutableStateOf(false) }
     var showLanguagePicker by remember { mutableStateOf(false) }
     var showStartupPicker by remember { mutableStateOf(false) }
-    var showCacheTimePicker by remember { mutableStateOf(false) }
     var showProtocolPriorityDialog by remember { mutableStateOf(false) }
     var showAutoTimeoutPicker by remember { mutableStateOf(false) }
     var showSoftetherConnectionsPicker by remember { mutableStateOf(false) }
@@ -223,7 +210,6 @@ fun SettingsScreen(
     val applyNextConnectionNote = stringResource(R.string.setting_apply_on_next_connection_time)
     val showImportOptions = remember { App.isImportToOpenVPN }
 
-    val cacheTimes = cacheTimeLabels()
     val startupScreens = listOf(
         stringResource(R.string.startup_screen_auto),
         stringResource(R.string.startup_screen_list),
@@ -242,9 +228,13 @@ fun SettingsScreen(
 
     fun clearListServerCache(showToast: Boolean) {
         scope.launch {
-            val ok = withContext(Dispatchers.IO) { dataUtil.clearConnectionCache() }
+            // v1.0.54 (§1.6.47) PART 2.3: the one manual cache control. It
+            // clears transient files only (app cacheDir + a legacy marker) and
+            // has no database access, so the server dataset, imported/manual
+            // servers, emergency sources, excluded apps and settings are all
+            // untouched.
+            val ok = withContext(Dispatchers.IO) { dataUtil.clearTransientCache() }
             if (ok) {
-                cacheExpires = null
                 if (showToast) {
                     Toast.makeText(context, context.getString(R.string.setting_clear_cache_success), Toast.LENGTH_SHORT).show()
                 }
@@ -254,6 +244,74 @@ fun SettingsScreen(
             } else if (showToast) {
                 Toast.makeText(context, context.getString(R.string.setting_clear_cache_error), Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    /**
+     * v1.0.54 (§1.6.49) PART 4: runs one import and returns the single line the
+     * user sees — accepted/rejected counts plus the first few reasons.
+     *
+     * Every reason string comes from the parser's own verdict; nothing here
+     * invents a cause. Content is never logged and never echoed back, because a
+     * pasted profile can contain a private address.
+     */
+    suspend fun runImport(text: String): String {
+        val result = connectionListViewModel.importManualCsv(text)
+        return when (result) {
+            is ManualCsvImport.Result.Success -> {
+                val base = context.getString(
+                    R.string.manual_server_result,
+                    result.items.size,
+                    result.rejectedCount,
+                )
+                if (result.rejectedReasons.isEmpty()) {
+                    base
+                } else {
+                    base + " — " + context.getString(
+                        R.string.manual_server_reject_reasons,
+                        result.rejectedReasons.joinToString("; "),
+                    )
+                }
+            }
+            is ManualCsvImport.Result.Failure -> when (result.reason) {
+                ManualCsvImport.Reason.TOO_LARGE ->
+                    context.getString(R.string.manual_server_too_large)
+                ManualCsvImport.Reason.TOO_MANY_ROWS ->
+                    context.getString(R.string.manual_server_too_many_rows, ManualCsvImport.MAX_ROWS)
+                ManualCsvImport.Reason.UNRECOGNIZED ->
+                    context.getString(R.string.manual_server_unrecognized)
+                ManualCsvImport.Reason.EMPTY,
+                ManualCsvImport.Reason.NO_VALID_ROWS ->
+                    context.getString(R.string.manual_server_import_failed)
+                ManualCsvImport.Reason.PARSE_ERROR ->
+                    context.getString(R.string.manual_server_import_error) +
+                        (result.detail?.let { ": $it" } ?: "")
+            }
+        }
+    }
+
+    // System document picker (SAF). The MIME filter includes */* on purpose:
+    // messengers label CSV attachments inconsistently, and refusing a file the
+    // user can see would be worse than parsing it and reporting "unrecognised".
+    val csvPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importBusy = true
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        readCappedUtf8(input, ManualCsvImport.MAX_BYTES)?.toString(Charsets.UTF_8)
+                    }
+                }.getOrNull()
+            }
+            importSummary = if (text == null) {
+                context.getString(R.string.manual_server_too_large)
+            } else {
+                runImport(text)
+            }
+            importBusy = false
         }
     }
 
@@ -296,18 +354,6 @@ fun SettingsScreen(
                     )
                     SettingDivider()
                     SettingSwitchRow(
-                        title = stringResource(R.string.udp_setting_label),
-                        subtitle = stringResource(R.string.udp_setting_hint),
-                        icon = Icons.Outlined.Router,
-                        checked = includeUdp,
-                        onChecked = {
-                            includeUdp = it
-                            dataUtil.setBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, it)
-                            clearListServerCache(false)
-                        },
-                    )
-                    SettingDivider()
-                    SettingSwitchRow(
                         title = stringResource(R.string.use_domain_label),
                         subtitle = stringResource(R.string.use_domain_hint),
                         icon = Icons.Outlined.Language,
@@ -317,41 +363,13 @@ fun SettingsScreen(
                             dataUtil.setBooleanSetting(DataUtil.USE_DOMAIN_TO_CONNECT, it)
                         },
                     )
-                    if (!showImportOptions) {
-                        SettingDivider()
-                        SettingSwitchRow(
-                            title = stringResource(R.string.block_ads_setting_label),
-                            subtitle = stringResource(R.string.block_ads_setting_hint),
-                            icon = Icons.Outlined.Block,
-                            checked = blockAds,
-                            onChecked = {
-                                blockAds = it
-                                Toast.makeText(context, applyNextConnectionNote, Toast.LENGTH_SHORT).show()
-                                dataUtil.setBooleanSetting(DataUtil.SETTING_BLOCK_ADS, it)
-                                if (it && useCustomDns) {
-                                    useCustomDns = false
-                                    dataUtil.setBooleanSetting(DataUtil.USE_CUSTOM_DNS, false)
-                                }
-                                prefs.edit().apply {
-                                    if (it) {
-                                        putBoolean(kittoku.osc.preference.OscPrefKey.DNS_DO_USE_CUSTOM_SERVER.toString(), true)
-                                        putString(
-                                            kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS.toString(),
-                                            AppConfig.getString("vpn_dns_block_ads_primary"),
-                                        )
-                                        putString(
-                                            kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS_SECONDARY.toString(),
-                                            AppConfig.getString("vpn_dns_block_ads_alternative"),
-                                        )
-                                    } else {
-                                        putBoolean(kittoku.osc.preference.OscPrefKey.DNS_DO_USE_CUSTOM_SERVER.toString(), false)
-                                        remove(kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS.toString())
-                                        remove(kittoku.osc.preference.OscPrefKey.DNS_CUSTOM_ADDRESS_SECONDARY.toString())
-                                    }
-                                }
-                            },
-                        )
-                    }
+                    // v1.0.54 (§1.6.47) PART 2.1: the "Include UDP server"
+                    // switch is GONE. UDP servers are always shown and always
+                    // included — that was the switch's default, so this is the
+                    // default made permanent rather than a behaviour change.
+                    //
+                    // v1.0.54 PART 2.2: the "Block Ads (Pro only)" switch is
+                    // GONE too, with its DNS preset and its flavor gating.
                 }
             }
 
@@ -367,10 +385,10 @@ fun SettingsScreen(
                             onChecked = {
                                 useCustomDns = it
                                 dataUtil.setBooleanSetting(DataUtil.USE_CUSTOM_DNS, it)
-                                if (it && blockAds) {
-                                    blockAds = false
-                                    dataUtil.setBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false)
-                                }
+                                // v1.0.54 (§1.6.47) PART 2.2: the mutual
+                                // exclusion with the removed Block-Ads switch
+                                // is gone; Custom DNS is now the only DNS
+                                // choice in the app.
                                 prefs.edit().apply {
                                     if (it) {
                                         putBoolean(kittoku.osc.preference.OscPrefKey.DNS_DO_USE_CUSTOM_SERVER.toString(), true)
@@ -562,23 +580,18 @@ fun SettingsScreen(
             // ---------------- Cache section
             item {
                 SettingsSection(title = stringResource(R.string.setting_cache_label)) {
-                    SettingValueRow(
-                        title = stringResource(R.string.setting_cache_label),
-                        value = cacheTimes[cacheTimeIndex],
-                        subtitle = stringResource(R.string.setting_cache_subtitle),
-                        icon = Icons.Outlined.Storage,
-                        onClick = { showCacheTimePicker = true },
+                    // v1.0.54 (§1.6.47) PART 2.3: "Cache save time" and
+                    // "Cache will auto clear at" are gone. Exactly one manual
+                    // control remains, and it clears transient files only —
+                    // never the server dataset, imported/manual servers,
+                    // emergency sources, excluded apps or settings.
+                    SettingActionRow(
+                        title = stringResource(R.string.setting_cache_clear_label),
+                        subtitle = stringResource(R.string.setting_cache_clear_subtitle),
+                        icon = Icons.Outlined.DeleteOutline,
+                        actionLabel = stringResource(R.string.setting_cache_clear),
+                        onClick = { clearListServerCache(true) },
                     )
-                    if (cacheExpires != null) {
-                        SettingDivider()
-                        SettingActionRow(
-                            title = stringResource(R.string.setting_cache_auto_clear_label),
-                            subtitle = DateTimeFormatterUtil.formatDate(cacheExpires),
-                            icon = Icons.Outlined.DeleteOutline,
-                            actionLabel = stringResource(R.string.setting_cache_clear),
-                            onClick = { clearListServerCache(true) },
-                        )
-                    }
                     SettingDivider()
                     SettingValueRow(
                         title = stringResource(R.string.setting_server_update_interval_label),
@@ -664,6 +677,34 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    // v1.0.54 (§1.6.47) PART 2.5: the seeded default URL can be
+                    // deleted by the user, and the one-shot seed flag then
+                    // refuses to put it back (that is the documented policy: a
+                    // deletion is a decision). This is the way back — an
+                    // explicit, idempotent action rather than a re-seed. It
+                    // adds the same URL the publisher writes into
+                    // R.string.default_emergency_source_url and never touches
+                    // the user's other sources.
+                    val defaultEmergencyUrl = stringResource(R.string.default_emergency_source_url)
+                    if (emergencySources.none { it.url == defaultEmergencyUrl }) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    connectionListViewModel.addEmergencySource(
+                                        defaultEmergencyUrl,
+                                        context.getString(R.string.emergency_source_default_label),
+                                    )
+                                },
+                            ) {
+                                Text(stringResource(R.string.emergency_source_restore_default))
+                            }
+                        }
+                    }
                     SettingDivider()
                     Column(
                         modifier = Modifier
@@ -716,7 +757,7 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------------- Manual Servers (Z1-IMPL-D, §12.5.2 item D)
+            // ---------------- Import servers from CSV (v1.0.54 §1.6.49 PART 4)
             item {
                 SettingsSection(title = stringResource(R.string.manual_server_title)) {
                     Text(
@@ -727,7 +768,7 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                     )
-                    if (manualServers.isEmpty()) {
+                    if (importedServers.isEmpty() && manualServers.isEmpty()) {
                         Text(
                             text = stringResource(R.string.manual_server_empty),
                             style = MaterialTheme.typography.bodyMedium,
@@ -737,10 +778,55 @@ fun SettingsScreen(
                                 .padding(horizontal = 16.dp, vertical = 4.dp),
                         )
                     } else {
-                        manualServers.forEachIndexed { index, server ->
-                            if (index > 0) {
-                                SettingDivider()
+                        // Imported rows first: they are what this section is for.
+                        importedServers.forEachIndexed { index, server ->
+                            if (index > 0) SettingDivider()
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = server.hostName,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append(server.ip ?: "")
+                                            if (server.seTcpPort > 0) append(" · SE/TCP ${server.seTcpPort}")
+                                            if (server.seUdpPort > 0) append(" · SE/UDP ${server.seUdpPort}")
+                                            if (!server.openVpnConfigData.isNullOrBlank()) append(" · OpenVPN")
+                                            if (server.isSSTPSupport) append(" · SSTP")
+                                            if (server.isL2TPSupport) append(" · L2TP")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                IconButton(
+                                    onClick = {
+                                        connectionListViewModel.removeImportedServer(server.hostName)
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.DeleteOutline,
+                                        contentDescription = stringResource(R.string.manual_server_remove),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
+                        }
+                        // Rows created by the old manual-add form. They keep
+                        // their enable switch and delete button, so the rewrite
+                        // takes no capability away.
+                        manualServers.forEachIndexed { index, server ->
+                            if (index > 0 || importedServers.isNotEmpty()) SettingDivider()
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
@@ -755,17 +841,7 @@ fun SettingsScreen(
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
                                     Text(
-                                        text = buildString {
-                                            append(server.host)
-                                            append(":")
-                                            append(server.port)
-                                            append(" · ")
-                                            append(manualProtocolLabel(server.protocol))
-                                            if (!server.label.isNullOrBlank()) {
-                                                append(" · ")
-                                                append(server.label)
-                                            }
-                                        },
+                                        text = "${server.host}:${server.port} · ${server.protocol}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 2,
@@ -800,91 +876,56 @@ fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         OutlinedTextField(
-                            value = manualHostInput,
-                            onValueChange = { manualHostInput = it },
-                            label = { Text(stringResource(R.string.manual_server_host_label)) },
-                            placeholder = { Text("203.0.113.7") },
+                            value = csvTextInput,
+                            onValueChange = { csvTextInput = it },
+                            label = { Text(stringResource(R.string.manual_server_paste_label)) },
+                            placeholder = { Text(stringResource(R.string.manual_server_paste_hint)) },
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
+                            minLines = 5,
+                            maxLines = 10,
                             shape = RoundedCornerShape(12.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         )
-                        OutlinedTextField(
-                            value = manualPortInput,
-                            onValueChange = { manualPortInput = it },
-                            label = { Text(stringResource(R.string.manual_server_port_label)) },
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Button(
+                                onClick = {
+                                    importBusy = true
+                                    scope.launch {
+                                        importSummary = runImport(csvTextInput)
+                                        importBusy = false
+                                    }
+                                },
+                                enabled = csvTextInput.isNotBlank() && !importBusy,
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(stringResource(R.string.manual_server_import_paste))
+                            }
+                            androidx.compose.material3.OutlinedButton(
+                                onClick = {
+                                    importSummary = null
+                                    csvPicker.launch(arrayOf("text/csv", "text/plain", "*/*"))
+                                },
+                                enabled = !importBusy,
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(stringResource(R.string.manual_server_import_file))
+                            }
+                        }
+                        importSummary?.let { summary ->
+                            Text(
+                                text = summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                         Text(
-                            text = stringResource(R.string.manual_server_protocol_label),
+                            text = stringResource(R.string.manual_server_format_help),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        // FlowRow, not Row. Four chips ("OpenVPN", "SoftEther",
-                        // "L2TP/IPsec", "MS-SSTP") do not fit on one line at
-                        // phone width (~360dp available), and the Row had no
-                        // scroll, so the trailing chip was laid out past the
-                        // right edge and clipped — unreachable. Because SSTP is
-                        // also this form's default, the *selected* chip was the
-                        // invisible one, which is what made the protocol look
-                        // absent from the picker. Wrapping keeps every protocol
-                        // reachable at any width.
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            MANUAL_SERVER_PROTOCOL_CHOICES.forEach { protocol ->
-                                FilterChip(
-                                    selected = manualProtocolInput == protocol,
-                                    onClick = { manualProtocolInput = protocol },
-                                    label = { Text(manualProtocolLabel(protocol)) },
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = manualLabelInput,
-                            onValueChange = { manualLabelInput = it },
-                            label = { Text(stringResource(R.string.manual_server_label_label)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        OutlinedTextField(
-                            value = manualNotesInput,
-                            onValueChange = { manualNotesInput = it },
-                            label = { Text(stringResource(R.string.manual_server_notes_label)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 2,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        Button(
-                            onClick = {
-                                val added = connectionListViewModel.addManualServer(
-                                    host = manualHostInput,
-                                    portText = manualPortInput,
-                                    protocol = manualProtocolInput,
-                                    label = manualLabelInput,
-                                    notes = manualNotesInput,
-                                )
-                                if (added) {
-                                    manualHostInput = ""
-                                    manualPortInput = ""
-                                    manualLabelInput = ""
-                                    manualNotesInput = ""
-                                } else {
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            context.getString(R.string.manual_server_invalid),
-                                        )
-                                    }
-                                }
-                            },
-                            enabled = manualHostInput.isNotBlank() && manualPortInput.isNotBlank(),
-                            modifier = Modifier.align(Alignment.End),
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
-                            Text(stringResource(R.string.manual_server_add))
-                        }
                     }
                 }
             }
@@ -989,19 +1030,6 @@ fun SettingsScreen(
         )
     }
 
-    if (showCacheTimePicker) {
-        SingleChoiceDialog(
-            title = stringResource(R.string.setting_cache_label),
-            options = cacheTimes,
-            selectedIndex = cacheTimeIndex,
-            onSelect = { index ->
-                cacheTimeIndex = index
-                dataUtil.setIntSetting(DataUtil.SETTING_CACHE_TIME_KEY, index)
-            },
-            onDismiss = { showCacheTimePicker = false },
-        )
-    }
-
     if (showProtocolPriorityDialog) {
         ProtocolPriorityDialog(
             dataUtil = dataUtil,
@@ -1085,86 +1113,53 @@ fun SettingsScreen(
 }
 
 /**
- * The protocols the manual-server form offers, in the order the filter sheet
- * uses.
+ * v1.0.54 (§1.6.49) PART 4: reads at most [maxBytes] from [input] and returns
+ * them, or null when the stream is larger than that.
  *
- * Hoisted out of the composable for two reasons. It is pinned against
- * [VpnProtocolNames.ALL] by `ManualServerProtocolChoicesTest`, so a protocol
- * added to the record layer can never be silently missing from this form —
- * which is exactly the class of bug that made SSTP look absent. And the form
- * renders it in a `FlowRow` rather than a plain `Row`, because four chips do
- * not fit on one line at phone width and the un-scrolled `Row` clipped the
- * trailing one off-screen.
+ * Why a manual cap instead of `readBytes()`: the document picker hands back a
+ * stream of *unknown* length chosen by whoever sent the file. A messenger
+ * attachment can legitimately be a 40 MB video with a `.csv` name. Buffering it
+ * whole to discover that would spike the heap on a low-RAM device and, worse,
+ * happen before the parser's own `MAX_BYTES` check could run — the parser only
+ * sees a `String`, which already costs ~2 bytes per char. So the cap is applied
+ * at the byte layer, before any decoding.
  *
- * The order is deliberately not [VpnProtocolNames.ALL]'s: it matches the
- * filter sheet so the two surfaces read the same.
+ * Reading is chunked, and the running total is compared against [maxBytes] after
+ * each chunk, so an oversize stream is abandoned as soon as it crosses the
+ * limit rather than after it has been fully buffered. The consequence is that
+ * the function never distinguishes "exactly at the limit" from "over the
+ * limit" by truncating: it returns the bytes only when the whole stream fit.
+ * Silently importing a truncated profile list would be worse than refusing it.
+ *
+ * Returns null both for oversize and for a read failure; the caller reports a
+ * single "too large / unreadable" line, because from the user's point of view
+ * the file could not be used either way and a precise distinction would only
+ * invite them to retry the same file.
  */
-internal val MANUAL_SERVER_PROTOCOL_CHOICES = listOf(
-    VpnProtocolNames.OPENVPN,
-    VpnProtocolNames.SOFTETHER,
-    VpnProtocolNames.L2TP_IPSEC,
-    VpnProtocolNames.SSTP,
-)
-
-/**
- * The string resource that names a record-layer protocol key, or null when the
- * key is not one this form knows.
- *
- * v1.0.26: this replaces a `when` whose fallback was `else -> MS-SSTP`. That
- * fallback was a silent lie — a protocol added to [VpnProtocolNames.ALL] later
- * would have been *offered* correctly (the picker list is pinned to `ALL` by
- * `ManualServerProtocolChoicesTest`) but *rendered* as "MS-SSTP", and nothing
- * would have failed.
- *
- * **A compile-time guard is not achievable here, and the reason is structural:**
- * [VpnProtocolNames] is an `object` of `const val` Strings, and Kotlin has no
- * exhaustive `when` over a `String` subject — the compiler always requires an
- * `else`. Making this exhaustive would mean converting the protocol keys to an
- * enum or sealed type, which changes the record layer and every call site, so
- * it is out of scope for this phase. The guard is therefore a **test**:
- * `ManualProtocolLabelExhaustiveTest` walks [VpnProtocolNames.ALL] and fails if
- * any member lacks a branch here, or if two members share one. That is a
- * test-time failure rather than a compile-time one — weaker, but it does fail,
- * and it fails in CI on the change that introduces the gap.
- *
- * Returning null (and letting the caller fall back to the raw key) means an
- * unknown protocol reads as visibly odd instead of confidently wrong.
- */
-internal fun manualProtocolLabelRes(protocol: String): Int? = when (protocol) {
-    VpnProtocolNames.SOFTETHER -> R.string.manual_server_protocol_softether
-    VpnProtocolNames.OPENVPN -> R.string.manual_server_protocol_openvpn
-    VpnProtocolNames.L2TP_IPSEC -> R.string.manual_server_protocol_l2tpipsec
-    VpnProtocolNames.SSTP -> R.string.manual_server_protocol_sstp
-    else -> null
+internal fun readCappedUtf8(input: java.io.InputStream, maxBytes: Int): ByteArray? {
+    val buffer = java.io.ByteArrayOutputStream(minOf(maxBytes, 8192))
+    val chunk = ByteArray(8192)
+    var total = 0
+    return try {
+        var over = false
+        while (!over) {
+            val read = input.read(chunk)
+            if (read <= 0) break
+            total += read
+            if (total > maxBytes) {
+                over = true
+            } else {
+                buffer.write(chunk, 0, read)
+            }
+        }
+        if (over) null else buffer.toByteArray()
+    } catch (e: java.io.IOException) {
+        // A picker stream can fail mid-read when the provider is a cloud app
+        // that lost its network. The caller shows one "unusable file" line;
+        // throwing here would surface as a crash instead.
+        null
+    }
 }
-
-/**
- * Z1-IMPL-D: the display name of a record-layer protocol key.
- *
- * The stored value is the collector's own vocabulary
- * ([VpnProtocolNames]) so a manual row and a collected row name the same
- * protocol identically; only the label is translated.
- *
- * An unrecognised key falls back to the key itself rather than to another
- * protocol's name — see [manualProtocolLabelRes].
- */
-@Composable
-private fun manualProtocolLabel(protocol: String): String {
-    val res = manualProtocolLabelRes(protocol)
-    return if (res != null) stringResource(res) else protocol
-}
-
-@Composable
-private fun cacheTimeLabels(): List<String> = listOf(    stringResource(R.string.cache_time_15m),
-    stringResource(R.string.cache_time_30m),
-    stringResource(R.string.cache_time_1h),
-    stringResource(R.string.cache_time_2h),
-    stringResource(R.string.cache_time_4h),
-    stringResource(R.string.cache_time_6h),
-    stringResource(R.string.cache_time_12h),
-    stringResource(R.string.cache_time_24h),
-    stringResource(R.string.cache_time_never),
-)
 
 /**
  * §6-§10 Protocol Priority Profile editor: enable/disable protocols and

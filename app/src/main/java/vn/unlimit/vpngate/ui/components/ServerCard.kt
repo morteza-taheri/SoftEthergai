@@ -66,6 +66,10 @@ enum class ServerCardHighlight { CONNECTING, CONNECTED }
  *
  * @param reachability result of the quick reachability test (null = untested)
  * @param highlight set when the app is connecting to / connected to this server
+ * @param pinned set for the row frozen at the top of the list (the server the
+ *   app is connected to, connecting to, or currently testing). The card shows
+ *   a badge so the user can find it immediately; it does not change the
+ *   Auto Connect ordering, which is display-independent.
  */
 @Composable
 fun ServerCard(
@@ -76,8 +80,8 @@ fun ServerCard(
     modifier: Modifier = Modifier,
     reachability: ReachabilityResult? = null,
     highlight: ServerCardHighlight? = null,
+    pinned: Boolean = false,
 ) {
-    val isIncludeUdp = dataUtil?.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true) ?: true
     val baseUrl = dataUtil?.baseUrl ?: "https://www.vpngate.net"
     val reachabilityColor = if (reachability?.isReachable == true) {
         vn.unlimit.vpngate.ui.theme.ExtendedTheme.autoConnected
@@ -130,6 +134,22 @@ fun ServerCard(
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
+                    // v1.0.54 (§1.6.48) PART 3: the frozen row marker. It is
+                    // deliberately separate from [ActiveServerBadge] so a
+                    // pinned-but-not-yet-dialled candidate still reads as
+                    // pinned, and a connecting row reads as both.
+                    if (pinned) {
+                        Text(
+                            text = stringResource(R.string.server_pinned_badge),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer)
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                     highlight?.let {
                         ActiveServerBadge(it)
                         Spacer(modifier = Modifier.height(4.dp))
@@ -196,8 +216,11 @@ fun ServerCard(
                 )
             }
             val badges = buildList {
-                if (isIncludeUdp && connection.tcpPort > 0) add(ProtocolBadges.TCP)
-                if (isIncludeUdp && connection.udpPort > 0) add(ProtocolBadges.UDP)
+                // v1.0.54 (§1.6.47) PART 2.1: UDP is always shown. The removed
+                // "Include UDP server" switch defaulted to true, so these two
+                // conditions are the old default made permanent.
+                if (connection.tcpPort > 0) add(ProtocolBadges.TCP)
+                if (connection.udpPort > 0) add(ProtocolBadges.UDP)
                 if (connection.seTcpPort > 0 || connection.seUdpPort > 0 || connection.seUdpSupported) {
                     add(ProtocolBadges.SOFTETHER)
                 }

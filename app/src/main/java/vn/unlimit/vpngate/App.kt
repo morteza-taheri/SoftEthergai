@@ -26,6 +26,7 @@ import vn.unlimit.vpngate.db.VPNGateItemDao
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
+import vn.unlimit.vpngate.utils.ExcludedAppsSeeder
 
 class App : Application() {
     var dataUtil: DataUtil? = null
@@ -37,6 +38,23 @@ class App : Application() {
 
     // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
     lateinit var manualServerDao: ManualServerDao
+
+    /**
+     * v1.0.54 (§1.6.49) PART 4: servers imported from a CSV file or pasted text.
+     *
+     * A JSON file rather than a Room table on purpose — see
+     * [vn.unlimit.vpngate.repository.ManualImportStore] for why the
+     * `manual_server` schema cannot hold a CSV row and why this phase may not
+     * widen it. Null only if `filesDir` is somehow unavailable, in which case
+     * import is simply unavailable rather than crashing.
+     */
+    val manualImportStore: vn.unlimit.vpngate.repository.ManualImportStore? by lazy {
+        runCatching {
+            vn.unlimit.vpngate.repository.ManualImportStore(
+                java.io.File(filesDir, "manual_import_servers.json"),
+            )
+        }.getOrNull()
+    }
 
     /**
      * v1.0.46 (§1.6.39): process-lifetime scope for one-shot startup work.
@@ -94,6 +112,22 @@ class App : Application() {
                 val url = getString(R.string.default_emergency_source_url)
                 seedEmergencyDefaultIfNeeded(dataUtil!!, emergencySourceConfigDao, url)
             }.onFailure { logW("Default emergency source seed failed", it) }
+        }
+
+        // v1.0.54 (§1.6.50) PART 5: seed the default Excluded Apps list, once
+        // per install, from assets/default_excluded_apps.
+        //
+        // Same fire-and-forget shape as the emergency seed above, for the same
+        // reason: `getInstalledApplications` on a device with a few hundred
+        // packages is tens of milliseconds, and blocking onCreate for it would
+        // slow every cold start. The one-shot rule, the installed-only rule and
+        // the "empty asset does not burn the flag" rule all live inside
+        // [ExcludedAppsSeeder.seedOnce], which is why this block is only the
+        // wiring.
+        appScope.launch {
+            runCatching {
+                ExcludedAppsSeeder.runIfNeeded(this@App)
+            }.onFailure { logW("Default excluded apps seed failed", it) }
         }
 
         // Apply the user-selected appearance (System / Light / Dark) before any

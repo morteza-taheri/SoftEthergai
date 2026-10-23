@@ -625,6 +625,23 @@ enum class AttemptOutcome {
         }
 
     private fun setState(state: AutoModeState) {
+        // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` means exactly
+        // "a Connected-state skip has been accepted and the machine has not
+        // left Connected yet". Publishing any other state is the precise
+        // moment that stops being true, so the flag's lifetime is owned here
+        // instead of at the call sites.
+        //
+        // The first implementation cleared it inside the skip continuation,
+        // just before launching the replacement run. That left the state
+        // reading `Connected` with the flag already `false` for as long as
+        // `adapter.disconnect()` and the list resolution took — a second press
+        // in that window re-entered the Connected branch, cancelled the
+        // continuation and dialled the list again. `duplicateSkipWhileConnected`
+        // reproduces it on a real dispatcher and passed only when the timing
+        // happened to favour the first press.
+        if (state !is AutoModeState.Connected) {
+            skipInFlight = false
+        }
         _state.value = state
         onStateChange?.invoke(state)
     }
@@ -750,6 +767,41 @@ enum class AttemptOutcome {
      */
     private val skipRequested = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * v1.0.54 (§1.6.46) PART 1 / R-1: the Connected-branch skip is a single
+     * atomic transition, and this flag is what makes re-entry visible.
+     *
+     * ## The defect this closes
+     *
+     * `skipToNextServer()`'s Connected branch tears the tunnel down and
+     * relaunches the run asynchronously, but it deliberately does **not**
+     * publish a new state: the state stays [AutoModeState.Connected] until the
+     * replacement run reaches its first `Connecting`. Between those two moments
+     * a second press of the same button re-enters the same branch, cancels the
+     * continuation this branch just published, and launches another one. Two
+     * independent runs then walk the same candidate list, and the observable
+     * signature is one server dialled several times in one skip burst
+     * (`[s2, s1, s1, s1, s1, s1]` in the failing report) plus the two
+     * intermittently failing tests.
+     *
+     * ## The invariant
+     *
+     * - Set to `true` **inside** [transitionLock], before any asynchronous work
+     *   starts, so the window in which the state still reads Connected is
+     *   already covered.
+     * - A skip arriving while it is `true` is **coalesced** — logged and
+     *   dropped. The first skip is already doing exactly what the second one
+     *   asks for, so dropping it loses no user intent.
+     * - Cleared when the replacement run actually starts
+     *   ([runAutoMode]'s first line), when the continuation finds no remaining
+     *   candidate, and by every path that ends a connection
+     *   ([stop], [disconnectNow]).
+     * - Never set by any other path, so a normal run can never be blocked by a
+     *   stale value.
+     */
+    @Volatile
+    private var skipInFlight: Boolean = false
+
     fun skipToNextServer() {
         val current = _state.value
         val connecting = current is AutoModeState.Connecting && isRunning
@@ -779,6 +831,17 @@ enum class AttemptOutcome {
                 ?: connectedState?.let { serverKey(it.ip, it.hostname) }
             adapter.log("[AUTO] Connected server skipped by user; trying next")
             synchronized(transitionLock) {
+                // v1.0.54 (§1.6.46) PART 1 / R-1: the state is still Connected
+                // here, so without this guard a second press would re-enter this
+                // branch and cancel the continuation published below. Coalescing
+                // is the correct semantic: the first skip already means "move on
+                // from this server", and a second press cannot mean anything
+                // stronger.
+                if (skipInFlight) {
+                    adapter.log("[AUTO] Skip already in flight; duplicate request ignored")
+                    return
+                }
+                skipInFlight = true
                 connectedWatcher?.cancel()
                 connectedWatcher = null
                 // R8: disarm BEFORE tearing down — this is a deliberate user move,
@@ -803,11 +866,18 @@ enum class AttemptOutcome {
                     }
                     if (remaining.isEmpty()) {
                         adapter.log("[AUTO] No more servers to try")
+                        // The Error state clears `skipInFlight` in setState.
                         setState(AutoModeState.Error(ERROR_NO_SERVER))
                         synchronized(transitionLock) { job = null }
                     } else {
                         synchronized(transitionLock) {
                             overrideServers = remaining
+                            // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is
+                            // deliberately NOT cleared here. It stays true until
+                            // `runAutoMode()` publishes a non-Connected state,
+                            // because until then the state still reads Connected
+                            // and a press must keep coalescing into this skip.
+                            // Clearing it here was the R-1 window itself.
                             // Replace the continuation with the actual run while
                             // still holding the lock: `job` goes from one live job
                             // straight to another, never through null.
@@ -1167,6 +1237,10 @@ enum class AttemptOutcome {
             TunnelStateWatcher.onTunnelLost = null
             stopLivenessProbe()
             skipRequested.set(false)
+            // v1.0.54 (§1.6.46) PART 1 / R-1: a stop ends any skip that was
+            // still being prepared, so a later Connected skip is not coalesced
+            // against a transition that no longer exists.
+            skipInFlight = false
             overrideServers = null
             // R8: a user stop ends the ownership record; no reconnect may name it.
             connectedCandidate = null
@@ -1273,6 +1347,20 @@ enum class AttemptOutcome {
             }
             is AutoModeState.Connecting -> stop()
             is AutoModeState.Connected -> {
+                // v1.0.54 (§1.6.46) PART 1 / R-1: while a Next-Server skip is
+                // being prepared, the state still reads Connected — and it can
+                // keep reading Connected for as long as the teardown and list
+                // resolution take. A press in that window is NOT treated as a
+                // second skip (that is the R-1 double-dial), but it is also not
+                // swallowed: §3 says the button means "disconnect" whenever the
+                // state is Connected, and ignoring a stop press for a whole
+                // teardown would break that contract. So it stops, which also
+                // cancels the pending continuation.
+                if (skipInFlight) {
+                    adapter.log("[AUTO] Skip in flight; button press treated as stop")
+                    stop()
+                    return
+                }
                 // v1.0.31 (OP-R6 / D-5): pressing while connected means "move
                 // on", not "start over". Record the position after the server
                 // that connected, then tear down and run again from there.
@@ -1312,6 +1400,8 @@ enum class AttemptOutcome {
         TunnelStateWatcher.onTunnelLost = null
         stopLivenessProbe()
         skipRequested.set(false)
+        // v1.0.54 (§1.6.46) PART 1 / R-1: see [stop].
+        skipInFlight = false
         overrideServers = null
         // R8: explicit user disconnect ends ownership; a later loss must not
         // reconnect a tunnel the user deliberately closed.
@@ -1543,6 +1633,11 @@ enum class AttemptOutcome {
     }
 
     private suspend fun runAutoMode() {
+        // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is NOT cleared here.
+        // This coroutine is the replacement run a Connected-branch skip
+        // published, and until its first `setState` the machine still reads
+        // Connected — so the coalescing window must stay open until then.
+        // `setState` owns the clear; see its comment.
         // Protocol priority profile: the user's ordered list of ENABLED
         // protocols, and the ONLY source of protocol order. There is no
         // default protocol and no implicit fallback — an empty profile means

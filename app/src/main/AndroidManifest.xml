@@ -12,6 +12,30 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!--
+        v1.0.54 (§1.6.50) PART 5 — package visibility for the Excluded Apps list.
+
+        Since Android 11 (API 30) `getInstalledApplications` returns only
+        packages this app is *allowed to see*. Without a <queries> declaration
+        the Excluded Apps sheet — and the first-run seed that fills it — would
+        list almost nothing on a modern device, silently, with no error.
+
+        The declaration is scoped to launchable apps on purpose. An app a user
+        would want to exclude from the tunnel is, by definition, one they
+        launch; this covers that set without asking for QUERY_ALL_PACKAGES,
+        which requires a separate Play Console justification and would be a
+        policy risk for no functional gain here. The trade-off is that a
+        background service with no launcher activity is not listed; that is
+        documented in the v1.0.54 report rather than papered over.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:hardwareAccelerated="true"
         android:name=".App"

@@ -1,0 +1,33 @@
+# v1.0.54 (§1.6.50) PART 5 — default Excluded Apps seed list
+#
+# Format, one package name per line:
+#
+#   com.example.app            ← seeded on first run, IF it is installed
+#   # anything after '#' is a comment
+#
+# Rules the loader enforces:
+#   * blank lines and '#' comments are ignored;
+#   * a line is used verbatim as an Android package name — no spaces, no
+#     commas, no aliases;
+#   * a package that is not installed on the device is SKIPPED, never
+#     inserted as a phantom row;
+#   * the seed runs at most ONCE per install (see SETTING_EXCLUDED_APPS_SEEDED),
+#     so a user who later removes a seeded app does not get it back.
+#
+# ── WHY THIS FILE IS CURRENTLY EMPTY OF ENTRIES ─────────────────────────
+#
+# The seed exists so that a fresh install already excludes the Iranian
+# services the operator uses, instead of asking them to tick 20 boxes by hand.
+# The package names themselves have to be read off the real device: the
+# operator entered those apps manually on the phone, and the authoritative
+# list lives there, not in this repository. Guessing package names from
+# memory would produce rows that silently match nothing (or, worse, match the
+# wrong app), and the seeder would then report success while excluding
+# nothing.
+#
+# So this asset ships with the format and the loader in place and the entries
+# pending. Adding them later is a data edit to this one file — no code change,
+# no schema change, no migration — because the parsing, the installed check,
+# the one-shot flag and the tests are already done.
+#
+# See the v1.0.54 report, DEFERRED item D1.

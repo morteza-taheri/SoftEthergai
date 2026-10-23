@@ -74,32 +74,10 @@
     </string-array>
     <string name="setting_startup_screen_subtitle">صفحه‌ای که پس از اجرای برنامه (با حداقل یک اتصال موفق) نمایش داده می‌شود.\nاگر اتصال موفقی ثبت نشده باشد همیشه صفحهٔ فهرست نمایش داده می‌شود.\nبا ضربه به اعلان نیز همین صفحه باز می‌شود.</string>
     <string name="enable_notification_speed_hint">نمایش سرعت/آمار در اعلان. در صورت خاموش بودن فقط وضعیت اتصال نمایش داده می‌شود و مصرف باتری کمتر می‌شود.</string>
-    <string name="setting_cache_label">مدت ذخیرهٔ کش</string>
-    <string name="setting_cache_subtitle">مدتی که داده‌ها پس از دریافت از سرور روی دستگاه ذخیره می‌شوند</string>
-    <string name="setting_cache_auto_clear_label">کش به‌طور خودکار پاک می‌شود در:</string>
+    <string name="setting_cache_label">کش</string>
     <string name="setting_cache_clear">پاک‌سازی همین حالا</string>
     <string name="setting_clear_cache_success">کش با موفقیت پاک شد</string>
     <string name="setting_clear_cache_error">مشکلی پیش آمد. کش پاک نشد</string>
-    <string-array name="setting_cache_time">
-        <item>۱۵ دقیقه</item>
-        <item>۳۰ دقیقه</item>
-        <item>۱ ساعت</item>
-        <item>۲ ساعت</item>
-        <item>۴ ساعت</item>
-        <item>۶ ساعت</item>
-        <item>۱۲ ساعت</item>
-        <item>۲۴ ساعت</item>
-        <item>هرگز</item>
-    </string-array>
-    <string name="cache_time_15m">۱۵ دقیقه</string>
-    <string name="cache_time_30m">۳۰ دقیقه</string>
-    <string name="cache_time_1h">۱ ساعت</string>
-    <string name="cache_time_2h">۲ ساعت</string>
-    <string name="cache_time_4h">۴ ساعت</string>
-    <string name="cache_time_6h">۶ ساعت</string>
-    <string name="cache_time_12h">۱۲ ساعت</string>
-    <string name="cache_time_24h">۲۴ ساعت</string>
-    <string name="cache_time_never">هرگز</string>
     <string name="startup_screen_auto">صفحهٔ اتصال خودکار</string>
     <string name="startup_screen_list">صفحهٔ فهرست</string>
     <string name="startup_screen_status">صفحهٔ وضعیت</string>
@@ -201,10 +179,6 @@
     <string name="connect_one_warning">برای دسترسی به این قابلیت باید حداقل به یک سرور VPN متصل شده باشید</string>
     <string name="disconnected">قطع شده</string>
     <string name="feature_available_in_pro">این قابلیت فقط در نسخهٔ Pro موجود است</string>
-    <string name="block_ads_setting_label">مسدودسازی تبلیغات (فقط Pro)</string>
-    <string name="block_ads_setting_hint">مسدودسازی تبلیغات در همهٔ برنامه‌ها و مرورگر هنگام اتصال VPN با استفاده از DNS</string>
-    <string name="udp_setting_label">شامل سرورهای UDP</string>
-    <string name="udp_setting_hint">قرار دادن سرورهای UDP در فهرست سرورها</string>
     <string name="setting_apply_on_next_connection_time">این تنظیم در اتصال بعدی اعمال می‌شود</string>
     <string name="dns_setting_label">استفاده از DNS سفارشی</string>
     <string name="dns_setting_hint">استفاده از DNS سفارشی هنگام اتصال به سرور VPN به‌جای DNS پیش‌فرض گوگل (۸.۸.۸.۸/۸.۸.۴.۴).\nبا فعال‌سازی، تنظیم مسدودسازی تبلیغات خاموش می‌شود</string>
@@ -357,4 +331,24 @@
     <string name="setting_server_update_interval_hours">هر %1$d ساعت</string>
     <string name="setting_server_update_interval_1h">هر ساعت</string>
     <string name="setting_server_update_interval_24h">هر روز</string>
+    <string name="setting_cache_clear_label">پاک‌سازی کش</string>
+    <string name="setting_cache_clear_subtitle">فقط فایل‌های موقت پاک می‌شوند. فهرست سرورها، سرورهای واردشده، منابع اضطراری، برنامه‌های استثنا و تنظیمات حفظ می‌شوند.</string>
+    <string name="emergency_source_restore_default">بازگرداندن منبع پیش‌فرض</string>
+    <string name="emergency_source_default_label">پیش‌فرض</string>
+    <string name="server_pinned_badge">سنجاق‌شده</string>
+    <string name="manual_server_title">وارد کردن سرورها از CSV</string>
+    <string name="manual_server_summary">متن CSV را بچسبانید یا یک فایل CSV انتخاب کنید. اپ هم CSV توسعه‌یافتهٔ خودش و هم CSV اصلی API وِی‌پی‌ان‌گیت را می‌شناسد.</string>
+    <string name="manual_server_empty">سروری وارد نشده است</string>
+    <string name="manual_server_paste_label">متن CSV</string>
+    <string name="manual_server_paste_hint">اینجا بچسبانید؛ مثلاً فایل CSV که در پیام‌رسان یا پیامک دریافت کرده‌اید.</string>
+    <string name="manual_server_import_paste">وارد کردن</string>
+    <string name="manual_server_import_file">وارد کردن فایل CSV</string>
+    <string name="manual_server_format_help">قالب‌های پذیرفته‌شده (از سرسطر تشخیص داده می‌شود):\n• CSV اپ: ستون‌های HostName، IP، schema_version=1.0 و SourceTag الزامی‌اند؛ SE_TCP_Port و SE_UDP_Port اختیاری‌اند.\n• CSV API وِی‌پی‌ان‌گیت: با #HostName,IP,Score,Ping,... شروع می‌شود.\nنمونه (API):\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\npublic-vpn-1.opengw.net,203.0.113.7,100,50,1000000,Japan,JP,10,100,100,1000000,2ip,unknown,</string>
+    <string name="manual_server_result">%1$d سرور وارد شد، %2$d رد شد</string>
+    <string name="manual_server_reject_reasons">ردشده: %1$s</string>
+    <string name="manual_server_too_large">حجم ورودی بیشتر از ۱ مگابایت است</string>
+    <string name="manual_server_too_many_rows">تعداد سطرها بیش از حد مجاز است (حداکثر %1$d)</string>
+    <string name="manual_server_unrecognized">CSV ناشناخته: سرسطر باید CSV اپ یا CSV API وِی‌پی‌ان‌گیت باشد</string>
+    <string name="manual_server_import_failed">چیزی وارد نشد</string>
+    <string name="manual_server_import_error">وارد کردن ناموفق بود</string>
 </resources>

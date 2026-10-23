@@ -12,8 +12,10 @@ object AppConfig {
      */
     fun getString(key: String): String {
         return when (key) {
-            "vpn_dns_block_ads_primary" -> "176.103.130.130"
-            "vpn_dns_block_ads_alternative" -> "176.103.130.131"
+            // v1.0.54 (§1.6.47) PART 2.2: `vpn_dns_block_ads_primary` and
+            // `vpn_dns_block_ads_alternative` are REMOVED with the Block-Ads
+            // feature. Their DNS addresses (176.103.130.130/131) were used only
+            // by that switch.
             "vpn_alternative_api" -> "https://www.vpngate.net"
             "vpn_udp_api_v2" -> "https://www.vpngate.net/api/iphone/"
             "vpn_check_ip_url" -> "https://whatismyipaddress.com/"

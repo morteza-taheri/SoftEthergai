@@ -926,16 +926,14 @@ class AndroidConnectionAdapter(
     }
 
     private fun resolvePrimaryDns(): String = when {
-        dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-            AppConfig.getString("vpn_dns_block_ads_primary").ifEmpty { "8.8.8.8" }
+        // v1.0.54 (§1.6.47) PART 2.2: Block-Ads DNS branch removed with the
+        // setting; Custom DNS is the only override.
         dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
             dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_1, "8.8.8.8") ?: "8.8.8.8"
         else -> "8.8.8.8"
     }
 
     private fun resolveSecondaryDns(): String = when {
-        dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-            AppConfig.getString("vpn_dns_block_ads_alternative").ifEmpty { "8.8.4.4" }
         dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
             dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_2, "8.8.4.4")?.takeIf { it.isNotEmpty() }
                 ?: "8.8.4.4"

@@ -9,23 +9,13 @@ import android.util.Log
 import androidx.preference.PreferenceManager
 import com.google.gson.reflect.TypeToken
 import com.google.gson.Gson
-import com.google.gson.stream.JsonReader
-import com.google.gson.stream.JsonWriter
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.BuildConfig
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.data.persistence.VpnLastConnectionStore
-import vn.unlimit.vpngate.models.Cache
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.nio.charset.StandardCharsets
-import java.util.Calendar
-import java.util.Date
 
 /**
  * Manager shared preferences data
@@ -69,7 +59,18 @@ class DataUtil(context: Context?) {
         sharedPreferencesSetting = sharedPreferences
     }
 
-    var connectionsCache: VPNGateConnectionList?
+    /**
+     * The stored server list, read from the Room dataset.
+     *
+     * v1.0.54 (§1.6.47) PART 2.3: this used to be a `var` whose setter wrote a
+     * legacy on-disk "cache expiry marker" (`CONNECTION_CACHE_KEY`) computed
+     * from the removed "Cache save time" setting. Nothing ever read that
+     * marker to decide anything — the KDoc of the setter said so explicitly —
+     * and no code assigned this property, so it is a `val` now and the marker
+     * is gone. Server-list freshness is governed solely by
+     * [getServerListUpdateIntervalHours].
+     */
+    val connectionsCache: VPNGateConnectionList?
         /**
          * Get connection cache from internal Room database
          *
@@ -91,99 +92,45 @@ class DataUtil(context: Context?) {
             }
             return null
         }
-        /**
-         * Legacy cache marker only.
-         *
-         * Assigning this property no longer writes server data. Persisting a
-         * dataset is the job of
-         * [vn.unlimit.vpngate.repository.ServerListUpdater] and of nothing
-         * else, so a server list can only reach the database after it passed
-         * dataset integrity — through one writer, under one mutex. What is
-         * left here is the historical on-disk cache-expiry marker, which no
-         * code path uses to decide anything.
-         */
-        set(value) {
-            try {
-                val cache = Cache()
-                val calendar = Calendar.getInstance()
-                val minute = getCacheSaveTimeMinutes()
-                if (minute < 0) {
-                    calendar.set(Calendar.YEAR, 9999)
-                } else {
-                    calendar.add(Calendar.MINUTE, minute)
-                }
-                cache.expires = calendar.time
-                val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-                val out = FileOutputStream(outFile)
-                val writer = JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8))
-                gson!!.toJson(cache, Cache::class.java, writer)
-                writer.close()
-                setConnectionCacheExpire(cache.expires)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
 
     /**
-     * Records that the on-disk cache file was just rewritten from a freshly
-     * downloaded list, so its expiry is relative to *now* rather than to
-     * whenever the list was last downloaded.
-     */
-    fun markConnectionsCacheFresh() {
-        try {
-            val cache = Cache()
-            val calendar = Calendar.getInstance()
-            val minute = getCacheSaveTimeMinutes()
-            if (minute < 0) {
-                calendar.set(Calendar.YEAR, 9999)
-            } else {
-                calendar.add(Calendar.MINUTE, minute)
-            }
-            cache.expires = calendar.time
-            val outFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-            FileOutputStream(outFile).use { out ->
-                JsonWriter(OutputStreamWriter(out, StandardCharsets.UTF_8)).use { writer ->
-                    gson!!.toJson(cache, Cache::class.java, writer)
-                }
-            }
-            setConnectionCacheExpire(cache.expires)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    /**
-     * Clear connection cache
+     * v1.0.54 (§1.6.47) PART 2.3: the single manual "Clear cache" action.
      *
-     * @return boolean
+     * What it clears — and nothing else:
+     *  - the app's transient `cacheDir` (downloaded flag images, HTTP response
+     *    cache, and any other throwaway file the platform put there);
+     *  - the legacy `CONNECTION_CACHE_KEY` expiry marker, if an older install
+     *    left one behind.
+     *
+     * What it must NEVER touch, by contract (and because it is not reachable
+     * from here): the persisted server dataset in Room, imported/manual
+     * servers, emergency-source configuration, the excluded-apps table, and
+     * every user preference. There is no database access in this function at
+     * all.
+     *
+     * @return true when the cleanup ran to completion (an already-empty cache
+     *   is a success, not a failure).
      */
-    fun clearConnectionCache(): Boolean {
-        val inFile = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-        return inFile.isFile && inFile.delete()
-    }
-
-    private fun setConnectionCacheExpire(expires: Date?) {
-        val editor = sharedPreferencesSetting!!.edit()
-        editor.putString("vpn_cache_time", gson!!.toJson(expires))
-        editor.apply()
-    }
-
-    val connectionCacheExpires: Date?
-        /**
-         * Get connection cache from shared preferences
-         *
-         * @return
-         */
-        get() {
-            try {
-                val jsonString =
-                    sharedPreferencesSetting!!.getString("vpn_cache_time", null) ?: return null
-                return gson!!.fromJson(jsonString, Date::class.java)
-            } catch (e: Exception) {
-                e.printStackTrace()
+    fun clearTransientCache(): Boolean {
+        var ok = true
+        try {
+            mContext?.cacheDir?.let { dir ->
+                dir.listFiles()?.forEach { child ->
+                    if (!child.deleteRecursively()) ok = false
+                }
             }
-            return null
+        } catch (e: Exception) {
+            Log.e(TAG, "Clearing cacheDir failed", e)
+            ok = false
         }
+        try {
+            val legacy = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
+            if (legacy.isFile && !legacy.delete()) ok = false
+        } catch (e: Exception) {
+            Log.e(TAG, "Removing legacy cache marker failed", e)
+        }
+        return ok
+    }
 
     val connectionCacheUpdatedAt: Long
         get() = sharedPreferencesSetting?.getLong(CONNECTION_CACHE_UPDATED_AT_KEY, 0L) ?: 0L
@@ -423,18 +370,24 @@ class DataUtil(context: Context?) {
      * Auto Mode protocol priority profile: ordered ids of ENABLED protocols
      * (priority = list order).
      *
-     * An empty result means the user enabled no protocol, and Auto Connect
-     * refuses to run — it must never substitute a protocol of its own. New
-     * protocols are picked up automatically — nothing is hard-coded here
-     * (§32 §33).
+     * v1.0.54 (§1.6.47) PART 2.4 (operator requirement): when **nothing** is
+     * stored — a fresh install, or an upgrade that never touched the profile —
+     * the default is SoftEther TCP then SoftEther UDP, both enabled, in that
+     * order. Before this, an unset profile read as an EMPTY list, and an empty
+     * list is the contract for "the user disabled every protocol", so Auto
+     * Connect refused to start on a fresh install. The two states are now
+     * distinct:
+     *
+     *  - key absent (`null`) -> [DEFAULT_AUTO_PROTOCOL_PRIORITY];
+     *  - key present but empty (`""`) -> empty list, i.e. the user switched
+     *    everything off. Auto Connect must never substitute a protocol of its
+     *    own, so this stays a refusal.
+     *
+     * A stored user choice is NEVER overwritten by the default: the default is
+     * only the answer to "there is no choice".
      */
     fun getAutoModeProtocolPriority(): List<AutoModeProtocol> =
-        getStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, null)
-            ?.split(',')
-            ?.mapNotNull { id ->
-                AutoModeProtocol.entries.firstOrNull { it.id == id.trim() }
-            }
-            .orEmpty()
+        parseAutoModeProtocolPriority(getStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, null))
 
     fun setAutoModeProtocolPriority(protocols: List<AutoModeProtocol>) {
         setStringSetting(SETTING_AUTO_PROTOCOL_PRIORITY, protocols.joinToString(",") { it.id })
@@ -550,29 +503,27 @@ class DataUtil(context: Context?) {
         setBooleanSetting(SETTING_DEVELOPER_MODE, enabled)
     }
 
-    // Cache Save Time: values align 1:1 with R.array.setting_cache_time;
-    // -1 means "Never" (the on-disk cache never expires on its own).
-    fun getCacheSaveTimeMinutes(): Int {
-        val minutes = intArrayOf(15, 30, 60, 120, 240, 360, 720, 1440, -1)
-        val index = getIntSetting(SETTING_CACHE_TIME_KEY, DEFAULT_CACHE_TIME_INDEX)
-        return minutes.getOrElse(index) { minutes[DEFAULT_CACHE_TIME_INDEX] }
-    }
+    // v1.0.54 (§1.6.47) PART 2.3: `getCacheSaveTimeMinutes()` and the
+    // "Cache save time" preference are REMOVED. The value only ever fed the
+    // legacy on-disk expiry marker (see [clearTransientCache]), which no code
+    // path consulted; server-list freshness has always been decided by
+    // [getServerListUpdateIntervalHours]. The fixed policy is therefore: the
+    // list refreshes on the configured 1..24 h interval (default 12 h) and on
+    // an explicit user refresh, and the only manual cache control is
+    // [clearTransientCache]. A `SETTING_CACHE_TIME_KEY` left behind by an
+    // older install is inert — nothing reads it — and is deliberately not
+    // deleted (removing user data was not requested).
 
     companion object {
         const val TAG = "DataUtil"
 
     /** Preference key holding the last used VPN connection. See VpnLastConnectionStore. */
     private const val PREF_LAST_VPN_CONNECTION = VpnLastConnectionStore.PREF_KEY
-        const val SETTING_CACHE_TIME_KEY: String = "SETTING_CACHE_TIME_KEY"
         const val SETTING_DEVELOPER_MODE: String = "SETTING_DEVELOPER_MODE"
 
-        /** Index of "24 hours" in the cache-time array — the default. */
-        const val DEFAULT_CACHE_TIME_INDEX = 7
         const val SETTING_HIDE_OPERATOR_MESSAGE_COUNT: String =
             "SETTING_HIDE_OPERATOR_MESSAGE_COUNT"
         const val USER_ALLOWED_VPN: String = "USER_ALLOWED_VPN"
-        const val SETTING_BLOCK_ADS: String = "SETTING_BLOCK_ADS"
-        const val INCLUDE_UDP_SERVER: String = "INCLUDE_UDP_SERVER"
         const val LAST_CONNECT_USE_UDP: String = "LAST_CONNECT_USE_UDP"
         const val LAST_CONNECT_SOFTETHER_USE_UDP: String = "LAST_CONNECT_SOFTETHER_USE_UDP"
         const val LAST_CONNECT_METHOD: String = "LAST_CONNECT_METHOD"
@@ -607,6 +558,32 @@ class DataUtil(context: Context?) {
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
+
+        /**
+         * v1.0.54 (§1.6.47) PART 2.4: the profile a fresh install starts with —
+         * SoftEther TCP first, then SoftEther UDP, both enabled (operator
+         * requirement). It is an ORDER, so the first entry is attempted first
+         * on every server.
+         */
+        val DEFAULT_AUTO_PROTOCOL_PRIORITY: List<AutoModeProtocol> = listOf(
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.SOFTETHER_UDP,
+        )
+
+        /**
+         * The one place the stored protocol-priority string is interpreted.
+         *
+         * `null` means "never stored" and yields the default; `""` means "the
+         * user enabled nothing" and yields an empty list. Unknown ids are
+         * dropped rather than guessed at (the same rule
+         * [AutoModeProtocol.fromId] enforces), so a value written by a future
+         * build cannot silently become a protocol this build can dial.
+         */
+        internal fun parseAutoModeProtocolPriority(raw: String?): List<AutoModeProtocol> {
+            if (raw == null) return DEFAULT_AUTO_PROTOCOL_PRIORITY
+            return raw.split(',')
+                .mapNotNull { id -> AutoModeProtocol.fromId(id.trim()) }
+        }
 
         /**
          * v1.0.46 (§1.6.39): set once the default emergency source URL from

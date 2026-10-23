@@ -96,32 +96,10 @@
     </string-array>
     <string name="setting_startup_screen_subtitle">Choose startup screen after app start with at least connection success.\nIf no connection success before list screen always display.\nStartup screen also display when tap to notification.</string>
     <string name="enable_notification_speed_hint">Display speed/statistics in notification. If turn off only connect status display in notification and battery usage may fewer.</string>
-    <string name="setting_cache_label">Cache save time</string>
-    <string name="setting_cache_subtitle">Is the time data will save in device after get data from server</string>
-    <string name="setting_cache_auto_clear_label">Cache will auto clear at:</string>
+    <string name="setting_cache_label">Cache</string>
     <string name="setting_cache_clear">Clear now</string>
     <string name="setting_clear_cache_success">Clear cache success</string>
     <string name="setting_clear_cache_error">Some thing when wrong. Cache can\'t clear</string>
-    <string-array name="setting_cache_time">
-        <item>15 minutes</item>
-        <item>30 minutes</item>
-        <item>1 hours</item>
-        <item>2 hours</item>
-        <item>4 hours</item>
-        <item>6 hours</item>
-        <item>12 hours</item>
-        <item>24 hours</item>
-        <item>Never</item>
-    </string-array>
-    <string name="cache_time_15m">15 minutes</string>
-    <string name="cache_time_30m">30 minutes</string>
-    <string name="cache_time_1h">1 hours</string>
-    <string name="cache_time_2h">2 hours</string>
-    <string name="cache_time_4h">4 hours</string>
-    <string name="cache_time_6h">6 hours</string>
-    <string name="cache_time_12h">12 hours</string>
-    <string name="cache_time_24h">24 hours</string>
-    <string name="cache_time_never">Never</string>
     <string name="startup_screen_auto">Auto Connect screen</string>
     <string name="startup_screen_list">List screen</string>
     <string name="startup_screen_status">Status screen</string>
@@ -225,10 +203,6 @@
     <string name="connect_one_warning">You need connect to at least one VPN Server before access this function</string>
     <string name="disconnected">Disconnected</string>
     <string name="feature_available_in_pro">This feature only available in Pro version</string>
-    <string name="block_ads_setting_label">Block Ads (Pro only)</string>
-    <string name="block_ads_setting_hint">Block ads in all app and browser when VPN is connected use DNS</string>
-    <string name="udp_setting_label">Include UDP server</string>
-    <string name="udp_setting_hint">Include UDP server in server list</string>
     <string name="setting_apply_on_next_connection_time">This setting will apply on next connection time</string>
     <string name="dns_setting_label">Use custom DNS</string>
     <string name="dns_setting_hint">Use custom DNS when connected to VPN Server instead of default Google DNS (8.8.8.8/8.8.4.4).\nThis setting will turn off Block Ads setting when enabled</string>
@@ -415,25 +389,31 @@
     <string name="emergency_source_invalid_url">Enter a valid http(s) URL</string>
 
     <!-- Manual Servers (Z1-IMPL-D, Roadmap §12.5.2 item D). -->
-    <string name="manual_server_title">Manual Servers</string>
-    <string name="manual_server_summary">Servers you added by hand. They are written back into the server list on every update, so a refresh can never drop them.</string>
-    <string name="manual_server_empty">No manual servers added</string>
-    <string name="manual_server_host_label">IPv4 address</string>
-    <string name="manual_server_port_label">Port</string>
-    <string name="manual_server_protocol_label">Protocol</string>
-    <string name="manual_server_label_label">Label (optional)</string>
-    <string name="manual_server_notes_label">Notes (optional)</string>
-    <string name="manual_server_add">Add server</string>
     <string name="manual_server_remove">Remove server</string>
-    <string name="manual_server_invalid">Enter an IPv4 address, a port from 1 to 65535, and a protocol</string>
-    <string name="manual_server_protocol_openvpn">OpenVPN</string>
-    <string name="manual_server_protocol_softether">SoftEther</string>
-    <string name="manual_server_protocol_l2tpipsec">L2TP/IPsec</string>
-    <string name="manual_server_protocol_sstp">MS-SSTP</string>
     <!-- v1.0.26: shown when a refresh fetched a server list but it was
          rejected as degraded (it lost the OpenVPN profiles / protocols the
          stored list has). The stored list is kept, so the screen looks
          unchanged — without this message the user cannot tell a failed
          update from a no-op. -->
     <string name="server_list_update_preserved">Server list could not be updated — stored list preserved</string>
+    <string name="setting_cache_clear_label">Clear cache</string>
+    <string name="setting_cache_clear_subtitle">Removes temporary files only. Your server list, imported servers, emergency sources, excluded apps and settings are kept.</string>
+    <string name="emergency_source_restore_default">Restore default source</string>
+    <string name="emergency_source_default_label">Default</string>
+    <string name="server_pinned_badge">PINNED</string>
+    <string name="manual_server_title">Import servers from CSV</string>
+    <string name="manual_server_summary">Paste CSV text or pick a CSV file. The app recognises its own extended CSV and the original VPN Gate API CSV.</string>
+    <string name="manual_server_empty">No imported servers</string>
+    <string name="manual_server_paste_label">CSV text</string>
+    <string name="manual_server_paste_hint">Paste here, e.g. a CSV file you received in a messenger or an SMS.</string>
+    <string name="manual_server_import_paste">Import</string>
+    <string name="manual_server_import_file">Import CSV file</string>
+    <string name="manual_server_format_help">Accepted formats (detected from the header):\n• App CSV: HostName, IP, schema_version=1.0 and SourceTag are required; SE_TCP_Port / SE_UDP_Port are optional.\n• VPN Gate API CSV: starts with #HostName,IP,Score,Ping,...\nExample (API):\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\npublic-vpn-1.opengw.net,203.0.113.7,100,50,1000000,Japan,JP,10,100,100,1000000,2ip,unknown,</string>
+    <string name="manual_server_result">Imported %1$d, rejected %2$d</string>
+    <string name="manual_server_reject_reasons">Rejected: %1$s</string>
+    <string name="manual_server_too_large">Input is larger than 1 MiB</string>
+    <string name="manual_server_too_many_rows">Too many rows (limit %1$d)</string>
+    <string name="manual_server_unrecognized">Unrecognised CSV: the header must be the app CSV or the VPN Gate API CSV</string>
+    <string name="manual_server_import_failed">Nothing was imported</string>
+    <string name="manual_server_import_error">Import failed</string>
 </resources>

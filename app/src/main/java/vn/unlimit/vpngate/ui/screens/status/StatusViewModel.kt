@@ -1082,9 +1082,9 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
     // --------------------------------------------------------------- DNS
 
     private fun resolvePrimaryDns(): String {
+        // v1.0.54 (§1.6.47) PART 2.2: Block-Ads DNS branch removed with the
+        // setting. Custom DNS is the only override; the fallback is unchanged.
         return when {
-            dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-                AppConfig.getString("vpn_dns_block_ads_primary").ifEmpty { "8.8.8.8" }
             dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
                 dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_1, "8.8.8.8") ?: "8.8.8.8"
             else -> "8.8.8.8"
@@ -1093,8 +1093,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun resolveSecondaryDns(): String {
         return when {
-            dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-                AppConfig.getString("vpn_dns_block_ads_alternative").ifEmpty { "8.8.4.4" }
             dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
                 dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_2, "8.8.4.4")
                     ?.takeIf { it.isNotEmpty() } ?: "8.8.4.4"

@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.automode
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -134,8 +135,23 @@ class AutoModeControllerTest {
             }
         }
 
+        /**
+         * When set, [disconnect] parks here until it is completed.
+         *
+         * v1.0.54 (§1.6.46) PART 1 / R-1: this is the only way to test the
+         * skip window *deterministically*. The window is the interval between
+         * "the skip was accepted" and "the replacement run published a state",
+         * and on a real dispatcher the continuation can leave that interval
+         * before the test thread ever gets to the second press — which makes a
+         * racing test green or red depending on machine load. Holding the
+         * teardown still pins the window open, so the assertion is about the
+         * controller's rule rather than about scheduling luck.
+         */
+        var disconnectGate: CompletableDeferred<Unit>? = null
+
         override suspend fun disconnect() {
             logs += "disconnect"
+            disconnectGate?.await()
         }
 
         override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
@@ -3798,6 +3814,177 @@ val sstp = AutoModeCandidate(
             "a double press must never dial the same server twice: $afterSkip",
             dialled.distinct(),
             dialled,
+        )
+    }
+
+    /**
+     * v1.0.54 (§1.6.46) PART 1 / R-1: a second press while the first skip is
+     * still being prepared must be COALESCED, not re-entered.
+     *
+     * Before the fix the Connected branch left the state at Connected while it
+     * tore the tunnel down asynchronously, so a second press re-entered the
+     * branch, cancelled the continuation the first press had just published and
+     * launched its own — two loops walking the same list. The device evidence
+     * in the report was `[s2, s1, s1, s1, s1, s1]` for one double press.
+     *
+     * Asserted here: the skip is a single transition (the continuation lands on
+     * the SECOND server, not the third), no server is dialled twice, and the
+     * dropped press is logged rather than silently swallowed.
+     */
+    @Test
+    fun duplicateSkipWhileConnectedIsCoalescedToTheFirstSkip() = runBlocking {
+        val c = controller(servers = listOf(server("s1"), server("s2"), server("s3")))
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val beforeSkip = c.state.value
+        val dialsBefore = adapter.connects.size
+
+        // The window is held open by gating the teardown, not raced — see the
+        // gate's KDoc. Both presses therefore observe the same state (Connected
+        // with a skip already accepted), which is exactly the condition the
+        // coalescing rule is about.
+        val gate = CompletableDeferred<Unit>()
+        adapter.disconnectGate = gate
+        c.skipToNextServer()
+        withTimeoutOrNull(2_000) {
+            while (adapter.logs.none { it == "disconnect" }) delay(5)
+        }
+        c.skipToNextServer()
+        gate.complete(Unit)
+        adapter.disconnectGate = null
+
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
+        assertTrue("expected a terminal after the coalesced skip, got $final", final is AutoModeState.Connected)
+        assertEquals(
+            "one skip means the next server, not the one after it",
+            "s2",
+            (final as AutoModeState.Connected).hostname,
+        )
+
+        val afterSkip = adapter.connects.drop(dialsBefore)
+        val dialled = afterSkip.map { it.first }
+        assertEquals("no server may be dialled twice in one skip: $afterSkip", dialled.distinct(), dialled)
+        assertTrue(
+            "the coalesced press must be logged: ${adapter.logs}",
+            adapter.logs.any { it.contains("duplicate request ignored") },
+        )
+    }
+
+    /**
+     * v1.0.54 (§1.6.46) PART 1 / R-1: the same window is reachable from the
+     * Auto Connect button, not only from the Next-Server button.
+     *
+     * While a skip is in flight the state still reads Connected, so a button
+     * press would take the OP-R6 branch — tear the tunnel down a second time
+     * and start a competing run. The press must therefore be distinguished from
+     * a fresh "move on": it is read as the stop that §3 assigns to the Connected
+     * state, which also cancels the pending continuation.
+     */
+    @Test
+    fun buttonPressDuringAnInFlightSkipStopsInsteadOfStartingASecondRun() = runBlocking {
+        val c = controller(servers = listOf(server("s1"), server("s2"), server("s3")))
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val dialsBefore = adapter.connects.size
+
+        // v1.0.54 (§1.6.46) PART 1 / R-1. Two rules meet in this window and
+        // both must hold:
+        //
+        //  - the press must NOT be read as a second skip (that is the R-1
+        //    double-dial), and
+        //  - the press must NOT be swallowed either: §3 says the button means
+        //    "disconnect" whenever the state is Connected, and the state still
+        //    reads Connected while the skip's teardown and list resolution run.
+        //    Swallowing it would ignore a stop for the length of a teardown.
+        //
+        // The window is pinned open by gating `disconnect()` rather than raced:
+        // a racing version of this test passes or fails on scheduling, and this
+        // one is about the rule.
+        val gate = CompletableDeferred<Unit>()
+        adapter.disconnectGate = gate
+        c.skipToNextServer()
+        withTimeoutOrNull(2_000) {
+            while (adapter.logs.none { it == "disconnect" }) delay(5)
+        }
+        assertTrue(
+            "the skip must be mid-teardown, state still Connected, got ${c.state.value}",
+            c.state.value is AutoModeState.Connected,
+        )
+
+        c.onButtonPressed()
+
+        assertEquals(
+            "the button must stop, not launch a competing run",
+            AutoModeState.Disconnected,
+            c.state.value,
+        )
+        assertTrue(
+            "the stop must be logged as such: ${adapter.logs}",
+            adapter.logs.any { it.contains("treated as stop") },
+        )
+
+        gate.complete(Unit)
+        adapter.disconnectGate = null
+        // Give the cancelled continuation every chance to misbehave.
+        repeat(20) { delay(10) }
+
+        assertEquals(
+            "a cancelled skip must not dial anything: ${adapter.connects.drop(dialsBefore)}",
+            dialsBefore,
+            adapter.connects.size,
+        )
+        assertEquals(AutoModeState.Disconnected, c.state.value)
+        assertFalse("nothing may still be running", c.isRunning)
+    }
+
+    /**
+     * v1.0.54 (§1.6.46) PART 1 / R-1: a burst of presses is ONE skip.
+     *
+     * Deterministic on purpose: the guard is set synchronously inside the first
+     * call, and the teardown is gated so the whole burst lands inside the same
+     * window. Five presses must therefore land on `s2` (the next server), not
+     * five servers further down the list, and must never dial the same server
+     * twice.
+     *
+     * The gate matters: without it the continuation can publish `Connecting`
+     * between two presses of the burst, and a later press then legitimately
+     * takes the Connecting branch (`skipRequested`), which is a *different*
+     * skip. That is correct product behaviour, not a coalescing failure — but
+     * it makes an ungated burst test assert the wrong thing.
+     */
+    @Test
+    fun fiveRapidSkipsCollapseIntoASingleContinuation() = runBlocking {
+        val c = controller(servers = (1..6).map { server("s$it") })
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val beforeSkip = c.state.value
+        val dialsBefore = adapter.connects.size
+
+        val gate = CompletableDeferred<Unit>()
+        adapter.disconnectGate = gate
+        c.skipToNextServer()
+        withTimeoutOrNull(2_000) {
+            while (adapter.logs.none { it == "disconnect" }) delay(5)
+        }
+        repeat(4) { c.skipToNextServer() }
+        gate.complete(Unit)
+        adapter.disconnectGate = null
+
+        val final = c.awaitNextTerminalAfterChange(beforeSkip)
+        assertTrue("expected a terminal after the burst, got $final", final is AutoModeState.Connected)
+        assertEquals(
+            "a burst of presses is one skip, so it must land on s2",
+            "s2",
+            (final as AutoModeState.Connected).hostname,
+        )
+
+        val afterSkip = adapter.connects.drop(dialsBefore)
+        val dialled = afterSkip.map { it.first }
+        assertEquals("no server may be dialled twice: $afterSkip", dialled.distinct(), dialled)
+        assertEquals(
+            "the burst must be coalesced, not replayed: ${adapter.logs}",
+            4,
+            adapter.logs.count { it.contains("duplicate request ignored") },
         )
     }
 

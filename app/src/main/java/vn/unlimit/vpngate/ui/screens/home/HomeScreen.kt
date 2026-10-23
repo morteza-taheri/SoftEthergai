@@ -127,6 +127,13 @@ fun HomeScreen(
     val activeServer = remember(autoState, globalVpnState) {
         activeServerOf(autoState, globalVpnState) { dataUtil.lastVPNConnection }
     }
+    // v1.0.54 (§1.6.48) PART 3: the identity of the row to freeze at index 0.
+    // Derived from the state the screen already collects — no new state, no DB
+    // write, no network. Null means "nothing is active", which makes the pin a
+    // no-op by identity.
+    val pinnedKey = remember(activeServer) {
+        activeServer?.let { ServerListPinning.identity(it.ip, it.hostname) }
+    }
 
     // ----- Data helpers (same threading model as HomeFragment)
     fun applyView(listModel: VPNGateConnectionList?, emptyRes: Int?) {
@@ -414,6 +421,7 @@ fun HomeScreen(
                         sortProperty,
                         sortType,
                         activeFilter?.isReachableOnly,
+                        pinnedKey,
                     ) {
                         var items = baseItems
                         // Stage 2F-F.28S: both the filter and the ordering read
@@ -432,7 +440,12 @@ fun HomeScreen(
                                 descending = sortType == VPNGateConnectionList.ORDER.DESC,
                             )
                         }
-                        items
+                        // v1.0.54 (§1.6.48) PART 3: pinning runs LAST, after the
+                        // user's filter and sort, so the frozen row survives both
+                        // — and so it can never influence Auto Connect's own
+                        // ordering, which was decided elsewhere. It is a move,
+                        // not a copy, so the row cannot appear twice.
+                        ServerListPinning.pin(items, { ServerListPinning.identityOf(it) }, pinnedKey)
                     }
                     // The database-level empty message cannot know about the
                     // in-memory healthy-only filter, so it is resolved here.
@@ -576,6 +589,8 @@ fun HomeScreen(
                                         connection = conn,
                                         dataUtil = dataUtil,
                                         reachability = reachabilitySnapshot[conn.ip],
+                                        pinned = pinnedKey != null &&
+                                            ServerListPinning.identityOf(conn) == pinnedKey,
                                         highlight = when {
                                             !matchesActiveServer(conn, activeServer) -> null
                                             activeServer?.connecting == true -> ServerCardHighlight.CONNECTING

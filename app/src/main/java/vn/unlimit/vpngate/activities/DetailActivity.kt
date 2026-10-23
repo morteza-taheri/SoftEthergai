@@ -553,7 +553,6 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         if (mVpnGateConnection != null) {
             try {
                 val conn = mVpnGateConnection!!
-                val isIncludeUDP = dataUtil.getBooleanSetting(DataUtil.INCLUDE_UDP_SERVER, true)
                 val showL2tp = conn.isL2TPSupport()
                 if (isCurrent && (checkStatus() || isSSTPConnected || isSoftEtherConnected)) {
                     val statusText = if (isSSTPConnected) {
@@ -583,8 +582,8 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                 update {
                     it.copy(
                         showL2tpButton = showL2tp,
-                        showTcpPort = isIncludeUDP && conn.tcpPort > 0,
-                        showUdpPort = isIncludeUDP && conn.udpPort > 0,
+                        showTcpPort = conn.tcpPort > 0,
+                        showUdpPort = conn.udpPort > 0,
                         showSstpBadge = conn.isSSTPSupport(),
                         excludedAppsCount = excludeAppsManager.getExcludedAppsCount(),
                     )
@@ -938,9 +937,10 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
     }
 
     private fun resolvePrimaryDns(): String {
+        // v1.0.54 (§1.6.47) PART 2.2: the Block-Ads DNS branch is gone with the
+        // switch. Custom DNS, when enabled, is the only override — exactly the
+        // behaviour that applied when ads blocking was OFF.
         return when {
-            dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-                AppConfig.getString("vpn_dns_block_ads_primary").ifEmpty { "8.8.8.8" }
             dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
                 dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_1, "8.8.8.8") ?: "8.8.8.8"
             else -> "8.8.8.8"
@@ -949,8 +949,6 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
 
     private fun resolveSecondaryDns(): String {
         return when {
-            dataUtil.getBooleanSetting(DataUtil.SETTING_BLOCK_ADS, false) ->
-                AppConfig.getString("vpn_dns_block_ads_alternative").ifEmpty { "8.8.4.4" }
             dataUtil.getBooleanSetting(DataUtil.USE_CUSTOM_DNS, false) ->
                 dataUtil.getStringSetting(DataUtil.CUSTOM_DNS_IP_2, "8.8.4.4")
                     ?.takeIf { it.isNotEmpty() } ?: "8.8.4.4"
