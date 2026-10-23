@@ -792,10 +792,13 @@ enum class AttemptOutcome {
      * - A skip arriving while it is `true` is **coalesced** — logged and
      *   dropped. The first skip is already doing exactly what the second one
      *   asks for, so dropping it loses no user intent.
-     * - Cleared when the replacement run actually starts
-     *   ([runAutoMode]'s first line), when the continuation finds no remaining
-     *   candidate, and by every path that ends a connection
+     * - Cleared by [setState] whenever it publishes anything other than
+     *   `Connected` — that publication is the exact moment the invariant stops
+     *   holding — and explicitly by every path that ends a connection
      *   ([stop], [disconnectNow]).
+     * - **Not** cleared when the replacement run starts. v1.0.54 shipped this
+     *   KDoc saying the opposite while the code already did the right thing;
+     *   clearing it there reopens the window. See [runAutoMode]'s first lines.
      * - Never set by any other path, so a normal run can never be blocked by a
      *   stale value.
      */
@@ -871,17 +874,39 @@ enum class AttemptOutcome {
                         synchronized(transitionLock) { job = null }
                     } else {
                         synchronized(transitionLock) {
-                            overrideServers = remaining
-                            // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is
-                            // deliberately NOT cleared here. It stays true until
-                            // `runAutoMode()` publishes a non-Connected state,
-                            // because until then the state still reads Connected
-                            // and a press must keep coalescing into this skip.
-                            // Clearing it here was the R-1 window itself.
-                            // Replace the continuation with the actual run while
-                            // still holding the lock: `job` goes from one live job
-                            // straight to another, never through null.
-                            job = scope.launch { runAutoMode() }
+                            // v1.0.55 (V1054_VERIFY_REPORT G-6): re-check that the
+                            // skip is still wanted before publishing the
+                            // replacement run.
+                            //
+                            // `adapter.disconnect()` above is a suspension point,
+                            // and `synchronized` is not, so a `stop()` that landed
+                            // while the teardown was finishing would have already
+                            // run to completion by the time this block is entered —
+                            // and this block would then overwrite `job = null`
+                            // (set by that stop) with a fresh run, resurrecting
+                            // Auto Connect after the user turned it off. The
+                            // window is narrow but it is exactly the kind of
+                            // window PART 1 exists to close, so it is closed here
+                            // too: `stop()` and `disconnectNow()` clear the flag
+                            // inside this same monitor, which makes the flag a
+                            // reliable "is this skip still live?" answer at this
+                            // point.
+                            if (!skipInFlight) {
+                                adapter.log("[AUTO] Skip superseded by stop; not relaunching")
+                                job = null
+                            } else {
+                                overrideServers = remaining
+                                // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is
+                                // deliberately NOT cleared here. It stays true until
+                                // `runAutoMode()` publishes a non-Connected state,
+                                // because until then the state still reads Connected
+                                // and a press must keep coalescing into this skip.
+                                // Clearing it here was the R-1 window itself.
+                                // Replace the continuation with the actual run while
+                                // still holding the lock: `job` goes from one live job
+                                // straight to another, never through null.
+                                job = scope.launch { runAutoMode() }
+                            }
                         }
                     }
                 }

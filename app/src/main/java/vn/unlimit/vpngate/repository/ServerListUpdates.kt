@@ -4,6 +4,7 @@ import vn.unlimit.vpngate.data.model.CollectorLog
 import vn.unlimit.vpngate.data.model.VpnServerRecord
 import vn.unlimit.vpngate.data.remote.EmergencySourceFetcher
 import vn.unlimit.vpngate.data.remote.ManualServer
+import vn.unlimit.vpngate.data.remote.ManualServerDao
 import vn.unlimit.vpngate.data.remote.SourceIdentity
 import vn.unlimit.vpngate.db.VPNGateItemDao
 import vn.unlimit.vpngate.merger.VpnServerMerger
@@ -340,28 +341,42 @@ private class LastManualRows {
     }
 }
 
-/** The enabled manual servers as rows of the server list; never throws. */
-private suspend fun manualServerRows(): List<VPNGateItem> {
-    val app = try {
-        vn.unlimit.vpngate.App.instance
-    } catch (e: Exception) {
-        null
-    } ?: return emptyList()
-
+/**
+ * The enabled manual servers as rows of the server list; never throws.
+ *
+ * v1.0.55 (`V1054_VERIFY_REPORT` G-2): the two sources are injected instead of
+ * being read from [vn.unlimit.vpngate.App] directly. The rule these lines
+ * implement — *imported rows are re-emitted on every write, so a refresh cannot
+ * delete them* — is the whole reason `ManualImportStore` is consulted here at
+ * all, and it was covered by no test: the function was private and reached a
+ * singleton the JVM harness cannot construct. Production passes the default
+ * providers, so this is the same code path; a test passes fakes and asserts the
+ * emission rule directly.
+ *
+ * The order is deliberate and load-bearing: legacy `manual_server` rows first,
+ * imported rows second. [withManualRows] drops a manual row whose host the
+ * network already serves, so a collision resolves in favour of the collected
+ * row either way; the order only decides which of two user rows is kept, and
+ * the older surface (the one that existed before CSV import) wins.
+ */
+internal suspend fun manualServerRows(
+    importedProvider: () -> List<VPNGateItem> = ::appImportedRows,
+    daoProvider: () -> ManualServerDao? = ::appManualServerDao,
+): List<VPNGateItem> {
     // v1.0.54 (§1.6.49) PART 4: imported CSV rows are a second, richer source of
     // user-owned servers. They are re-emitted here — at the single write — for
     // exactly the same reason the DAO rows are: a refresh replaces the stored
     // list wholesale, so anything not re-emitted would be deleted by the very
     // update that succeeded.
     val imported = try {
-        app.manualImportStore?.items().orEmpty()
+        importedProvider()
     } catch (e: Exception) {
         CollectorLog.d("Imported server list unavailable: ${e.message}")
         emptyList()
     }
 
     val dao = try {
-        app.manualServerDao
+        daoProvider()
     } catch (e: Exception) {
         null
     }
@@ -377,6 +392,15 @@ private suspend fun manualServerRows(): List<VPNGateItem> {
 
     return ManualServerStore(dao).toItems(enabled.map { ManualServer.fromEntity(it) }) + imported
 }
+
+/** Production source of imported rows; a singleton lookup that may be absent. */
+private fun appImportedRows(): List<VPNGateItem> =
+    vn.unlimit.vpngate.App.instance?.manualImportStore?.items().orEmpty()
+
+/** Production source of legacy manual rows; a singleton lookup that may be absent. */
+private fun appManualServerDao(): ManualServerDao? =
+    vn.unlimit.vpngate.App.instance?.manualServerDao
+
 
 /**
  * Z1-IMPL-D (Roadmap §12.5.2 item D): the manual-preservation merge.

@@ -112,23 +112,8 @@ class DataUtil(context: Context?) {
      *   is a success, not a failure).
      */
     fun clearTransientCache(): Boolean {
-        var ok = true
-        try {
-            mContext?.cacheDir?.let { dir ->
-                dir.listFiles()?.forEach { child ->
-                    if (!child.deleteRecursively()) ok = false
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Clearing cacheDir failed", e)
-            ok = false
-        }
-        try {
-            val legacy = File(mContext!!.filesDir, CONNECTION_CACHE_KEY)
-            if (legacy.isFile && !legacy.delete()) ok = false
-        } catch (e: Exception) {
-            Log.e(TAG, "Removing legacy cache marker failed", e)
-        }
+        val ok = clearTransientCache(mContext?.cacheDir, mContext?.filesDir)
+        if (!ok) Log.w(TAG, "Clear cache finished with at least one entry it could not delete")
         return ok
     }
 
@@ -637,6 +622,50 @@ class DataUtil(context: Context?) {
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"
         const val CONNECTION_CACHE_KEY = "CONNECTION_CACHE_KEY"
         const val CONNECTION_CACHE_UPDATED_AT_KEY = "CONNECTION_CACHE_UPDATED_AT_KEY"
+
+        /**
+         * v1.0.55 (`V1054_VERIFY_REPORT` G-1): the pure half of
+         * [clearTransientCache], taking the two directories explicitly.
+         *
+         * It exists because the contract this function has to keep — *"delete
+         * the transient cache and the legacy marker, and nothing else"* — was
+         * asserted in a KDoc comment and nowhere else. The instance method needs
+         * a `Context`, and this module's unit tests run on a plain JVM with no
+         * Robolectric, so the contract could not be tested at all. Taking
+         * `cacheDir` and `filesDir` as arguments makes it testable against two
+         * real temp directories, and it is the same code production runs.
+         *
+         * Deletes:
+         *  - every child of [cacheDir] (the directory itself is kept — it is
+         *    the platform's cache location and removing it would be a change of
+         *    ownership, not a cleanup);
+         *  - `<filesDir>/CONNECTION_CACHE_KEY`, the legacy expiry marker only.
+         *
+         * Never deletes: any other entry in [filesDir] — which is where
+         * `manual_import_servers.json`, the Room database and every other
+         * durable file live — and nothing in this function touches a database,
+         * a DAO or a preference.
+         *
+         * @return false when something could not be deleted; an absent directory
+         *   or an already-clean cache is a success, not a failure.
+         */
+        internal fun clearTransientCache(cacheDir: File?, filesDir: File?): Boolean {
+            var ok = true
+            try {
+                cacheDir?.listFiles()?.forEach { child ->
+                    if (!child.deleteRecursively()) ok = false
+                }
+            } catch (e: Exception) {
+                ok = false
+            }
+            try {
+                val legacy = filesDir?.let { File(it, CONNECTION_CACHE_KEY) }
+                if (legacy != null && legacy.isFile && !legacy.delete()) ok = false
+            } catch (e: Exception) {
+                ok = false
+            }
+            return ok
+        }
 
         /**
          * Check device connect to a network or not

@@ -288,4 +288,29 @@
     <string name="setting_server_update_interval_1h">Every hour</string>
     <string name="setting_server_update_interval_24h">Every day</string>
 
+    <!-- v1.0.55 (V1054_VERIFY_REPORT G-5): v1.0.54 added the CSV-import surface,
+         the pinned badge, the cache-clear label and the emergency restore button
+         in English and Persian only, which left 17 keys rendering in English for
+         Vietnamese users and produced 17 new MissingTranslation lint errors. -->
+    <string name="setting_cache_clear_label">Xóa bộ nhớ đệm</string>
+    <string name="setting_cache_clear_subtitle">Chỉ xóa các tệp tạm. Danh sách máy chủ, máy chủ đã nhập, nguồn khẩn cấp, ứng dụng bị loại trừ và cài đặt của bạn được giữ nguyên.</string>
+    <string name="emergency_source_restore_default">Khôi phục nguồn mặc định</string>
+    <string name="emergency_source_default_label">Mặc định</string>
+    <string name="server_pinned_badge">ĐÃ GHIM</string>
+    <string name="manual_server_title">Nhập máy chủ từ CSV</string>
+    <string name="manual_server_summary">Dán văn bản CSV hoặc chọn một tệp CSV. Ứng dụng nhận dạng CSV mở rộng của riêng ứng dụng và CSV gốc của API VPN Gate.</string>
+    <string name="manual_server_empty">Chưa có máy chủ nào được nhập</string>
+    <string name="manual_server_paste_label">Văn bản CSV</string>
+    <string name="manual_server_paste_hint">Dán vào đây, ví dụ tệp CSV bạn nhận được qua tin nhắn hoặc SMS.</string>
+    <string name="manual_server_import_paste">Nhập</string>
+    <string name="manual_server_import_file">Nhập tệp CSV</string>
+    <string name="manual_server_format_help">Định dạng được chấp nhận (nhận dạng từ dòng tiêu đề):\n• CSV của ứng dụng: bắt buộc có HostName, IP, schema_version=1.0 và SourceTag; SE_TCP_Port / SE_UDP_Port là tùy chọn.\n• CSV của API VPN Gate: bắt đầu bằng #HostName,IP,Score,Ping,...\nVí dụ (API):\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\npublic-vpn-1.opengw.net,203.0.113.7,100,50,1000000,Japan,JP,10,100,100,1000000,2ip,unknown,</string>
+    <string name="manual_server_result">Đã nhập %1$d, bị từ chối %2$d</string>
+    <string name="manual_server_reject_reasons">Bị từ chối: %1$s</string>
+    <string name="manual_server_too_large">Dữ liệu nhập lớn hơn 1 MiB</string>
+    <string name="manual_server_too_many_rows">Quá nhiều dòng (giới hạn %1$d)</string>
+    <string name="manual_server_unrecognized">Không nhận dạng được CSV: dòng tiêu đề phải là CSV của ứng dụng hoặc CSV của API VPN Gate</string>
+    <string name="manual_server_import_failed">Không có gì được nhập</string>
+    <string name="manual_server_import_error">Nhập thất bại</string>
+
 </resources>

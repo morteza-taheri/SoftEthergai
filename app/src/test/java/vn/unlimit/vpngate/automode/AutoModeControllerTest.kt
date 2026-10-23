@@ -655,14 +655,39 @@ class AutoModeControllerTest {
     @Test
     fun pressWhileConnectedDisconnects() = runBlocking {
         val c = controller(servers = listOf(server("s1")))
+        // v1.0.55 (V1054_VERIFY_REPORT G-3): this test used to read
+        // `c.state.value` and `c.isRunning` synchronously after the press. Both
+        // are races, not assertions: the OP-R6 continuation runs on
+        // Dispatchers.Default, so between `onButtonPressed()` returning and the
+        // test thread reading the field the continuation can already have
+        // published its own terminal (`Error(no_compatible_server)`). That is
+        // how this test failed 2 of 10 full-suite runs while passing in
+        // isolation.
+        //
+        // The rule it is actually asserting is a SEQUENCE — the press publishes
+        // Disconnected, and then a continuation runs to its own terminal — so
+        // the sequence is what gets recorded, through the same `onStateChange`
+        // hook production uses. `state` is a conflating StateFlow and cannot
+        // answer "did Disconnected ever happen?".
+        val seen = java.util.Collections.synchronizedList(ArrayList<AutoModeState>())
+        c.onStateChange = { seen += it }
+
         c.start()
         assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
         c.onButtonPressed()
-        assertEquals(AutoModeState.Disconnected, c.state.value)
-        assertTrue(c.isRunning) // v1.0.31 D-5: pressing while Connected starts a continuation run
+
         val terminal = c.awaitTerminal()
-        assertTrue(terminal is AutoModeState.Error)
+        assertTrue("expected the continuation to exhaust the list, got $terminal", terminal is AutoModeState.Error)
         assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
+
+        val connectedAt = seen.indexOfFirst { it is AutoModeState.Connected }
+        val disconnectedAt = seen.indexOfFirst { it is AutoModeState.Disconnected }
+        assertTrue("the press must publish Disconnected, saw $seen", disconnectedAt >= 0)
+        assertTrue(
+            "Disconnected must follow the Connected it ends, saw $seen",
+            connectedAt >= 0 && disconnectedAt > connectedAt,
+        )
     }
 
     // §7 per-protocol capability rules
@@ -3017,7 +3042,19 @@ val sstp = AutoModeCandidate(
     fun aFreshPressAfterExhaustionStartsFromTheTopAgain() = runBlocking {
         val servers = listOf(server("s1"), server("s2"))
         adapter.failing += "s1"
-        val c = controller(servers = servers, timeout = 300)
+        // v1.0.55 (V1054_VERIFY_REPORT G-4): the per-attempt deadline was 300 ms.
+        // This test is about ORDERING — a fresh press must restart at index 0 —
+        // but on a loaded machine the whole suite runs on one shared
+        // Dispatchers.Default, and a 300 ms deadline can expire before the fake
+        // adapter's instant `awaitTunnel()` is even scheduled. Both attempts then
+        // time out, the run ends in ERROR_NO_SERVER, and the test reports a
+        // restart failure that never happened (`connects.first()` was `s1`, the
+        // run had already dialled the right server). Observed once in 10
+        // full-suite runs, never in isolation.
+        //
+        // The deadline is not what this test asserts, so it is raised out of the
+        // way. Tests that DO assert timeout behaviour set their own small value.
+        val c = controller(servers = servers, timeout = 5_000)
 
         c.onButtonPressed()
         val first = c.awaitTerminal()
@@ -3038,7 +3075,11 @@ val sstp = AutoModeCandidate(
             "s1" to AutoModeProtocol.SOFTETHER_UDP,
             adapter.connects.first(),
         )
-        assertTrue("expected the restart to connect, got $restarted", restarted is AutoModeState.Connected)
+        assertTrue(
+            "expected the restart to connect, got $restarted; " +
+                "connects=${adapter.connects}, logs=${adapter.logs.takeLast(12)}",
+            restarted is AutoModeState.Connected,
+        )
         assertEquals("s1", (restarted as AutoModeState.Connected).hostname)
     }
 
