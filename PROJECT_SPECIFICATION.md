@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `4afa7e3cec82a1078a84dcde9ba2d6c876107ce2`
-**Document version:** 1.0.53
-**Last updated:** 2026-10-22
+**HEAD:** `d4888ee66bf86d8ff77a8e483be25e169a119dc7`
+**Document version:** 1.0.54
+**Last updated:** 2026-10-23
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -3137,6 +3137,100 @@ A device-free audit of the server data plus the one defect the audit proved. TAS
 
 21. **No new methodology lessons.** Nothing in this phase produced a §22 entry. §22 is byte-identical. Evidence: SOURCE CODE (diff) + TEST.
 
+#### 1.6.46 SKIP-RACE-COALESCING (v1.0.54)
+
+Closes **R-1** of `AUTO_DATA_AUDIT_REPORT.md` §8 — the duplicate-dial that the v1.0.53 report could only record as an observation. Device-free; nothing in this part needs the phone.
+
+1. **The defect.** `skipToNextServer()`'s Connected branch tore the tunnel down asynchronously while the state still read `Connected`. A second press in that window re-entered the same branch, cancelled the continuation the first press had just published (`job?.cancel()`), and launched its own — two loops walking one list. The v1.0.53 observation was `[s2, s1, s1, s1, s1, s1]` for one double press. Evidence: SOURCE CODE.
+
+2. **The guard.** `skipInFlight: Boolean` (`@Volatile`) is set **inside** `transitionLock` at the top of the Connected branch, before any asynchronous work, and a second entry logs `[AUTO] Skip already in flight; duplicate request ignored` and returns. Setting it synchronously inside the monitor that already owns the transition — rather than relying on dispatcher ordering — is what makes the coalescing deterministic. Evidence: SOURCE CODE + TEST.
+
+3. **The lifetime, and the first implementation was wrong.** v1.0.54 initially cleared the flag in two places: inside the skip continuation just before launching the replacement run, and on `runAutoMode()`'s first line. Both are *before* the replacement run publishes a state, so the machine still read `Connected` with the flag already `false` for the whole teardown plus list resolution. The full-suite run caught it: `duplicateSkipWhileConnectedIsCoalescedToTheFirstSkip` passed in isolation and failed under load, with the log showing two "Connected server skipped by user" lines and no "duplicate request ignored". **The flag's lifetime is now owned by `setState`**: publishing any state other than `Connected` clears it. That is the definition — "a Connected-state skip was accepted and the machine has not left Connected yet" — expressed in the single place that can observe it. Evidence: TEST.
+
+4. **A press in the window is a stop, not a swallow.** `onButtonPressedWithoutGuard()`'s Connected branch first read the flag as "ignore the press". That breaks §3: while the state is Connected the button means *disconnect*, and the window lasts as long as a teardown. It now logs `[AUTO] Skip in flight; button press treated as stop` and calls `stop()`, which also cancels the pending continuation. Evidence: SOURCE CODE + TEST.
+
+5. **The tests hold the window open instead of racing it.** `FakeAdapter.disconnect()` gained an optional `disconnectGate: CompletableDeferred<Unit>`; a test parks the skip inside its teardown, presses, then releases. Without the gate the continuation can publish `Connecting` between two presses, and a later press then legitimately takes the *Connecting* branch (`skipRequested`) — a different, correct skip that makes an ungated assertion meaningless. Three tests use it: `duplicateSkipWhileConnectedIsCoalescedToTheFirstSkip`, `buttonPressDuringAnInFlightSkipStopsInsteadOfStartingASecondRun`, `fiveRapidSkipsCollapseIntoASingleContinuation`. Evidence: TEST.
+
+6. **Stability evidence.** After the fix, `AutoModeControllerTest` ran repeatedly with `--rerun-tasks` and finished with 0 failures each time; before the fix the same class failed under full-suite load while passing in isolation. The flakiness was the finding, not an accident of the run. Evidence: TEST.
+
+#### 1.6.47 SETTINGS-CLEANUP (v1.0.54)
+
+Three Settings controls removed outright, one default changed, one recovery path added. Every removal deletes the code behind it rather than hiding the switch — a dead preference that no longer renders is a second source of truth waiting to be re-read.
+
+1. **"Include UDP server" — removed, and UDP servers are in the list by construction.** Deleted: the switch, `DataUtil.INCLUDE_UDP_SERVER`, and every `isIncludeUdp` consumer. `VPNGateConnection.getName()` no longer branches on the setting, `VPNGateConnection.fromCsv()` always reads the port columns, `ServerCard` renders the TCP/UDP badges unconditionally from the ports themselves, and `DetailActivity` / `StatusViewModel` / `AndroidConnectionAdapter` lost their local `isIncludeUDP` and the `&&` conditions built on it. Evidence: SOURCE CODE.
+
+2. **"Block Ads (Pro only)" — removed.** Deleted: `DataUtil.SETTING_BLOCK_ADS`, the switch and its `prefs` DNS writes, the `vpn_dns_block_ads_primary` / `vpn_dns_block_ads_alternative` entries in `AppConfig`, and the three `resolvePrimaryDns()` / `resolveSecondaryDns()` branches in `DetailActivity`, `StatusViewModel` and `AndroidConnectionAdapter`. Each now resolves Custom DNS only, which is exactly what the switch produced when it was OFF — so no user-visible behaviour is lost, only the ability to turn the alternate DNS pair on. Evidence: SOURCE CODE.
+
+3. **Cache: one button, no schedule.** `models/Cache.kt` deleted. Removed `getCacheSaveTimeMinutes()`, `clearConnectionCache()`, `markConnectionsCacheFresh()`, `connectionCacheExpires`, `setConnectionCacheExpire()`, the `connectionsCache` custom setter (now a plain `val`), and the `SETTING_CACHE_TIME_KEY` / `DEFAULT_CACHE_TIME_INDEX` constants. Settings keeps a single "Clear cache" row plus the existing update-interval row; `setting_cache_subtitle`, `setting_cache_auto_clear_label` and the whole `setting_cache_time` array are gone from all three locales. `DataUtil.clearTransientCache()` replaces the removed pair: it deletes the children of `cacheDir` and the legacy `CONNECTION_CACHE_KEY` marker, and by documented contract touches nothing else. A `SETTING_CACHE_TIME_KEY` left in an existing install is inert, and a test pins that it is ignored rather than honoured. Evidence: SOURCE CODE + TEST (`DataUtilDefaultsV1054Test`).
+
+4. **Auto Connect protocol priority defaults to SoftEther TCP + SoftEther UDP.** `DataUtil.DEFAULT_AUTO_PROTOCOL_PRIORITY = [SOFTETHER_TCP, SOFTETHER_UDP]`, returned when the key is **absent** (`null`) — not when it is empty. An explicitly stored empty list stays empty, because a user who switched every protocol off must not be silently overridden by a default. Parsing is extracted to `parseAutoModeProtocolPriority()` so the three cases (absent / explicitly empty / unknown ids dropped) are testable without SharedPreferences. Evidence: SOURCE CODE + TEST.
+
+5. **The emergency source is pre-filled, and now restorable.** Already true since v1.0.46: `app/src/main/res/values/emergency_defaults.xml` carries `default_emergency_source_url` = the GitHub-hosted `emergency-sources/servers.csv`, generated by `emergency_csv_publisher.py`, and `App.onCreate` seeds it once. What v1.0.54 adds is recovery — when the row is absent, Settings shows a **Restore default source** button (`emergency_source_restore_default`), so a user who deleted the row gets it back without reinstalling or hand-typing a URL. Evidence: SOURCE CODE.
+
+6. **Strings.** Removed across `values`, `values-fa` and `values-vi`: `udp_setting_label` / `_hint`, `block_ads_setting_label` / `_hint`, `setting_cache_subtitle`, `setting_cache_auto_clear_label`, the `setting_cache_time` array, every `cache_time_*` entry, and the whole old manual-form set (`manual_server_host_label`, `_port_label`, `_protocol_label`, `_label_label`, `_notes_label`, `_add`, `_invalid`, `manual_server_protocol_*`). Added in English and Persian: `setting_cache_clear_label` / `_subtitle`, `emergency_source_restore_default`, `emergency_source_default_label`, `server_pinned_badge`, and the CSV-import set recorded in §1.6.49. Evidence: SOURCE CODE.
+
+7. **Out of scope, deliberately.** No Room schema change, no manifest change in this part, no `versionCode` / `versionName` change. Evidence: SOURCE CODE (diff scope).
+
+#### 1.6.48 SERVER-LIST-PIN (v1.0.54)
+
+The server the app is currently on — or is currently dialling — is shown at row 1 of the list, so it can be found without scrolling.
+
+1. **The rule.** The row whose identity matches the active server is moved to index 0 of the *rendered* list. Everything else keeps its position.
+
+2. **Identity, not IP and not index.** `ServerListPinning.identity(ip, hostName)` returns `"ip|host"` — the same key `resumeFromServerKey` (§1.6.35 / OP-R6) and the wedge ledger already use. An IP alone collides under NAT or a load balancer; an index drifts the moment the list re-sorts. One key for one concept. Evidence: SOURCE CODE.
+
+3. **A view transform, not a reorder.** `ServerListPinning.pin(items, keyOf, pinnedKey)` is pure and O(n), applied **after** filter and sort in `HomeScreen`, and returns the caller's own list instance when there is nothing to do. The stored dataset is untouched, so a refresh cannot persist an accidental ordering and `firstSeenAt` / `lastSeenAt` / `healthScore` are never rewritten by a display concern. Evidence: SOURCE CODE + TEST.
+
+4. **Both live states pin.** `pinnedKey` is remembered from the controller's active server, so a `Connecting` candidate pins exactly like a `Connected` one — the row the user is waiting for is the row they are looking for.
+
+5. **Visible marker.** `ServerCard` gained `pinned: Boolean = false` and renders `server_pinned_badge` above the existing active-server badge, so a row that has moved is explained rather than merely displaced.
+
+6. **Tests.** `ServerListPinningTest`, 11 pure cases: identity shape, connected pin, connecting pin, candidate switching, same-IP-different-host, absent server, empty list, null pin, pin filtered out, no duplication, and a 1000-row single pass. Evidence: TEST.
+
+#### 1.6.49 MANUAL-IMPORT (v1.0.54)
+
+The manual add-server form is replaced by CSV import: a box to paste into plus a button to pick a file, with the accepted format explained in the UI.
+
+1. **The old form is gone.** The host / port / protocol / label / notes fields and the `manual_server_protocol_*` labels are removed. Two tests were deleted with the surface they pinned — `ManualServerProtocolChoicesTest` and `ManualProtocolLabelExhaustiveTest` — because a test that asserts the shape of a form that no longer exists is worse than no test. **Legacy `manual_server` rows are still listed in Settings** with their enable switch and delete button, so the rewrite loses no user data. Evidence: SOURCE CODE.
+
+2. **The replacement.** A multiline paste field with an **Import** button, and an **Import CSV file** button that opens the system document picker. The picker accepts `text/csv`, `text/plain` and `*/*` on purpose: messengers label CSV attachments inconsistently, and refusing a file the user can see would be worse than parsing it and reporting "unrecognised".
+
+3. **Two formats, both already owned.** The §10 extended CSV (`EmergencyCsvParser`) and the VPN Gate `/api/iphone/` CSV (`VpnGateApiParser`). `ManualCsvImport` does only what neither parser should do for a pasted file — detect the dialect, tolerate transport artefacts, enforce the caps, and hand the text to the owner. It never re-implements column semantics; a second definition of the format would drift from the first. Evidence: SOURCE CODE.
+
+4. **Transport repair.** BOM stripped, CRLF/CR unified, trailing horizontal whitespace trimmed, and hard-wrapped rows re-joined by `joinWrappedRows()`. The re-join is deliberately conservative: a line is appended to the buffer only when **both** the buffer and the line have fewer fields than the header. A complete row therefore always starts a new buffer, and a genuinely malformed short line is left standing so the owning parser can reject it with a real reason instead of being glued to the next server.
+
+5. **A defect found while writing the tests.** The API body opens with a `*vpn_servers` section marker, so "the first non-blank line is the header" misclassified every real API file as `UNKNOWN` and refused it. Detection and the wrapped-row repair now both locate the header through `VpnGateApiParser.findApiHeader`, and the body is sliced from that line before it reaches either parser. Evidence: TEST (`detect sees past the api section marker`, `an api file with its section marker parses instead of being refused`).
+
+6. **Limits, and they are documented in the UI.** 1 MiB of UTF-8 input and 2000 data rows, both hard: over either, the import is refused whole rather than truncated, because a truncated server list is worse than a clear error. `readCappedUtf8()` enforces the byte cap at the *stream* layer, before any decoding — the picker hands back a stream of unknown length, and a 40 MB attachment would otherwise be decoded into a ~80 MB `String` before the parser's own check could run. Evidence: SOURCE CODE + TEST.
+
+7. **Storage.** `ManualImportStore`, a JSON file (`manual_import_servers.json`) keyed by `hostName`, with atomic temp-file + rename writes, a corrupt file reading as empty (and left untouched), and no Room or network access at all. A JSON file rather than a table because `manual_server`'s unique index is `(host, port, protocol)` while the list merges by host name — a multi-protocol CSV row would collapse into one protocol — and widening the schema is a Room migration this phase is not authorised to make. Evidence: SOURCE CODE + TEST.
+
+8. **Preservation, through the existing policy.** `ServerListUpdates.manualServerRows()` now emits the imported rows as well, and `ConnectionListViewModel.materializeImported()` writes them back through the same `withManualRows` the refresh path uses. One preservation rule, not two. Evidence: SOURCE CODE + TEST.
+
+9. **Provenance.** Imported rows carry the tag `manual` — never `api` or `html` — so a file the user imported can never speak with canonical authority in the merger. Evidence: SOURCE CODE + TEST.
+
+10. **Tests.** `ManualCsvImportTest` (36), `ManualImportStoreTest` (20), `ReadCappedUtf8Test` (9). The CSV tests cover both dialects, the section marker, BOM + CRLF, SMS hard-wrap repair, duplicate collapsing, the byte and row caps at their exact boundaries, the failure taxonomy, binary garbage, and the "`0.0.0.0` is accepted, an empty IP is not" distinction that the first draft of one test got wrong. Evidence: TEST.
+
+#### 1.6.50 EXCLUDED-APPS-SEED (v1.0.54)
+
+A fresh install should already exclude the operator's Iranian services instead of asking for twenty ticks by hand. The mechanism ships complete; the package names are the one part that needs the phone.
+
+1. **The asset.** `app/src/main/assets/default_excluded_apps` — one package name per line, `#` comments, blank lines ignored, duplicates collapsed to the first occurrence, BOM stripped. `DefaultExcludedApps.parse()` is pure (text in, list out); `load()` reads the asset and returns an empty list on any failure, because a packaging mistake must not stop the app from starting.
+
+2. **The four rules of `ExcludedAppsSeeder.seedOnce()`.** (a) **Installed only** — a package that is not on the device is skipped, never inserted as a phantom row that cannot be unticked meaningfully. (b) **Once per install** — `SETTING_EXCLUDED_APPS_SEEDED` is set when the seed runs, so a user who removes a seeded app does not get it back on the next launch. (c) **Never overwrite** — an existing row keeps its stored `appName`. (d) **No candidates, no flag** — see item 4.
+
+3. **Why the core takes lambdas.** `seedOnce()` performs no Android work: "is the flag set", "set the flag", "is this installed" and "insert this row" all arrive as functions. Every rule above is therefore provable in a pure JVM test with no Robolectric, no Room and no device — which matters precisely because the device is unavailable while this ships. Evidence: SOURCE CODE + TEST.
+
+4. **Rule (d) is the one that matters for this release.** The asset ships with its format documented and **no entries**, because the real package names are on the operator's phone and guessing them would produce rows that match nothing while the seeder reported success. Setting the flag on an empty list would permanently disable the seed for the very build that finally carries the names, so an empty candidate list leaves the flag clear. Evidence: TEST (`an empty seed list does not burn the one-shot flag`).
+
+5. **Wiring.** `App.onCreate` launches `ExcludedAppsSeeder.runIfNeeded()` on the existing `appScope` (IO) with `runCatching` — the same fire-and-forget shape as the v1.0.46 emergency-source seed, for the same reason: `getInstalledApplications` on a device with a few hundred packages must not block startup.
+
+6. **Package visibility, which the sheet also needed.** The manifest gained a `<queries>` element for `MAIN` / `LAUNCHER`. Since API 30, `getInstalledApplications` returns only packages the app is allowed to see; without a declaration it returns almost nothing — silently, with no error — so both the Excluded Apps sheet and this seed would have looked broken on any modern device. It is scoped to launchable apps on purpose: `QUERY_ALL_PACKAGES` requires a separate Play Console justification and buys nothing for the actual use case. The trade-off — a background service with no launcher activity is not listed — is recorded here rather than papered over. Evidence: SOURCE CODE.
+
+7. **Tests.** `ExcludedAppsSeederTest` (13) and `DefaultExcludedAppsTest` (12): installed-only, flag set even when nothing matched, second run inert, a user-removed entry not re-added, an already-excluded row keeping its name, seed order preserved, every candidate accounted for exactly once, the empty-list rule, comment/blank/duplicate/BOM/CRLF parsing, and two guards on the shipped asset itself (it must document its format, and it must still be empty until D1 lands).
+
+8. **DEFERRED (D1) — the package names.** The operator entered those apps manually on the phone; extracting the authoritative list needs the device. Adding them later is a data edit to one asset file: no code change, no schema change, no migration, because the parsing, the installed check, the one-shot flag and the tests are already in place. Evidence: OPERATOR STATEMENT.
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -4430,6 +4524,8 @@ The user must be able to configure one or more emergency source URLs:
 
 > **v1.0.46 annotation (§1.6.39 CHANGE A).** The bullets above describe what the *user* can configure. Since v1.0.46 a **fresh install also starts with one source already present**: on first startup `App.seedEmergencyDefaultIfNeeded(...)` inserts a single row whose URL is `R.string.default_emergency_source_url` — the published `servers.csv` location written by `emergency_csv_publisher.py` — with label `Default` and `enabled = true`. It is a normal row in `emergency_source_config`, so the user can disable or delete it with the same controls; the seed runs **once** (`SETTING_EMERGENCY_DEFAULT_SEEDED`), never overwrites an existing configuration, and a deleted row is not resurrected. Before this revision the resource was written but never read, so the table was empty on every new install and the emergency path was dead by construction. Evidence: SOURCE CODE + TEST.
 
+> **v1.0.54 annotation (§1.6.47).** The default is still seeded exactly as described above, and it is still **not** resurrected once deleted — that rule is unchanged. What v1.0.54 adds is an explicit way back: when no row carries the default URL, the Settings section shows a **Restore default source** button that inserts it again on demand. A deliberate deletion is therefore respected, while a user who deleted the row by accident (or cannot retype a URL) is no longer stuck. Evidence: SOURCE CODE.
+
 ### 11.9.2 Safety requirements
 
 The application must handle the following safely:
@@ -4486,47 +4582,49 @@ A future design task must define and document the canonical CSV schema **before*
 
 ## 11.10 Manual Server Entry (Product Requirement)
 
-Users must be able to add individual VPN servers manually.
-
-### 11.10.1 Motivating use case
-
-A user receives VPN server details from a friend by SMS, WhatsApp, Telegram, email, Bluetooth, a file, or another communication method and wants to add the server to SoftEthergai.
+Users must be able to add servers they receive from other people — by SMS, messenger, email, Bluetooth or a file — without depending on a collector.
 
 This is distinct from configuring an emergency URL:
 - **Emergency source** = a URL from which the application retrieves a dataset.
-- **Manual server** = an individual server/configuration supplied directly by the user.
+- **Imported servers** = individual records, or a small CSV of records, supplied directly by the user.
 
-### 11.10.2 UI entry point
+> **v1.0.54 (§1.6.49) — this section is now NORMATIVE, not planned.** The original text described an undecided UI and an undecided format ("Do not choose the final UI placement", "Do not invent the final manual-import format"). Both decisions have been taken and implemented: the surface is **CSV import**, and the accepted formats are the two dialects the app already owns. The former per-field form (host / port / protocol / label / notes) is **removed**; rows created by it remain stored, and remain listed, toggleable and removable.
 
-The future UI should provide an obvious "Add Server" entry point. Possible placements include:
-- An Add Server row at the end of the server list
-- A floating action button
-- Another UI placement consistent with the existing design
+### 11.10.1 Motivating use case
 
-Do not choose the final UI placement unless the existing specification already decides it.
+A user receives VPN server details from a friend by SMS, WhatsApp, Telegram, email, Bluetooth, a file, or another communication method and wants to add the server to SoftEthergai. The two realistic transports are a **pasted text block** (SMS, messenger) and a **file attachment** (messenger, email, Bluetooth). Both are supported directly.
 
-### 11.10.3 Input methods
+### 11.10.2 UI entry point (DECIDED, v1.0.54)
 
-Planned input methods should be considered in phases:
-- Paste server details or configuration text
-- Enter server fields manually
-- Import supported files
-- Receive shared text/configuration through Android Sharesheet / Intent
-- Support data received from messaging and communication applications, subject to Android platform capabilities and supported formats
+Settings → the servers section contains exactly two actions:
+- a multiline **paste field** with an **Import** button;
+- an **Import CSV file** button that opens the system document picker (`ActivityResultContracts.OpenDocument`).
 
-Do not promise that arbitrary SMS, messaging-app, or file formats will be automatically understood. The app must define and validate supported input formats.
+Imported rows are listed in the same section with a remove action, above the legacy manual rows. There is no separate "Add Server" screen and no floating action button.
+
+### 11.10.3 Accepted input (DECIDED, v1.0.54)
+
+- **Pasted text** or **a file** chosen through the system picker. The picker's MIME filter is `text/csv`, `text/plain` and `*/*`: messengers label CSV attachments inconsistently, and refusing a file the user can see would be worse than parsing it and reporting *unrecognised*.
+- **Two dialects only**, both already owned by an existing parser:
+  - the §10 extended CSV (`SERVER_SOURCE_ARCHITECTURE.md` §10) — required columns `HostName`, `IP`, `schema_version`, `SourceTag`;
+  - the VPN Gate `/api/iphone/` CSV — `#HostName,IP,...`, 15 canonical columns, optionally preceded by the `*vpn_servers` section marker.
+- **Transport artefacts tolerated** (an import is not a feed, so the collector's strictness would reject real user input): UTF-8 BOM, CRLF or CR line endings, trailing horizontal whitespace, the `*vpn_servers` marker, and rows hard-wrapped by SMS or a messenger.
+- **Hard limits:** 1 MiB of UTF-8 input and 2000 data rows. Over either limit the import is **refused whole**; it is never truncated, because a truncated server list is worse than a clear error. The byte cap is enforced before decoding.
+- **Anything else** is reported as *unrecognised*. The app does not promise to understand arbitrary SMS or messenger formats; the two dialects above are the promise.
 
 ### 11.10.4 Entry requirements
 
-Before adding a manual server:
-- Validate the supplied information.
-- Explain invalid or incomplete input to the user.
-- Avoid duplicate entries.
-- Preserve the original input where appropriate for editing or troubleshooting, subject to secure handling.
-- Record that the server was added manually.
-- Allow the user to edit and remove manually added entries.
+- **Validate and explain.** The result line states how many rows were accepted and how many were rejected, plus at most three reject reasons.
+- **Never echo or log the content.** A pasted profile can contain a private server address, so it never reaches a log line or the UI.
+- **No duplicates.** Rows are keyed by host name; re-importing the same file updates rows instead of duplicating them, and a repeated host inside one file collapses to the last occurrence.
+- **Survive refreshes.** Imported rows are re-materialised on every list build through the same `withManualRows` policy as legacy manual rows — one preservation rule, not two.
+- **Record provenance.** Imported rows carry the tag `manual`, never `api` or `html`, so a user-supplied file can never outrank a canonical source in the merger.
+- **Removable.** The user can delete any imported row.
+- **Fail safely.** An unreadable or oversized file produces one clear failure message, never a crash.
 
-Do not invent the final manual-import format or server model changes in this task.
+### 11.10.5 Storage and out-of-scope
+
+Imported records live in a JSON file store (`ManualImportStore`), **not** a Room table. `manual_server`'s unique index is `(host, port, protocol)` while the server list merges by host name, so a multi-protocol CSV row would collapse into a single protocol; widening the schema is a Room migration, which v1.0.54 was not authorised to make. No schema change, no migration, and no new §10 column result from this requirement.
 
 ---
 
@@ -4673,6 +4771,45 @@ A new Settings option controls whether Auto Mode automatically re-establishes a 
 - **ENABLED + S unreachable on all protocols** → app proceeds to next sorted server.
 - **DISABLED + unexpected drop** → app issues no reconnect; state returns to disconnected/idle.
 - **Either state + user re-press of AutoConnect during reconnection** → reconnection cancelled (R7b).
+
+---
+
+## 11.14 Settings Surface and List Presentation (v1.0.54)
+
+Normative decisions taken in v1.0.54. Each one either removes a control or fixes a default; none of them adds a user-facing option, and that is deliberate — every removed control had exactly one useful setting, so a switch was a way to be wrong.
+
+### 11.14.1 Removed Settings controls
+
+The following are **removed from the product**, not hidden and not deprecated. Their preference keys, consumers and strings are deleted; no code path may read them again.
+
+| Control | Removed with | Consequence |
+|---------|--------------|-------------|
+| *Include UDP server* | switch, `DataUtil.INCLUDE_UDP_SERVER`, every `isIncludeUdp` consumer | UDP-capable servers are in the list by construction; the badges are rendered from the ports themselves |
+| *Block Ads (Pro only)* | switch, `SETTING_BLOCK_ADS`, `AppConfig` alternate-DNS pair, three `resolvePrimaryDns()` / `resolveSecondaryDns()` branches | DNS resolves Custom-DNS-only, which is exactly what the switch produced when OFF |
+| *Cache save time* / *Cache will auto clear* | `models/Cache.kt`, five `DataUtil` accessors, `SETTING_CACHE_TIME_KEY`, `DEFAULT_CACHE_TIME_INDEX`, the `setting_cache_time` array | one manual **Clear cache** action remains; `DataUtil.clearTransientCache()` deletes `cacheDir` children and the legacy marker, and nothing else |
+
+A preference value left behind by an older install (for example `SETTING_CACHE_TIME_KEY`) is **inert**: it is never read, and a test pins that it is ignored rather than honoured.
+
+### 11.14.2 Auto Connect protocol-priority default
+
+`DataUtil.DEFAULT_AUTO_PROTOCOL_PRIORITY = [SOFTETHER_TCP, SOFTETHER_UDP]`, used when the stored key is **absent**. An **explicitly empty** stored profile stays empty: a user who switched every protocol off must not be silently overridden by a default. Unknown protocol ids read from storage are dropped.
+
+### 11.14.3 Server-list pinning
+
+The server that is currently `Connected` or `Connecting` is rendered at **index 0**. The identity is `ip|hostname` — the same key the Next-Server continuation and the wedge ledger use, never the IP alone and never the index. The move is a **view transform applied after filter and sort**; the stored dataset is not reordered, so a refresh cannot persist an accidental ordering and the retention fields (`firstSeenAt`, `lastSeenAt`, `healthScore`) are never rewritten by a display concern. A pinned row carries a visible badge.
+
+### 11.14.4 Excluded Apps default seed
+
+On the first run after install, every package listed in `assets/default_excluded_apps` that is **installed** on the device is added to `excluded_apps`, once (`SETTING_EXCLUDED_APPS_SEEDED`). Four rules, all normative:
+
+1. **Installed only** — an entry that is not on the device is skipped, never inserted as a phantom row.
+2. **Once per install** — a seeded app the user later removes is not re-added.
+3. **Never overwrite** — an existing row keeps its stored name.
+4. **No candidates, no flag** — an empty seed list does not set the one-shot flag, so a later build that ships real entries can still seed existing installs.
+
+Package visibility is declared in the manifest as a `<queries>` element for `MAIN` / `LAUNCHER`. Since API 30 an app cannot enumerate packages it has not declared an interest in, and the failure is silent; `QUERY_ALL_PACKAGES` was rejected because it requires a separate Play Console justification and adds nothing for this use case. **Known limitation, accepted:** a background service with no launcher activity is not listed.
+
+> **Status (v1.0.54).** The mechanism, the rules, the tests and the manifest declaration ship complete. The package names themselves are **DEFERRED (D1)** — they exist only on the operator's device. Adding them later is a data edit to one asset file.
 
 ---
 
@@ -5295,6 +5432,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 
 | 1.0.52 | 2026-10-22 | AUTO-ROUTE-AND-AUTOCONNECT-UX (device-free; operator-authorised; spec §1.6.44) | **Three operator-requested corrections. TASK A — the manual collector-routing switch is removed, not deprecated.** Deleted in one pass: the Settings switch, `DataUtil.getPrefersVpnForCollector()`/`setPrefersVpnForCollector()`, the now-write-only `defaultPreferences` field and its two-argument test constructor, `GlobalVpnTracker.prefersVpnForCollector()`, `PREF_ALWAYS_PREFER_VPN`, the `preferVpn` component of `CollectorRoutingInput`, the whole `CollectorRouting` object, and the two `setting_prefer_vpn_collector_*` strings. `CollectorRoutingInput` is now two **measurements** (`tunnelUsable`, `hasBoundNetwork`); a stale stored `vpn_always_prefer_vpn` is inert and needs no migration. **Replacement is measurement:** new bounded in-process `VpnServerRepository.PathMemory` (success TTL 30 min, failure cooldown 2 min, injectable clock, key space = the 3-value `CollectorPath` enum, no personal data, never persisted) and `routeLadder(input, memory)` keeps `PHYSICAL → TUNNEL (when usable and bound) → EMERGENCY` while promoting `TUNNEL` **only** on evidence (`PHYSICAL` cooling down, or `TUNNEL` the last proven transport) — no input can promote it. `refresh()` gained exactly one bounded one-shot TUNNEL retry: CAS-guarded `tunnelRetryAvailable`, `TUNNEL_RETRY_TIMEOUT_MS = 20 s`, inside the existing `refreshMutex`, re-armed only by a run that *starts* with a usable tunnel, so it cannot loop. **TASK B — Auto Connect UX and ownership.** B.1 the "Automatic Reconnection" switch moved Settings → Auto Connect screen (one preference, one switch, default still `true`). B.2 the default per-attempt timeout moved **12 s → 8 s** — `DataUtil.getAutoModeTimeoutSeconds()` default `8`, `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS = 8_000L`, picker fallback `values.indexOf(8)`; the default is now the 8 s floor, so fresh and legacy installs converge with no migration; normative sites (§6.7 R5, §6.8.1, §6.8.7, §10.1) updated, the 12 s figures in §1.6.23/§1.6.31/§1.6.39 left as historical record. B.3(a) `AutoModeController` gained `transitionLock` (a monitor, not a `Mutex`, because `start()`/`stop()` must stay non-suspending) + a `startLocked()` seam, so every `job` mutation is one transition and the skip continuation is published as the current job then swapped for `scope.launch { runAutoMode() }` while still holding the lock — `job` never passes through null, closing the two-loops window. B.3(b) `CancellationException` is rethrown on the probe and both connect paths (never absorbed as a failed attempt) and `adapter.disconnect()` runs under `withContext(NonCancellable)` so teardown completes. B.3(c) `rememberRemaining()` now compares by `serverKey` (`ip|hostname`, null → "") instead of `it.ip == current.ip && it.hostname == current.hostname`, which disagreed on null-vs-`""` and could re-dial the server just left. **Tests replaced, never silently deleted:** `DataUtilPrefersVpnTest` → `DataUtilRoutingPreferenceRemovedTest` (T-REMOVED-01..05); the routing half of `HttpFetcherR4bTest` → input-shape + removal assertions; `VpnServerRepositoryLadderTest` → the automatic ladder + 8 `PathMemory` cases; `DataUtilTimeoutRangeTest` T-NEW-70/72 updated to 8 s plus a new default-equals-controller-fallback case; `VpnServerRepositoryRoutingDynamicTest` extended with T-LADDER-20..24; two new `AutoModeControllerTest` cases (identity cursor with null-vs-empty hostname; double press never dials a server twice). One new production seam: `pathMemory` is a constructor parameter (and `PathMemory` is public, since a public constructor cannot expose an `internal` type) so a test can seed the evidence that promotes TUNNEL — production still gets a fresh instance. `:app` **925 / 0 / 0 / 1** (baseline 907; **+18** net), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched). `:app:assembleProDebug` SUCCESSFUL under `CI=true` (`--rerun-tasks --no-build-cache`); `versionCode='144' versionName='2.4.11-dev'` (**unchanged** — no build or manifest file touched). **NOT device-verified** — V-VERIFY-4 (automatic recovery with the physical path blocked; the moved switch reachable and persistent; a dead server abandoned at ~8 s) is PENDING. §22 byte-identical; §1.6.2–§1.6.43 untouched. No tag was created. |
 | 1.0.53 | 2026-10-22 | SERVER-DATA-AUDIT-AND-OPENVPN-CONFIG-GATE (device-free; operator-authorised; spec §1.6.45) | **TASK A — OpenVPN was treated as usable without a config.** `AutoModeController.usableProtocols()` gated OpenVPN on the port alone (`openVpnTcpPort > 0` / `openVpnUdpPort > 0`); `AndroidConnectionAdapter.connectOpenVpn()` returned **silently** when `openVpnConfigData` was null, so the connect looked issued, `awaitArmedOutcome()` waited out the full per-attempt budget and reported `TIMED_OUT` — the one outcome that records a **wedge** against the server (AUTOCONNECT-AUDIT D-5). A data defect was billed as a dead endpoint at 8 s per selected server. The emergency publisher strips configs to stay under the 1 MiB body cap, so this was the majority case, not an edge. Fix: new `AutoModeCandidate.openVpnConfigAvailable` (default `false`, **fail closed**) derived in `AutoModeEngine.toCandidate()` from the real bytes (`!openVpnConfigData.isNullOrBlank()`), required by both OpenVPN branches. One flag covers both transports because `OpenVpnConfigTransform.forUdp` is null iff its input is null — so `VPNGateConnection.kt` (authorised conditionally) was **not** needed. **Port facts are preserved verbatim**; only usability is gated. A `do_openvpn` link is not a config (nothing downloads it), and the gate keys on bytes, so link-only rows are correctly unusable. **TASK B.3 — the embedded config is authoritative over the link and the column.** Applied in `EmergencyCsvParser.applyOpenVpnColumnPort()` (within a row; new non-rejecting issues `OPENVPN_PORT_CONFLICT_CONFIG_WINS`, `OPENVPN_PORT_WITHOUT_CONFIG`; the parser also stops claiming `supported` without bytes, which stops `ServerQualityCalculator` awarding OpenVPN points to an undialable row), `VpnServerMerger.enforceConfigAuthoritativePorts()` (a record-wide invariant run before port validation, recording a §38 conflict) and `emergency_csv_publisher.enforce_config_ports()` (after the merge, before prune/budget, logging every correction). **No §10 CSV column was added.** **TASK B.4 — `SSTP_Hostname` may carry `:port`**, live and recurring (`SSTP Hostname : vpn799794865.opengw.net:1919`). `EmergencyCsvParser` was already correct (`normalizeHost()` + `applySstpEndpoint()`) and is now pinned by test; `emergency_csv_publisher.py` was not, and now splits via `split_sstp_endpoint()` + `normalize_sstp_rows()`. **TASK B.5 — flags verified against live HTML.** `SE_UDP_Port` all-zero with `SE_UDP_Supported` true is **correct data** (`TCP: 443<BR>UDP: Supported`; the page never publishes a SoftEther UDP port) — no change. `Has_IPv6` is **unobservable** (`IPv6` occurs 0 times on the 216 651-byte page) and inert (no record field, merge rule or UI reads it) — recorded UNKNOWN, no change, because the §10 schema requires a boolean and nothing depends on it. `SSTP_Supported` needs no change: the consumer already requires a port or the documented 443 default. **TASK B.6 — `AttemptOutcome.MISSING_CONFIG`** plus a per-attempt `[AUTO] ATTEMPT_CLASS` developer log (`CONNECTED` / `REFUSED_START` / `TIMEOUT_NO_VERDICT` / `ENDPOINT_REJECTED` / `MISSING_CONFIG`). The outcome is returned **before** any wait, so no budget is spent; the controller treats it as an ordinary attempt failure — next protocol on the same server, **no wedge, no terminal**, the v1.0.37 contract intact. The one distinction the log cannot make (refused port / TLS / protocol / auth all arrive as `NATIVE_ERROR`, because `TunnelStateWatcher` does not forward the stack's `logmessage`) is stated in code rather than invented; `WRONG_DATA_SUSPECT` is never emitted per attempt because it is a property of the record, not of one dial. **TASK B.2 — field-by-field audit.** All four parsers and the Python oracle converge on `speedMbps` / `uptimeDays` / `totalTrafficGB`; unquoted commas parse identically (0 malformed rows of 229, 29 columns every row); DDNS hostnames verbatim; 0 duplicate IPs; the OpenVPN port source is the only divergence, and it is the one fixed here. **The dataset advanced four times during the phase** (`a5cb153` 280 rows / `0387d37` 283 / `b5e0f7e` 271 / `4afa7e3` 229), so figures are pinned per commit: the config-less proportion is a **range (72.5–78.1 %)**, `123.48.124.169` (column 1534 vs config 1558) is present in every snapshot, and `153.180.162.195` — recorded UNKNOWN for `a5cb153` exactly as the brief instructed, because its config was empty there — is **confirmed at `4afa7e3`** (column 1820 vs config 1759). Nothing in this block wrote to `emergency-sources/servers.csv`, `servers.csv` or `vpngate_collector.py`; none was staged. JVM `:app` **941 / 0 / 0 / 1** (baseline 925; **+16** net), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), Python **40 / 0** (baseline 24; **+16**). `:app:assembleProDebug` SUCCESSFUL under `CI=true`; `versionCode 144` / `versionName 2.4.11-dev` unchanged. **One instability reported, not hidden:** across four full-suite runs `pressWhileConnectedDisconnects` failed once and `twoImmediateSkipsNeverDialTheSameServerTwice` failed once (logging a server dialled five times); both pass in isolation and on the recorded green run, and the duplicate dial is recorded as **R-1** for a follow-up block because it lies in the v1.0.52 skip/continuation path this block did not modify. **NOT device-verified** — V-1..V-5 PENDING. §22 byte-identical; §1.6.2–§1.6.44 untouched. No tag was created. |
+| 1.0.54 | 2026-10-23 | SETTINGS-CLEANUP, MANUAL-IMPORT, LIST-PIN, DEFAULTS, SKIP-RACE (device-free; operator-authorised; spec §1.6.46–§1.6.50) | **PART 1 — the R-1 duplicate dial, closed.** `skipInFlight` is set inside `transitionLock` before any async work, and its lifetime is owned by `setState` (any non-`Connected` state clears it) — the first implementation cleared it before the replacement run published a state, which reopened the very window it was meant to close and was caught by the full-suite run. A button press inside the window is a **stop**, not a swallowed press. **PART 2 — three Settings controls removed with their code:** *Include UDP server* (`INCLUDE_UDP_SERVER`, every `isIncludeUdp` consumer; UDP rows are in the list by construction), *Block Ads* (`SETTING_BLOCK_ADS`, the alternate-DNS pair, three `resolve*Dns` branches — Custom-DNS-only is exactly the OFF behaviour), and the cache schedule (`models/Cache.kt` deleted; `clearTransientCache()` replaces five accessors; one manual button remains). Auto Connect now defaults to **SoftEther TCP + SoftEther UDP** when the key is absent, while an explicitly empty profile stays empty. The emergency source stays pre-filled from `emergency_defaults.xml` and gained a *Restore default source* button. **PART 3 — the active/connecting server is pinned to row 1** by `ip|hostname` identity, applied after filter+sort as a pure O(n) view transform, with a visible badge; 11 tests. **PART 4 — the manual add-server form is replaced by CSV import:** a paste box plus a document picker, accepting the §10 extended CSV and the VPN Gate API CSV, with BOM/CRLF/SMS-hard-wrap repair, a 1 MiB and 2000-row hard cap enforced at the byte layer, duplicate collapsing by host, and JSON persistence (`ManualImportStore`) because the `manual_server` schema cannot hold a CSV row and this phase may not widen it. Legacy `manual_server` rows are still listed, so no user data is lost. Writing the tests found a real defect: the API body's `*vpn_servers` marker made every real API file `UNKNOWN`. **PART 5 — a one-shot first-run Excluded Apps seed** (`assets/default_excluded_apps`, `ExcludedAppsSeeder`) with four rules — installed-only, once per install, never overwrite, and *no candidates means no flag* — plus the `<queries>` declaration the sheet needed to see other packages on API 30+. The seed's package names are **DEFERRED (D1)** because they live on the operator's phone. **Verification:** `:app` **1044/0/0/1** (baseline 941, **+103**), `:SoftEtherClient` **184/0/0/0**; `AutoModeControllerTest` green on three consecutive `--rerun-tasks` runs after the fix. **NOT device-verified** — D2/D3 PENDING. §22 byte-identical; §1.6.2–§1.6.45 untouched. No tag was created. |
 
 ### Verification Status
 
@@ -5317,6 +5455,7 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | §1.6.43 — ADDITIONAL-CONNECT-PROTECT (v1.0.51) | HISTORICAL — attributed to this revision and its phase report (`ADDITIONAL_CONNECT_PROTECT_REPORT.md`). The defect (the additional TCP socket dialled at `softether_protocol.c:4036` with no protect between `socket_create` at `:4029` and the connect, while Kotlin's sweep only runs from the receive loop at `ConnectionController.kt:1175`) is **SOURCE CODE**, corroborated by the **PRIOR REPORT** device log of 2026-10-21 18:16. The hook (`protect_socket_fn`/`protect_socket_ctx`, `softether_set_socket_protector`), its call site between create and connect, the JNI upcall (`nativeSetSocketProtector`, `GetEnv`/`AttachCurrentThread`/`DetachCurrentThread`, `ExceptionCheck`/`Clear`, `NewGlobalRef`/`NewLocalRef`/`DeleteGlobalRef`), the release-after-join ordering in `nativeDestroy`, and the two Kotlin arming sites are **SOURCE CODE**. The fail-closed abort, the ordering, the teardown release ordering, and the preservation of the safety net are **TEST** (`AdditionalConnectProtectTest`, 7 cases, T-PROTECT-01..07). Counts `:SoftEtherClient` 184/0/0/0, `:app` 907/0/0/1 and APK `36b4e4bb…a521` are **TEST**, as is the presence of both symbols in the built `libsoftether.so`. **Device verification PENDING** — whether a SoftEther TCP tunnel now survives > 20 s with `additional_connect` active, whether the `received` counter climbs, and whether the on-device log shows the socket protected before connect are **UNKNOWN** (V-VERIFY-3). |
 | §1.6.44 — AUTO-ROUTE-AND-AUTOCONNECT-UX (v1.0.52) | VERIFIED at SOURCE CODE + TEST level, **NOT device-verified**. **SOURCE CODE:** the removal set (Settings row, `DataUtil` accessors + the write-only `defaultPreferences` field and its two-argument constructor, `GlobalVpnTracker.prefersVpnForCollector()`, `PREF_ALWAYS_PREFER_VPN`, `CollectorRoutingInput.preferVpn`, the `CollectorRouting` object, the two `setting_prefer_vpn_collector_*` strings) inspected as absent; `PathMemory` (bounded `HashMap<CollectorPath, Long>` pairs, injectable clock, TTL/cooldown, `synchronized` on every method), `routeLadder(input, memory)` and the `fetchOnChosenPath` `recordSuccess`/`recordFailure` wiring inspected; the one-shot retry inspected as CAS-guarded, `refreshMutex`-scoped, `withTimeoutOrNull(TUNNEL_RETRY_TIMEOUT_MS)`-bounded and re-armed only by a run that starts with a usable tunnel; the `transitionLock` critical sections, the `startLocked()` seam, the two `CancellationException` rethrows, the `withContext(NonCancellable) { adapter.disconnect() }` sites and the `serverKey` comparison in `rememberRemaining()` inspected; the moved switch inspected on `AutoModeScreen` and absent from `SettingsScreen`; the 8 s default inspected in `DataUtil`, `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` and the picker fallback. **TEST:** 18 net new JVM cases across `VpnServerRepositoryLadderTest` (rewritten: base order, evidence-only promotion, invariants, 8 `PathMemory` cases), `VpnServerRepositoryRoutingDynamicTest` (T-LADDER-20..24), `HttpFetcherR4bTest` (routing half replaced by removal assertions), `DataUtilRoutingPreferenceRemovedTest` (T-REMOVED-01..05, replacing the deleted `DataUtilPrefersVpnTest`), `DataUtilTimeoutRangeTest` (T-NEW-70/70b/72) and two `AutoModeControllerTest` cases (null-vs-`""` identity cursor; double press never dials a server twice). Counts `:app` **925 / 0 / 0 / 1** (baseline 907), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), and the `:app:assembleProDebug` gate, are **TEST**. **PENDING (UNKNOWN, V-VERIFY-4):** whether the collector now recovers on its own when the physical path is blocked (run 1 fails on PHYSICAL, run 2 logs `[ladder] order=TUNNEL,PHYSICAL,EMERGENCY` with no user action); whether the moved switch is reachable on the Auto Connect screen, absent from Settings and persistent across a restart; and whether a dead server is abandoned at ~8 s rather than ~12 s. |
 | §1.6.45 — SERVER-DATA-AUDIT-AND-OPENVPN-CONFIG-GATE (v1.0.53) | VERIFIED at SOURCE CODE + TEST level, **NOT device-verified**. **SOURCE CODE:** the gate (`openVpnConfigAvailable` required by **both** OpenVPN branches of `usableProtocols()`), the fail-closed default on `AutoModeCandidate`, its derivation from the real bytes in `AutoModeEngine.toCandidate()`, and the untouched port fields, inspected; `AttemptOutcome.MISSING_CONFIG` returned **before** `awaitArmedTunnel` in `awaitArmedOutcome()`, `lastMissingConfig` cleared per attempt in `armTunnelWatch()`, and the controller branch that `continue`s to the next protocol on the same server (no wedge, no wait, no terminal) inspected; the `[AUTO] ATTEMPT_CLASS` emission and the `classifyAttempt()` mapping inspected, with the distinction it cannot make stated in code rather than guessed; `EmergencyCsvParser.applyOpenVpnColumnPort()` (three cases, `OPENVPN_PORT_CONFLICT_CONFIG_WINS`, `OPENVPN_PORT_WITHOUT_CONFIG`, and `supported` no longer claimed without bytes) and `VpnServerMerger.enforceConfigAuthoritativePorts()` (run before port validation, recording a §38 conflict) inspected; `emergency_csv_publisher.py`'s `split_sstp_endpoint()` / `normalize_sstp_rows()` / `enforce_config_ports()` inspected as wired between the `sanitize_row` filter and `dedupe_hostnames`. `SE_UDP_Port`, `Has_IPv6` and `SSTP_Supported` inspected as **deliberately unchanged** (§1.6.45 items 12–14). **TEST:** 16 net new JVM cases — 4 in `AutoModeControllerTest` (config absent, HTML-link-only, port facts preserved, `MISSING_CONFIG` rotation to the next protocol), 4 in the new `AutoConnectAttemptClassificationTest` (including a source-shape guard that the `lastMissingConfig` check precedes `awaitArmedTunnel`), 6 in `EmergencyCsvParserTest` (port conflict, port without config, three SSTP `host:port` cases, merged API+emergency rows) and 2 in `MergerOracleTest` — plus 16 net new Python cases (9 `ConfigAuthoritativePorts`, 7 `SstpHostPortSplit`). Counts `:app` **941 / 0 / 0 / 1** (baseline 925), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), Python `test_emergency_csv_publisher.py` **40 / 0** (baseline 24), and the `:app:assembleProDebug` gate, are **TEST**. One instability is disclosed rather than hidden: `pressWhileConnectedDisconnects` and `twoImmediateSkipsNeverDialTheSameServerTwice` each failed once across four full-suite runs (the latter logging one server dialled five times), both pass in isolation and on the recorded green run, and the duplicate dial is recorded as **R-1** for a follow-up block because it lies in the v1.0.52 skip/continuation path this revision did not modify. **PENDING (UNKNOWN, V-1..V-5):** that a config-less OpenVPN server is never selected and no 8 s stall precedes the protocol rotation; that the gate does not shrink the usable set when configs are present; that `123.48.124.169` dials 1558 rather than 1534; that an SSTP row whose hostname carries `:port` reaches the intended endpoint instead of failing to resolve; and that `ATTEMPT_CLASS MISSING_CONFIG` never appears in a device log — its appearance would itself be a defect report. |
+| §1.6.46–§1.6.50 — v1.0.54 (SKIP-RACE, SETTINGS-CLEANUP, LIST-PIN, MANUAL-IMPORT, EXCLUDED-APPS-SEED) | VERIFIED at SOURCE CODE + TEST level only. `:app` **1044/0/0/1**, `:SoftEtherClient` **184/0/0/0**; 108 new tests across 7 new classes, 3 new Auto Mode tests, 2 obsolete Settings tests deleted. PART 1's coalescing is proven with a gated teardown rather than a raced one, and the class was re-run three times with `--rerun-tasks`. **NOT device-verified:** D2 (pinned row, import via paste and file, the four removed Settings controls, default protocol priority, the single cache button, and a Next-Server double press) and D3 (V-VERIFY-3/4) are PENDING — no device ran. **DEFERRED:** D1, the package names for `assets/default_excluded_apps`. |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
