@@ -389,3 +389,54 @@ Evidence: `test-evidence/dv57/final_logcat.txt`.
   (1068 tests here). The committed-tree evidence is the three runs in §C.
 - No claim about real Wi-Fi/cellular handover behaviour, process-restart durability, or any
   improvement in physical connection success rate.
+
+---
+
+## H. Push gate (STEP 7) — **NOT MET**
+
+The block authorises a push only if four conditions hold. Condition (2) does not.
+
+| Gate | Result |
+|---|---|
+| (1) fast-forward — `origin/main` is an ancestor of HEAD | **PASS** (`0 2` at first, then `0 4`; `git merge-base --is-ancestor` succeeds) |
+| (2) three committed-tree runs all green, no failures/errors | **FAIL** — see below |
+| (3) device launch OK, no crash, V3 not a FAIL | **PASS** — pid constant 30 s, zero FATAL/ANR/tombstone; V3 PASS |
+| (4) `git status --short` identical to STEP 1 | **PASS** — the only delta is `PROJECT_SPECIFICATION.md`, which this block committed; no F.29 file, `D1_CANDIDATES.md`, `test-evidence/` or `vpngate_collector.py` was touched |
+
+### The three runs at the push HEAD (`ac3939f`)
+
+| # | Result | `:app` | `:SoftEtherClient` |
+|---|--------|--------|--------------------|
+| 1 | **INFRA FAILURE** — `java.net.BindException: Address already in use: bind`, daemon could not start, failed in 5 s with no tests executed | — | — |
+| 2 | BUILD SUCCESSFUL | 1072/0/0/1 (87 suites) | 184/0/0/0 (13 suites) |
+| 3 | **BUILD FAILED** | 1072/**1**/0/1 (87 suites) | 184/0/0/0 (13 suites) |
+| 1-retry | BUILD SUCCESSFUL (`--no-daemon`, per the block's infra rule) | 1072/0/0/1 (87 suites) | 184/0/0/0 (13 suites) |
+
+So three runs actually executed tests: **two green, one failed**.
+
+### The failure — a pre-existing test race, not a regression
+
+```
+vn.unlimit.vpngate.network.ReachabilityGateTest.unreachableOnEveryUsableProtocolRemovesTheServer
+java.lang.ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 0
+    at java.base/java.util.ArrayList.add(ArrayList.java:484)
+    at vn.unlimit.vpngate.network.ReachabilityGateTest$PerProtocolProbe.probe(ReachabilityGateTest.kt:52)
+    at vn.unlimit.vpngate.network.ServerReachabilityTester$filterReachableCandidates$2$verdicts$1$1.invokeSuspend(ServerReachabilityTester.kt:413)
+    at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.java:586)
+```
+
+`ReachabilityGateTest.kt:52` is `calls += target` — an append to a plain `mutableListOf()` (an `ArrayList`) inside the test's own fake probe. The stack shows the call arriving from `CoroutineScheduler`, i.e. the tester fans the probe out across parallel coroutines, so two threads append to an unsynchronised `ArrayList` concurrently. `ArrayList.add` is not thread-safe; the race is in the **test's** data structure, and the exception is thrown inside the fake, before any assertion runs.
+
+**It is not caused by this block.** `git log 0c3c56e..HEAD -- <that test> <the tester>` is empty: neither `ReachabilityGateTest.kt` nor `ServerReachabilityTester.kt` was touched. This block's four commits change exactly six files — the two markdown documents, `default_excluded_apps`, `ConnectionListViewModel.kt`, `DefaultExcludedAppsTest.kt` and `ConnectionListViewModelInitOrderTest.kt` — none of which is in the failing path. The crash fix moves an `init` block; the D1 change is an asset and a test file.
+
+**It is the same defect class already on record.** §1.6.51 records two v1.0.54 flakes — `pressWhileConnectedDisconnects` (2 of 10) and `aFreshPressAfterExhaustionStartsFromTheTopAgain` (1 of 10) — both test-level races that load could manufacture, and the lesson written there ("never assert an instantaneous intermediate state in this controller's tests") applies verbatim here. The v1.0.55 fix repaired those two; this is a third instance of the same pattern in a different suite.
+
+**Frequency in this block.** Across every full-suite run executed here: 7 green, 1 failed, 1 infra failure (retried green). The failure appeared once in roughly 1-in-4 loaded runs — the same order as the v1.0.54 flakes, and low enough that a single run looks clean most of the time.
+
+### Consequence
+
+**No push was made.** `origin/main` is still `0c3c56e`; HEAD is `ac3939f` with four unpushed commits. Nothing was force-pushed, no tag was created, and the working tree is unchanged.
+
+### Recommended next step
+
+The race is a one-line test fix — make `calls` thread-safe (`CopyOnWriteArrayList`, or a `synchronized` block, or collect into a concurrent structure) — and it is independently worth doing, because a flaky suite erodes the value of every green run recorded against it. It is **out of scope for this block**, which authorised only the ViewModel fix, its tests and the D1 data change, so it needs its own authorisation. Once fixed, the gate can be re-run cleanly and the four commits pushed.
