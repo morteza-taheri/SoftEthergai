@@ -117,6 +117,14 @@ copied in, and confirmed to contain the fix but **not** the F.29 work and **not*
 `1064 + 4 = 1068`, exactly the four new tests. No failures, no errors, one pre-existing skip.
 All three runs used `--rerun-tasks --no-build-cache` with `CI=true` and the Android Studio JBR.
 
+**A later, final verification at the pushed HEAD.** The D1 commit (`85f0747`) landed *after* the three
+runs above and after the device install, so the tree that was actually pushed is not the tree that was
+device-tested. To close that gap the final HEAD (`85f0747` = fix + D1) was re-extracted with
+`git archive HEAD` and run three more times: `:app` **1072/0/0/1** across **87 suites**
+(1064 + 4 crash-fix tests + 4 D1 tests), `:SoftEtherClient` **184/0/0/0** across 13 suites, all
+BUILD SUCCESSFUL, no failures, no errors, one pre-existing skip. The three numbers are therefore:/n`7dac3a6` → 1068, `85f0747` → 1072, and the device-verified APK is the `7dac3a6` one (SHA-256
+`9c0328de…`).
+
 **APK.** `:app:assembleProDebug` BUILD SUCCESSFUL — `app-pro-debug.apk`, **63,824,336 bytes**,
 SHA-256 **`9c0328de42bfc3d9a1cd5b0f0390fd23aba01166033b6e1edba615032860bd42`**,
 `versionCode 144` / `versionName 2.4.11-dev`.
