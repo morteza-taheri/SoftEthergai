@@ -181,7 +181,7 @@
     <string name="feature_available_in_pro">این قابلیت فقط در نسخهٔ Pro موجود است</string>
     <string name="setting_apply_on_next_connection_time">این تنظیم در اتصال بعدی اعمال می‌شود</string>
     <string name="dns_setting_label">استفاده از DNS سفارشی</string>
-    <string name="dns_setting_hint">استفاده از DNS سفارشی هنگام اتصال به سرور VPN به‌جای DNS پیش‌فرض گوگل (۸.۸.۸.۸/۸.۸.۴.۴).\nبا فعال‌سازی، تنظیم مسدودسازی تبلیغات خاموش می‌شود</string>
+    <string name="dns_setting_hint">استفاده از DNS سفارشی هنگام اتصال به سرور VPN به‌جای DNS پیش‌فرض گوگل (۸.۸.۸.۸/۸.۸.۴.۴).</string>
     <string name="dns_ip_2">DNS ۲ (اختیاری)</string>
     <string name="dns_preset_label">DNS از پیش‌تنظیم‌شده</string>
     <string name="dns_preset_google">گوگل</string>

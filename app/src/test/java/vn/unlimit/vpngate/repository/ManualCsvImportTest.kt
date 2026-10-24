@@ -454,4 +454,92 @@ class ManualCsvImportTest {
         assertEquals(1_048_576, ManualCsvImport.MAX_BYTES)
         assertEquals(2000, ManualCsvImport.MAX_ROWS)
     }
+
+    // ── v1.0.59 PART B2: whitespace / control characters inside a field ──
+
+    @Test
+    fun `leading and trailing whitespace is trimmed and accepted`() {
+        val result = success(
+            ManualCsvImport.parse(
+                appCsv(appRow("HostName" to "  public-vpn-206  ")),
+                now,
+            ),
+        )
+
+        assertEquals(1, result.items.size)
+        assertEquals("public-vpn-206", result.items.first().hostName)
+    }
+
+    @Test
+    fun `a host name with an inner space is rejected with a per-row reason`() {
+        // The device stored `test-a. example` — an input method that inserts a
+        // space after `.` produced a server that no DNS can resolve and that the
+        // dedupe can never match.
+        val result = success(
+            ManualCsvImport.parse(
+                appCsv(
+                    appRow("HostName" to "good.example", "IP" to "203.0.113.10"),
+                    appRow("HostName" to "test-a. example", "IP" to "203.0.113.11"),
+                ),
+                now,
+            ),
+        )
+
+        assertEquals("only the clean row may be stored", 1, result.items.size)
+        assertEquals("good.example", result.items.first().hostName)
+        assertEquals(1, result.rejectedCount)
+        assertTrue(
+            "the summary must name the reason; got ${result.rejectedReasons}",
+            result.rejectedReasons.any { it.contains("whitespace or control characters") },
+        )
+        assertTrue(
+            "the summary must identify the offending row; got ${result.rejectedReasons}",
+            result.rejectedReasons.any { it.contains("test-a. example") },
+        )
+    }
+
+    @Test
+    fun `an IP with an inner space is rejected`() {
+        val result = success(
+            ManualCsvImport.parse(
+                appCsv(
+                    appRow("HostName" to "good.example", "IP" to "203.0.113.10"),
+                    appRow("HostName" to "spaced.example", "IP" to "203.0.113. 11"),
+                ),
+                now,
+            ),
+        )
+
+        assertEquals(1, result.items.size)
+        assertEquals(1, result.rejectedCount)
+    }
+
+    @Test
+    fun `a control character in the host name is rejected and not echoed raw`() {
+        val result = success(
+            ManualCsvImport.parse(
+                appCsv(
+                    appRow("HostName" to "good.example", "IP" to "203.0.113.10"),
+                    appRow("HostName" to "bad\u0007.example", "IP" to "203.0.113.12"),
+                ),
+                now,
+            ),
+        )
+
+        assertEquals(1, result.items.size)
+        assertEquals(1, result.rejectedCount)
+        assertTrue(
+            "a control character must never reach the summary verbatim",
+            result.rejectedReasons.none { it.contains('\u0007') },
+        )
+    }
+
+    @Test
+    fun `the inner-whitespace predicate matches exactly the inner cases`() {
+        assertFalse(ManualCsvImport.hasInnerWhitespaceOrControl("public-vpn-206"))
+        assertFalse(ManualCsvImport.hasInnerWhitespaceOrControl("219.100.37.165"))
+        assertTrue(ManualCsvImport.hasInnerWhitespaceOrControl("test-a. example"))
+        assertTrue(ManualCsvImport.hasInnerWhitespaceOrControl("a\tb"))
+        assertTrue(ManualCsvImport.hasInnerWhitespaceOrControl("a\u0007b"))
+    }
 }

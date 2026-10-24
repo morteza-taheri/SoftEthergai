@@ -204,6 +204,8 @@ object ManualCsvImport {
 
         val byHost = LinkedHashMap<String, VPNGateItem>()
         var unusable = 0
+        var malformed = 0
+        val malformedReasons = mutableListOf<String>()
         for (record in records) {
             val connection = try {
                 VpnConnectionMapper.toConnection(record)
@@ -219,7 +221,27 @@ object ManualCsvImport {
                 unusable++
                 continue
             }
-            byHost[item.hostName.trim()] = item.copy(
+            // v1.0.59 (§1.6.58) PART B2: a field with whitespace or control
+            // characters *inside* it is not a server identity, it is a paste
+            // artefact. Leading/trailing whitespace is trimmed and accepted;
+            // anything left inside is rejected per row.
+            //
+            // The device showed why this matters: a row typed through an input
+            // method that inserts a space after `.` was stored as
+            // `test-a. example`, which then survives as a distinct server that
+            // no DNS will ever resolve and that the dedupe can never match.
+            val host = item.hostName.trim()
+            val ip = item.ip.orEmpty().trim()
+            if (hasInnerWhitespaceOrControl(host) || hasInnerWhitespaceOrControl(ip)) {
+                malformed++
+                if (malformedReasons.size < MAX_REPORTED_REASONS) {
+                    malformedReasons +=
+                        "row '${sanitizeForReport(host)}': whitespace or control characters " +
+                        "inside the host name or IP"
+                }
+                continue
+            }
+            byHost[host] = item.copy(
                 firstSeenAt = now,
                 lastSeenAt = now,
                 healthScore = 0,
@@ -229,13 +251,32 @@ object ManualCsvImport {
 
         val mergedReasons = ArrayList<String>(reasons)
         if (unusable > 0) mergedReasons.add(0, "$unusable row(s) had no usable address")
+        if (malformed > 0) mergedReasons.add(0, "$malformed row(s) had a malformed host name or IP")
+        mergedReasons.addAll(0, malformedReasons)
         return Result.Success(
             format = format,
             items = byHost.values.toList(),
             rejectedReasons = mergedReasons.take(MAX_REPORTED_REASONS),
-            rejectedCount = rejectedCount + unusable,
+            rejectedCount = rejectedCount + unusable + malformed,
         )
     }
+
+    /**
+     * True when [value] still contains whitespace or a control character after
+     * its ends have been trimmed — i.e. something is *inside* the field.
+     */
+    internal fun hasInnerWhitespaceOrControl(value: String): Boolean =
+        value.any { it.isWhitespace() || it.isISOControl() }
+
+    /**
+     * A short, printable excerpt of a rejected value for the result summary.
+     *
+     * Control characters become `·` so a summary line can never carry an
+     * invisible character (or a terminal escape) into the UI, and the length is
+     * bounded so one pathological row cannot dominate the report.
+     */
+    private fun sanitizeForReport(value: String, max: Int = 40): String =
+        value.take(max).map { if (it.isISOControl()) '·' else it }.joinToString("")
 
     // ─────────────────────────────────────────────────────────────────────
     // Wrapped-line repair (SMS / messenger paste)

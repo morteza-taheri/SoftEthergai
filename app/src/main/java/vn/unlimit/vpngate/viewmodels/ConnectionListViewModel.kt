@@ -330,7 +330,15 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 if (itemDao != null) {
                     val remaining = itemDao.getAll().filterNot { it.hostName.trim() == hostName.trim() }
                     if (remaining.isNotEmpty()) itemDao.replaceAll(remaining)
-                    vpnGateConnectionList.value = VPNGateConnectionList().fromVPNGateItems(remaining)
+                    // v1.0.59 (PART A): a LiveData write from inside
+                    // `withContext(Dispatchers.IO)` — this was the second crash
+                    // the device reproduced (`:333` before the fix). The value is
+                    // still published before this block returns, so the ordering
+                    // the caller relies on is unchanged.
+                    publishLiveData(
+                        vpnGateConnectionList,
+                        VPNGateConnectionList().fromVPNGateItems(remaining),
+                    )
                 }
                 _importedServers.value = store.items()
             }
@@ -367,7 +375,12 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         val merged = withManualRows(current, legacyRows + store.items())
         if (merged.isEmpty()) return
         itemDao.replaceAll(merged)
-        vpnGateConnectionList.value = VPNGateConnectionList().fromVPNGateItems(merged)
+        // v1.0.59 (PART A): NOT `vpnGateConnectionList.value = …`. This function
+        // runs inside `withContext(Dispatchers.IO)` at every call site, and
+        // `MutableLiveData.setValue` asserts the main thread — the device threw
+        // `IllegalStateException: Cannot invoke setValue on a background thread`
+        // here after a successful import, killing the app. See [publishLiveData].
+        publishLiveData(vpnGateConnectionList, VPNGateConnectionList().fromVPNGateItems(merged))
     }
 
     /** §33: provenance dump + raw sources for the debug panel. */
@@ -447,10 +460,17 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                                 outcome.snapshotSaved -> "saved"
                                 else -> "not saved"
                             }
+                            // v1.0.59 (§1.6.58) PART B3: two numbers, named.
+                            // `outcome.serverCount` is the INCOMING dataset
+                            // (`usableRows.size` in ServerListUpdater), never the
+                            // table's size — reading it as "the dataset went
+                            // 261 -> 170" is what produced the false V9 finding
+                            // in BLOCK v1.0.58. `list.size()` is the stored table
+                            // as it is right now, after the write.
                             Log.i(
                                 TAG,
-                                "Server list updated atomically: ${outcome.serverCount} servers " +
-                                    "(snapshot $snapshotNote)",
+                                "Server list updated atomically: ${outcome.serverCount} incoming, " +
+                                    "${list.size()} stored (snapshot $snapshotNote)",
                             )
                         }
                     }
@@ -503,4 +523,41 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
             }
         }
     }
+}
+
+/**
+ * v1.0.59 (§1.6.58) PART A: publish a `LiveData` value from **any** coroutine
+ * context, including `Dispatchers.IO`.
+ *
+ * ## Why this exists
+ *
+ * `MutableLiveData.setValue` calls `assertMainThread("setValue")` and throws
+ * `IllegalStateException: Cannot invoke setValue on a background thread` when
+ * it is not. The CSV-import path (v1.0.54) did exactly that, from inside
+ * `withContext(Dispatchers.IO)`, at two sites: `materializeImported()` (after a
+ * successful import) and `removeImportedServer()` (after a delete). Both
+ * completed the *data* work first, so the row was written and then the app
+ * died — reproduced on device `5585fecc` at 16:07:13 and 16:09:54.
+ *
+ * ## Why not `postValue`
+ *
+ * `postValue` is thread-safe but it **defers**: the value lands on the main
+ * loop later, and two rapid calls can coalesce into one. The callers here
+ * return to the UI immediately after publishing (`importManualCsv` returns the
+ * parse result that drives the summary dialog), so the existing ordering
+ * guarantee is "the list is published before the caller continues". Switching
+ * to `postValue` would have changed that to "eventually", which is exactly the
+ * kind of ordering drift that produces a summary dialog next to a stale list.
+ * A main-thread hop keeps the guarantee: the assignment happens on the main
+ * thread, synchronously, before this function returns.
+ *
+ * [dispatcher] exists so a JVM test can drive the hop without a real Android
+ * main looper; production always uses the default.
+ */
+internal suspend fun <T> publishLiveData(
+    target: MutableLiveData<T>,
+    value: T,
+    dispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.Main.immediate,
+) {
+    withContext(dispatcher) { target.value = value }
 }
