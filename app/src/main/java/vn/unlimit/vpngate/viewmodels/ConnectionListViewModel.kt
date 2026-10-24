@@ -42,13 +42,6 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
 
     val vpnGateConnectionList = MutableLiveData<VPNGateConnectionList>()
     val lastUpdatedTime = MutableLiveData<Long>()
-    init {
-        vpnGateConnectionList.value = dataUtil.connectionsCache
-        lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
-        // v1.0.54 (§1.6.49) PART 4: load the imported CSV rows once, off the
-        // main thread. A missing or corrupt file reads as empty.
-        refreshImportedServers()
-    }
     private var isRetried = false
     var isError: MutableLiveData<Boolean> = MutableLiveData(false)
 
@@ -279,6 +272,28 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      * few reject reasons — the parse result is the only thing that can tell a
      * user why their file did nothing.
      */
+
+    init {
+        vpnGateConnectionList.value = dataUtil.connectionsCache
+        lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
+        // v1.0.57 (§1.6.55): every property this class uses is declared ABOVE
+        // this block, and this launch is the last thing init does.
+        //
+        // refreshImportedServers() starts a coroutine on viewModelScope, which
+        // uses Dispatchers.Main.immediate: the coroutine body runs
+        // synchronously up to its first suspension point. Any field it writes
+        // must therefore already be initialised. Before v1.0.57 the init block
+        // sat at the top of the class while _importedServers was declared ~220
+        // lines below, so `_importedServers.value = ...` hit a null field and
+        // the app died on launch with a NullPointerException on
+        // MutableStateFlow.setValue. Moving the block here (after every
+        // property) is what makes the write safe.
+        //
+        // v1.0.54 (§1.6.49) PART 4: load the imported CSV rows once, off the
+        // main thread. A missing or corrupt file reads as empty.
+        refreshImportedServers()
+    }
+
     suspend fun importManualCsv(text: String): vn.unlimit.vpngate.repository.ManualCsvImport.Result {
         val store = importStore
             ?: return vn.unlimit.vpngate.repository.ManualCsvImport.Result.Failure(
