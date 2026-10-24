@@ -11,8 +11,36 @@ import org.junit.Test
  * Pure JVM: text in, list out. The asset read itself is a one-line
  * `assets.open(...)` and is not worth a Robolectric test; the *rules* are what
  * can silently break, so they are what this class pins.
+ *
+ * v1.0.56: the asset is no longer empty. The 12 package names were extracted
+ * from the operator's device in BLOCK v1.0.56 PART B and confirmed by the
+ * operator. [EXPECTED_D1_ENTRIES] is the single place that expectation lives,
+ * so adding or removing an entry is a one-line edit here plus the asset.
  */
 class DefaultExcludedAppsTest {
+
+    /**
+     * The confirmed D1 list, in the asset's shipped (sorted) order.
+     *
+     * Extracted from `excluded_apps` on device 5585fecc on 2026-10-24. The
+     * operator's device had 15 rows; the three non-defaults
+     * (DeepSeek / Android Auto / the app itself) are deliberately excluded and
+     * pinned absent by `the shipped asset excludes the three non-default packages`.
+     */
+    private val EXPECTED_D1_ENTRIES = listOf(
+        "app.rbmain.a",
+        "cab.snapp.passenger",
+        "com.byagowi.persiancalendar",
+        "com.farsitel.bazaar",
+        "com.myirancell",
+        "com.pmb.mobile",
+        "com.rahand.qbank",
+        "ir.bmi.bam.nativeweb",
+        "ir.easytrader.orbis.m.twa",
+        "ir.eitaa.messenger",
+        "ir.nasim",
+        "org.rajman.neshan.traffic.tehran.navigator",
+    )
 
     @Test
     fun `a plain list is returned in order`() {
@@ -63,15 +91,86 @@ class DefaultExcludedAppsTest {
     }
 
     @Test
-    fun `the shipped asset carries no entries yet`() {
-        // The seed ships with its format and no package names, because the real
-        // list is on the operator's device (report DEFERRED item D1). This test
-        // is the reminder: when the names are added, this expectation changes
-        // with them, deliberately, in one place.
+    fun `the shipped asset carries the extracted D1 entries`() {
+        // v1.0.56: the list was extracted from the operator's device in BLOCK
+        // v1.0.56 PART B and confirmed with "CONFIRM D1: ALL CLASSIFIED-IRANIAN".
+        // The old expectation ("carries no entries yet") was the reminder that
+        // the extraction was pending; it is now deliberately replaced by the
+        // real content, in this one place.
         val shipped = java.io.File("src/main/assets/default_excluded_apps")
         assertTrue("asset not found at ${shipped.absolutePath}", shipped.isFile)
         val parsed = DefaultExcludedApps.parse(shipped.readText(Charsets.UTF_8))
-        assertEquals(emptyList<String>(), parsed)
+        assertEquals(EXPECTED_D1_ENTRIES, parsed)
+    }
+
+    @Test
+    fun `every shipped entry is a plausible Android package name`() {
+        // Android package names are dot-separated Java identifiers. This is a
+        // shape check, not Android's full grammar: a malformed name would never
+        // match an installed package, so the seeder would skip it silently and
+        // the exclusion would be lost without any visible error.
+        val shipped = java.io.File("src/main/assets/default_excluded_apps")
+        val parsed = DefaultExcludedApps.parse(shipped.readText(Charsets.UTF_8))
+        assertTrue("the asset must ship entries", parsed.isNotEmpty())
+        val segment = Regex("[A-Za-z_][A-Za-z0-9_]*")
+        for (pkg in parsed) {
+            val segments = pkg.split(".")
+            assertTrue(
+                "'$pkg' must have at least two dot-separated segments",
+                segments.size >= 2,
+            )
+            for (seg in segments) {
+                assertTrue(
+                    "'$pkg' has an invalid segment '$seg'",
+                    seg.isNotEmpty() && segment.matches(seg),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the shipped asset contains no duplicate entries`() {
+        val shipped = java.io.File("src/main/assets/default_excluded_apps")
+        val parsed = DefaultExcludedApps.parse(shipped.readText(Charsets.UTF_8))
+        assertEquals(
+            "duplicates found: " +
+                parsed.groupBy { it }.filter { it.value.size > 1 }.keys,
+            parsed.size,
+            parsed.toSet().size,
+        )
+    }
+
+    @Test
+    fun `the shipped entries are sorted and carry no comment leakage`() {
+        // Sorted keeps the diff small when an entry is added. And a comment
+        // marker surviving into an entry would make the name unmatchable.
+        val shipped = java.io.File("src/main/assets/default_excluded_apps")
+        val parsed = DefaultExcludedApps.parse(shipped.readText(Charsets.UTF_8))
+        assertEquals(parsed.sorted(), parsed)
+        for (pkg in parsed) {
+            assertTrue("'$pkg' contains '#'", !pkg.contains("#"))
+            assertTrue("'$pkg' contains whitespace", pkg.none { it.isWhitespace() })
+        }
+    }
+
+    @Test
+    fun `the shipped asset excludes the three non-default packages`() {
+        // The operator's device had 15 rows; three must NOT ship to all users:
+        // DeepSeek (Chinese, personal), Android Auto (Google, user-added), and
+        // the app itself (self-excluded in App.kt). This pins that decision so
+        // a future edit cannot quietly re-add them.
+        val shipped = java.io.File("src/main/assets/default_excluded_apps")
+        val parsed = DefaultExcludedApps.parse(shipped.readText(Charsets.UTF_8)).toSet()
+        for (mustNotShip in listOf(
+            "com.deepseek.chat",
+            "com.google.android.projection.gearhead",
+            "vn.unlimit.vpngatepro",
+        )) {
+            assertTrue(
+                "'$mustNotShip' must not ship as a default for all users",
+                mustNotShip !in parsed,
+            )
+        }
     }
 
     @Test
@@ -80,7 +179,8 @@ class DefaultExcludedAppsTest {
         val text = shipped.readText(Charsets.UTF_8)
         assertTrue("the asset must explain the format", text.contains("package name per line"))
         assertTrue("the asset must explain the skip rule", text.contains("SKIPPED"))
-        assertTrue("the asset must point at the deferred extraction", text.contains("D1"))
+        assertTrue("the asset must record the D1 provenance", text.contains("D1"))
+        assertTrue("the asset must record the confirmation", text.contains("CONFIRM D1"))
     }
 
     @Test

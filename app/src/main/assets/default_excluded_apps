@@ -1,33 +1,67 @@
 # v1.0.54 (§1.6.50) PART 5 — default Excluded Apps seed list
+# v1.0.56 — D1 EXTRACTED: the package names below were read off the operator's
+#   device on 2026-10-24 (BLOCK v1.0.56, PART B) and confirmed by the operator
+#   with "CONFIRM D1: ALL CLASSIFIED-IRANIAN".
 #
 # Format, one package name per line:
 #
 #   com.example.app            ← seeded on first run, IF it is installed
 #   # anything after '#' is a comment
 #
-# Rules the loader enforces:
+# Rules the loader enforces (see DefaultExcludedApps.parse):
 #   * blank lines and '#' comments are ignored;
+#   * a line is cut at the first '#', so a trailing comment on an entry works;
 #   * a line is used verbatim as an Android package name — no spaces, no
 #     commas, no aliases;
 #   * a package that is not installed on the device is SKIPPED, never
 #     inserted as a phantom row;
+#   * duplicates collapse to the first occurrence;
 #   * the seed runs at most ONCE per install (see SETTING_EXCLUDED_APPS_SEEDED),
 #     so a user who later removes a seeded app does not get it back.
 #
-# ── WHY THIS FILE IS CURRENTLY EMPTY OF ENTRIES ─────────────────────────
+# ── PROVENANCE ────────────────────────────────────────────────────────────
+#
+# Source: the `excluded_apps` table of the on-device database
+# `vpn_gate_connector` (device 5585fecc, Xiaomi 2201117TG, Android 13),
+# read read-only via `run-as`. Every package below was INSTALLED on that
+# device at extraction time (`pm path` returned an APK path for each).
+#
+# The operator's device carried 15 excluded apps. Three were deliberately NOT
+# shipped, because this list is a default for ALL users and not a copy of one
+# operator's phone:
+#
+#   * com.deepseek.chat (DeepSeek) — a Chinese AI assistant, a personal
+#     install. Not Iranian; shipping it would silently exclude it inside
+#     every user's tunnel.
+#   * com.google.android.projection.gearhead (Android Auto) — a Google system
+#     app. §1.6.47 records it as the operator's own user-added exclusion, so
+#     it belongs to that device's data, not to the shipped default.
+#   * vn.unlimit.vpngatepro (Self) — the app excludes itself automatically in
+#     `App.kt`; listing it here would be a duplicate.
+#
+# The 12 entries below are the ones classified "clearly Iranian" and confirmed
+# by the operator. They are sorted alphabetically by package name.
+#
+# ── WHY THE ENTRIES ARE HERE AT ALL ───────────────────────────────────────
 #
 # The seed exists so that a fresh install already excludes the Iranian
-# services the operator uses, instead of asking them to tick 20 boxes by hand.
-# The package names themselves have to be read off the real device: the
-# operator entered those apps manually on the phone, and the authoritative
-# list lives there, not in this repository. Guessing package names from
-# memory would produce rows that silently match nothing (or, worse, match the
-# wrong app), and the seeder would then report success while excluding
-# nothing.
-#
-# So this asset ships with the format and the loader in place and the entries
-# pending. Adding them later is a data edit to this one file — no code change,
-# no schema change, no migration — because the parsing, the installed check,
-# the one-shot flag and the tests are already done.
-#
-# See the v1.0.54 report, DEFERRED item D1.
+# services the operator uses, instead of asking them to tick a dozen boxes by
+# hand. The names are data, not code: adding, removing or re-annotating an
+# entry is an edit to this one file — no code change, no schema change, no
+# migration — because the parsing, the installed check, the one-shot flag and
+# the tests are already done.
+
+# ── ENTRIES (sorted, de-duplicated) ───────────────────────────────────────
+
+app.rbmain.a                                # Rubika — Iranian social/messaging platform
+cab.snapp.passenger                         # Snapp — Iranian ride-hailing
+com.byagowi.persiancalendar                 # Persian Calendar — Persian (Jalali) calendar
+com.farsitel.bazaar                         # Bazaar (Cafe Bazaar) — the Iranian Android app store
+com.myirancell                              # My Irancell — MTN Irancell, Iranian mobile operator
+com.pmb.mobile                              # Bank Mellat — Iranian bank
+com.rahand.qbank                            # QBank — Iranian exam question bank
+ir.bmi.bam.nativeweb                        # Baam (بام) — Iranian ride-hailing
+ir.easytrader.orbis.m.twa                   # EasyTrader Arbis (ایزی تریدر اربیس) — Iranian brokerage
+ir.eitaa.messenger                          # Eitaa — Iranian messenger
+ir.nasim                                    # Bale — Iranian messenger
+org.rajman.neshan.traffic.tehran.navigator  # Neshan — Iranian map/navigation (Tehran)
