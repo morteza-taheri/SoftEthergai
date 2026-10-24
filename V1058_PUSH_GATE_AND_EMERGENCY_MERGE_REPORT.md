@@ -228,8 +228,10 @@ Reproduced twice: once on import (16:07:13) and once on delete (16:09:54). The f
 | `:SoftEtherClient` | **184 / 0 / 0 / 0** — 13 suites (untouched) |
 | Gate at the push HEAD (`ef9bf99`) | 3 green (4m13s / 6m19s / 5m45s) + 1 infra failure, retried, failed the same way |
 | Gate on this tree (`85b03d4`) | 3 green (5m51s / 3m59s / 5m45s) + 1 infra failure, retried green |
-| `:app:assembleProDebug` (`git archive HEAD`) | **SUCCESSFUL** in 4m27s |
-| APK | 63,825,448 bytes · SHA-256 `71e0b68c180973ae12db1d8ab975fbf0b799b3d0aba531b1ba6b3357f69d3396` |
+| `:app:assembleProDebug` (`git archive HEAD`, `85b03d4`) | **SUCCESSFUL** in 4m27s |
+| `:app:assembleProDebug` (`git archive origin/main`, `702ef17`) | **SUCCESSFUL** in 5m29s — post-push gate |
+| APK installed on the device (`85b03d4`) | 63,825,448 bytes · SHA-256 `71e0b68c180973ae12db1d8ab975fbf0b799b3d0aba531b1ba6b3357f69d3396` |
+| APK from `origin/main` (`702ef17`) | 63,825,460 bytes · SHA-256 `2b02d5969e0db4f5ecc7a304e6083bad314a57fb0af4be37ebe9270f5517ffee` — the 12-byte difference is the two markdown files landing in the archive, not a code change |
 | `versionCode` / `versionName` | `144` / `2.4.11-dev` (unchanged) |
 | §22 | byte-identical to `ef9bf99` — `adf12858…020e` |
 
