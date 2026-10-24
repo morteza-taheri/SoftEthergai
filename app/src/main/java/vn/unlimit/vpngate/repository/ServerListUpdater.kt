@@ -268,6 +268,19 @@ class ServerListUpdater(
                 false
             }
 
+            // v1.0.58 (BLOCK v1.0.58 PART B): whether the dataset about to be
+            // stored came from the EMERGENCY rung rather than from a network
+            // observation of the full feed.
+            //
+            // It is tracked separately from [fromCache] because it must not
+            // reuse that flag's meaning: an emergency dataset IS a fresh
+            // download (so the "last updated" label may move), but it is a
+            // *supplement* — a subset of the catalogue, produced by
+            // `emergency_csv_publisher.py` from the same feed — and it must
+            // never become the last-known-good dataset. See the snapshot
+            // decision below for the defect this closes.
+            var suppliedByEmergency = false
+
             if (downloaded == null) {
                 // Emergency rung. Every failure is contained here: a source
                 // that yields nothing, a body that is refused or oversized,
@@ -284,6 +297,7 @@ class ServerListUpdater(
                 }
                 CollectorLog.d("Emergency rung supplied ${emergency.size} server(s); using it")
                 downloaded = emergency
+                suppliedByEmergency = true
             }
             if (downloaded.isEmpty()) {
                 return Outcome.Preserved(Reason.EMPTY_RESPONSE, store.currentCount())
@@ -337,11 +351,33 @@ class ServerListUpdater(
                 // Only now, after the dataset is stored and known good, does
                 // it become the last-known-good fallback. A rejected dataset
                 // never reaches this point, so it can never poison it.
-                val snapshotSaved = if (fromCache) {
+                val snapshotSaved = if (fromCache || suppliedByEmergency) {
                     // A snapshot / stored / bundled-seed dataset is not a new
                     // observation, so it must not be promoted to "the last
                     // thing we saw". The file already holds the last accepted
                     // network dataset, and that is exactly what must survive.
+                    //
+                    // v1.0.58 (BLOCK v1.0.58 PART B): the EMERGENCY rung is in
+                    // the same category, and it was not — that omission is the
+                    // V9 defect. The emergency dataset is merged into the table
+                    // (`daoStore.replaceAll` -> `mergeAll`, because the rung
+                    // leaves the origin flag false), so the table itself never
+                    // shrank. But this line then promoted the *incoming* subset
+                    // to last-known-good, overwriting a complete snapshot with
+                    // the publisher's ~170-row excerpt. The next run that had to
+                    // fall back to the snapshot (`loadSnapshot`, `fromCache =
+                    // true`) replaced the table with that excerpt wholesale —
+                    // which is exactly the 261 -> 170 the operator saw, one
+                    // refresh later than the rung that caused it.
+                    //
+                    // Measured on the device before the fix: `VPNGateItem` 261
+                    // rows, `files/collector_vpn_servers.json` `count: 170`.
+                    //
+                    // Nothing is lost by not writing: the table already holds
+                    // the union of the stored dataset and the emergency rows, so
+                    // a cold start is served by the stored list, and the file
+                    // keeps the last *complete* observation — which is the only
+                    // thing worth falling back to.
                     true
                 } else {
                     try {
