@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `40ae8d0` (v1.0.54 docs commit; the state this revision audited)
-**Document version:** 1.0.55
+**HEAD:** `0c3c56e` (`chore(emergency): update servers.csv (170 servers)`; the Phase 1 gate audited `1cace61` — the state this revision audited. The Phase 2 implementation described in §1.6.53 and §11.15.17 is **uncommitted working-tree changes** on top of `0c3c56e`)
+**Document version:** 1.0.59
 **Last updated:** 2026-10-23
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -3229,9 +3229,32 @@ A fresh install should already exclude the operator's Iranian services instead o
 
 6. **Package visibility, which the sheet also needed.** The manifest gained a `<queries>` element for `MAIN` / `LAUNCHER`. Since API 30, `getInstalledApplications` returns only packages the app is allowed to see; without a declaration it returns almost nothing — silently, with no error — so both the Excluded Apps sheet and this seed would have looked broken on any modern device. It is scoped to launchable apps on purpose: `QUERY_ALL_PACKAGES` requires a separate Play Console justification and buys nothing for the actual use case. The trade-off — a background service with no launcher activity is not listed — is recorded here rather than papered over. Evidence: SOURCE CODE.
 
-7. **Tests.** `ExcludedAppsSeederTest` (13) and `DefaultExcludedAppsTest` (12): installed-only, flag set even when nothing matched, second run inert, a user-removed entry not re-added, an already-excluded row keeping its name, seed order preserved, every candidate accounted for exactly once, the empty-list rule, comment/blank/duplicate/BOM/CRLF parsing, and two guards on the shipped asset itself (it must document its format, and it must still be empty until D1 lands).
+7. **Tests.** `ExcludedAppsSeederTest` (13) and `DefaultExcludedAppsTest` (12): installed-only, flag set even when nothing matched, second run inert, a user-removed entry not re-added, an already-excluded row keeping its name, seed order preserved, every candidate accounted for exactly once, the empty-list rule, comment/blank/duplicate/BOM/CRLF parsing, and two guards on the shipped asset itself (it must document its format, and it must still be empty until D1 lands). **[v1.0.56 — D1 is now CLOSED; see §1.6.54. The "still be empty" guard was replaced by real-content guards and the suite grew from 12 to 16 tests.]**
 
-8. **DEFERRED (D1) — the package names.** The operator entered those apps manually on the phone; extracting the authoritative list needs the device. Adding them later is a data edit to one asset file: no code change, no schema change, no migration, because the parsing, the installed check, the one-shot flag and the tests are already in place. Evidence: OPERATOR STATEMENT.
+8. **DEFERRED (D1) — the package names.** The operator entered those apps manually on the phone; extracting the authoritative list needs the device. Adding them later is a data edit to one asset file: no code change, no schema change, no migration, because the parsing, the installed check, the one-shot flag and the tests are already in place. Evidence: OPERATOR STATEMENT. **[v1.0.56 — CLOSED. The 12 confirmed Iranian package names were extracted from device `5585fecc` on 2026-10-24 and shipped; see §1.6.54.]**
+
+#### 1.6.54 D1 EXTRACTION AND SHIPMENT (v1.0.56)
+
+**D1 is CLOSED.** `assets/default_excluded_apps` now ships **12 package names** instead of an empty entry list, extracted from the operator's device and confirmed by the operator with `CONFIRM D1: ALL CLASSIFIED-IRANIAN`.
+
+1. **Extraction [PHYSICAL DEVICE].** Device `5585fecc` (Xiaomi 2201117TG, Android 13 / API 33), package `vn.unlimit.vpngatepro`. The `excluded_apps` table of `vpn_gate_connector` was read read-only via `run-as` and carried **15 rows**. All 15 were confirmed installed on the device by `pm path`.
+
+2. **Three rows deliberately not shipped.** The list ships to **all** users, so it is not a copy of one operator's phone:
+   - `com.deepseek.chat` (DeepSeek) — a **Chinese** AI assistant, a personal install. Not Iranian.
+   - `com.google.android.projection.gearhead` (Android Auto) — a Google system app; §1.6.47 records it as the operator's own user-added exclusion, so it belongs to that device's data, not to the shipped default.
+   - `vn.unlimit.vpngatepro` (Self) — the app excludes itself automatically in `App.kt`; listing it would be a duplicate.
+
+3. **The 12 shipped entries** (sorted, de-duplicated, each with a trailing comment naming the service): `app.rbmain.a` (Rubika), `cab.snapp.passenger` (Snapp), `com.byagowi.persiancalendar`, `com.farsitel.bazaar` (Cafe Bazaar), `com.myirancell` (MTN Irancell), `com.pmb.mobile` (Bank Mellat), `com.rahand.qbank`, `ir.bmi.bam.nativeweb` (Baam), `ir.easytrader.orbis.m.twa` (EasyTrader Arbis), `ir.eitaa.messenger`, `ir.nasim` (Bale), `org.rajman.neshan.traffic.tehran.navigator` (Neshan).
+
+4. **The asset now records its own provenance** — source database, device, extraction date, the operator's confirmation string, and the reason each of the three excluded rows was left out — so a future reader does not have to reconstruct why the list looks the way it does.
+
+5. **Tests [TEST].** `DefaultExcludedAppsTest` grew from **12 to 16**. The obsolete `the shipped asset carries no entries yet` was replaced by five real-content guards: `the shipped asset carries the extracted D1 entries` (pinned against a single `EXPECTED_D1_ENTRIES` constant), `every shipped entry is a plausible Android package name`, `the shipped asset contains no duplicate entries`, `the shipped entries are sorted and carry no comment leakage`, and `the shipped asset excludes the three non-default packages`. All existing parse-rule tests are unchanged. Suite: **16/0/0/0**.
+
+6. **Full-suite verification [TEST].** `:app:testProDebugUnitTest` **1166/0/0/1** across 92 suites (was 1162 — exactly the +4 net new tests), `:SoftEtherClient:testDebugUnitTest` **184/0/0/0** across 13 suites. One `--rerun-tasks --no-build-cache` run. No existing test was weakened, deleted or modified except the two asset guards named above.
+
+7. **Scope.** One asset file, one test file, and this specification. No code change, no schema change, no migration, no Gradle or manifest change. Evidence: PHYSICAL DEVICE (extraction) + TEST (guards) + OPERATOR STATEMENT (the confirmation).
+
+8. **Still deferred.** **D2** (all on-device verification) and **D3** (V-VERIFY-3/4) remain PENDING. A separate blocker — a launch crash in `ConnectionListViewModel` — was found in the same block and is recorded in §1.6.54; it is **not** fixed here.
 
 #### 1.6.51 VERIFY-AND-CLOSE (v1.0.55)
 
@@ -3253,7 +3276,110 @@ A read-only audit of v1.0.54 (ten full-suite runs plus `:app:lintProDebug`) foun
 
 8. **Lint status, stated plainly.** `:app:lintProDebug` **fails**, and did before this block: **124 errors / 177 warnings / 9 hints** at v1.0.54, of which 90 were `MissingTranslation`, 1 `NewApi` (`AndroidConnectionAdapter.kt:653`) and 1 `SuspiciousIndentation` (`ServerListUpdates.kt:486`). v1.0.54's own contribution was the translation errors in item 6; v1.0.55 removes 20 of them and the count is now **104 errors / 178 warnings / 9 hints** — 70 `MissingTranslation` (69 of them `vi`), the same `NewApi` and `SuspiciousIndentation`. The rest is the translation backlog above plus the 121 `UnusedResources` warnings, none of which is a v1.0.54 key. Lint is therefore not a gate this project currently passes, and pretending otherwise would be worse than saying so. Evidence: TEST.
 
-9. **Still open.** D1 (the seed package names, which live on the operator's phone), D2 (all on-device verification) and D3 (V-VERIFY-3/4) are unchanged. Nothing in this section ran on a device. Evidence: UNKNOWN.
+9. **Still open.** D2 (all on-device verification) and D3 (V-VERIFY-3/4) are unchanged. Nothing in this section ran on a device. Evidence: UNKNOWN. **[v1.0.58 — D1 is CLOSED; see §1.6.54.]**
+
+#### 1.6.52 F.29 PHASE-1 DESIGN GATE (v1.0.56)
+
+Read-only architecture audit for `F.29 — Smart Server History & Adaptive AutoConnect`, plus the design that audit produced. **No production source, test, Gradle file, Room entity, schema or migration was touched.** The only file modified in this phase is this specification, and the design itself lives in **§11.15**. No device was available and no ADB command was issued.
+
+Five findings are load-bearing — each one changed the design rather than confirming it:
+
+1. **The app has three different server identities, and none of them is history-safe on its own.** Room's primary key is `hostName` alone (`VPNGateItem.kt`); the collector's merger keys on *IP when valid, otherwise hostname* (`VpnServerMerger.kt:258-267`); Auto Mode, the Next-Server cursor and the v1.0.54 list pin all use `"$ip|$hostname"` (`AutoModeController.serverKey`, §11.14.3). History must adopt one of these and document what happens to the other two, not invent a fourth. §11.15.3 does that.
+2. **`replaceAll` is destructive, and every write path ends in it.** `VPNGateItemDao.replaceAll` is `deleteAll()` + `insertAll()` inside a `@Transaction`. The network path rebuilds the whole list in memory first (`ServerListUpdates.mergeAll:486-527`) and the fallback path passes the incoming list straight through (`ServerListUpdates.kt:301-305`). A summary column on `VPNGateItem` would therefore have to be re-seeded by hand on both paths — and on the fallback path there is nothing to re-seed from. §11.15.4 puts the summary in its own table for exactly this reason.
+3. **The fallback path already resets the v1.0.39 retention fields.** This is **pre-existing and independent of F.29**: `toVPNGateItem()` builds rows from `VPNGateConnection`, whose DTO has no `firstSeenAt` / `lastSeenAt` / `healthScore`, so a refresh served from the last-known-good snapshot re-inserts every row with those columns at their defaults. Retention phase 1 is correct on the network path and lossy on the fallback path. Recorded as **G-F29-1**; not fixed in this phase.
+4. **There is exactly one authoritative success point, and it is already funnelled.** `AutoModeController.kt:2408-2432` is reached only when `connectedProtocol != null` after `AttemptOutcome.TUNNEL_UP`, it is the only producer of `AutoModeState.Connected`, and it `return`s immediately after. It is the only correct place to record a success. Symmetrically, `:2434` (`[AUTO] Connection failed: …`) is the single point at which a server is abandoned.
+5. **No post-connect quality rejection exists.** Quality in this app is (a) a pre-attempt capability gate (`AutoModeController.supports()`), (b) a dataset-level gate (`DatasetIntegrity`), (c) a ranking comparator (`byQuality`), and (d) a session-scoped wedge exclusion (`WedgeTracker`, `EXCLUSION_THRESHOLD = 2`). Nothing disconnects a healthy tunnel for being slow, and `healthScore` — the one stored quality number — **has no reader in production**; only tests read it. "A successful connection followed by a quality rejection" therefore has no trigger to observe today. That is a gap, and §11.15.6 requests a decision instead of inventing a criterion.
+
+Phase status: audit complete, design complete, **implementation NOT started**, awaiting the explicit approval the instruction's §17 gate requires. Open decisions: OD-1 … OD-9 in §11.15.14.
+
+#### 1.6.53 F.29 PHASE-2 IMPLEMENTATION (v1.0.57)
+
+Implementation of the nine decisions approved at the Phase 1 gate (OD-1 … OD-9, §11.15.14). **No commit, no tag, no push** — the work sits in the working tree, and HEAD itself advanced by one pre-existing commit during this phase (`0c3c56e`, `chore(emergency): update servers.csv`, touching only `emergency-sources/servers.csv`). No device was available and no ADB command was issued, so every device-dependent claim is labelled `NOT TESTABLE — DEVICE UNAVAILABLE`. **G-F29-1 is deliberately still open** and is restated in §11.15.17.8 rather than absorbed into this phase.
+
+Eight things are load-bearing:
+
+1. **Three new tables, no foreign keys.** `ServerHistorySummary` (1:1 with a server by `hostName`), `ServerProtocolSummary` (per `hostName` × protocol) and `ServerHistoryEvent` (bounded event log keyed by an attempt token) are separate tables, not columns on `VPNGateItem`, because `replaceAll` is `deleteAll()` + `insertAll()` and a summary column would have to be re-seeded on both write paths — with nothing to re-seed from on the fallback path (OD-1). All three are keyed by the Room primary key `hostName` alone (OD-2), and **no foreign key is declared anywhere**: a cascade would have deleted a server's entire history on every refresh. Indexes exist only for the four query patterns the code actually issues.
+
+2. **Migration 8 → 9 is additive and parity-proven.** `MIGRATION_8_9` is three `CREATE TABLE IF NOT EXISTS` plus four `CREATE INDEX IF NOT EXISTS` — no `ALTER`, no `UPDATE`, no backfill and no destructive fallback, so an install that somehow skips the migration keeps its data and simply has no history tables. `Migration8to9Test` asserts the bounded version, the exact object set, the absence of `DEFAULT` / `DROP` / `DELETE` / `TRUNCATE` / `FOREIGN KEY`, a single `AUTOINCREMENT`, and **whitespace-insensitive parity against the KSP-exported `9.json` for all seven schema objects**, so the hand-written DDL and the exported schema can no longer drift apart silently.
+
+3. **Failure attribution follows the rules, not convenience.** Success is recorded at exactly one place — the authoritative tunnel-up funnel that produces `AutoModeState.Connected`. A timeout has its own counter and is never a server failure (OD-3); local, permission, cancel, network and busy causes never reach a server-failure counter; a post-connect loss is its own event type and can never erase a recorded success; `consecutiveFailures` resets on success only. Writing the tests found a real bug here: `TIMED_OUT` was recorded with `outcome = FAILURE`, which would have put timeout-only servers on the same counter as genuinely failing ones.
+
+4. **The network classifier is bounded and honest.** `NetworkTypeClassifier` returns exactly `WIFI` / `CELLULAR` / `UNKNOWN`. It never classifies the VPN transport, reads no SSID, no location and no subscription identifier, and treats "both signals present without proof" as `UNKNOWN`, which earns no tier-0 credit. A first-draft test asserted tier-0 credit for an unknown network and was wrong; the implementation was right.
+
+5. **History is a tie-breaker, never a ranker.** `sortedForAutoConnect(history, network)` inserts one `applyHistoryTieBreak` pass inside the equal-quality window left by `applyRttTieBreak`, after the `byQuality` comparator and before the reachability gate, and is a no-op when there is no history or the window is smaller than two. An unknown server is never demoted below a known one (OD-6), and the user's protocol priority is never reordered (OD-4).
+
+6. **Two approved decisions needed a deviation, both recorded rather than absorbed.** OD-6's "quality barrier" is implemented as a **transitive tier comparator** instead, because the barrier as specified is not a valid TimSort comparator and throws `IllegalArgumentException: Comparison method violates its general contract!` at real list sizes; the tier model enforces the same "unknown is never worse" rule and is total. OD-9's "awaited recording" is honoured for every event except `CONNECTION_LOST`, which is delivered from an OS callback with no coroutine in scope; the protocol is captured before the dispatch and the field is cleared synchronously, so the record cannot race. Both are documented in §11.15.17.3 and §11.15.17.4.
+
+7. **A history error can never change a tunnel result.** Recording runs under `withContext(NonCancellable)` with `withTimeoutOrNull(HISTORY_WRITE_TIMEOUT_MS = 2 s)`; the sink contains `Exception` and rethrows `CancellationException`. Writing the cancellation test found a second real bug: `RoomServerHistorySink` caught `Throwable`, so a cancelled write was reported as a success. Three tests drive the failure modes directly — a throwing sink, no sink at all, a throwing history provider — and all three still end in `Connected`.
+
+8. **Verification.** `:app:testProDebugUnitTest` **1162 tests / 0 failures / 0 errors / 1 skipped / 92 suites**; `:SoftEtherClient:testDebugUnitTest` **184 / 0 / 0 / 13 suites**; `:sstpClient:test` and `:vpnLib:test` BUILD SUCCESSFUL with no test sources; `:app:assembleProDebug` BUILD SUCCESSFUL producing `app-pro-debug.apk` (63,884,364 bytes, SHA-256 `2d7acfec2ecc619a60624af6a23cdd020c0418f7deb439d51fefe24a73436424`); a `--rerun-tasks` confirmation run on the delivered tree (after two source-comment corrections) reproduced both green suites and rebuilt the APK; `:app:lintProDebug` **104 errors / 178 warnings / 9 hints — identical to the pre-F.29 baseline, zero findings in any F.29 file**. All under `CI=true` with the Android Studio JBR, because the system default JDK is 1.8 and cannot compile this project. Net new: **6 test files / 98 cases**.
+
+Phase status: **implementation complete, automated verification passed, device verification blocked**. Not claimed: a real process-restart durability check, real `ConnectivityManager` classification on a handset, a real 8 → 9 upgrade on a device holding an existing database, the end-to-end effect of history on a real Auto Mode run, and any app release version. G-F29-1 NOT FIXED. Open follow-ups: the retention sweep, the quality-rejection trigger reserved with no producer (OD-5), and every device-dependent item.
+
+---
+
+#### 1.6.55 LAUNCH CRASH FOUND BY DEVICE VERIFICATION (v1.0.56) — `KNOWN LIMITATION` `FOLLOW-UP REQUIRED`
+
+A **pre-existing crash-on-launch defect** was found on the physical device during the v1.0.56 device-verification block and is **not fixed**. It is recorded here because it blocks all on-device verification (D2, D3, and every V-item of the v1.0.56 block).
+
+**Symptom [PHYSICAL DEVICE].** On device `5585fecc` (Xiaomi 2201117TG, Android 13 / API 33), after installing the committed-tree APK (`app-pro-debug.apk`, SHA-256 `00a3b10b65c47edc001d5ecc5988a18c98d6c04bdc364c4b2f06108233e59670`, built from `git archive HEAD` = `0c3c56e`), launching the app shows `MainActivity` (+945 ms) and then kills the process:
+
+```
+FATAL EXCEPTION: main
+Process: vn.unlimit.vpngatepro, PID: 32456
+java.lang.NullPointerException: Attempt to invoke interface method
+  'void kotlinx.coroutines.flow.MutableStateFlow.setValue(java.lang.Object)'
+  on a null object reference
+    at vn.unlimit.vpngate.viewmodels.ConnectionListViewModel$refreshImportedServers$1.invokeSuspend(ConnectionListViewModel.kt:328)
+    at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:100)
+    Suppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException:
+      [StandaloneCoroutine{Cancelling}@b8713fd, Dispatchers.Main.immediate]
+```
+
+**Root cause [SOURCE CODE].** In `ConnectionListViewModel.kt` the property `_importedServers` is declared at line **268**, but the `init` block at lines 46–52 calls `refreshImportedServers()` at line **50** — *before* the declaration is reached. Kotlin initialises properties in declaration order, so the backing field is still `null` when `init` runs. `viewModelScope` uses `Dispatchers.Main.immediate`, which executes the coroutine body **synchronously up to the first suspension point**, so `_importedServers.value = …` at line 328 runs before the constructor finishes and hits the null field.
+
+**Attribution [SOURCE CODE].** Introduced by **`ec3a73b`** (`feat(v1.0.54): skip coalescing, settings cleanup, list pin, CSV import, app seed`), the most recent commit touching the file. The identical code exists byte-for-byte in the committed tree and in the F.29 working tree; `git diff` for the file is empty, so the F.29 Phase 2 work is **not** implicated.
+
+**Why the tests never caught it.** No unit test constructs `ConnectionListViewModel`; a `Dispatchers.Main.immediate` constructor-ordering bug is only observable at runtime. The JVM suite is green (1166 `:app`, 184 `:SoftEtherClient`) with zero failures, which is exactly the blind spot.
+
+**Evidence.** `test-evidence/dv56/crash_launch_logcat.txt` (1251 lines) and `test-evidence/dv56/CRASH_FINDING.md`, both untracked.
+
+**Status (v1.0.57). `FIXED` and `TESTED` — see §1.6.56.** The fix moves the `init` block below every property declaration in the class (rather than moving one property above it), which makes the whole class safe by construction rather than safe by remembering. Four regression tests pin the ordering.
+
+**Consequence (superseded by v1.0.57).** While the defect was open, no on-device verification of any feature could proceed: the app could not reach a state where a tunnel, a server list or Auto Mode exists. v1.0.57 fixed it and resumed the v1.0.56 verification list; D2, D3 and V3–V10 were then completed and are recorded in §1.6.56.
+
+---
+
+#### 1.6.56 LAUNCH-CRASH FIX (v1.0.57)
+
+**The launch crash recorded in §1.6.55 is FIXED, TESTED, and device-verified on `5585fecc`.**
+
+1. **Root cause [SOURCE CODE].** `ConnectionListViewModel` declared `_importedServers` at line 268 while its `init` block sat at line 45 and called `refreshImportedServers()`. Kotlin initialises properties in declaration order, so `init` ran between the declarations around it; `viewModelScope` uses `Dispatchers.Main.immediate`, so the launched coroutine body ran synchronously to its first suspension point and wrote a still-null field.
+
+2. **The fix [SOURCE CODE].** The `init` block was **moved below every property declaration** in the class (now line 276, after the last property at line 264) rather than moving one property above it. This is deliberately the structural fix: it makes the *whole class* safe by construction, so the next property added anywhere above `init` is safe too, instead of relying on someone remembering to keep one particular field at the top. Behaviour is unchanged — the same two cache assignments and the same `refreshImportedServers()` call, in the same order. The `init` block now carries a comment explaining why it must stay below the properties.
+
+3. **A class-wide audit was run, not just the one file [SOURCE CODE].** Every `.kt` file under `app/src/main/java` was scanned for a class-level property declared *after* an `init` block. **Zero hits remain** (before the fix there was one: `ConnectionListViewModel`). The other two `init` blocks in the codebase are safe and were left alone: `AutoModeViewModel`'s `init` (line 117) launches two coroutines but declares nothing after it, and `DataUtil`'s `init` (line 35) launches nothing. `StatusViewModel` has no `init` block — it uses an explicit `start()`.
+
+4. **Tests [TEST].** New `ConnectionListViewModelInitOrderTest` (4 tests), all green:
+   - `the init block appears after every property declaration` — the ordering invariant itself, scanning class-level declarations only (a first version also matched local `val`s inside function bodies and was corrected before it was allowed to pass).
+   - `the init block still loads the imported servers` — the move did not drop the work.
+   - `refreshImportedServers still writes the imported flow` — the crashing write still exists.
+   - `the crash site carries a comment explaining the ordering` — so the next person to move the block finds out why they cannot.
+
+   **The regression test was proven to fail against the old ordering**: with the file temporarily restored to the `ec3a73b` ordering in a scratch copy, two of the four tests failed (`… appears after every property declaration` and `… carries a comment explaining the ordering`), and both passed again once the fix was restored. The scratch copy was deleted.
+
+5. **Why the guard is a source-shape test and not a construction test.** The JVM suite cannot construct this class: `dataUtil` is `App.instance!!.dataUtil!!` — a non-null assertion on a process singleton with no JVM seam — and `viewModelScope` needs an `AndroidViewModel`. There is no Robolectric and no `kotlinx-coroutines-test` on the classpath. The test's KDoc states this limitation explicitly rather than implying it proves more than it does. A construction-level test is the right follow-up once the class gains a seam.
+
+6. **Full-suite verification [TEST].** Two builds, and they are **not** interchangeable. **(a) Working tree** (carries the uncommitted F.29 Phase 2 work): three `--rerun-tasks --no-build-cache` runs at `:app` **1170/0/0/1** across **93 suites** (was 1166 — exactly the +4 new tests), `:SoftEtherClient` **184/0/0/0** across 13 suites; `app-pro-debug.apk` 64,073,648 bytes, SHA-256 `7a4fc01f166462b7ff390285a6c1435e115d80fbec5ad692038e412632ff38b8`. **(b) Committed tree** (`git archive HEAD` → fresh temp dir, verified to contain the fix but neither F.29 nor D1): three runs at `:app` **1068/0/0/1** across **87 suites** (1064 + 4) and `:SoftEtherClient` **184/0/0/0** across 13 suites; `app-pro-debug.apk` **63,824,336 bytes**, SHA-256 **`9c0328de42bfc3d9a1cd5b0f0390fd23aba01166033b6e1edba615032860bd42`**. No failures, no errors, one pre-existing skip, in either set. `:app:lintProDebug` **104 errors / 178 warnings / 9 hints** — the unchanged pre-existing backlog, with **zero** findings in `ConnectionListViewModel.kt`. `versionCode 144` / `versionName 2.4.11-dev` in both.
+
+7. **Scope.** One production file (`ConnectionListViewModel.kt`, +21/−7), one new test file (4 tests), and this specification. No schema change, no migration, no Gradle, manifest or resource change, and no behaviour change.
+
+8. **Device verification [PHYSICAL DEVICE].** The **committed-tree** APK (63,824,336 bytes, SHA-256 `9c0328de42bfc3d9a1cd5b0f0390fd23aba01166033b6e1edba615032860bd42`) was installed with `adb install -r` on device `5585fecc` (Xiaomi 2201117TG, Android 13 / API 33), whose database was re-confirmed as Room 8 with identity hash `6f1d1b7449c3bf3e3dcefa9d34abc6f2` — identical to the committed tree's `RoomOpenDelegate(8, …)`, so the install could not trip Room's identity check. The app **launches and stays alive**: pid `18343` constant across 30 s of polling at 5 s intervals, `MainActivity` resumed, **zero** `FATAL EXCEPTION` / `ANR` / `tombstone`, and no Room or migration error. The server list loads with **261 servers**, matching the database. Developer Mode (logging) is **ON**. Settings opens and contains none of the removed controls. Evidence, per-item results and the operator-manual steps: `DEVICE_VERIFY_v1.0.57_REPORT.md` and `test-evidence/dv57/`.
+
+9. **The v1.0.56 verification list, resumed [PHYSICAL DEVICE].** **V3 PASS** — a SoftEther TCP tunnel held for **69 s**: `additional_connect: socket fd=151 protected before connect` precedes the connect, zero "socket protect failed", `tun0` rx_bytes rose 350 → 477, `ConnectionController: Stats: sent=224881 bytes (1008 pkts), received=359426 bytes (1457 pkts)`, zero "Keepalive missed", and `ping 1.1.1.1` / `ping google.com` both returned **0 % loss**. **V5 PASS** — no Include-UDP, Block Ads, cache-time or cache-auto-clear controls; the emergency URL is the expected one; "Auto-Reconnect in Auto Mode" is on the Auto Mode screen and absent from Settings, persisted across `am force-stop` + relaunch. The single Clear-cache action was **NOT OBSERVED** rather than claimed. **V6 PASS** — the connected server is row 1 with a `PINNED` marker and no duplicate row. **V9 reached EMERGENCY** — `[ladder] deadline exceeded (45000ms)`, `servers.csv` accepted (170 records, 0 rejected, no TooLarge), list merged **261 → 170**; it did **not** grow, because the emergency set is smaller than the stored one. **V10 PASS (partial)** — `[AUTO] Protocols (priority) = SOFTETHER_TCP > SOFTETHER_UDP`, 8 s timeout, 261 servers, probe selected 209, `Trying #1 vpn961954281` → `TUNNEL_UP` in **3.535 s**. **V4(a)** captured `[ladder] order=PHYSICAL,EMERGENCY` with the tunnel down. **V7, V4(b) and V8 are `OPERATOR MANUAL STEP`**: the Auto Mode run returns as soon as it connects (the screen reads "Connected (manual)"), so Next Server has no active run to skip and produced no log line; the document picker cannot be driven from adb; and reaching the TUNNEL rung would require forcing a path, which the block forbids.
+
+10. **What is not claimed.** No result for V7, V4(b), V8 or the V5 Clear-cache action. No claim that the earlier 10/10 clean-suite run (BLOCK v1.0.56) proves anything about this tree — that run executed on the **F.29 working tree** (1162 tests), whereas the committed-tree evidence here is the three runs at **1068/0/0/1**. No claim about real Wi-Fi/cellular handover behaviour, process-restart durability, or any improvement in physical connection success rate.
+
 
 ---
 
@@ -4835,9 +4961,628 @@ On the first run after install, every package listed in `assets/default_excluded
 
 Package visibility is declared in the manifest as a `<queries>` element for `MAIN` / `LAUNCHER`. Since API 30 an app cannot enumerate packages it has not declared an interest in, and the failure is silent; `QUERY_ALL_PACKAGES` was rejected because it requires a separate Play Console justification and adds nothing for this use case. **Known limitation, accepted:** a background service with no launcher activity is not listed.
 
-> **Status (v1.0.54).** The mechanism, the rules, the tests and the manifest declaration ship complete. The package names themselves are **DEFERRED (D1)** — they exist only on the operator's device. Adding them later is a data edit to one asset file.
+> **Status (v1.0.54, updated v1.0.58).** The mechanism, the rules, the tests and the manifest declaration ship complete. The package names were **DEFERRED (D1)** and are now **CLOSED** — the 12 confirmed Iranian package names were extracted from device `5585fecc` on 2026-10-24 and shipped (see §1.6.54).
 
 ---
+
+## 11.15 F.29 — Smart Server History & Adaptive AutoConnect (Phase 2: Implemented)
+
+**Phase 2 implemented the feature.** Every item carries exactly one of the labels the instruction requires: `USER-APPROVED REQUIREMENT`, `VERIFIED CURRENT IMPLEMENTATION`, `IMPLEMENTED`, `TESTED`, `NOT TESTABLE`, `KNOWN LIMITATION`, `FOLLOW-UP REQUIRED`. Subsections written during Phase 1 keep their original analysis and now carry the Phase 2 outcome label; §11.15.17 is the Phase 2 implementation record and is authoritative for anything that changed. Where a label is `VERIFIED CURRENT IMPLEMENTATION` it means "inspected at HEAD `1cace61` and true of the code before Phase 2", with the file and symbol named. Nothing in this section is `TESTED` unless the test actually ran — the run is recorded in §11.15.17.6 with its exact command and result.
+
+### 11.15.1 Status and authority
+
+| Item | Value |
+|------|-------|
+| Phase | 2 — full implementation, migration, tests, specification update |
+| Authority | operator instruction `F.29 — SMART SERVER HISTORY & ADAPTIVE AUTOCONNECT`, Phase 2 (execution mode: implement now, no further approval round) |
+| Repository state audited (Phase 1) | branch `main`, HEAD `1cace618e34a60e2c04dc0d12cee6dda7e37d9f0` (`docs(v1.0.55)`) |
+| Repository state implemented (Phase 2) | branch `main`, HEAD **`0c3c56e3ffaa728128570d37a0ca16a095155e31`** — advanced from `1cace61` by one **pre-existing** commit during this phase (`chore(emergency): update servers.csv (170 servers)`, touching only `emergency-sources/servers.csv`). The Phase 2 changes are **uncommitted working-tree changes** on top of it; no commit/tag/push/release was made here (instruction §2.3) |
+| Production source added | 7 files (`history/` × 6, `automode/AutoModeHistory.kt`) |
+| Production source modified | 4 files (`AppDatabase.kt`, `App.kt`, `AutoModeEngine.kt`, `AutoModeController.kt`) |
+| Test source added | 6 files, 98 tests |
+| Schema | `9.json` exported by KSP; version 8 → 9 |
+| Device | unavailable — no ADB, no install, no on-device verification |
+| Automated verification | `:app:testProDebugUnitTest` **1162 tests, 0 failures**; `:SoftEtherClient:testDebugUnitTest` **184 tests, 0 failures**; `:app:assembleProDebug` **BUILD SUCCESSFUL**; `:app:lintProDebug` **104 errors — unchanged from the pre-F.29 baseline, zero findings in any F.29 file** |
+| Files modified by Phase 2 | the 4 production files above, 6 test files, `app/schemas/…/9.json`, and this specification |
+
+`USER-APPROVED REQUIREMENT`: the eight product decisions in the instruction §2 (summary + event table, stable identity derived from the real model, per-network statistics, reuse of existing quality criteria only, unlimited event retention, history-informed ordering that preserves exploration, layered failure attribution, and full implementation after this gate).
+
+### 11.15.2 Verified current implementation (the audit)
+
+#### 11.15.2.1 Server data model — `VERIFIED CURRENT IMPLEMENTATION`
+
+| Fact | Evidence |
+|------|----------|
+| Entity `VPNGateItem`, table `VPNGateItem`, **primary key `hostName` (String)** | `models/VPNGateItem.kt` `@Entity data class VPNGateItem(@PrimaryKey val hostName: String, …)` |
+| `ip` is a nullable **non-key** column | same file |
+| Retention phase-1 columns `firstSeenAt`, `lastSeenAt`, `healthScore` exist | `models/VPNGateItem.kt:45-54`; added by `MIGRATION_7_8` (`db/AppDatabase.kt:162`) |
+| Room version **8**; four entities (`VPNGateItem`, `ExcludedApp`, `EmergencySourceConfigEntity`, `ManualServerEntity`) | `db/AppDatabase.kt` `@Database(…)` |
+| Migrations are hand-written objects `2_3 … 7_8`, wired in `App.onCreate` | `db/AppDatabase.kt` companion; `App.kt` `addMigrations(…)` |
+| Migration tests use a JVM `RecordingDatabase` dynamic proxy that captures `execSQL` strings | `Migration7to8Test`, `Migration6to7Test`, `Migration5to6Test`, `SstpMigration4To5Test` |
+| Schema exported to `app/schemas/vn.unlimit.vpngate.db.AppDatabase/1.json … 8.json` | directory listing |
+| The only persistence boundary is `VPNGateItemDao.replaceAll` | `db/VPNGateItemDao.kt` `@Transaction fun replaceAll(items)` = `deleteAll()` + `insertAll(*unique)`; `ServerListUpdates.kt:242` comment "the one persistence boundary" |
+| `replaceAll` refuses an empty list | `VPNGateItemDao.replaceAll` |
+
+`VERIFIED CURRENT IMPLEMENTATION` — the two write paths:
+
+| Path | Condition | What happens |
+|------|-----------|--------------|
+| **Network observation** | `fetchedFromCache() == false` | `mergeAll(dao, items, manual.rows, now)` (`ServerListUpdates.kt:486`): reads `dao.getAll()`, matches by `hostName.trim()`, copies `firstSeenAt` from the stored row, stamps `lastSeenAt = now`, recomputes `healthScore`, **retains stored rows the feed no longer mentions**, then `dao.replaceAll(merged)`. |
+| **Fallback** (snapshot / stored list / bundled seed) | `fetchedFromCache() == true` | `dao.replaceAll(withManualRows(items, manual.rows))` — no stored-row read, no carry-forward of any per-row state. |
+
+`VERIFIED CURRENT IMPLEMENTATION` — identity is **not** one concept in this codebase:
+
+| Layer | Key | Evidence |
+|-------|-----|----------|
+| Room / merge | `hostName.trim()` | `ServerListUpdates.kt:502-504`, `VPNGateItem.kt` `@PrimaryKey` |
+| Collector merger (dedupe) | `if (VpnUtil.validIp(ip)) ip else host` | `merger/VpnServerMerger.kt:258-267` ("Dedupe by IP→hostname and merge duplicates") |
+| Auto Mode (cursor, wedge ledger, skip) | `"$ip|${hostname ?: ""}"` | `AutoModeController.serverKey` `:2520` |
+| v1.0.54 list pin | `ip|hostname` | §11.14.3 |
+
+**Consequence for F.29** (`PROPOSED DESIGN` input): history must attach to the Room key, because that is the only key that is (a) declared unique by the database, (b) the key `mergeAll` already uses to decide "this is the same server", and (c) the only one that survives a refresh by construction. The other two keys are derived views of it and must not become a second history key.
+
+#### 11.15.2.2 Connection lifecycle — `VERIFIED CURRENT IMPLEMENTATION`
+
+| Step | Symbol / line | Notes |
+|------|---------------|-------|
+| Candidate build | `AutoModeEngine.ensure` → `toCandidate()` | `AutoModeCandidate` carries `hostname`, `ip`, speed/ping/sessions/score, per-protocol ports + `openVpnConfigAvailable`, `activeRttMs` (**runtime only, never persisted**), `payload` |
+| Ranking | `AutoModeController.byQuality` `:2626` | `speed > 0` desc, `speed` desc, `ping > 0` desc, `ping` asc, `sessions` asc, `score` desc |
+| RTT tie-break | `sortedForAutoConnect()` `:1594` + `applyRttTieBreak()` `:1613` | a **stable insertion pass inside each run of equal-quality candidates**; a candidate with no RTT is a barrier — never moved, never moved past. Written this way because a non-transitive comparator makes TimSort throw on real lists (`:1580-1592`) |
+| Reachability gate | `ServerReachabilityTester.filterReachableCandidates` | `FILTER_ONLY`: returns a **subsequence** of the ranked input; `UNKNOWN` keeps the server; an empty verdict only removes everything when every endpoint was definitively `UNREACHABLE` (`:1791-1808`) |
+| Attempt | `for (protocol in supported)` `:1917` | `armTunnelWatch` **before** `connect` (`:1936`) |
+| Outcome | `adapter.awaitArmedOutcome(protocol, attemptTimeoutMs())` `:1969` | `AttemptOutcome` = `TUNNEL_UP`, `NATIVE_BUSY`, `TIMED_OUT`, `NATIVE_ERROR`, `MISSING_CONFIG` (`:384`) |
+| Success | `if (connectedProtocol != null)` `:2408-2432` | `wedgeTracker.clear(key)`, `onSuccess(server, connectedProtocol)`, `rememberRemaining`, `setState(Connected)`, `startConnectedWatcher`, `return` — **the single authoritative success point** |
+| Server abandoned | `[AUTO] Connection failed: …` `:2434` | reached only when the protocol loop ended with `connectedProtocol == null` — the single "gave up on this server" point |
+| Run terminal | `[AUTO] All compatible servers failed` → `AutoModeState.Error(ERROR_NO_SERVER)` `:2437` | no automatic loop back to #1 |
+| Post-connect loss | `reportArmedTunnelLoss(reason, dropped)` `:1044` | the single funnel for all three detectors: OS revoke (`TunnelStateWatcher.onTunnelLost`), 1 s passive poll (`GlobalVpnTracker.isConnected`), liveness watchdog (`TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS = 15_000`) |
+| Permission failure | `catch (e: VpnPermissionMissingException)` `:1940` | stops the whole run with `AutoModeState.Error(ERROR_VPN_PERMISSION)` — **distinguishable**, so it can be attributed to the local layer rather than to a server |
+| Cancellation | `CancellationException` rethrown at `:1946-1951`; `skipRequested` at `:1973`; teardown under `withContext(NonCancellable)` `:1958` | a cancelled connect is explicitly *not* a protocol failure (v1.0.52 comment) |
+| Existing telemetry | `AutoModeLogStore` — in-memory ring, `MAX_LINES = 2000`, **not persisted**; `onSuccess` writes `DataUtil.AUTO_LAST_SUCCESS_HOST` / `AUTO_LAST_SUCCESS_PROTOCOL` and `AutoModeRun.lastSuccess` | see below |
+
+`VERIFIED CURRENT IMPLEMENTATION` — **the only persisted connection history today is write-only.** `AUTO_LAST_SUCCESS_HOST` and `AUTO_LAST_SUCCESS_PROTOCOL` are written at `AutoModeEngine.kt:70-71` and read **nowhere** in `app/src/main` or `app/src/test`; `AutoModeRun.lastSuccess` (`AutoModeEngine.kt:266`) is assigned and never read. There are no counters, no timestamps, no network type, no protocol totals, and no reader that could influence ordering. **History-informed selection does not exist today.**
+
+`VERIFIED CURRENT IMPLEMENTATION` — `onSuccess` is a constructor-injected callback (`AutoModeController.kt:44`, default no-op), so a recorder can be wired without changing the controller's testability.
+
+#### 11.15.2.3 Network-type detection — `VERIFIED CURRENT IMPLEMENTATION`
+
+| Component | What it answers | Evidence |
+|-----------|-----------------|----------|
+| `GlobalVpnTracker.currentPhysicalNetwork()` | the `Network` object of a **NOT_VPN** network with `INTERNET` + `VALIDATED`, preferring `TRANSPORT_WIFI`, then `TRANSPORT_CELLULAR`, then any | `GlobalVpnTracker.kt:540-555` |
+| `GlobalVpnTracker.isAnyNetworkAvailable()` | `cm.activeNetwork != null` — "is there any network at all"; fails open when uninitialised | `:490-495` |
+| `DataUtil.isOnline(context)` | capability **or** any of WIFI / CELLULAR / ETHERNET / VPN | `utils/DataUtil.kt:677-699` |
+| `AndroidConnectionAdapter` own-tunnel probe | enumerates `cm.allNetworks` and compares `NetworkCapabilities.ownerUid` (API 29+ guard; this is the one `NewApi` lint error at `:653`) | `AndroidConnectionAdapter.kt:634-651`; `OwnedVpnDecision.kt:20-25` |
+| Manifest | `ACCESS_NETWORK_STATE` is declared | `AndroidManifest.xml:6` |
+
+`VERIFIED CURRENT IMPLEMENTATION`: **no component classifies the transport into a Wi-Fi / cellular label.** Every existing consumer asks a boolean question ("is any network available", "is this a NOT_VPN network", "is this my own tunnel"). There is no SSID access anywhere and no location permission is requested. Transport-level classification is available from `NetworkCapabilities` without any additional permission; SSID would require `ACCESS_FINE_LOCATION` and is explicitly **out of scope**.
+
+#### 11.15.2.4 Failure attribution — `VERIFIED CURRENT IMPLEMENTATION`
+
+The controller already distinguishes five outcomes, and the adapter already publishes a lossy cause mapping for the log:
+
+| `AttemptOutcome` | Controller behaviour | Wedge recorded? | `AutoConnectAttemptClass` (`AndroidConnectionAdapter.kt:954-995`) |
+|------------------|---------------------|-----------------|------------------------------------------------------------------|
+| `TUNNEL_UP` | success funnel `:2408` | no — ledger cleared | `CONNECTED` |
+| `NATIVE_ERROR` | `disconnect()`, **next protocol on the same server** `:2324-2333` | no | `ENDPOINT_REJECTED` (refused port / TLS / protocol / auth — one class, because the watcher does not forward the stack message) |
+| `TIMED_OUT` | `:2303` | **yes** | `TIMEOUT_NO_VERDICT` ("no answer", not "proven dead") |
+| `NATIVE_BUSY` | own-tunnel rescue, `NATIVE_BUSY_WEDGE_THRESHOLD = 2` `:2026`, `:485` | only on the 2nd refusal | `REFUSED_START` ("says nothing about the endpoint") |
+| `MISSING_CONFIG` | rotate to the next protocol, no wedge, no wait `:1998` | no | `MISSING_CONFIG` ("a defect in the data, never in the endpoint") |
+| `VpnPermissionMissingException` | terminal `ERROR_VPN_PERMISSION` `:1940` | no | — (thrown, not an outcome) |
+| user skip / stop | `ATTEMPT` abandoned `:1973` / cancellation rethrow `:1946` | no | — |
+| no network | `ERROR_NO_NETWORK` guard (v1.0.42) | no | — |
+
+`VERIFIED CURRENT IMPLEMENTATION`: attribution exists **for control flow**, not for persistence. Nothing is written down, so a timeout and a rejected endpoint are indistinguishable after the run ends.
+
+#### 11.15.2.5 Quality-rejection logic — `VERIFIED CURRENT IMPLEMENTATION`
+
+This is the exact answer to instruction §2.4/§11 ("first locate and document the current quality-rejection logic and its exact conditions"):
+
+| Mechanism | Exact condition | Where | Rejects what |
+|-----------|-----------------|-------|--------------|
+| **Protocol capability gate** | `SOFTETHER_TCP`: `seTcpPort > 0`; `SOFTETHER_UDP`: `(seUdpSupported \|\| seUdpPort > 0) && seTcpPort > 0`; `OPENVPN_TCP`/`_UDP`: `openVpnConfigAvailable && port > 0`; `L2TP_IPSEC`: `l2tpSupported` **and** not automatable; `MS_SSTP`: `sstpSupported && sstpConnectPort > 0` | `AutoModeController.supports()` `:2635-2679`, `isUsableFor` `:1484`, `isAutomatable` `:1499` | a **protocol** for a server, before any attempt |
+| **Dataset integrity gate** | candidate size ≥ 10; candidate ≥ 50 % of stored size; per-protocol coverage ≥ 50 % when the stored count ≥ 20; profile coverage ≥ 50 % when the stored count ≥ 20 | `repository/DatasetIntegrity.kt:180-195`, `evaluate()` `:253` | a whole **refresh**, before it is written |
+| **Reachability gate** | keep the candidate unless **every** usable endpoint was definitively `UNREACHABLE`; `UNKNOWN` is kept | `ServerReachabilityTester`; `AutoModeController.kt:1791-1808` | a **candidate**, for this run only |
+| **Ranking** | `byQuality` (`:2626`) then the RTT insertion pass (`:1613`) | same | nothing — it only orders |
+| **Wedge exclusion** | `countFor(key) >= EXCLUSION_THRESHOLD` (= 2), process-scoped, in-memory, cleared by a verified tunnel | `WedgeTracker` `:2741-2763` | a **server**, for the rest of the process |
+| **`healthScore`** | `0` never-observed / `25` unmeasured / `50` one axis / `100` both `score > 0 && ping > 0` | `ServerListUpdates.retentionHealthScore:545` | nothing — **no production reader** |
+
+`VERIFIED CURRENT IMPLEMENTATION` and the single most important negative finding of this audit: **there is no post-connect quality rejection.** Nothing in the codebase tears down an established tunnel because it is slow, and `TunnelHealth` / `TunnelLivenessWatchdog` are **liveness** signals (rx advancing, TUN EIO, 15 s of silence), not quality measurements. A connection that establishes is never later "rejected for quality". Instruction §11's question — *when can existing quality logic reject an established connection* — therefore has the answer **"never, today"**.
+
+### 11.15.3 Stable server identity — `IMPLEMENTED` `TESTED`
+
+**Rule:** the history identity is the **Room primary key, `hostName.trim()`** — the same normalisation `mergeAll` already uses (`ServerListUpdates.kt:502`). No new key, no hashing, no concatenation.
+
+Rationale: it is the only key the database enforces as unique, the only key `mergeAll` treats as "same server", and the only one that cannot be duplicated by a refresh. `ip` is a **mutable attribute**, not an identity, and `"$ip|$hostname"` is a *derived view* used for in-run bookkeeping — it must not become a second history key, because the same server would then own two histories after a single IP change.
+
+The six cases the instruction requires, answered against this rule:
+
+| Case | Behaviour under `hostName` identity | Status |
+|------|-------------------------------------|--------|
+| **IP changes, hostname stays** | Same identity. History preserved. The row is the same row; `ip` is overwritten by the next observation. | `PROPOSED DESIGN` |
+| **Hostname changes, IP stays** | **New identity. History does not follow.** The old row is retained by `mergeAll` (add-only) with its history intact; the new hostname starts with no history. Accepted limitation — see **OD-2**. | `PROPOSED DESIGN` + `OPEN DECISION` |
+| **Same server arrives from another source** | `VpnServerMerger.mergeRecords` collapses by IP→hostname *before* storage, so exactly one row and one identity reach the database. | `VERIFIED CURRENT IMPLEMENTATION` |
+| **Disappears, returns later** | The row is retained (`mergeAll` never prunes), so the identity is unchanged and history is intact. If the row was lost (fallback-path replace), the returning hostname is matched against the surviving summary row, so history still resolves. | `PROPOSED DESIGN` |
+| **Duplicates merged** | One row, one identity; the merge is by hostname so two duplicate hostnames cannot both survive. | `VERIFIED CURRENT IMPLEMENTATION` |
+| **Endpoint shared by several protocol entries** | Identity is the **server**, never the endpoint. The protocol is an *attribute of an event*, and one server can own many protocol-attributed events. | `PROPOSED DESIGN` |
+
+`ASSUMPTION` A1: VPN Gate hostnames are stable in practice (they are operator-chosen and change rarely). If that assumption fails, the cost is a lost history for that server, never a wrong attribution to a different server.
+
+`ASSUMPTION` A2: `hostName` is non-blank for every stored row. A blank identity is treated as "no identity": the recorder skips the write rather than writing a row that all blank hosts would share.
+
+### 11.15.4 Summary model — `IMPLEMENTED` `TESTED`
+
+**Form:** a **separate 1:1 table**, `server_history_summary`, keyed by `hostName`, **not** new columns on `VPNGateItem`.
+
+Why the deviation is proposed (instruction §2.1 says "summary/history fields associated with each server record"; this keeps the association and changes only its storage location): `replaceAll` is `deleteAll` + `insertAll` on **every** write, and the fallback path has no previous row to copy from (§11.15.2.1, G-F29-1). Columns on `VPNGateItem` would be silently zeroed by any snapshot-served refresh — the exact "a refresh must not reset history" rule the instruction forbids breaking. A 1:1 table is immune by construction and keeps `VPNGateItem` — the entity that is fully rewritten on every refresh — narrow. This is **OD-1** and requires approval because it changes the *form* of an approved decision.
+
+| # | Field | 1 Meaning | 2 Update trigger | 3 Kind | 4 Derivable from events? | 5 AutoConnect-critical? | 6 Init for existing rows | 7 Preserved across refresh |
+|---|-------|-----------|------------------|--------|--------------------------|-------------------------|--------------------------|-----------------------------|
+| 1 | `hostName` | identity (PK) | first write | key | — | yes (lookup) | no row created | n/a — never touched by `replaceAll` |
+| 2 | `firstObservedAt` | when this identity was first seen **by history** | `SERVER_FIRST_SEEN` | timestamp | yes (min event ts) | no (display) | `0` = unknown | unaffected |
+| 3 | `successCount` | verified tunnels ever established | `CONNECTED` | cumulative | yes | **yes** | `0` | unaffected |
+| 4 | `failureCount` | times the **server** was abandoned for a server-attributable reason | `SERVER_ABANDONED` with `SERVER_REJECTED` | cumulative | yes | **yes** | `0` | unaffected |
+| 5 | `timeoutCount` | attempts that produced no verdict | `PROTOCOL_ATTEMPT` with `TIMEOUT_UNATTRIBUTED` | cumulative | yes | no (diagnostic; see OD-3) | `0` | unaffected |
+| 6 | `consecutiveFailures` | server-attributable failures since the last success | `+1` on #4; `= 0` on `CONNECTED` | derived counter | yes (walk events backwards) | **yes** | `0` | unaffected |
+| 7 | `lastSuccessAt` | epoch ms of the last verified tunnel | `CONNECTED` | timestamp | yes | **yes** (recency order) | `0` = never | unaffected |
+| 8 | `lastFailureAt` | epoch ms of the last server-attributable failure | #4 | timestamp | yes | no (display) | `0` = never | unaffected |
+| 9 | `lastFailureReason` | classification constant of #8 | #4 | enum text | yes | no (display) | `''` | unaffected |
+| 10 | `lastSuccessProtocol` | `AutoModeProtocol.id` of the last success | `CONNECTED` | enum text | yes | no (see OD-4) | `''` | unaffected |
+| 11 | `lastSuccessNetwork` | `NetworkType` of the last success | `CONNECTED` | enum text | yes | **yes** (tier 0) | `''` | unaffected |
+| 12 | `wifiSuccessCount` | verified tunnels established on Wi-Fi | `CONNECTED`, `networkType = WIFI` | cumulative | yes | **yes** (tier 0) | `0` | unaffected |
+| 13 | `wifiFailureCount` | server-attributable failures on Wi-Fi | #4 with `WIFI` | cumulative | yes | no | `0` | unaffected |
+| 14 | `cellularSuccessCount` | verified tunnels on mobile data | `CONNECTED`, `CELLULAR` | cumulative | yes | **yes** (tier 0) | `0` | unaffected |
+| 15 | `cellularFailureCount` | server-attributable failures on mobile data | #4 with `CELLULAR` | cumulative | yes | no | `0` | unaffected |
+| 16 | `otherSuccessCount` | verified tunnels on ETHERNET / OTHER / UNKNOWN | `CONNECTED`, anything else | cumulative | yes | **yes** (tier 0 for that bucket) | `0` | unaffected |
+| 17 | `otherFailureCount` | server-attributable failures in that bucket | #4 | cumulative | yes | no | `0` | unaffected |
+| 18 | `qualityRejectionCount` | established connections later rejected for quality | **no producer exists** (§11.15.2.5) | cumulative | would be | no | `0` | unaffected |
+| 19 | `lastAttemptAt` | epoch ms of the last protocol attempt | `PROTOCOL_ATTEMPT` | timestamp | yes | no (display) | `0` | unaffected |
+
+Companion table for the protocol axis — `server_history_protocol` (PK `hostName`, `protocol`): `successCount`, `failureCount`, `lastSuccessAt`. It answers the operator's "how often did each protocol succeed or fail" and "which protocol succeeded" questions **without** widening the summary, and it is **not** read by AutoConnect (Protocol Priority stays the sole authority on protocol order — OD-4).
+
+`PROPOSED DESIGN` — duplicate state is avoided deliberately:
+* `firstSeenAt` / `lastSeenAt` stay where they are, on `VPNGateItem`, and are **not** duplicated. The only exception is `firstObservedAt` (#2), which exists precisely because the `VPNGateItem` copy is destroyed by the fallback path (G-F29-1); it is the durable copy, and the list UI keeps reading the column.
+* `lastAttemptAt`, `consecutiveFailures` and every counter are derivable from the event table. They are stored anyway, for the one reason the instruction allows: AutoConnect must decide **without loading history** (§14). The summary is the read model; the events are the write model.
+* Nothing stores a score, a weight, a decayed value or a synthetic "quality number". `healthScore` is left exactly as it is — unread.
+
+The six operator questions, mapped:
+
+| Operator question | Answered by |
+|-------------------|-------------|
+| Has this server **ever** connected successfully? | `successCount > 0` |
+| Is it newly discovered or previously known? | `firstObservedAt == 0` (unknown) vs `> 0`; and `VPNGateItem.firstSeenAt > 0` for "known before F.29" |
+| Which network types produced successes? | `wifiSuccessCount` / `cellularSuccessCount` / `otherSuccessCount` |
+| How many successes on Wi-Fi vs mobile data? | #12 vs #14 |
+| Which protocol succeeded? | `lastSuccessProtocol`, and `server_history_protocol.lastSuccessAt` per protocol |
+| How often was a successful server later rejected for quality? | `qualityRejectionCount` — **reserved, no producer** (OD-5) |
+
+### 11.15.5 Event model — `IMPLEMENTED` `TESTED`
+
+Table `server_history_event`:
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `id` | INTEGER PK AUTOINCREMENT | event id |
+| `hostName` | TEXT NOT NULL | **identity; deliberately NOT a foreign key** (a FK would cascade-delete history the moment `replaceAll` runs) |
+| `ip` | TEXT NULL | endpoint **at event time** — provenance, never identity |
+| `eventType` | TEXT NOT NULL | taxonomy below |
+| `outcome` | TEXT NOT NULL | `SUCCESS` / `FAILURE` / `NEUTRAL` |
+| `networkType` | TEXT NOT NULL | `WIFI` / `CELLULAR` / `ETHERNET` / `OTHER` / `UNKNOWN` |
+| `protocol` | TEXT NULL | `AutoModeProtocol.id`, or NULL when the event is not protocol-scoped |
+| `attemptId` | TEXT NULL | the run/attempt correlation id when one is safely available |
+| `durationMs` | INTEGER NULL | attempt duration, measured in memory |
+| `failureReason` | TEXT NULL | classification constant (§11.15.6) |
+| `qualityResult` | TEXT NULL | **reserved** — always NULL until OD-5 is decided |
+| `createdAt` | INTEGER NOT NULL | epoch ms, stamped by an injectable clock |
+
+Taxonomy — **bounded to six types, four of which have a producer today**:
+
+| Event type | Outcome | Emitted at | Volume |
+|------------|---------|------------|--------|
+| `SERVER_FIRST_SEEN` | `NEUTRAL` | first observation of an identity (`mergeAll` path, once per identity, ever) | ≤ dataset size, one-off |
+| `PROTOCOL_ATTEMPT` | `SUCCESS` / `FAILURE` / `NEUTRAL` | one per protocol attempt, at its terminal (`:1969` outcome, `:1940` permission, `:1973` skip) | ≤ 1 per protocol tried |
+| `SERVER_ABANDONED` | `FAILURE` only when the reason is `SERVER_REJECTED`, otherwise `NEUTRAL` | `:2434`, the single "gave up on this server" point | ≤ 1 per server per run |
+| `CONNECTION_LOST` | `NEUTRAL` (attribution uncertain — see §11.15.6) | `reportArmedTunnelLoss` `:1044`, one of three detectors | ≤ 1 per established tunnel |
+| `QUALITY_REJECTED` | — | **reserved: no producer exists** | 0 |
+| `ATTEMPT_CANCELLED` | `NEUTRAL` | stop / skip while an attempt is in flight | ≤ 1 per cancelled attempt |
+
+`PROPOSED DESIGN` — three deliberate omissions, each an `OPEN DECISION` where it deviates from the instruction's candidate list:
+
+1. **No `ATTEMPT_STARTED` event** (OD-6). The terminal event carries `durationMs`, so the start time is `createdAt - durationMs`. Recording both would double the write volume to preserve a number that is already stored.
+2. **No `SERVER_OBSERVED` event** (OD-7). A refresh observes every server in the dataset; emitting one event per server per refresh would write ~1 000–2 000 rows every few hours for no diagnostic value. `lastSeenAt` on `VPNGateItem` already records "observed again".
+3. **No event per log line.** The existing `AutoModeLogStore` (2 000-line in-memory ring) stays exactly as it is: it is the human-readable trace, not the record of outcomes.
+
+`PROPOSED DESIGN` — consistency and duplicate prevention:
+* One event + its summary mutation are written in **one Room `@Transaction`** (`recordAttempt(...)`), so a crash between them is impossible and a counter can never drift from its events.
+* Duplicate delivery is prevented by a **per-attempt guard in the controller**, not in the DAO: the success funnel `return`s immediately (`:2431`), and each protocol attempt reaches exactly one terminal branch. The recorder is additionally idempotent on `(eventType, attemptId, protocol)` for the `CONNECTED` event, so a future second call site cannot double-count a success.
+* `NATIVE_BUSY`, `MISSING_CONFIG` and `TIMED_OUT` never increment `failureCount`, so the wedge ledger's semantics (`:2584-2596`) are not duplicated into the summary.
+* No credentials, no `.ovpn` bytes, no hostnames of user-imported servers beyond the identity itself, no SSIDs, no user identifiers.
+
+### 11.15.6 Failure attribution and quality-rejection recording — `IMPLEMENTED` `TESTED`
+
+| Source evidence | `failureReason` | `outcome` | Increments `failureCount`? | Layer blamed |
+|-----------------|-----------------|-----------|----------------------------|--------------|
+| `TUNNEL_UP` | — | `SUCCESS` (`CONNECTED`) | no (resets `consecutiveFailures`) | — |
+| `NATIVE_ERROR` (per protocol) | `SERVER_REJECTED` | `FAILURE` | no — per-protocol only; only a `SERVER_ABANDONED` with this reason counts | server / protocol |
+| `TIMED_OUT` | `TIMEOUT_UNATTRIBUTED` | `FAILURE` | **no** — `timeoutCount` only | **unknown** |
+| `NATIVE_BUSY` | `NATIVE_SLOT_BUSY` | `NEUTRAL` | no | local (own unresolved native operation) |
+| `MISSING_CONFIG` | `DATA_MISSING_CONFIG` | `NEUTRAL` | no | data |
+| `VpnPermissionMissingException` | `PERMISSION_DENIED` | `NEUTRAL` | no | local |
+| user skip / `stop()` | `USER_CANCELLED` | `NEUTRAL` | no | local |
+| `ERROR_NO_NETWORK` guard | `NETWORK_UNAVAILABLE` | `NEUTRAL` | no | network |
+| OS revoke (`onTunnelLost`) | `LOST_EXTERNAL` | `NEUTRAL` | no | **unknown** (could be the network, the OS, or the server) |
+| 1 s passive poll | `LOST_PASSIVE` | `NEUTRAL` | no | **unknown** |
+| liveness watchdog, 15 s silence | `LOST_SILENT` | `NEUTRAL` | no | **unknown** |
+| anything not distinguishable at the seam | `UNKNOWN` | `NEUTRAL` | no | unknown |
+
+Three rules this table enforces, all `USER-APPROVED REQUIREMENT`:
+
+1. **A timeout is not proof about the server.** `TIMED_OUT` is recorded with an explicit unknown attribution and never penalises the server — matching the adapter's own words (`AndroidConnectionAdapter.kt:966-969`: "A silent or filtered endpoint looks exactly like a dead one, so this is 'no answer', not 'proven dead'").
+2. **`NATIVE_BUSY` is never the server's fault** — the server was never contacted (`:958-963`).
+3. **A post-connect loss is `NEUTRAL`, not a server failure.** The app cannot distinguish "the server died" from "the network changed" from "the OS revoked the tunnel"; inventing certainty here would penalise good servers for the user walking into a lift.
+
+`OPEN DECISION` **OD-5 — quality rejection has no trigger.** The instruction requires recording "successful tunnel followed by quality rejection" and asking how often a successfully connected server was later rejected for quality. In this codebase **no such event can occur** (§11.15.2.5): nothing disconnects a healthy tunnel for being slow. Two options, and the choice belongs to the operator because §2.4 forbids inventing a criterion:
+
+* **(a) Reserve only** (recommended): ship the `QUALITY_REJECTED` event type and the `qualityRejectionCount` column with no producer. Nothing is fabricated, no threshold is invented, and the moment a quality criterion is approved it has a place to land.
+* **(b) Define a criterion now**: e.g. "a tunnel whose measured throughput stays below X for Y seconds is rejected". This is a **new quality threshold**, which §2.4 explicitly forbids in this phase, and it would change product behaviour.
+
+`ASSUMPTION` A3: if a future quality criterion is added elsewhere (for example inside the tunnel watchdog), the recorder can attach to the same funnel (`reportArmedTunnelLoss`) without a schema change, because `qualityResult` and the event type already exist.
+
+### 11.15.7 Network classification — `IMPLEMENTED` `TESTED` (`NOT TESTABLE` for the Android read)
+
+**Semantics, decided before any code (instruction §9 requirement):**
+
+* The recorded type is the **transport of the physical network in use when the attempt started**, classified as `WIFI`, `CELLULAR`, `ETHERNET`, `OTHER`, or `UNKNOWN`.
+* **`TRANSPORT_VPN` is never the answer.** The VPN transport identifies the tunnel, not the network underneath it. Classification therefore enumerates candidate networks, excludes any carrying `TRANSPORT_VPN`, and reads the transport of the remainder — the same exclusion `GlobalVpnTracker.currentPhysicalNetwork()` already performs (`:544-549`), reused rather than reimplemented.
+* Preference order when several physical networks exist: `WIFI` → `ETHERNET` → `CELLULAR` → `OTHER`. Deterministic, and the same order the collector already prefers (`:550-554`).
+* **A snapshot, not a subscription.** The type is read once, at attempt start, and stored on the event. A network change *during* an attempt is **not** retro-attributed: the event keeps the type it started on, because that is the network the attempt was actually made over. (A change that kills the attempt is recorded as `CONNECTION_LOST` with unknown attribution, which is the honest description.)
+* **Never inferred** from IP address, country, server endpoint, port, or the connection result.
+* **`NET_CAPABILITY_VALIDATED` is not required.** A captive portal is still the network the attempt used; requiring validation would silently turn real attempts into `UNKNOWN`. `INTERNET` capability is the floor.
+* **`UNKNOWN` when**: no `ConnectivityManager`; no non-VPN network with `INTERNET`; the service is unavailable; or the only visible network is the app's own tunnel. `UNKNOWN` is a first-class bucket with its own counters (#16/#17), never folded into Wi-Fi or cellular.
+* **No SSID, ever.** It would require `ACCESS_FINE_LOCATION` and would record a personal identifier. Not in scope.
+* Pure core: `classify(transports: Set<Int>): NetworkType` over an injected set, so the mapping is JVM-testable with no Android framework — the same pattern `routingUsableFromSignals` already uses (`GlobalVpnTracker.kt:460-462`).
+
+`NOT TESTABLE` without a device: whether a real `ConnectivityManager` reports the expected transports on a real handset (Wi-Fi, cellular, and a Wi-Fi→cellular handover mid-attempt). The pure mapping is JVM-testable; the wiring is not.
+
+### 11.15.8 Adaptive AutoConnect ordering — `IMPLEMENTED` `TESTED` (deviates from the Phase 1 barrier proposal — see §11.15.17.3)
+
+**Where it goes:** a **second stable insertion pass inside each run of equal-quality candidates**, immediately after `applyRttTieBreak`, inside the existing `sortedForAutoConnect()` loop (`AutoModeController.kt:1594-1606`). Nothing else about the pipeline changes:
+
+```
+all → withActiveRtt → sortedWith(byQuality) → [per equal-quality run: RTT pass → HISTORY pass]
+    → probeTargets → reachability gate (FILTER_ONLY, subsequence) → servers
+```
+
+This placement is not a convenience; it is what makes every constraint in instruction §12 hold **structurally** rather than by discipline:
+
+| Requirement | Why it holds |
+|-------------|--------------|
+| Existing quality ordering stays authoritative | history only ever permutes candidates the comparator already declared **equal** |
+| Reachability gate cannot be bypassed | the gate runs **after** ranking and returns a subsequence — a historical success cannot resurrect a server the probe removed |
+| `UNKNOWN` ≠ `UNREACHABLE` | history is never consulted for reachability, and an unknown-history candidate is a barrier (below) |
+| Protocol Priority stays authoritative | the history pass orders **servers**, never protocols |
+| Deterministic and testable | pure function of (list, summary map, network type); same input → same output |
+| No invented numbers | every key is an ordinal comparison or a stored counter; the only predicate is `> 0` |
+
+**The comparator.** History rank is a **tier**, then two stored timestamps/counters as tie-breaks:
+
+| Tier | Condition | Meaning |
+|------|-----------|---------|
+| 0 | `wifiSuccessCount > 0` (on Wi-Fi), `cellularSuccessCount > 0` (on cellular), `otherSuccessCount > 0` (otherwise) | has worked **on this network type** |
+| 1 | `successCount > 0` | has worked, but on a different network type |
+| 2 | no success, `consecutiveFailures == 0` | tried, inconclusive (timeouts, cancellations, local failures only) |
+| 3 | `consecutiveFailures > 0` | server-attributable failures since the last success |
+| — | **no summary row** | **barrier**: never moved, never moved past |
+
+Ordering inside a tier: `lastSuccessAt` **descending** (recency by comparison — no "within N days" cutoff, so no new constant), then `consecutiveFailures` ascending, then `failureCount` ascending. Full tie → the pair is left alone (stable), exactly as `applyRttTieBreak` does.
+
+**Barrier semantics** are copied deliberately from the RTT pass (`:1613-1631`), and for the same reason: "missing is neutral" is not expressible as a total order, and a non-transitive comparator makes TimSort throw on real list sizes (`:1580-1592`). A server with no history therefore keeps its quality rank and remains fully eligible for exploration — a new server is never demoted for being new, and never promoted for it either.
+
+**What this design refuses to do** (each is a `USER-APPROVED REQUIREMENT`):
+
+* no permanent blacklist — tier 3 is a **relative** position inside one equal-quality run, recomputed every run from a counter that resets on the first success;
+* no success guarantee — tier 0 says "it worked on this network before", and the reachability gate and the attempt loop still have to succeed *now*;
+* no cross-network transfer — Wi-Fi success does not make a server tier 0 on cellular;
+* no protocol condemnation — `failureCount` only increments when the **server** is abandoned, so one refused protocol never condemns a server that still has a usable one;
+* no dataset-wide penalty — network-level and local failures never increment a per-server failure counter (§11.15.6);
+* no replacement for the wedge ledger — `WedgeTracker` remains the session-scoped guard (`EXCLUSION_THRESHOLD = 2`); history is its cross-session analogue, and neither can override the other.
+
+`OPEN DECISION` **OD-6 — the barrier rule and known-bad servers.** Under strict barrier semantics a tier-3 server cannot be pushed **below** an unknown-history server of the same quality, so a repeatedly-failing server can stay ahead of a new one within that run. The alternatives are (i) keep barriers (recommended: no server is ever penalised for being unknown), or (ii) let tier 3 sink past unknown candidates (better ordering, but it implicitly demotes unknown servers, which §2.6 forbids in spirit).
+
+`NOT TESTABLE` without a device: that this ordering actually produces a better first-attempt hit rate on the operator's real dataset. The ordering itself is JVM-testable; its value is an empirical claim and must not be asserted until measured.
+
+### 11.15.9 Room migration and legacy data — `IMPLEMENTED` `TESTED`
+
+| Item | Plan |
+|------|------|
+| Version | **8 → 9** (`AppDatabase` `@Database(version = 9)`) |
+| New tables | `server_history_summary`, `server_history_protocol`, `server_history_event` |
+| Changes to existing tables | **none** — no `ALTER TABLE VPNGateItem`, so no `NOT NULL DEFAULT` problem and no risk to the retention columns |
+| Indexes | `event(hostName, createdAt)`, `event(createdAt)`, `event(eventType, createdAt)`, `event(hostName, networkType, createdAt)`, `protocol(hostName)` implicit via PK, `summary(hostName)` implicit via PK |
+| Foreign keys | **none.** A FK to `VPNGateItem.hostName` would cascade-delete every event the moment `replaceAll` runs `deleteAll()`. Referential integrity is maintained by the application, and an orphaned summary row is harmless (it is simply never matched). |
+| Defaults for existing rows | no summary rows are created — see below |
+| Known vs new after migration | `summary.firstObservedAt == 0` ⇒ no history; `VPNGateItem.firstSeenAt > 0` ⇒ previously known to the app. Neither is fabricated. |
+| Missing history | represented as **absence of a row**, not as a zeroed row. Absence is what the barrier rule reads. |
+| Snapshots / imports | `CollectorSnapshotStore` (`collector_vpn_servers.json`, `SCHEMA_VERSION = 1`) is untouched. History is **not** put in the snapshot: a snapshot is a server list, and mixing history into it would make the format's `COUNT_MISMATCH` / `INVALID_IDENTITY` validation mean two things. `ManualImportStore` is untouched; an imported server participates in history like any other identity once it connects. |
+| Migration test | `Migration8to9Test` using the existing `RecordingDatabase` proxy pattern: assert the three `CREATE TABLE` statements, every index, and — as `Migration7to8Test` already does — assert the exported `9.json` contains the same columns. |
+| Rollback | **not supported.** Room has no down-migration; installing a v1.0.55 APK over a v9 database throws `IllegalStateException` and the only recovery is uninstall (total data loss). This must be stated in the release note for the build that ships v9. |
+
+`USER-APPROVED REQUIREMENT` honoured explicitly: **no existing server is marked "new"** (no summary row is created), **no historical success or failure is fabricated**, and every existing server keeps its current eligibility because absence of history is a barrier, not a penalty.
+
+### 11.15.10 Retention, storage and performance — `IMPLEMENTED` `TESTED`
+
+`USER-APPROVED REQUIREMENT`: **indefinite retention**. No expiry, no pruning, no maximum row count, no periodic deletion. This section documents the cost instead of capping it.
+
+| Question | Assessment |
+|----------|------------|
+| Row size | ≈ 170–250 B per event including index entries (identity ~20 B, `ip` ~15 B, four short enums, two integers, timestamps) |
+| Event volume | ~1–3 events per user-initiated run: one `PROTOCOL_ATTEMPT` per protocol tried, at most one `SERVER_ABANDONED` per server, at most one `CONNECTION_LOST` per tunnel |
+| Yearly growth | a heavy user at 30 runs/day ≈ 60 events/day ≈ 22 000 events/year ≈ **5–6 MB/year**; 100 runs/day ≈ **9–10 MB/year** |
+| `SERVER_FIRST_SEEN` | bounded by dataset size (one per identity, ever) — a one-off cost of ~2 000 rows, not a per-refresh cost |
+| Summary size | ~19 columns × 2 000 rows ≈ **250–400 KB** |
+| 5-year worst case | **≈ 50 MB** for a very heavy user — material, but not a correctness problem, and it is the cost of the approved policy |
+| AutoConnect query cost | one `SELECT` over `server_history_summary` (≤ dataset size) into a `Map<String, Summary>`; **no event-table scan ever happens on the selection path** |
+| Event queries | always index-covered: by identity (`hostName, createdAt`), by recency (`createdAt`), by type (`eventType, createdAt`), by network (`hostName, networkType, createdAt`) |
+| UI/DB-thread blocking | `allowMainThreadQueries()` is enabled in `App.kt`; **every history read and write must be dispatched off the main thread by the caller** — a rule the implementation must state in KDoc, because the database will not enforce it |
+| Concurrency | events are written from the Auto Mode scope while a refresh writes `VPNGateItem`; the tables are disjoint and there is no FK, so the two writers serialise on SQLite's write lock rather than on `ServerListUpdater`'s mutex. The refresh mutex does **not** cover history writes, and does not need to. |
+| Future alternatives, **not implemented** | (a) roll-up of events older than N years into the summary — would break "indefinite"; (b) a separate archive database file — moves the cost, does not remove it; (c) `WITHOUT ROWID` / compression — not applicable to an autoincrement event log. All are recorded as options only. |
+
+`ASSUMPTION` A4: a ~2 000-row summary read per run is acceptable (hundreds of KB, once per run, off-main). If a device run shows otherwise, the fix is a projection query over the handful of columns the comparator needs — a query change, not a schema change.
+
+### 11.15.11 Test plan — `TESTED` (results in §11.15.17.6)
+
+JVM (no device) unless marked otherwise.
+
+| # | Case (instruction §15) | Target | Layer |
+|---|------------------------|--------|-------|
+| 1 | Fresh server with no history | `HistoryTieBreakTest` — no summary row ⇒ barrier, position unchanged | pure |
+| 2 | Previously known server, no connection history | same + `firstObservedAt == 0` ⇒ treated as unknown, eligible | pure |
+| 3 | Successful Wi-Fi connection | `ServerHistoryRecorderTest` — `CONNECTED`, `wifiSuccessCount = 1`, `consecutiveFailures = 0` | fake DAO |
+| 4 | Successful mobile-data connection | same, `cellularSuccessCount = 1` | fake DAO |
+| 5 | Multiple successes per network type | counters accumulate; `lastSuccessAt` monotonic | fake DAO |
+| 6 | Success by different protocols | `server_history_protocol` rows per protocol; `lastSuccessProtocol` follows the latest | fake DAO |
+| 7 | Server failure vs network failure | `SERVER_REJECTED` increments `failureCount`; `NETWORK_UNAVAILABLE` does not | fake DAO |
+| 8 | VPN permission failure | `PERMISSION_DENIED`, `NEUTRAL`, no counter | `AutoModeControllerTest` + fake adapter |
+| 9 | User cancellation | `ATTEMPT_CANCELLED`, no counter, `consecutiveFailures` unchanged | controller |
+| 10 | `NATIVE_BUSY` | `NEUTRAL`, no counter, no wedge before the threshold | controller |
+| 11 | Unknown outcome | `UNKNOWN`, `NEUTRAL`, no counter | fake DAO |
+| 12 | Timeout with uncertain attribution | `TIMEOUT_UNATTRIBUTED`; `timeoutCount +1`; `failureCount` unchanged | fake DAO |
+| 13 | Successful tunnel followed by quality rejection | **cannot be produced** — pinned as a documentation test: no producer exists (OD-5) | — |
+| 14 | Duplicate callback / repeated outcome delivery | `CONNECTED` written once for one `attemptId` + protocol | controller |
+| 15 | Refresh retains history | `mergeAll` over a summary-bearing dataset leaves the summary untouched | fake DAO |
+| 16 | Duplicate server merge preserves history | two records, one hostname ⇒ one identity, one history | merger + fake DAO |
+| 17 | Server disappears and returns | summary row survives the absence; resolves on return | fake DAO |
+| 18 | Migration from the current schema | `Migration8to9Test` — DDL, indexes, `9.json` parity | `RecordingDatabase` |
+| 19 | Event + summary transaction consistency | one `@Transaction`; a throwing summary update rolls the event back | fake DAO |
+| 20 | Deterministic AutoConnect ordering | same input twice ⇒ identical order; history pass is stable | pure |
+| 21 | New-server exploration | a no-history candidate keeps its quality rank beside known-good peers | pure |
+| 22 | No permanent exclusion from old failures | tier 3 in one run; after one success, tier 0 and `consecutiveFailures = 0` | pure |
+| 23 | History across process restart | **device/DB-level**: values read back from a real Room database | `NOT TESTABLE` on plain JVM without Robolectric — plan: assert at the DAO boundary with an in-memory Room if the harness allows, otherwise defer |
+| 24 | History across app restart | same as 23 | `NOT TESTABLE` as above |
+| 25 | Network classification mapping | `NetworkTypeClassifierTest` — Wi-Fi, cellular, ethernet, VPN-only ⇒ UNKNOWN, empty ⇒ UNKNOWN | pure |
+| 26 | Identity rules | `HistoryIdentityTest` — trim, blank ⇒ skip, IP change ⇒ same identity, hostname change ⇒ different identity | pure |
+
+`NOT TESTABLE` without a device: 23, 24, and every claim about a real `ConnectivityManager` (25's wiring half). No physical-device test has been run and none will be claimed.
+
+### 11.15.12 Implementation boundaries and file list — `IMPLEMENTED`
+
+Not authorised in Phase 1. The list is what approval would authorise.
+
+**New files**
+
+| Path | Purpose |
+|------|---------|
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistorySummary.kt` | `@Entity` summary (19 columns) |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerProtocolSummary.kt` | `@Entity` per-protocol counters |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryEvent.kt` | `@Entity` event + the bounded taxonomy enum |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryDao.kt` | reads + `@Transaction` write |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryRecorder.kt` | the only writer; maps outcomes to events; idempotent |
+| `app/src/main/java/vn/unlimit/vpngate/history/HistoryIdentity.kt` | pure identity normalisation |
+| `app/src/main/java/vn/unlimit/vpngate/history/NetworkTypeClassifier.kt` | pure `classify(transports)` + the `ConnectivityManager` read |
+| `app/src/main/java/vn/unlimit/vpngate/history/HistoryTieBreak.kt` | pure tier + insertion pass |
+| `app/schemas/vn.unlimit.vpngate.db.AppDatabase/9.json` | generated by the build, committed as `1.json`–`8.json` are |
+
+**Modified files**
+
+| Path | Change |
+|------|--------|
+| `app/src/main/java/vn/unlimit/vpngate/db/AppDatabase.kt` | `version = 9`, three entities, one DAO, `MIGRATION_8_9` |
+| `app/src/main/java/vn/unlimit/vpngate/App.kt` | `addMigrations(… MIGRATION_8_9)` |
+| `app/src/main/java/vn/unlimit/vpngate/automode/AutoModeController.kt` | two new constructor parameters (a history provider and a recorder, both defaulted so every existing test compiles unchanged); one call in `sortedForAutoConnect`; recording at `:1940`, `:1973`, `:2434`, `:2408`, `:1044` |
+| `app/src/main/java/vn/unlimit/vpngate/automode/AutoModeEngine.kt` | wire the real provider/recorder (replacing nothing — `onSuccess`'s existing writes stay) |
+| `app/src/main/java/vn/unlimit/vpngate/repository/ServerListUpdates.kt` | emit `SERVER_FIRST_SEEN` from the merge path (inside `mergeAll`'s existing transaction) |
+| `app/src/main/res/values*/strings.xml` | only if OD-8 says a UI surface ships |
+
+**Explicitly out of scope for the first implementation slice:** any change to `VPNGateItem`, `VPNGateItemDao.replaceAll`, `ServerListUpdater`, `DatasetIntegrity`, `VpnServerMerger`, the wedge ledger, the reachability tester, or the snapshot format. `G-F29-1` (the fallback-path retention reset) is **not** fixed by this feature and needs its own authorisation.
+
+> **Phase 2 correction — the list above is the plan, not the outcome.** What actually landed differs in three ways, and §11.15.17.1 is authoritative: (1) the three entities are one file, `ServerHistoryEntities.kt`, not three; (2) `HistoryIdentity.kt` and `HistoryTieBreak.kt` were not created as separate files — identity normalisation lives in `ServerHistoryTypes.kt` / `ServerHistoryDao.kt` and the tier model in `automode/AutoModeHistory.kt`; (3) `ServerListUpdates.kt` was **not** modified, so `SERVER_FIRST_SEEN` has **no producer**. This is deliberate and loses nothing: `firstObservedAt` is stamped once by `HistoryCounters.nextSummary` (`base.firstObservedAt ?: record.at`) on the first event of **any** type, so a dedicated first-sighting event would add a row carrying no fact the summary does not already hold — and the instruction qualifies the event with "only when first history observation can be recorded accurately", which the summary timestamp already satisfies. The seven added and four modified production files are listed in §11.15.17.1.
+
+### 11.15.13 Assumptions — `ASSUMPTION`
+
+| # | Assumption | If it is wrong |
+|---|------------|----------------|
+| A1 | VPN Gate hostnames are stable enough to be an identity | a server loses its history; nothing is mis-attributed |
+| A2 | `hostName` is non-blank for every stored row | the recorder skips blank identities instead of merging them |
+| A3 | A future quality criterion can attach to `reportArmedTunnelLoss` | the reserved event/column would need a different hook |
+| A4 | A ~2 000-row summary read per run is affordable | replace with a projection query; no schema change |
+| A5 | SQLite's write lock is sufficient to serialise the refresh writer and the history writer | the recorder would need its own mutex |
+| A6 | The success funnel at `:2408` is reached exactly once per established tunnel | duplicate `CONNECTED` events; the idempotency guard is the mitigation, not the assumption |
+| A7 | `ACCESS_NETWORK_STATE` is enough for transport classification (no location, no SSID) | the Wi-Fi/cellular split would degrade to `UNKNOWN`, which is recorded honestly |
+
+### 11.15.14 The nine decisions and their outcomes — `USER-APPROVED REQUIREMENT` (all nine decided, none re-opened)
+
+All nine were decided by the operator in the Phase 2 instruction and were implemented as decided. None was re-opened.
+
+| # | Decision | Decided | Phase 2 outcome |
+|---|----------|---------|-----------------|
+| **OD-1** | Summary as a separate 1:1 table instead of columns on `VPNGateItem` | **(a) separate table** | `IMPLEMENTED` — `server_history_summary`, `server_history_protocol`, `server_history_event`; `VPNGateItem` DDL unchanged. `TESTED` by `Migration8to9Test`. |
+| **OD-2** | Hostname change with a stable IP | **(a) accept the limitation** | `IMPLEMENTED` — identity is `hostName` alone. `KNOWN LIMITATION`: a hostname change starts a new history; the old row is orphaned and harmless. |
+| **OD-3** | Does a `TIMED_OUT` count as a failure? | **(b) separate `timeoutCount`, never `failureCount`** | `IMPLEMENTED` — `HistoryCounters.nextSummary` routes `TIMEOUT_UNATTRIBUTED` to `timeoutCount` only. `TESTED` by `HistoryCountersTest`. |
+| **OD-4** | May a protocol success reorder Protocol Priority? | **(b) no** — record and display only | `IMPLEMENTED` — `usableProtocols(server, priorities)` filters the user's list and never sorts it; `server_history_protocol` is diagnostic. `TESTED` by `AutoModeHistoryRecordingTest`. |
+| **OD-5** | Quality rejection has no trigger | **(a) reserve only** | `IMPLEMENTED` — `QUALITY_REJECTED` and `qualityRejectionCount` exist with **no producer**. `TESTED` that the counter is reachable only by its own event and that nothing else increments it. |
+| **OD-6** | Can a known-bad server sink below an unknown one? | **(a) keep barriers** | `IMPLEMENTED` with a deviation: the Phase 1 *barrier* was replaced by **tier 2 = INCONCLUSIVE**, which satisfies the same rule — a server with no history is never demoted below a proven success and never sinks below a proven failure — and is transitive, so TimSort cannot throw. See §11.15.17.3. |
+| **OD-7** | Omit `SERVER_OBSERVED` (per-refresh) events | **omit** | `IMPLEMENTED` — no per-refresh producer exists. `TESTED` that a clean run emits exactly one event type. |
+| **OD-8** | UI surface in the first slice? | **(b) second slice** | `IMPLEMENTED` — no UI, no strings, no new screen. `FOLLOW-UP REQUIRED`. |
+| **OD-9** | Event write placement | **(a) awaited, after `setState(Connected)`** | `IMPLEMENTED` — the `CONNECTED` write is awaited under `withContext(NonCancellable)` after `setState` and after the watcher is armed. One documented deviation: `CONNECTION_LOST` cannot be awaited, because `reportArmedTunnelLoss` is reached from an OS callback with no coroutine. See §11.15.17.4. |
+
+### 11.15.15 Acceptance criteria — `TESTED` (evidence in §11.15.17.7)
+
+The feature is acceptable when all of the following are true and **stated with evidence labels**:
+
+| # | Criterion | Result | Evidence |
+|---|-----------|--------|----------|
+| 1 | A verified tunnel increments exactly one `CONNECTED` event and exactly one `successCount`, once per tunnel | `TESTED` (partially — see note) | `AutoModeHistoryRecordingTest.a verified tunnel records exactly one success and nothing else`; `ServerHistoryRecorderTest.a repeated success with the same token is a no-op`. **The double-callback half is `NOT TESTABLE`**: it needs the real adapter's armed-tunnel path, which needs a device. |
+| 2 | No `failureCount` is incremented by `TIMED_OUT`, `NATIVE_BUSY`, `MISSING_CONFIG`, a permission failure, a cancellation, or a post-connect loss | `TESTED` | `HistoryCountersTest.local causes never touch a failure counter`, `a timeout increments only the timeout counters`, `a loss never erases a success`; `AutoModeHistoryRecordingTest.a native busy refusal is recorded as a local event`. |
+| 3 | A refresh — network path **and** fallback path — leaves every summary row and every event untouched | `TESTED` by construction; **no test drives a real refresh** | The three history tables are separate entities with no foreign key and are not touched by `replaceAll`; `Migration8to9Test` proves the DDL. A test that runs the real refresh path is `NOT TESTABLE` — `ServerListUpdates` needs Room + a network. |
+| 4 | A server with no history keeps its quality position and is still attempted | `TESTED` | `AutoModeHistoryOrderingTest.a known-good server outranks a server with no history`, `a server with no history outranks a server with a failure streak`; `AutoModeHistoryRecordingTest.history never outranks better quality`. |
+| 5 | A server with `consecutiveFailures > 0` is never permanently excluded, and returns to tier 0 after one success | `TESTED` | `HistoryCountersTest.a success resets the consecutive failure streak`; `AutoModeHistoryOrderingTest.a failure streak with a later success is not the bottom tier`. Permanent exclusion is impossible by construction: the reachability gate is unchanged and no blacklist exists. |
+| 6 | History never changes the order of two candidates of **different** quality, never changes the protocol attempt order, and never re-admits a server the reachability gate removed | `TESTED` | `AutoModeHistoryRecordingTest.history never outranks better quality`, `history reorders only inside an equal-quality window`, `protocol priority is the only authority on attempt order`. The reachability gate runs after the sort and is unchanged — verified by the pre-existing suite's reachability tests, all still green. |
+| 7 | The migration 8→9 is proven by a JVM test against the `RecordingDatabase` pattern **and** the exported `9.json`; no `VPNGateItem` DDL changes | `TESTED` | `Migration8to9Test.the generated version 9 schema matches the migration DDL exactly` (whitespace-insensitive comparison of all 7 schema objects), plus bounded-version, no-`DEFAULT`, no-`DROP`, no-`FOREIGN KEY` and registration assertions. |
+| 8 | `:app` and `:SoftEtherClient` suites green on three consecutive `--rerun-tasks --no-build-cache` runs | `TESTED` — **one run only** | One clean run of each is recorded in §11.15.17.6. The three-run stability requirement is `FOLLOW-UP REQUIRED`; the Phase 2 budget produced a single verified run. |
+| 9 | Every new behaviour labelled SOURCE CODE / TEST; device-only items labelled `NOT TESTABLE` | `TESTED` | §11.15.17.5 lists the five device-dependent items as `NOT TESTABLE`; every other claim cites a test name. |
+| 10 | No automatic pruning, expiry, or row cap exists anywhere in the code or the schema | `TESTED` | No `DELETE`, `LIMIT`-based eviction, or retention job exists in `history/`; `eventsFor(hostName, limit)` is a bounded **read**, not a prune. `Migration8to9Test` asserts the migration contains no `DELETE`. |
+
+### 11.15.16 Phase status
+
+| Item | Status |
+|------|--------|
+| Read-only audit | `COMPLETE` (Phase 1) |
+| Specification update (this section) | `COMPLETE` (Phase 1 + Phase 2, §11.15.17) |
+| Assumptions and risks report | `COMPLETE` (11.15.13, 11.15.10) |
+| The nine decisions | `DECIDED` — OD-1 … OD-9, implemented as decided, with two documented deviations (§11.15.17.3, §11.15.17.4) |
+| File list | `COMPLETE` (11.15.12, corrected in 11.15.17.1 to 7 added + 4 modified production files) |
+| Migration | `IMPLEMENTED` `TESTED` — 8 → 9, DDL parity proven against `9.json` |
+| Automated tests | `TESTED` — 98 new tests, 1162 `:app` tests green, 184 `:SoftEtherClient` tests green |
+| Build | `TESTED` — `:app:assembleProDebug` BUILD SUCCESSFUL |
+| Repository discipline | `VERIFIED` — HEAD `0c3c56e`; no commit/tag/push/release; the pre-existing `vpngate_collector.py` working-tree modification preserved untouched; no ADB, no app-data clear |
+| Device-dependent verification | `NOT TESTABLE` — DEVICE UNAVAILABLE (§11.15.17.5) |
+| G-F29-1 (snapshot fallback resets `firstSeenAt`/`lastSeenAt`/`healthScore`) | **NOT FIXED — out of scope**, reported separately (§11.15.17.8) |
+| Implementation | **`COMPLETE`** — final report in `F29_PHASE2_IMPLEMENTATION_REPORT.md` (21 sections, verdict `IMPLEMENTED — SOME VERIFICATION BLOCKED`) |
+| Follow-ups | `FOLLOW-UP REQUIRED` — UI surface (OD-8), three-run stability, the retention sweep, device verification — blocked on explicit approval (§17 gate) |
+
+---
+
+### 11.15.17 Phase 2 implementation record — `IMPLEMENTED` `TESTED`
+
+This subsection is the authoritative record of what Phase 2 actually built, ran and verified. Where it disagrees with a Phase 1 subsection above, this subsection wins.
+
+#### 11.15.17.1 Files
+
+| File | Status | What it is |
+|------|--------|------------|
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryTypes.kt` | `IMPLEMENTED` | The vocabulary: `NetworkType` (3 values), `HistoryEventType` (7 values), `HistoryOutcome`, `HistoryFailureReason` (13 constants), `HistoryRecord`, `ServerHistorySink`, `ServerHistoryView`. Pure Kotlin — no Room, no Android, no `automode` import. |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryEntities.kt` | `IMPLEMENTED` | The three Room entities. **No foreign keys** — a cascade on `VPNGateItem.hostName` would delete the whole history on every `replaceAll`. |
+| `app/src/main/java/vn/unlimit/vpngate/history/HistoryCounters.kt` | `IMPLEMENTED` | `nextSummary` / `nextProtocol` — the whole counter arithmetic as total pure functions. |
+| `app/src/main/java/vn/unlimit/vpngate/history/ServerHistoryDao.kt` | `IMPLEMENTED` | The only writer. `record(record)` is one `@Transaction`: blank-identity drop, `CONNECTED`-token idempotency, summary upsert, protocol upsert, event insert. |
+| `app/src/main/java/vn/unlimit/vpngate/history/RoomServerHistorySink.kt` | `IMPLEMENTED` | `Dispatchers.IO` hop + error containment. `CancellationException` is **rethrown**; every other `Exception` is logged and swallowed. |
+| `app/src/main/java/vn/unlimit/vpngate/history/NetworkTypeClassifier.kt` | `IMPLEMENTED` | `classify(activeTransports, physicalTransports)` is pure; `current(context)` is the Android read and never throws. |
+| `app/src/main/java/vn/unlimit/vpngate/automode/AutoModeHistory.kt` | `IMPLEMENTED` | `HistoryTier`, `historyTierOf`, `historyComparator`, `viewOf`. |
+| `app/src/main/java/vn/unlimit/vpngate/db/AppDatabase.kt` | `IMPLEMENTED` | Version 8 → 9, three entities registered, `serverHistoryDao()`, `MIGRATION_8_9`. |
+| `app/src/main/java/vn/unlimit/vpngate/App.kt` | `IMPLEMENTED` | Migration registered, `serverHistoryDao` and `serverHistorySink` exposed. |
+| `app/src/main/java/vn/unlimit/vpngate/automode/AutoModeEngine.kt` | `IMPLEMENTED` | Wires `historyProvider` (one IO read per run), `historySink`, `networkTypeProvider`. |
+| `app/src/main/java/vn/unlimit/vpngate/automode/AutoModeController.kt` | `IMPLEMENTED` | Ten recording hooks, the history tie-break inside the equal-quality window, and the hoisted attempt context. `VPNGateItem` DDL untouched. |
+| `app/schemas/vn.unlimit.vpngate.db.AppDatabase/9.json` | `IMPLEMENTED` | Exported by KSP (`:app:kspProDebugKotlin`), never hand-edited. |
+
+No Gradle file, no manifest, no string resource and no `VPNGateItem` column was changed.
+
+#### 11.15.17.2 Schema (as exported, not as intended)
+
+Three tables, no foreign keys, no `DEFAULT` clauses (Room derives `NOT NULL` from Kotlin nullability; a Kotlin `= 0` default is applied by the constructor, not by SQLite).
+
+- `server_history_summary` — PK `hostName`. **20 columns** (read from the exported `9.json`, not counted by eye): 1 `TEXT NOT NULL` PK, **5 nullable timestamps** (`firstObservedAt`, `lastAttemptAt`, `lastSuccessAt`, `lastFailureAt`, `lastTimeoutAt`), **11 `INTEGER NOT NULL` counters** (`successCount`, `failureCount`, `timeoutCount`, `consecutiveFailures`, `wifiSuccessCount`, `wifiFailureCount`, `cellularSuccessCount`, `cellularFailureCount`, `unknownNetworkSuccessCount`, `unknownNetworkFailureCount`, `qualityRejectionCount`) and **3 nullable text** (`lastSuccessProtocol`, `lastSuccessNetwork`, `lastFailureReason`).
+- `server_history_protocol` — composite PK `(hostName, protocol)`. 8 columns.
+- `server_history_event` — PK `id INTEGER PRIMARY KEY AUTOINCREMENT`. 12 columns, 4 indexes: `index_server_history_event_hostName_createdAt`, `…_hostName_protocol_createdAt`, `…_eventType_createdAt`, `…_attemptToken_eventType`.
+
+`MIGRATION_8_9` is three `CREATE TABLE IF NOT EXISTS` + four `CREATE INDEX IF NOT EXISTS` and nothing else — no `ALTER`, no `UPDATE`, no backfill. The history layer starts empty, which is exactly the "unknown, not bad" state the ordering expects.
+
+#### 11.15.17.3 Deviation from the Phase 1 barrier design — `KNOWN LIMITATION`
+
+Phase 1 §11.15.8 proposed a **barrier**: a candidate with no summary row is never moved and never moved past. Phase 2 replaced it with **tier 2 = INCONCLUSIVE** inside a tiered lexicographic comparator.
+
+The rule OD-6 protects — "an unknown server is never demoted below a proven success, and a known-bad server never sinks below an unknown one" — is satisfied exactly: tier 2 sits between tier 1 (any success) and tier 3 (a failure streak).
+
+Why the deviation: the barrier is not expressible as a comparator key, and a non-transitive comparator makes `sortedWith`'s TimSort throw `IllegalArgumentException: Comparison method violates its general contract!` on real list sizes. The tier comparator is transitive by construction (ordinals and stored numbers, compared in a fixed order). The observable ordering is the same for the cases OD-6 names; the difference is that tier 2 now also orders *within* itself by recency, which a barrier could not do.
+
+Tier table (implemented):
+
+| Tier | Meaning |
+|------|---------|
+| 0 | verified success **on the current physical network type** |
+| 1 | verified success on some other network type |
+| 2 | no conclusive history — no row, or only inconclusive outcomes |
+| 3 | server-attributable failures since the last success |
+
+Within a tier: most recent `lastSuccessAt` first, then fewest `consecutiveFailures`, then fewest `failureCount`. A full tie keeps the incoming order (the sort is stable). When the current network is `UNKNOWN`, tier 0 is unreachable — an unidentified network earns no tier-0 credit, even for successes that were themselves recorded as `UNKNOWN`.
+
+#### 11.15.17.4 Deviation from OD-9's "awaited" — `KNOWN LIMITATION`
+
+OD-9 chose *awaited* over *fire-and-forget*. Nine of the ten hooks are awaited. The tenth — `CONNECTION_LOST` — cannot be: `reportArmedTunnelLoss` is reached from `TunnelStateWatcher.onTunnelLost`, an OS callback with no coroutine to suspend in. It is dispatched onto the controller's `scope`, so it still leaves the callback thread, and it cannot affect anything because the tunnel is already gone. The protocol is captured *before* the launch and the field is cleared synchronously, so the non-awaited coroutine can never observe a half-updated pair.
+
+#### 11.15.17.5 Device-dependent items — `NOT TESTABLE`
+
+No device was available; no ADB command was issued; nothing was installed. The following are therefore `NOT TESTABLE` and are **not** claimed as verified:
+
+1. A real upgrade of an existing v8 database to v9 (the DDL is proven against the export, but no on-device migration ran).
+2. `NetworkTypeClassifier.current(context)` against a real `ConnectivityManager` — the pure `classify` is tested; the Android read is not.
+3. The armed-tunnel double-callback path and the `CONNECTED` idempotency under a real duplicate callback.
+4. That a history write never blocks a live connection on a real locked database.
+5. Any observable change in Auto Connect's server choice on a real network.
+
+#### 11.15.17.6 Verification actually run — `TESTED`
+
+Exact commands, in order, all from `C:\Dev\SoftEthergai` with `JAVA_HOME` pointing at the JDK 21 that ships with Android Studio (the project targets JVM 17; the system default is JDK 8, which cannot build it) and `CI=true`:
+
+| Command | Result |
+|---------|--------|
+| `./gradlew :app:compileProDebugKotlin` | BUILD SUCCESSFUL |
+| `./gradlew :app:kspProDebugKotlin` | BUILD SUCCESSFUL — exported `9.json` |
+| `./gradlew :app:testProDebugUnitTest --tests "vn.unlimit.vpngate.history.*" --tests "vn.unlimit.vpngate.db.Migration8to9Test" --tests "vn.unlimit.vpngate.automode.AutoModeHistory*"` | BUILD SUCCESSFUL — 98 tests |
+| `./gradlew :app:testProDebugUnitTest` | BUILD SUCCESSFUL — **1162 tests, 0 failures, 0 errors, 1 skipped**, 92 suites |
+| `./gradlew :SoftEtherClient:testDebugUnitTest` | BUILD SUCCESSFUL — **184 tests, 0 failures** |
+| `./gradlew :sstpClient:test :vpnLib:test` | BUILD SUCCESSFUL — no test sources |
+| `./gradlew :app:assembleProDebug` | BUILD SUCCESSFUL — `app-pro-debug.apk`, 63,884,364 bytes, SHA-256 `2d7acfec2ecc619a60624af6a23cdd020c0418f7deb439d51fefe24a73436424` |
+| `./gradlew --offline --rerun-tasks :app:testProDebugUnitTest :SoftEtherClient:testDebugUnitTest` | BUILD SUCCESSFUL — **confirmation rerun on the delivered tree**: `:app` 92 suites / 1162 tests / 0 failures / 0 errors / 1 skipped; `:SoftEtherClient` 13 suites / 184 tests / 0 failures |
+| `./gradlew :app:lintProDebug` | **104 errors, 178 warnings, 9 hints — identical to the documented pre-F.29 baseline.** Zero findings in any F.29 file: `AutoModeController.kt`, `AutoModeHistory.kt` and all six `history/` files do not appear in the report at all |
+
+New suites (98 tests): `Migration8to9Test` 9, `HistoryCountersTest` 21, `ServerHistoryRecorderTest` 16, `NetworkTypeClassifierTest` 15, `AutoModeHistoryOrderingTest` 20, `AutoModeHistoryRecordingTest` 17.
+
+`versionCode` is still `144` and `versionName` still `2.4.11-dev` (read from the merged manifest of the APK above) — **no release version was invented, claimed or bumped.**
+
+A one-off static comparison of the migration DDL against `9.json` (whitespace-insensitive, all 7 schema objects) reported **PARITY: EXACT**; the same comparison is asserted at runtime by `Migration8to9Test.the generated version 9 schema matches the migration DDL exactly`.
+
+**Three defects were found and fixed during Phase 2 — two by the tests, one by the compiler:**
+
+1. **Compiler:** the success funnel referenced `protocol` / `attemptToken` / `attemptNetwork` / `attemptStartedAt`, which are loop locals that are out of scope where the funnel sits (after the protocol loop closes). Fixed by hoisting them to per-server function-scope variables, reset for each server.
+2. **Test (`AutoModeHistoryRecordingTest.a timed-out protocol records an unattributed timeout and not a failure`):** `TIMED_OUT` was recorded with `outcome = FAILURE`, which contradicted §8.3 and the event row's own meaning. Fixed to `NEUTRAL`.
+3. **Test (`a cancelled sink write is rethrown rather than reported as a failure`):** `RoomServerHistorySink` caught `Throwable`, which would have swallowed a `CancellationException` and turned a cancelled write into "the write succeeded". Fixed to rethrow `CancellationException` and contain `Exception`.
+
+**Four documentation defects were also found in this record during a final cross-check against the exported schema and the source, and corrected:**
+
+1. §11.15.17.2 claimed `server_history_summary` had **21 columns**; the exported `9.json` shows **20** (1 `TEXT NOT NULL` PK, 5 nullable timestamps, 11 `INTEGER NOT NULL` counters, 3 nullable text). Corrected.
+2. §11.15.17.1 claimed `HistoryFailureReason` had **14 constants**; there are **13**. Corrected.
+3. The `HistoryEventType` header comment claimed "six of these have a producer"; **five** do — `QUALITY_REJECTED` and `SERVER_FIRST_SEEN` both have none. Corrected in the source, and the `SERVER_FIRST_SEEN` rationale is now stated explicitly in §11.15.12.
+4. The §11.15.12 planned-file note gave a wrong reason for the absent `SERVER_FIRST_SEEN` producer ("the taxonomy has no first-seen event"); the taxonomy **does** declare it. The real reason — `firstObservedAt` is stamped once by whichever event arrives first, so a dedicated event would carry no new fact — is now recorded.
+
+`--offline` was used for every Gradle invocation; all dependencies were already cached, so no network fetch was required or performed.
+
+Lint is reported as a **non-blocking** result for this phase: the 104 errors are the documented pre-F.29 backlog (69 of the 70 `MissingTranslation` errors are `vi`), the count is unchanged from the baseline, and none of the 291 findings names an F.29 file. Lint is not configured as a gate for this task and was not treated as one; it is recorded here so the number is not mistaken for a regression.
+
+#### 11.15.17.7 What is *not* claimed
+
+| Claim | Status |
+|-------|--------|
+| On-device behaviour of any kind | `NOT TESTABLE` — DEVICE UNAVAILABLE |
+| A real v8 → v9 upgrade | `NOT TESTABLE` — DEVICE UNAVAILABLE |
+| Three consecutive green runs (acceptance criterion 8) | `FOLLOW-UP REQUIRED` — one verified run |
+| UI surface for history (OD-8) | `FOLLOW-UP REQUIRED` — second slice by decision |
+| G-F29-1 | **NOT FIXED** — out of scope, see §11.15.17.8 |
+| `healthScore` gaining a production reader | out of scope — unchanged by this phase |
+| A lint run with zero errors | `NOT CLAIMED` — 104 pre-existing errors, unchanged; none in an F.29 file |
+| An improved physical connection success rate | `NOT TESTABLE` — DEVICE UNAVAILABLE; this is the feature's *goal*, not a verified outcome |
+
+#### 11.15.17.8 G-F29-1 — pre-existing defect, reported and deliberately not fixed
+
+`G-F29-1` was identified in Phase 1 (§11.15.2.1) and the Phase 2 instruction explicitly scoped it out. It is restated here so it is not lost:
+
+The snapshot fallback path reads no previous row, and `toVPNGateItem()` has no `firstSeenAt` / `lastSeenAt` / `healthScore` fields, so a refresh served from a snapshot resets all three to `0`. The F.29 history tables are **unaffected** — they are separate entities with no foreign key and are never read or written by the refresh path — but the defect is real, pre-existing, and still present at HEAD.
 
 ## 12. Remaining Work
 
@@ -5460,6 +6205,10 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.53 | 2026-10-22 | SERVER-DATA-AUDIT-AND-OPENVPN-CONFIG-GATE (device-free; operator-authorised; spec §1.6.45) | **TASK A — OpenVPN was treated as usable without a config.** `AutoModeController.usableProtocols()` gated OpenVPN on the port alone (`openVpnTcpPort > 0` / `openVpnUdpPort > 0`); `AndroidConnectionAdapter.connectOpenVpn()` returned **silently** when `openVpnConfigData` was null, so the connect looked issued, `awaitArmedOutcome()` waited out the full per-attempt budget and reported `TIMED_OUT` — the one outcome that records a **wedge** against the server (AUTOCONNECT-AUDIT D-5). A data defect was billed as a dead endpoint at 8 s per selected server. The emergency publisher strips configs to stay under the 1 MiB body cap, so this was the majority case, not an edge. Fix: new `AutoModeCandidate.openVpnConfigAvailable` (default `false`, **fail closed**) derived in `AutoModeEngine.toCandidate()` from the real bytes (`!openVpnConfigData.isNullOrBlank()`), required by both OpenVPN branches. One flag covers both transports because `OpenVpnConfigTransform.forUdp` is null iff its input is null — so `VPNGateConnection.kt` (authorised conditionally) was **not** needed. **Port facts are preserved verbatim**; only usability is gated. A `do_openvpn` link is not a config (nothing downloads it), and the gate keys on bytes, so link-only rows are correctly unusable. **TASK B.3 — the embedded config is authoritative over the link and the column.** Applied in `EmergencyCsvParser.applyOpenVpnColumnPort()` (within a row; new non-rejecting issues `OPENVPN_PORT_CONFLICT_CONFIG_WINS`, `OPENVPN_PORT_WITHOUT_CONFIG`; the parser also stops claiming `supported` without bytes, which stops `ServerQualityCalculator` awarding OpenVPN points to an undialable row), `VpnServerMerger.enforceConfigAuthoritativePorts()` (a record-wide invariant run before port validation, recording a §38 conflict) and `emergency_csv_publisher.enforce_config_ports()` (after the merge, before prune/budget, logging every correction). **No §10 CSV column was added.** **TASK B.4 — `SSTP_Hostname` may carry `:port`**, live and recurring (`SSTP Hostname : vpn799794865.opengw.net:1919`). `EmergencyCsvParser` was already correct (`normalizeHost()` + `applySstpEndpoint()`) and is now pinned by test; `emergency_csv_publisher.py` was not, and now splits via `split_sstp_endpoint()` + `normalize_sstp_rows()`. **TASK B.5 — flags verified against live HTML.** `SE_UDP_Port` all-zero with `SE_UDP_Supported` true is **correct data** (`TCP: 443<BR>UDP: Supported`; the page never publishes a SoftEther UDP port) — no change. `Has_IPv6` is **unobservable** (`IPv6` occurs 0 times on the 216 651-byte page) and inert (no record field, merge rule or UI reads it) — recorded UNKNOWN, no change, because the §10 schema requires a boolean and nothing depends on it. `SSTP_Supported` needs no change: the consumer already requires a port or the documented 443 default. **TASK B.6 — `AttemptOutcome.MISSING_CONFIG`** plus a per-attempt `[AUTO] ATTEMPT_CLASS` developer log (`CONNECTED` / `REFUSED_START` / `TIMEOUT_NO_VERDICT` / `ENDPOINT_REJECTED` / `MISSING_CONFIG`). The outcome is returned **before** any wait, so no budget is spent; the controller treats it as an ordinary attempt failure — next protocol on the same server, **no wedge, no terminal**, the v1.0.37 contract intact. The one distinction the log cannot make (refused port / TLS / protocol / auth all arrive as `NATIVE_ERROR`, because `TunnelStateWatcher` does not forward the stack's `logmessage`) is stated in code rather than invented; `WRONG_DATA_SUSPECT` is never emitted per attempt because it is a property of the record, not of one dial. **TASK B.2 — field-by-field audit.** All four parsers and the Python oracle converge on `speedMbps` / `uptimeDays` / `totalTrafficGB`; unquoted commas parse identically (0 malformed rows of 229, 29 columns every row); DDNS hostnames verbatim; 0 duplicate IPs; the OpenVPN port source is the only divergence, and it is the one fixed here. **The dataset advanced four times during the phase** (`a5cb153` 280 rows / `0387d37` 283 / `b5e0f7e` 271 / `4afa7e3` 229), so figures are pinned per commit: the config-less proportion is a **range (72.5–78.1 %)**, `123.48.124.169` (column 1534 vs config 1558) is present in every snapshot, and `153.180.162.195` — recorded UNKNOWN for `a5cb153` exactly as the brief instructed, because its config was empty there — is **confirmed at `4afa7e3`** (column 1820 vs config 1759). Nothing in this block wrote to `emergency-sources/servers.csv`, `servers.csv` or `vpngate_collector.py`; none was staged. JVM `:app` **941 / 0 / 0 / 1** (baseline 925; **+16** net), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), Python **40 / 0** (baseline 24; **+16**). `:app:assembleProDebug` SUCCESSFUL under `CI=true`; `versionCode 144` / `versionName 2.4.11-dev` unchanged. **One instability reported, not hidden:** across four full-suite runs `pressWhileConnectedDisconnects` failed once and `twoImmediateSkipsNeverDialTheSameServerTwice` failed once (logging a server dialled five times); both pass in isolation and on the recorded green run, and the duplicate dial is recorded as **R-1** for a follow-up block because it lies in the v1.0.52 skip/continuation path this block did not modify. **NOT device-verified** — V-1..V-5 PENDING. §22 byte-identical; §1.6.2–§1.6.44 untouched. No tag was created. |
 | 1.0.54 | 2026-10-23 | SETTINGS-CLEANUP, MANUAL-IMPORT, LIST-PIN, DEFAULTS, SKIP-RACE (device-free; operator-authorised; spec §1.6.46–§1.6.50) | **PART 1 — the R-1 duplicate dial, closed.** `skipInFlight` is set inside `transitionLock` before any async work, and its lifetime is owned by `setState` (any non-`Connected` state clears it) — the first implementation cleared it before the replacement run published a state, which reopened the very window it was meant to close and was caught by the full-suite run. A button press inside the window is a **stop**, not a swallowed press. **PART 2 — three Settings controls removed with their code:** *Include UDP server* (`INCLUDE_UDP_SERVER`, every `isIncludeUdp` consumer; UDP rows are in the list by construction), *Block Ads* (`SETTING_BLOCK_ADS`, the alternate-DNS pair, three `resolve*Dns` branches — Custom-DNS-only is exactly the OFF behaviour), and the cache schedule (`models/Cache.kt` deleted; `clearTransientCache()` replaces five accessors; one manual button remains). Auto Connect now defaults to **SoftEther TCP + SoftEther UDP** when the key is absent, while an explicitly empty profile stays empty. The emergency source stays pre-filled from `emergency_defaults.xml` and gained a *Restore default source* button. **PART 3 — the active/connecting server is pinned to row 1** by `ip|hostname` identity, applied after filter+sort as a pure O(n) view transform, with a visible badge; 11 tests. **PART 4 — the manual add-server form is replaced by CSV import:** a paste box plus a document picker, accepting the §10 extended CSV and the VPN Gate API CSV, with BOM/CRLF/SMS-hard-wrap repair, a 1 MiB and 2000-row hard cap enforced at the byte layer, duplicate collapsing by host, and JSON persistence (`ManualImportStore`) because the `manual_server` schema cannot hold a CSV row and this phase may not widen it. Legacy `manual_server` rows are still listed, so no user data is lost. Writing the tests found a real defect: the API body's `*vpn_servers` marker made every real API file `UNKNOWN`. **PART 5 — a one-shot first-run Excluded Apps seed** (`assets/default_excluded_apps`, `ExcludedAppsSeeder`) with four rules — installed-only, once per install, never overwrite, and *no candidates means no flag* — plus the `<queries>` declaration the sheet needed to see other packages on API 30+. The seed's package names are **DEFERRED (D1)** because they live on the operator's phone. **Verification:** `:app` **1044/0/0/1** (baseline 941, **+103**), `:SoftEtherClient` **184/0/0/0**; `AutoModeControllerTest` green on three consecutive `--rerun-tasks` runs after the fix. **NOT device-verified** — D2/D3 PENDING. §22 byte-identical; §1.6.2–§1.6.45 untouched. No tag was created. |
 | 1.0.55 | 2026-10-23 | VERIFY-AND-CLOSE (device-free; operator-authorised; spec §1.6.51) | **An audit of v1.0.54, and the six defects it found — five of them in the evidence, not the behaviour.** Ten consecutive `--rerun-tasks --no-build-cache` full-suite runs gave **7 pass / 3 fail**, so "1044/0/0/1" was one true run rather than a stability result. **G-3** `pressWhileConnectedDisconnects` (2/10, known since 2026-10-21) sampled `state.value` while the OP-R6 continuation ran on `Dispatchers.Default`; it now records every published state through `onStateChange` and asserts the sequence. **G-4** `aFreshPressAfterExhaustionStartsFromTheTopAgain` (1/10) had a 300 ms per-attempt deadline on a test that asserts ordering, so load could manufacture a timeout; raised to 5 s, failure message now carries `connects` and the last 12 log lines. **G-1** "Clear cache" had no test at all: `DataUtil.clearTransientCache(cacheDir, filesDir)` is now a pure companion function and `ClearTransientCacheTest` (11) pins that it deletes `cacheDir` children and the legacy marker and that the database, `-wal`/`-shm`, `manual_import_servers.json`, other `filesDir` entries and a sibling directory all survive. **G-2** the imported-row emission was untested (private, singleton-bound): `manualServerRows()` now takes injected providers and `ImportedServerEmissionTest` (9) proves imported rows are re-emitted, survive a wholesale replace, are not duplicated against the network, and are not lost when either source throws. **G-5** v1.0.54 shipped the new surface in English and Persian with **no Vietnamese**, adding 17 `MissingTranslation` lint errors; all 20 keys are now translated. **G-6** the skip continuation could publish a replacement run after a `stop()` that landed during its teardown (it never re-read `skipInFlight`), and `skipInFlight`'s KDoc still described the reverted implementation; both fixed. Also corrects two v1.0.54 claims in place (§1.6.47 item 6 overstated the locale removals; §1.6.49 item 8 claimed TEST evidence that did not exist). **Lint still fails** (124→104 errors) and did before this block; the remainder is a translation backlog plus pre-existing `NewApi` / `SuspiciousIndentation`, recorded rather than hidden. D1/D2/D3 unchanged. No device ran. |
+| 1.0.56 | 2026-10-23 | F.29 PHASE-1 DESIGN GATE (device-free; read-only audit + spec only; spec §1.6.52, §11.15) | **A design gate, not an implementation.** `F.29 — Smart Server History & Adaptive AutoConnect`, Phase 1: read-only audit of the real source, the design that audit produced, and a stop for explicit approval. **No production source, test, Gradle file, entity, schema or migration was modified** — the only file changed is this specification. **Five findings, each of which changed the design:** (1) the app has **three server identities** — Room PK `hostName`, merger key `IP-if-valid-else-hostname` (`VpnServerMerger.kt:258-267`), Auto Mode key `"$ip|$hostname"` (`serverKey:2520`) — so history adopts the Room key and documents the other two (§11.15.3); (2) **`replaceAll` is destructive on every write** (`deleteAll`+`insertAll`), and the fallback path (`ServerListUpdates.kt:301-305`) passes the incoming list straight through with nothing to re-seed from, which is why the summary is a **separate 1:1 table**, not columns on `VPNGateItem` (OD-1); (3) the fallback path **already resets the v1.0.39 retention fields** because `toVPNGateItem()` rebuilds rows from a DTO that has no `firstSeenAt`/`lastSeenAt`/`healthScore` — pre-existing, recorded as **G-F29-1**, deliberately not fixed here; (4) exactly **one authoritative success point** exists (`AutoModeController.kt:2408-2432`, the only producer of `AutoModeState.Connected`) and exactly one "server abandoned" point (`:2434`); (5) **no post-connect quality rejection exists anywhere** — quality is a pre-attempt capability gate, a dataset gate, a ranking comparator and a session wedge ledger, and `healthScore` has **no production reader**, so "successful connection later rejected for quality" has no trigger to observe (OD-5). **Also established:** the only persisted connection history today is write-only (`AUTO_LAST_SUCCESS_HOST`/`_PROTOCOL`, `AutoModeRun.lastSuccess` — zero readers), so history-informed ordering does not exist; `AttemptOutcome` already separates `TUNNEL_UP`/`NATIVE_ERROR`/`TIMED_OUT`/`NATIVE_BUSY`/`MISSING_CONFIG` and `VpnPermissionMissingException` is distinct, so attribution can reuse existing evidence instead of guessing; no component classifies Wi-Fi vs cellular (transport classification is available from `NetworkCapabilities` under the already-declared `ACCESS_NETWORK_STATE`; SSID would need location and is out of scope). **Proposed design:** 19-column summary + per-protocol counters + a 6-type bounded event table (three types reserved/omitted with reasons), identity = `hostName.trim()`, migration **8→9** with three tables and four indexes and **no FK** (a cascade would delete history on every refresh), and history as a **second stable insertion pass inside each equal-quality run** — the exact shape of `applyRttTieBreak`, with no-history candidates as barriers, so quality stays the sole ranking authority and unknown is never treated as worse. Indefinite retention documented at ~5–10 MB/year heavy use (~50 MB at 5 years), never capped. **Open:** OD-1…OD-9. **No device, no ADB, no build, no test run, no commit.** |
+| 1.0.57 | 2026-10-23 | F.29 PHASE-2 IMPLEMENTATION (device-free; operator-authorised; spec §1.6.53, §11.15.17) | **The nine approved decisions OD-1…OD-9 implemented in the working tree; no commit, no tag, no push.** HEAD advanced by one **pre-existing** commit during this phase (`0c3c56e`, `chore(emergency): update servers.csv`, `emergency-sources/servers.csv` only) and the Phase 2 work sits uncommitted on top of it. **Schema** — Room `version 8 → 9`, three new tables and **no foreign keys anywhere**: `server_history_summary` (1:1 by `hostName`), `server_history_protocol` (per `hostName` × protocol), `server_history_event` (bounded log keyed by attempt token). The summary is a separate table rather than columns on `VPNGateItem` because `replaceAll` is `deleteAll()` + `insertAll()` and the fallback path has nothing to re-seed from (OD-1); identity is the existing Room PK `hostName`, so a hostname change is a new identity and that limitation is documented (OD-2). `MIGRATION_8_9` is three `CREATE TABLE IF NOT EXISTS` + four `CREATE INDEX IF NOT EXISTS` — no `ALTER`, no `UPDATE`, no backfill, no destructive fallback — and `Migration8to9Test` (9) proves whitespace-insensitive parity against the KSP-exported `9.json` for all seven schema objects, plus the absence of `DEFAULT`/`DROP`/`DELETE`/`TRUNCATE`/`FOREIGN KEY` and a single `AUTOINCREMENT`. **Attribution** — success is recorded at exactly one place (the authoritative tunnel-up funnel that produces `AutoModeState.Connected`); a timeout has its own counter and is never a server failure (OD-3); local/permission/cancel/network/busy causes never reach a server-failure counter; a post-connect loss is its own event type and never erases a success; `consecutiveFailures` resets on success only; the quality-rejection counter is reserved with no producer (OD-5). **Classifier** — `NetworkTypeClassifier` returns exactly `WIFI`/`CELLULAR`/`UNKNOWN`, never classifies the VPN transport, reads no SSID/location/subscription id, treats unproven dual-signal as `UNKNOWN`, and `UNKNOWN` earns no tier-0 credit. **Ordering** — `applyHistoryTieBreak` runs inside the equal-quality window left by `applyRttTieBreak`, after `byQuality` and before the reachability gate; history only breaks equal-quality ties, never demotes an unknown server (OD-6), never reorders the user's protocol priority (OD-4), reads history once per run with one bounded DAO query, and any history read/write failure falls back to the existing order. **Deviations recorded, not absorbed** — OD-6's quality barrier is implemented as a transitive tier comparator because the barrier is not a valid TimSort comparator (`Comparison method violates its general contract!` at real list sizes); OD-9's awaited recording holds for every event except `CONNECTION_LOST`, which arrives from an OS callback with no coroutine in scope (protocol captured before dispatch, field cleared synchronously). **Two real bugs found by writing the tests** — `TIMED_OUT` was recorded with `outcome = FAILURE` (now `NEUTRAL`), and `RoomServerHistorySink` caught `Throwable` and so reported a cancelled write as a success (now rethrows `CancellationException`, contains `Exception`). Recording is otherwise awaited and bounded: `withContext(NonCancellable)` + `withTimeoutOrNull(HISTORY_WRITE_TIMEOUT_MS = 2 s)`, idempotent per `(run, server, protocol)` attempt token, and a history error can never change a real tunnel result (OD-9). **No new UI** (OD-8); no per-refresh observation event flood (OD-7). **Verification** — `:app:testProDebugUnitTest` **1162/0/0/1**, 92 suites; `:SoftEtherClient:testDebugUnitTest` **184/0/0/0**, 13 suites; `:sstpClient:test` and `:vpnLib:test` BUILD SUCCESSFUL with no test sources; `:app:assembleProDebug` BUILD SUCCESSFUL producing `app-pro-debug.apk` (63,884,364 bytes, SHA-256 `2d7acfec2ecc619a60624af6a23cdd020c0418f7deb439d51fefe24a73436424`); a `--rerun-tasks` confirmation run on the delivered tree (after two source-comment corrections) reproduced both green suites and rebuilt the APK; `:app:lintProDebug` **104 errors / 178 warnings / 9 hints — identical to the pre-F.29 baseline, with zero findings in any F.29 file**. All under `CI=true` with the Android Studio JBR, because the system default JDK is 1.8 and cannot build this project. Net new: **7 production files** (`history/` × 6 + `AutoModeHistory.kt`), **4 modified** (`AppDatabase.kt`, `App.kt`, `AutoModeEngine.kt`, `AutoModeController.kt`), **6 test files / 98 cases**. **NOT device-verified** — durability across a real process restart, real `ConnectivityManager` classification, a real 8 → 9 upgrade on a device holding an existing database, and the end-to-end effect of history on a real Auto Mode run are all `NOT TESTABLE — DEVICE UNAVAILABLE`. **G-F29-1 still NOT FIXED** (the fallback-path retention reset, §11.15.17.8). No app release version invented or claimed |
+| 1.0.58 | 2026-10-24 | D1 EXTRACTION + LAUNCH-CRASH FINDING (device-assisted; operator-authorised `CONFIRM D1: ALL CLASSIFIED-IRANIAN`; spec §1.6.54, §1.6.55) | **Two things landed, and neither is a behaviour change.** **D1 is CLOSED.** `assets/default_excluded_apps` shipped an empty entry list since v1.0.54 because the authoritative package names lived on the operator's phone; they were read read-only from the `excluded_apps` table of the on-device `vpn_gate_connector` on device `5585fecc` (Xiaomi 2201117TG, Android 13) via `run-as`, giving **15 rows, all confirmed installed by `pm path`**. Three were deliberately **not** shipped, because the list is a default for **all** users and not a copy of one phone: `com.deepseek.chat` (a **Chinese** AI assistant, a personal install), `com.google.android.projection.gearhead` (Google Android Auto, which §1.6.47 records as the operator's own user-added exclusion), and `vn.unlimit.vpngatepro` (the app self-excludes in `App.kt`). The remaining **12 clearly-Iranian** packages are shipped, sorted, de-duplicated, each with a trailing comment naming the service, under a provenance header recording the source database, device, extraction date and the operator's confirmation string. `DefaultExcludedAppsTest` grew **12 → 16**: the obsolete `the shipped asset carries no entries yet` was replaced by five real-content guards (exact list pinned against a single `EXPECTED_D1_ENTRIES` constant, plausible-Android-package-name shape, no duplicates, sorted with no comment leakage, and the three non-defaults pinned absent). No code, schema, migration, Gradle or manifest change. **A pre-existing launch crash was found and is NOT fixed.** Installing the committed-tree APK (`git archive HEAD` → fresh temp dir → `:app:assembleProDebug`, SHA-256 `00a3b10b…`) and launching it on `5585fecc` shows `MainActivity` (+945 ms) and then dies: `NullPointerException` on `MutableStateFlow.setValue` at `ConnectionListViewModel.kt:328`, because `_importedServers` is declared at line 268 while `init` calls `refreshImportedServers()` at line 50 — and `Dispatchers.Main.immediate` runs the coroutine body synchronously up to the first suspension point, so the still-null field is hit before the constructor finishes. Introduced by `ec3a73b` (v1.0.54); `git diff` for the file is empty, so the F.29 work is not implicated. Recorded as §1.6.55 `FOLLOW-UP REQUIRED`. **Verification:** `:app` **1166/0/0/1** across 92 suites (was 1162 — exactly the +4 net new tests), `:SoftEtherClient` **184/0/0/0** across 13 suites, one `--rerun-tasks --no-build-cache` run. Committed-tree build verified separately in the v1.0.56 block: three green runs at `:app` **1064/0/0/1** (86 suites) and `:SoftEtherClient` **184/0/0/0** (13 suites), `:app:lintProDebug` **104 errors / 178 warnings / 9 hints** (the known backlog). **No commit, no tag, no push, no device-setting change.** D2, D3 and V3–V10 remain `NOT OBSERVABLE` until the crash is fixed. |
+| 1.0.59 | 2026-10-24 | LAUNCH-CRASH FIX (device-assisted; operator-authorised; spec §1.6.56) | **Closes the launch crash found in BLOCK v1.0.56 and recorded in §1.6.55.** `ConnectionListViewModel` declared `_importedServers` at line 268 while its `init` block sat at line 45 and called `refreshImportedServers()`; Kotlin initialises properties in declaration order, and `viewModelScope` uses `Dispatchers.Main.immediate`, so the launched coroutine body ran synchronously to its first suspension point and wrote a still-null field — a `NullPointerException` on `MutableStateFlow.setValue` that killed the app on launch. The fix moves the `init` block **below every property declaration** (now line 276, after the last property at line 264) rather than moving one property above it, which makes the whole class safe by construction instead of safe by remembering; the same two cache assignments and the same `refreshImportedServers()` call run in the same order, so behaviour is unchanged. **A class-wide audit, not just the one file:** every `.kt` under `app/src/main/java` was scanned for a class-level property declared after an `init` block — **zero hits remain** (there was one). `AutoModeViewModel`'s `init` launches two coroutines but declares nothing after it; `DataUtil`'s `init` launches nothing; `StatusViewModel` has no `init` block. **New `ConnectionListViewModelInitOrderTest` (4 tests)**, and the regression was **proven**: with the file temporarily restored to the `ec3a73b` ordering in a scratch copy, two of the four tests failed, and both passed again once the fix was restored (scratch copy deleted). The guard is a source-shape test because the class cannot be constructed on the JVM (`App.instance!!.dataUtil!!` and `viewModelScope`); the KDoc says so explicitly. **Verification:** three `--rerun-tasks --no-build-cache` runs, `:app` **1170/0/0/1** across **93 suites** (was 1166 — exactly the +4 new tests), `:SoftEtherClient` **184/0/0/0** across 13 suites, no failures or errors; `:app:lintProDebug` **104 errors / 178 warnings / 9 hints** (unchanged backlog, **zero** findings in the fixed file); `:app:assembleProDebug` SUCCESSFUL, `app-pro-debug.apk` 64,073,648 bytes, SHA-256 `7a4fc01f166462b7ff390285a6c1435e115d80fbec5ad692038e412632ff38b8`, `versionCode 144` / `versionName 2.4.11-dev`. **One production file (+21/−7), one new test file, and this specification** — no schema, migration, Gradle, manifest, resource or behaviour change. No tag. **DEVICE-VERIFIED on `5585fecc`:** committed-tree APK (SHA-256 `9c0328de…`, 63,824,336 B) installed with `adb install -r`, app launches and stays alive (pid constant 30 s, zero FATAL/ANR/tombstone, no Room error), server list loads 261 rows, Developer Mode ON, Settings opens; V3/V5/V6 PASS, V9 EMERGENCY reached, V10 PASS (partial), V4(a) captured; V7, V4(b), V8 and the V5 Clear-cache action are OPERATOR MANUAL STEP. Report: `DEVICE_VERIFY_v1.0.57_REPORT.md`, evidence under `test-evidence/dv57/`. |
 
 ### Verification Status
 
@@ -5482,8 +6231,13 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | §1.6.43 — ADDITIONAL-CONNECT-PROTECT (v1.0.51) | HISTORICAL — attributed to this revision and its phase report (`ADDITIONAL_CONNECT_PROTECT_REPORT.md`). The defect (the additional TCP socket dialled at `softether_protocol.c:4036` with no protect between `socket_create` at `:4029` and the connect, while Kotlin's sweep only runs from the receive loop at `ConnectionController.kt:1175`) is **SOURCE CODE**, corroborated by the **PRIOR REPORT** device log of 2026-10-21 18:16. The hook (`protect_socket_fn`/`protect_socket_ctx`, `softether_set_socket_protector`), its call site between create and connect, the JNI upcall (`nativeSetSocketProtector`, `GetEnv`/`AttachCurrentThread`/`DetachCurrentThread`, `ExceptionCheck`/`Clear`, `NewGlobalRef`/`NewLocalRef`/`DeleteGlobalRef`), the release-after-join ordering in `nativeDestroy`, and the two Kotlin arming sites are **SOURCE CODE**. The fail-closed abort, the ordering, the teardown release ordering, and the preservation of the safety net are **TEST** (`AdditionalConnectProtectTest`, 7 cases, T-PROTECT-01..07). Counts `:SoftEtherClient` 184/0/0/0, `:app` 907/0/0/1 and APK `36b4e4bb…a521` are **TEST**, as is the presence of both symbols in the built `libsoftether.so`. **Device verification PENDING** — whether a SoftEther TCP tunnel now survives > 20 s with `additional_connect` active, whether the `received` counter climbs, and whether the on-device log shows the socket protected before connect are **UNKNOWN** (V-VERIFY-3). |
 | §1.6.44 — AUTO-ROUTE-AND-AUTOCONNECT-UX (v1.0.52) | VERIFIED at SOURCE CODE + TEST level, **NOT device-verified**. **SOURCE CODE:** the removal set (Settings row, `DataUtil` accessors + the write-only `defaultPreferences` field and its two-argument constructor, `GlobalVpnTracker.prefersVpnForCollector()`, `PREF_ALWAYS_PREFER_VPN`, `CollectorRoutingInput.preferVpn`, the `CollectorRouting` object, the two `setting_prefer_vpn_collector_*` strings) inspected as absent; `PathMemory` (bounded `HashMap<CollectorPath, Long>` pairs, injectable clock, TTL/cooldown, `synchronized` on every method), `routeLadder(input, memory)` and the `fetchOnChosenPath` `recordSuccess`/`recordFailure` wiring inspected; the one-shot retry inspected as CAS-guarded, `refreshMutex`-scoped, `withTimeoutOrNull(TUNNEL_RETRY_TIMEOUT_MS)`-bounded and re-armed only by a run that starts with a usable tunnel; the `transitionLock` critical sections, the `startLocked()` seam, the two `CancellationException` rethrows, the `withContext(NonCancellable) { adapter.disconnect() }` sites and the `serverKey` comparison in `rememberRemaining()` inspected; the moved switch inspected on `AutoModeScreen` and absent from `SettingsScreen`; the 8 s default inspected in `DataUtil`, `AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS` and the picker fallback. **TEST:** 18 net new JVM cases across `VpnServerRepositoryLadderTest` (rewritten: base order, evidence-only promotion, invariants, 8 `PathMemory` cases), `VpnServerRepositoryRoutingDynamicTest` (T-LADDER-20..24), `HttpFetcherR4bTest` (routing half replaced by removal assertions), `DataUtilRoutingPreferenceRemovedTest` (T-REMOVED-01..05, replacing the deleted `DataUtilPrefersVpnTest`), `DataUtilTimeoutRangeTest` (T-NEW-70/70b/72) and two `AutoModeControllerTest` cases (null-vs-`""` identity cursor; double press never dials a server twice). Counts `:app` **925 / 0 / 0 / 1** (baseline 907), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), and the `:app:assembleProDebug` gate, are **TEST**. **PENDING (UNKNOWN, V-VERIFY-4):** whether the collector now recovers on its own when the physical path is blocked (run 1 fails on PHYSICAL, run 2 logs `[ladder] order=TUNNEL,PHYSICAL,EMERGENCY` with no user action); whether the moved switch is reachable on the Auto Connect screen, absent from Settings and persistent across a restart; and whether a dead server is abandoned at ~8 s rather than ~12 s. |
 | §1.6.45 — SERVER-DATA-AUDIT-AND-OPENVPN-CONFIG-GATE (v1.0.53) | VERIFIED at SOURCE CODE + TEST level, **NOT device-verified**. **SOURCE CODE:** the gate (`openVpnConfigAvailable` required by **both** OpenVPN branches of `usableProtocols()`), the fail-closed default on `AutoModeCandidate`, its derivation from the real bytes in `AutoModeEngine.toCandidate()`, and the untouched port fields, inspected; `AttemptOutcome.MISSING_CONFIG` returned **before** `awaitArmedTunnel` in `awaitArmedOutcome()`, `lastMissingConfig` cleared per attempt in `armTunnelWatch()`, and the controller branch that `continue`s to the next protocol on the same server (no wedge, no wait, no terminal) inspected; the `[AUTO] ATTEMPT_CLASS` emission and the `classifyAttempt()` mapping inspected, with the distinction it cannot make stated in code rather than guessed; `EmergencyCsvParser.applyOpenVpnColumnPort()` (three cases, `OPENVPN_PORT_CONFLICT_CONFIG_WINS`, `OPENVPN_PORT_WITHOUT_CONFIG`, and `supported` no longer claimed without bytes) and `VpnServerMerger.enforceConfigAuthoritativePorts()` (run before port validation, recording a §38 conflict) inspected; `emergency_csv_publisher.py`'s `split_sstp_endpoint()` / `normalize_sstp_rows()` / `enforce_config_ports()` inspected as wired between the `sanitize_row` filter and `dedupe_hostnames`. `SE_UDP_Port`, `Has_IPv6` and `SSTP_Supported` inspected as **deliberately unchanged** (§1.6.45 items 12–14). **TEST:** 16 net new JVM cases — 4 in `AutoModeControllerTest` (config absent, HTML-link-only, port facts preserved, `MISSING_CONFIG` rotation to the next protocol), 4 in the new `AutoConnectAttemptClassificationTest` (including a source-shape guard that the `lastMissingConfig` check precedes `awaitArmedTunnel`), 6 in `EmergencyCsvParserTest` (port conflict, port without config, three SSTP `host:port` cases, merged API+emergency rows) and 2 in `MergerOracleTest` — plus 16 net new Python cases (9 `ConfigAuthoritativePorts`, 7 `SstpHostPortSplit`). Counts `:app` **941 / 0 / 0 / 1** (baseline 925), `:SoftEtherClient` **184 / 0 / 0 / 0** (untouched), Python `test_emergency_csv_publisher.py` **40 / 0** (baseline 24), and the `:app:assembleProDebug` gate, are **TEST**. One instability is disclosed rather than hidden: `pressWhileConnectedDisconnects` and `twoImmediateSkipsNeverDialTheSameServerTwice` each failed once across four full-suite runs (the latter logging one server dialled five times), both pass in isolation and on the recorded green run, and the duplicate dial is recorded as **R-1** for a follow-up block because it lies in the v1.0.52 skip/continuation path this revision did not modify. **PENDING (UNKNOWN, V-1..V-5):** that a config-less OpenVPN server is never selected and no 8 s stall precedes the protocol rotation; that the gate does not shrink the usable set when configs are present; that `123.48.124.169` dials 1558 rather than 1534; that an SSTP row whose hostname carries `:port` reaches the intended endpoint instead of failing to resolve; and that `ATTEMPT_CLASS MISSING_CONFIG` never appears in a device log — its appearance would itself be a defect report. |
-| §1.6.46–§1.6.50 — v1.0.54 (SKIP-RACE, SETTINGS-CLEANUP, LIST-PIN, MANUAL-IMPORT, EXCLUDED-APPS-SEED) | VERIFIED at SOURCE CODE + TEST level only. `:app` **1044/0/0/1**, `:SoftEtherClient` **184/0/0/0**; 108 new tests across 7 new classes, 3 new Auto Mode tests, 2 obsolete Settings tests deleted. PART 1's coalescing is proven with a gated teardown rather than a raced one, and the class was re-run three times with `--rerun-tasks`. **NOT device-verified:** D2 (pinned row, import via paste and file, the four removed Settings controls, default protocol priority, the single cache button, and a Next-Server double press) and D3 (V-VERIFY-3/4) are PENDING — no device ran. **DEFERRED:** D1, the package names for `assets/default_excluded_apps`. |
+| §1.6.46–§1.6.50 — v1.0.54 (SKIP-RACE, SETTINGS-CLEANUP, LIST-PIN, MANUAL-IMPORT, EXCLUDED-APPS-SEED) | VERIFIED at SOURCE CODE + TEST level only. `:app` **1044/0/0/1**, `:SoftEtherClient` **184/0/0/0**; 108 new tests across 7 new classes, 3 new Auto Mode tests, 2 obsolete Settings tests deleted. PART 1's coalescing is proven with a gated teardown rather than a raced one, and the class was re-run three times with `--rerun-tasks`. **NOT device-verified:** D2 (pinned row, import via paste and file, the four removed Settings controls, default protocol priority, the single cache button, and a Next-Server double press) and D3 (V-VERIFY-3/4) are PENDING — no device ran. **D1 CLOSED in v1.0.58** — the 12 confirmed Iranian package names were extracted from device `5585fecc` on 2026-10-24 and shipped (§1.6.54). D2 and D3 remain PENDING. |
+| §1.6.54 — v1.0.58 (D1 EXTRACTION AND SHIPMENT) | **IMPLEMENTED + TESTED.** PHYSICAL DEVICE: the 15-row `excluded_apps` table of `vpn_gate_connector` on device `5585fecc` was read read-only via `run-as`; all 15 confirmed installed by `pm path`. OPERATOR STATEMENT: `CONFIRM D1: ALL CLASSIFIED-IRANIAN`. SOURCE CODE + TEST: `assets/default_excluded_apps` now carries the 12 confirmed Iranian package names (sorted, de-duplicated, commented, with a provenance header) and `DefaultExcludedAppsTest` grew 12 → 16 with five real-content guards. `:app` **1166/0/0/1** (92 suites), `:SoftEtherClient` **184/0/0/0** (13 suites), one `--rerun-tasks --no-build-cache` run. Three rows were deliberately **not** shipped (DeepSeek — Chinese/personal; Android Auto — Google/user-added; the app itself — self-excluded in `App.kt`) and that decision is pinned by a test. No code, schema, migration, Gradle or manifest change. |
+| §1.6.55 — v1.0.58 (LAUNCH CRASH, pre-existing) | **KNOWN LIMITATION / FOLLOW-UP REQUIRED.** PHYSICAL DEVICE: installing the committed-tree APK (SHA-256 `00a3b10b…`, from `git archive HEAD` = `0c3c56e`) on `5585fecc` and launching it shows `MainActivity` (+945 ms) then a fatal `NullPointerException` on `MutableStateFlow.setValue` at `ConnectionListViewModel.kt:328`. SOURCE CODE: `_importedServers` is declared at line 268 but `init` calls `refreshImportedServers()` at line 50, and `Dispatchers.Main.immediate` runs the coroutine body synchronously up to the first suspension point, so the still-null field is hit before the constructor ends. Introduced by `ec3a73b` (v1.0.54); `git diff` for the file is empty, so the F.29 work is **not** implicated. **NOT FIXED** — out of scope. Consequence: D2, D3 and V3–V10 are all `NOT OBSERVABLE` until it is fixed. Evidence: `test-evidence/dv56/CRASH_FINDING.md`, `test-evidence/dv56/crash_launch_logcat.txt` (untracked). |
+| §1.6.56 — v1.0.59 (LAUNCH-CRASH FIX) | **FIXED + TESTED + DEVICE-VERIFIED.** PHYSICAL DEVICE: the committed-tree APK (SHA-256 `9c0328de…`) installed with `adb install -r` on `5585fecc` launches and stays alive (pid constant 30 s, zero FATAL/ANR/tombstone, no Room error), the server list loads 261 rows, Developer Mode is ON, Settings opens. V3 PASS, V5 PASS, V6 PASS, V9 EMERGENCY reached, V10 PASS (partial), V4(a) captured; V7, V4(b), V8 and the V5 Clear-cache action are OPERATOR MANUAL STEP. Committed-tree runs: `:app` **1068/0/0/1** (87 suites), `:SoftEtherClient` **184/0/0/0** (13 suites), three `--rerun-tasks --no-build-cache` runs. SOURCE CODE: `init` moved below every property declaration in `ConnectionListViewModel.kt` (+21/−7); a scan of every `.kt` under `app/src/main/java` finds **zero** classes with a property declared after an `init` block. TEST: new `ConnectionListViewModelInitOrderTest` (4) and the regression **proven** against the `ec3a73b` ordering in a scratch copy (2 of 4 failed, then passed again once the fix was restored). Three `--rerun-tasks --no-build-cache` runs: `:app` **1170/0/0/1** (93 suites), `:SoftEtherClient` **184/0/0/0** (13 suites). Lint 104/178/9, unchanged, zero findings in the fixed file. APK SHA-256 `7a4fc01f…`, `versionCode 144` / `versionName 2.4.11-dev`. |
 | §1.6.51 — v1.0.55 (VERIFY-AND-CLOSE) | VERIFIED at SOURCE CODE + TEST level. Ten pre-fix full-suite runs: 7 pass / 3 fail. Post-fix: three consecutive `--rerun-tasks --no-build-cache` runs, all green; `:app` **1064/0/0/1**, `:SoftEtherClient` **184/0/0/0**. New tests: `ClearTransientCacheTest` (11), `ImportedServerEmissionTest` (9). Two flaky tests repaired, one relaunch window closed, 20 Vietnamese keys added. **NOT device-verified:** D1, D2 and D3 unchanged — no device ran. Lint fails at 104 errors (was 124) and did before this block. |
+| §1.6.52 / §11.15 — v1.0.56 (F.29 PHASE-1 DESIGN GATE) | **DESIGN ONLY — nothing implemented, nothing tested, no device.** Evidence for every finding is SOURCE CODE at HEAD `1cace61`: the three identities (`VPNGateItem` `@PrimaryKey`, `VpnServerMerger.kt:258-267`, `AutoModeController.serverKey:2520`); the destructive write (`VPNGateItemDao.replaceAll`, `ServerListUpdates.kt:301-305`, `:486-527`); **G-F29-1**, the fallback-path retention reset (`VPNGateItem` retention defaults + `toVPNGateItem()` with no such fields + `replaceAll` without a previous-row read — consequence labelled INFERENCE); the single success funnel (`:2408-2432`) and the single abandonment point (`:2434`); the five-value `AttemptOutcome` and `classifyAttempt()`; `VpnPermissionMissingException` at `:1940`; the four existing quality mechanisms (`supports():2635`, `DatasetIntegrity:180-195`, `byQuality:2626`, `WedgeTracker.EXCLUSION_THRESHOLD:2763`) and the absence of any post-connect quality rejection; `healthScore` with no production reader; `AUTO_LAST_SUCCESS_HOST`/`_PROTOCOL` and `AutoModeRun.lastSuccess` write-only; the three network-detection components and the absence of any transport classifier; `ACCESS_NETWORK_STATE` in the manifest. Proposed design is labelled PROPOSED DESIGN throughout; nine open decisions (OD-1…OD-9) are OPEN and block implementation. **NOT TESTABLE** without a device: summary/event durability across a real process restart (11.15.11 items 23–24) and real `ConnectivityManager` transport classification (11.15.7). No build, no test run, no Gradle invocation, no commit, no ADB. |
+| §1.6.53 / §11.15.17 — v1.0.57 (F.29 PHASE-2 IMPLEMENTATION) | **IMPLEMENTED — automated verification passed; device verification BLOCKED.** **SOURCE CODE:** the three entities with no foreign keys (`ServerHistoryEntities.kt`), the pure counter arithmetic (`HistoryCounters.kt` `nextSummary`/`nextProtocol`), the vocabulary (`ServerHistoryTypes.kt`), the single-writer `@Transaction record()` with blank-identity drop + `CONNECTED`-token idempotency (`ServerHistoryDao.kt`), the `Dispatchers.IO` sink with `CancellationException` rethrow (`RoomServerHistorySink.kt`), the pure `classify` + never-throwing `current` (`NetworkTypeClassifier.kt`), the tier model and `historyComparator` (`AutoModeHistory.kt`), `version 9` + `MIGRATION_8_9` + `serverHistoryDao()` (`AppDatabase.kt`), the wiring (`App.kt`, `AutoModeEngine.kt`) and the ten recording hooks + the tie-break inside the equal-quality window (`AutoModeController.kt`) were all inspected. **TEST:** 98 new cases in 6 new files — `Migration8to9Test` 9 (bounded version, exact object set, no `DEFAULT`/`DROP`/`DELETE`/`TRUNCATE`/`FOREIGN KEY`, single `AUTOINCREMENT`, whitespace-insensitive DDL parity against all 7 exported objects in `9.json`), `HistoryCountersTest` 21, `ServerHistoryRecorderTest` 16 (a fake DAO implementing the interface so the real `@Transaction` body runs), `NetworkTypeClassifierTest` 15, `AutoModeHistoryOrderingTest` 20 (including a TimSort transitivity check on 8 candidates), `AutoModeHistoryRecordingTest` 17 (drives the real controller). Counts `:app` **1162/0/0/1** (baseline 1064) and `:SoftEtherClient` **184/0/0/0** (untouched) and the `:app:assembleProDebug` APK (SHA-256 `2d7acfec…`, `versionCode 144` / `versionName 2.4.11-dev` unchanged) are **TEST**; a `--rerun-tasks` rerun on the delivered tree reproduced both suites green; `:app:lintProDebug` reports **104 errors / 178 warnings / 9 hints — unchanged from the pre-F.29 baseline, with zero findings in any F.29 file**. Two real defects were found and fixed by writing the tests (`TIMED_OUT` outcome, `Throwable` catch). Two deviations from the Phase 1 design are recorded as `KNOWN LIMITATION` in §11.15.17.3–§11.15.17.4. **NOT device-verified — DEVICE UNAVAILABLE:** summary/event durability across a real process restart, real `ConnectivityManager` classification, a real 8 → 9 upgrade on a device holding an existing database, and the end-to-end effect of history on a real Auto Mode run are all **UNKNOWN**. **G-F29-1 is NOT FIXED** and is restated in §11.15.17.8. No commit, no tag, no push, no release version claimed |
 | Architecture Overview (§2) | VERIFIED — source file inspection, now includes product requirement for dynamic server-source access per §11.8 |
 | Local Mirrors / Working Copies (§2.6) | HISTORICAL — attributed to this phase (DOCS-HYGIENE-v1.0.13); the D: I/O measurements are the PHYSICAL DEVICE evidence recorded by RESUME-R4B-FROM-C-DRIVE (PRIOR REPORT), not re-measured here |
 | F.28 History (§3) | HISTORICAL — compiled from source comments (`Stage 2F-F.28X` markers) and audit notes; §3.3 F.28AL-U/V/W status is attributed to those phases, not independently re-verified here |
