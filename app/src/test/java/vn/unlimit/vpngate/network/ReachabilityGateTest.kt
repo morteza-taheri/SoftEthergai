@@ -9,6 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 import vn.unlimit.vpngate.automode.AutoModeCandidate
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.ProbeTransport
@@ -46,7 +47,27 @@ class ReachabilityGateTest {
     private class PerProtocolProbe(
         private val verdict: (ReachabilityTarget) -> WireOutcome,
     ) : AutoConnectReachabilityProbe {
-        val calls = mutableListOf<ReachabilityTarget>()
+        /**
+         * v1.0.58 (BLOCK v1.0.57 §H): this **must** be a thread-safe list.
+         *
+         * `ServerReachabilityTester.filterReachableCandidates` fans the probe
+         * out across parallel coroutines on `Dispatchers.IO`
+         * (`targets.map { async(Dispatchers.IO) { … probe.probe(…) } }`,
+         * `ServerReachabilityTester.kt:394-395`), bounded by a semaphore. A
+         * plain `mutableListOf` is an `ArrayList`, whose `add` is not
+         * thread-safe, so two concurrent probes could interleave inside
+         * `ArrayList.add` and throw
+         * `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 0`
+         * — which is exactly what happened once in roughly every four loaded
+         * runs, and what blocked the v1.0.57 push gate.
+         *
+         * The assertions only ever ask `calls.isEmpty()`, so nothing here
+         * depends on ordering; `CopyOnWriteArrayList` keeps insertion order
+         * anyway and makes the append safe. The same defect class was recorded
+         * in §1.6.51 for two v1.0.54 flakes — a test-level race that load can
+         * manufacture, not a product defect.
+         */
+        val calls: MutableList<ReachabilityTarget> = CopyOnWriteArrayList()
 
         override fun probe(target: ReachabilityTarget, tcpTimeoutMs: Int): ProbeReport {
             calls += target
