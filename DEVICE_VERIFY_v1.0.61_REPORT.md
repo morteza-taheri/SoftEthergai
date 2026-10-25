@@ -193,8 +193,21 @@ hash. [PHYSICAL DEVICE]
 Conditions: ten green runs (**met**), no crash and the migration verified on the device copy
 (**met**), `git status --short` differing from the start only by what was committed (**met** — 31
 lines at the start, 17 at the end, and the 14 that disappeared are the tracked work this block
-committed). Pushed fast-forward, no `--force`, no tag; the post-push standalone gate runs from
-`git archive origin/main`.
+committed).
+
+**Pushed.** `b66e6d6..b8a9d3e main -> main`, fast-forward, `origin/main == HEAD`, **no `--force`**,
+**no tag** (5 before, 5 after).
+
+**Post-push standalone gate.** A fresh extraction of the published tree — `git archive origin/main`
+into `/d/dv61/pp2`, a directory that never saw the working tree — built `:app:assembleProDebug`:
+**BUILD SUCCESSFUL in 1m41s**, `app-pro-debug.apk` **63,889,704 B**, SHA-256
+`f4eb86716a6f5e0cbbb302c8a93685a697915a1e03c98573bdd11cbe32b7688d`. The APK is not byte-reproducible
+against the pre-push build (`05d70919…`, same size): the two trees differ in build timestamps, which
+is expected and not a code difference — the two source trees differ only by this report.
+
+Two infrastructure failures were retried on the way: two `BindException` startups, then a
+`FileNotFoundException` on `SoftEtherClient/.cxx/.../hash_key.txt` (a CMake artifact left locked in
+a reused directory — the fresh directory fixed it). None of them is a code failure. [TEST]
 
 ---
 
