@@ -10,7 +10,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import vn.unlimit.softether.NativeLifetimeRegistry
+import vn.unlimit.vpngate.history.HistoryEventType
+import vn.unlimit.vpngate.history.HistoryFailureReason
+import vn.unlimit.vpngate.history.HistoryOutcome
+import vn.unlimit.vpngate.history.HistoryRecord
+import vn.unlimit.vpngate.history.NetworkType
+import vn.unlimit.vpngate.history.ServerHistorySink
+import vn.unlimit.vpngate.history.ServerHistoryView
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 
 /**
@@ -476,6 +484,16 @@ enum class AttemptOutcome {
 }
 
     companion object {
+        /**
+         * F.29: the safety bound on one history write.
+         *
+         * Not a quality threshold and not a retry policy — it exists so a database
+         * locked by a concurrent server-list refresh cannot hold the success path
+         * open indefinitely. On expiry the record is dropped and logged; the
+         * connection result is untouched either way.
+         */
+        const val HISTORY_WRITE_TIMEOUT_MS: Long = 2_000L
+
         /**
          * v1.0.31 (AUTOCONNECT-FIX, D-1): the pure-JVM fallback for
          * [attemptTimeoutMs], aligned with the shipped Settings default —
@@ -1002,6 +1020,7 @@ enum class AttemptOutcome {
                 reportArmedTunnelLoss(
                     "[AUTO] Tunnel disconnected externally / revoked by system",
                     connectedCandidate,
+                    HistoryFailureReason.LOST_EXTERNAL,
                 )
             }
         }
@@ -1023,6 +1042,7 @@ enum class AttemptOutcome {
                     reportArmedTunnelLoss(
                         "[AUTO] GlobalVpnTracker confirmed disconnected",
                         connectedCandidate,
+                        HistoryFailureReason.LOST_PASSIVE,
                     )
                     break
                 }
@@ -1040,6 +1060,7 @@ enum class AttemptOutcome {
                                 "${TunnelLivenessWatchdog.DEFAULT_SILENCE_TIMEOUT_MS}ms; " +
                                 "tunnel considered lost",
                             connectedCandidate,
+                            HistoryFailureReason.LOST_SILENT,
                         )
                         break
                     }
@@ -1074,12 +1095,23 @@ enum class AttemptOutcome {
      * ConnectivityManager thread, so the follow-up is dispatched through
      * [scope] rather than assumed to already be in a coroutine.
      */
-    private fun reportArmedTunnelLoss(reason: String, dropped: AutoModeCandidate?) {
+    private fun reportArmedTunnelLoss(
+        reason: String,
+        dropped: AutoModeCandidate?,
+        lossReason: String = HistoryFailureReason.UNKNOWN,
+    ) {
         adapter.log(reason)
         connectedWatcher?.cancel()
         connectedWatcher = null
         stopLivenessProbe()
         TunnelStateWatcher.onTunnelLost = null
+        // F.29 §8.4: record the loss against the server we were connected to.
+        // The protocol is captured BEFORE the launch (and the field cleared
+        // synchronously) so the non-awaited coroutine can never observe a
+        // half-updated pair. A loss never erases the CONNECTED record — it is
+        // a separate event with NEUTRAL outcome.
+        recordLoss(dropped, lossReason, connectedProtocolForHistory)
+        connectedProtocolForHistory = null
         scope.launch { onUnexpectedDisconnect(dropped) }
     }
 
@@ -1261,6 +1293,26 @@ enum class AttemptOutcome {
      */
     @Volatile
     private var connectedCandidate: AutoModeCandidate? = null
+
+    /**
+     * F.29: the protocol the currently established tunnel was built over.
+     *
+     * Captured at the success transition and cleared by [reportArmedTunnelLoss],
+     * so a `CONNECTION_LOST` record can name the transport it lost. Kept separate
+     * from [connectedCandidate] because the loss path is reached from an OS
+     * callback that has no access to the success block's locals.
+     */
+    @Volatile
+    private var connectedProtocolForHistory: AutoModeProtocol? = null
+
+    /**
+     * F.29: monotonic run counter used only to build attempt tokens.
+     *
+     * An `AtomicLong` rather than a timestamp because two runs can start inside
+     * the same millisecond, and a colliding token would make the idempotency
+     * check drop a real success.
+     */
+    private val runSequence = java.util.concurrent.atomic.AtomicLong(0L)
 
     private var connectedWatcher: kotlinx.coroutines.Job? = null
 
@@ -1624,7 +1676,10 @@ enum class AttemptOutcome {
      * order preserved everywhere else, which keeps the result deterministic
      * without reaching for identity or hash codes.
      */
-    internal fun List<AutoModeCandidate>.sortedForAutoConnect(): List<AutoModeCandidate> {
+    internal fun List<AutoModeCandidate>.sortedForAutoConnect(
+        history: Map<String, ServerHistoryView> = emptyMap(),
+        network: NetworkType = NetworkType.UNKNOWN,
+    ): List<AutoModeCandidate> {
         val ordered = sortedWith(byQuality).toMutableList()
         var runStart = 0
         while (runStart < ordered.size) {
@@ -1633,9 +1688,35 @@ enum class AttemptOutcome {
                 runEnd++
             }
             applyRttTieBreak(ordered, runStart, runEnd)
+            // F.29 §10.2: history runs LAST inside the same equal-quality window,
+            // so it refines the RTT order instead of replacing it. The sort is
+            // stable, which is what makes "RTT first, then history, ties keep
+            // their order" true rather than merely intended.
+            applyHistoryTieBreak(ordered, runStart, runEnd, history, network)
             runStart = runEnd
         }
         return ordered
+    }
+
+    /**
+     * F.29 §10: reorder **only within** `[from, to)` — one run of candidates the
+     * quality comparator considers equal — using persisted history.
+     *
+     * A no-op when there is no history at all, which is what keeps the
+     * pre-F.29 ordering bit-identical for a fresh install and for every existing
+     * test that does not supply a map.
+     */
+    private fun applyHistoryTieBreak(
+        ordered: MutableList<AutoModeCandidate>,
+        from: Int,
+        to: Int,
+        history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+    ) {
+        if (history.isEmpty() || to - from < 2) return
+        val slice = ordered.subList(from, to)
+        val reordered = slice.sortedWith(historyComparator(history, network))
+        for (i in reordered.indices) slice[i] = reordered[i]
     }
 
     /**
@@ -1766,9 +1847,16 @@ enum class AttemptOutcome {
         // has not measured. A first-ever run therefore ranks without the
         // tie-break (every candidate null) and subsequent runs benefit. Nothing
         // is fabricated and no ordering was deferred to make this work.
+        // F.29 §10.3/§10.4: history is read ONCE per run, as one bounded map, and
+        // a failed read is not a failure — the run proceeds on the existing
+        // quality order. Nothing here can remove a candidate, and nothing here
+        // runs per server.
+        val runNetworkType = safeNetworkType()
+        val history = loadHistory()
+
         val qualitySorted = all
             .withActiveRtt(priorities)
-            .sortedForAutoConnect()
+            .sortedForAutoConnect(history, runNetworkType)
         adapter.log("[AUTO] Servers available = ${all.size}")
         adapter.log("[AUTO] Sorted by quality")
 
@@ -1848,6 +1936,10 @@ enum class AttemptOutcome {
 
         val attempted = mutableSetOf<String>()
         var attempt = 0
+        // F.29: the run's identity for history tokens. One run visits each
+        // (server, protocol) pair at most once, so this plus the pair is a
+        // collision-free token.
+        val runToken = runSequence.incrementAndGet()
 
         // v1.0.31 (OP-R6 / D-5), identity-based in v1.0.42 (§1.6.35 / F6): a
         // press taken while Connected asked this run to continue after the server
@@ -1947,8 +2039,39 @@ enum class AttemptOutcome {
             // server produced in THIS run. See the NATIVE_BUSY branch for why a refusal
             // is not always innocent, and [NATIVE_BUSY_WEDGE_THRESHOLD].
             var nativeBusyThisServer = 0
+            // F.29 §8.2: whether at least one protocol on THIS server was rejected
+            // at the endpoint layer. Only then may the server be abandoned as a
+            // server-attributable failure; timeouts alone never qualify.
+            var sawEndpointRejection = false
+            // F.29 §8.4: a user skip ends this server's turn without saying
+            // anything about the server, so it must not be recorded as abandonment.
+            var skippedByUser = false
+            // F.29: the attempt context of the protocol iteration currently
+            // running, mirrored to function scope. The authoritative success
+            // point (§8.1) sits AFTER the protocol loop has closed, so the
+            // loop's own locals are already out of scope there — and their
+            // final values are exactly what the success record must carry.
+            // Reset per server so a previous server's context can never leak.
+            var lastAttemptProtocol: AutoModeProtocol? = null
+            var lastAttemptToken: String? = null
+            var lastAttemptNetwork: NetworkType = NetworkType.UNKNOWN
+            var lastAttemptStartedAt: Long? = null
             for (protocol in supported) {
                 if (!currentCoroutineContext().isActive) return
+
+                // F.29: measured from here, so `durationMs` describes the attempt
+                // rather than the run. The network type is read per attempt — the
+                // user can move between Wi-Fi and mobile data mid-run, and the
+                // record should say which one this attempt actually used.
+                val attemptStartedAt = System.currentTimeMillis()
+                val attemptToken = historyToken(runToken, server, protocol)
+                val attemptNetwork = safeNetworkType()
+                // Mirrored for the success funnel, which runs after this loop
+                // has closed (see the declarations above).
+                lastAttemptProtocol = protocol
+                lastAttemptToken = attemptToken
+                lastAttemptNetwork = attemptNetwork
+                lastAttemptStartedAt = attemptStartedAt
 
                 setState(
                     AutoModeState.Connecting(
@@ -1972,6 +2095,20 @@ enum class AttemptOutcome {
                     adapter.connect(server, protocol)
                 } catch (e: VpnPermissionMissingException) {
                     adapter.log("[AUTO] VPN permission missing; stopping Auto Mode")
+                    // F.29 §8.4: a local failure. Recorded so the attempt is not
+                    // invisible, but it is NEUTRAL — the server was never tried.
+                    withContext(NonCancellable) {
+                        recordHistory(
+                            server = server,
+                            protocol = protocol,
+                            eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                            outcome = HistoryOutcome.NEUTRAL,
+                            reason = HistoryFailureReason.PERMISSION_DENIED,
+                            networkType = attemptNetwork,
+                            token = attemptToken,
+                            startedAt = attemptStartedAt,
+                        )
+                    }
                     adapter.disconnect()
                     setState(AutoModeState.Error(ERROR_VPN_PERMISSION))
                     job = null
@@ -1997,6 +2134,20 @@ enum class AttemptOutcome {
                     // to the next server: two failures with identical meaning
                     // rotated at different granularity, so a server that threw
                     // on its first protocol never got a chance at its second.
+                    //
+                    // F.29 §8.4: a throw with no verdict is a LOCAL event. It is
+                    // recorded, and it is NEUTRAL — the endpoint was never shown
+                    // to be at fault.
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.CONNECT_THREW,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
+                    )
                     continue
                 }
                 val outcome = adapter.awaitArmedOutcome(protocol, attemptTimeoutMs())
@@ -2008,6 +2159,19 @@ enum class AttemptOutcome {
                     skipRequested.set(false)
                     adapter.disconnect()
                     connectedProtocol = null
+                    // F.29 §8.4: the user cancelled. Nothing about the server was
+                    // learned, so this is NEUTRAL and the server is not abandoned.
+                    skippedByUser = true
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.ATTEMPT_CANCELLED,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.USER_CANCELLED,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
+                    )
                     break // user skip: next SERVER (not next protocol)
                 }
 
@@ -2034,6 +2198,17 @@ enum class AttemptOutcome {
                                 "${protocol.id}; no profile bytes for this protocol, " +
                                 "moving to the next protocol (no wedge, no wait)",
                     )
+                    // F.29 §8.4: a data defect, never the endpoint's fault.
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.DATA_MISSING_CONFIG,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
+                    )
                     continue
                 }
 
@@ -2057,6 +2232,19 @@ enum class AttemptOutcome {
                 // measured 18.9 s. The run therefore died 27 ms before the native operation
                 // returned on its own. The slot release is observable, so it is waited for.
                 if (outcome == AttemptOutcome.NATIVE_BUSY) {
+                    // F.29 §8.4: our own previous native operation still held the
+                    // slot, so the server was never contacted. NEUTRAL, no counter,
+                    // no matter how many times this branch runs.
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.NATIVE_SLOT_BUSY,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
+                    )
                     // v1.0.36 (AUTOCONNECT-FIX-6, Fix-1): before treating NATIVE_BUSY as a
                     // failure, check whether our OWN tunnel is actually up.
                     //
@@ -2346,6 +2534,23 @@ enum class AttemptOutcome {
                         recordWedge(server, key)
                         wedgedThisServer = true
                     }
+                    // F.29 §8.3: the wedge ledger and the durable history disagree on
+                    // purpose. The ledger is a session-scoped guard against re-dialling
+                    // the same trap, so it counts this. History must not: a silent or
+                    // filtered endpoint looks exactly like a dead one, so the durable
+                    // record says TIMEOUT, and `timeoutCount` is the only counter it
+                    // touches. NEUTRAL, never FAILURE — the event row must not claim a
+                    // verdict the evidence does not carry.
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.TIMEOUT_UNATTRIBUTED,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
+                    )
                 }
 
                 // AUTOCONNECT-AUDIT D-4 + D-6: the stack delivered a terminal failure
@@ -2359,6 +2564,24 @@ enum class AttemptOutcome {
                         "[AUTO] NATIVE_ERROR on ${server.hostname ?: server.ip}/" +
                                 "${protocol.id}; the stack rejected this endpoint, " +
                                 "moving to the next protocol",
+                    )
+                    // F.29 §8.2: the ONE outcome that is defensible evidence about
+                    // this endpoint over this protocol — a refused port, a rejected
+                    // handshake, an answer that is not a SoftEther Hello, or an auth
+                    // rejection. It is recorded per protocol, and it arms
+                    // `sawEndpointRejection` so abandoning the server afterwards can
+                    // be counted as a server failure. It does not condemn the server
+                    // on its own: another protocol may still work.
+                    sawEndpointRejection = true
+                    recordHistory(
+                        server = server,
+                        protocol = protocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.FAILURE,
+                        reason = HistoryFailureReason.SERVER_REJECTED,
+                        networkType = attemptNetwork,
+                        token = attemptToken,
+                        startedAt = attemptStartedAt,
                     )
                 }
 
@@ -2460,11 +2683,55 @@ enum class AttemptOutcome {
                         ping = server.ping,
                     )
                 )
+                // Set BEFORE the watcher is armed: an OS-level loss can be
+                // delivered the instant onTunnelLost is installed, and the loss
+                // record needs this protocol.
+                connectedProtocolForHistory = connectedProtocol
                 startConnectedWatcher(connectedProtocol)
+                // F.29 §8.1: this is the authoritative success point — the
+                // tunnel is verified up and the protocol is non-null, so this
+                // is the only place that records CONNECTED. An attempt start,
+                // a native "connected" callback or a granted permission is
+                // NOT a success and records nothing.
+                //
+                // The write is awaited (OD-9) and wrapped in NonCancellable so
+                // a concurrent stop() cannot cancel a record that has already
+                // been earned; it still cannot change the result — every
+                // failure path inside recordHistory is swallowed.
+                withContext(NonCancellable) {
+                    recordHistory(
+                        server = server,
+                        protocol = lastAttemptProtocol,
+                        eventType = HistoryEventType.CONNECTED,
+                        outcome = HistoryOutcome.SUCCESS,
+                        reason = null,
+                        networkType = lastAttemptNetwork,
+                        token = lastAttemptToken,
+                        startedAt = lastAttemptStartedAt,
+                    )
+                }
                 return
             }
 
             adapter.log("[AUTO] Connection failed: ${server.hostname ?: server.ip}")
+            // F.29 §8.2: this server produced no verified tunnel across every
+            // supported protocol. FAILURE only when at least one protocol was
+            // rejected by the server itself; otherwise the abandonment is
+            // inconclusive (NEUTRAL) and must not look like a server fault.
+            // A user skip is never a server abandonment — the ATTEMPT_CANCELLED
+            // records above already carry it.
+            if (!skippedByUser) {
+                recordHistory(
+                    server = server,
+                    protocol = null,
+                    eventType = HistoryEventType.SERVER_ABANDONED,
+                    outcome = if (sawEndpointRejection) HistoryOutcome.FAILURE else HistoryOutcome.NEUTRAL,
+                    reason = if (sawEndpointRejection) HistoryFailureReason.SERVER_REJECTED else HistoryFailureReason.NO_VERDICT,
+                    networkType = safeNetworkType(),
+                    token = null,
+                    startedAt = null,
+                )
+            }
         }
 
         adapter.log("[AUTO] All compatible servers failed")
@@ -2475,6 +2742,125 @@ enum class AttemptOutcome {
         // a position behind for a later run.
         resumeFromServerKey = null
         job = null // terminal state: the run is over; next press restarts cleanly
+    }
+
+    /**
+     * F.29: the token that makes a success record idempotent.
+     *
+     * `run|ip|hostname|protocol` — unique per attempt because one run visits each
+     * `(server, protocol)` pair at most once (`attempted` guarantees it) and
+     * [runSequence] guarantees two runs never share a token. It is a
+     * **correlation** string for duplicate suppression, not a connection-attempt
+     * model: nothing reads it back, and no behaviour depends on its shape.
+     */
+    private fun historyToken(
+        run: Long,
+        server: AutoModeCandidate,
+        protocol: AutoModeProtocol?,
+    ): String = "$run|${serverKey(server.ip, server.hostname)}|${protocol?.id ?: "-"}"
+
+    /** The physical network type, or `UNKNOWN`. Never throws, never blocks. */
+    private fun safeNetworkType(): NetworkType = try {
+        networkTypeProvider()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        NetworkType.UNKNOWN
+    }
+
+    /**
+     * The summaries for this run, or an empty map.
+     *
+     * F.29 §10.4: history is **advisory**. A database that will not answer costs
+     * the user a better ordering, never a connection — so a read failure logs and
+     * returns nothing rather than failing the run.
+     */
+    private suspend fun loadHistory(): Map<String, ServerHistoryView> = try {
+        historyProvider()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        adapter.log(
+            "[HISTORY] read failed: ${e.javaClass.simpleName}: ${e.message}; " +
+                "using the quality order",
+        )
+        emptyMap()
+    }
+
+    /**
+     * Persists one terminal outcome, **awaited** at a defined point.
+     *
+     * Three guarantees, in order of importance:
+     *
+     *  1. it cannot change the connection result — every failure is caught, logged
+     *     and dropped (F.29 §9/§17). A statistics write must never turn a live
+     *     tunnel into an error, never increment a server failure, never disconnect;
+     *  2. it cannot hang the run — [HISTORY_WRITE_TIMEOUT_MS] bounds a database
+     *     that is locked by a concurrent refresh, and the timeout is a *safety*
+     *     bound, not a quality threshold;
+     *  3. it is not fire-and-forget, except where the caller has no coroutine to
+     *     wait in (see [recordLoss]).
+     */
+    private suspend fun recordHistory(
+        server: AutoModeCandidate,
+        protocol: AutoModeProtocol?,
+        eventType: HistoryEventType,
+        outcome: HistoryOutcome,
+        reason: String?,
+        networkType: NetworkType,
+        token: String?,
+        startedAt: Long?,
+    ) {
+        val sink = historySink ?: return
+        val now = System.currentTimeMillis()
+        val record = HistoryRecord(
+            hostName = server.hostname?.trim().orEmpty(),
+            ip = server.ip,
+            eventType = eventType,
+            outcome = outcome,
+            networkType = networkType,
+            protocol = protocol?.id,
+            token = token,
+            durationMs = startedAt?.let { (now - it).coerceAtLeast(0L) },
+            failureReason = reason,
+            at = now,
+        )
+        try {
+            withTimeoutOrNull(HISTORY_WRITE_TIMEOUT_MS) { sink.record(record) }
+                ?: adapter.log("[HISTORY] write timed out; connection result unchanged")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            adapter.log(
+                "[HISTORY] write failed for ${eventType.name}: " +
+                    "${e.javaClass.simpleName}: ${e.message}",
+            )
+        }
+    }
+
+    /**
+     * F.29 §8.5: records a post-connect loss.
+     *
+     * This is the one write that is **not** awaited, and the reason is structural
+     * rather than a shortcut: [reportArmedTunnelLoss] is reached from
+     * `TunnelStateWatcher.onTunnelLost`, an OS callback with no coroutine to
+     * suspend in. It is dispatched onto [scope] so it still leaves the callback
+     * thread, and it cannot affect anything — the tunnel is already gone.
+     */
+    private fun recordLoss(dropped: AutoModeCandidate?, reason: String, protocol: AutoModeProtocol?) {
+        if (historySink == null || dropped == null) return
+        scope.launch {
+            recordHistory(
+                server = dropped,
+                protocol = protocol,
+                eventType = HistoryEventType.CONNECTION_LOST,
+                outcome = HistoryOutcome.NEUTRAL,
+                reason = reason,
+                networkType = safeNetworkType(),
+                token = null,
+                startedAt = null,
+            )
+        }
     }
 
     /** Store the not-yet-attempted tail so user skip continues from the next server. */
