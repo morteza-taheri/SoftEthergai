@@ -495,6 +495,18 @@ enum class AttemptOutcome {
         const val HISTORY_WRITE_TIMEOUT_MS: Long = 2_000L
 
         /**
+         * v1.0.61 (§1.6.59): the bound on the once-per-run history read.
+         *
+         * The read is advisory, so it must never be able to delay a run. 1500 ms is
+         * chosen to sit **under** the 2 s write bound and under the 8 s per-attempt
+         * budget: a read that cannot answer within a second and a half is a database
+         * that is busy, and waiting longer would only delay the first dial without
+         * improving the order. On expiry the run proceeds on the quality order, which
+         * is exactly what a device with no history would do.
+         */
+        const val HISTORY_READ_TIMEOUT_MS: Long = 1_500L
+
+        /**
          * v1.0.31 (AUTOCONNECT-FIX, D-1): the pure-JVM fallback for
          * [attemptTimeoutMs], aligned with the shipped Settings default —
          * `DataUtil.getAutoModeTimeoutSeconds()` returns **8 s**
@@ -2774,9 +2786,24 @@ enum class AttemptOutcome {
      * F.29 §10.4: history is **advisory**. A database that will not answer costs
      * the user a better ordering, never a connection — so a read failure logs and
      * returns nothing rather than failing the run.
+     *
+     * v1.0.61 (§1.6.59): the read is **bounded** as well as guarded. The bound lives
+     * here rather than inside the production provider because this is the single
+     * choke point every provider passes through — production, test fake, or a future
+     * one — so "history can never delay a run" is a property of the class and not of
+     * one wiring. The blocking Room query itself is not interruptible; the coroutine
+     * stops waiting at the suspension boundary, so the run continues on time even if
+     * the underlying call returns later.
      */
     private suspend fun loadHistory(): Map<String, ServerHistoryView> = try {
-        historyProvider()
+        withTimeoutOrNull(HISTORY_READ_TIMEOUT_MS) { historyProvider() }
+            ?: run {
+                adapter.log(
+                    "[HISTORY] read timed out after $HISTORY_READ_TIMEOUT_MS ms; " +
+                        "using the quality order",
+                )
+                emptyMap()
+            }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
