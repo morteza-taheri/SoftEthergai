@@ -67,7 +67,13 @@ object AutoModeEngine {
                 // tries and in what order — there is no separate "default
                 // protocol" setting anymore.
                 protocolPriorityProvider = { du.getAutoModeProtocolPriority() },
-                serverProvider = { serversProvider?.invoke() ?: defaultServers() },
+                serverProvider = {
+                    serversProvider?.invoke() ?: defaultServers(
+                        openVpnEnabled = du.getAutoModeProtocolPriority().any {
+                            it == AutoModeProtocol.OPENVPN_TCP || it == AutoModeProtocol.OPENVPN_UDP
+                        },
+                    )
+                },
                 onSuccess = { candidate, protocol ->
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_HOST, candidate.hostname ?: candidate.ip ?: "")
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_PROTOCOL, protocol.id)
@@ -251,9 +257,77 @@ object AutoModeEngine {
      */
     suspend fun defaultServers(
         source: ServerDatasetSource = productionSource(),
+        openVpnEnabled: Boolean = true,
     ): List<AutoModeCandidate> {
         val currentList = source.dataset() ?: return emptyList()
-        return (0 until currentList.size()).mapNotNull { currentList.get(it)?.toCandidate() }
+        val candidates = (0 until currentList.size()).mapNotNull { currentList.get(it)?.toCandidate() }
+        return dedupeByIp(candidates, openVpnEnabled)
+    }
+
+    /**
+     * v1.0.61 (§1.6.59) PART D: **one candidate per IPv4**.
+     *
+     * The table is keyed by `hostName`, and the run's per-run guard keys on
+     * `ip|hostname` (`AutoModeController.serverKey`), so two stored rows that share
+     * an IPv4 under different host names are two identities and both would be dialled
+     * in one run — the same endpoint twice, once per name. The stored dataset is not
+     * changed (its identity and schema stay exactly as they are); only the candidate
+     * list handed to a run is.
+     *
+     * Which row survives is a **total** order, so the result is deterministic and
+     * does not depend on the order the rows happen to arrive in:
+     *
+     *  1. a usable OpenVPN profile, when OpenVPN is one of the enabled protocols —
+     *     a row that cannot dial the protocol the user enabled must not shadow one
+     *     that can;
+     *  2. the richer verified protocol data (how many of SE/TCP, SE/UDP, SSTP, L2TP,
+     *     OpenVPN the row can actually dial);
+     *  3. the higher score;
+     *  4. the lexicographically smaller host name.
+     *
+     * The survivor keeps the **position of the first row with that IP**, so the rest
+     * of the list is untouched. Rows with no IP are all kept: an empty address is not
+     * an identity, and dropping those would lose servers rather than de-duplicate.
+     */
+    internal fun dedupeByIp(
+        candidates: List<AutoModeCandidate>,
+        openVpnEnabled: Boolean = true,
+    ): List<AutoModeCandidate> {
+        val byIp = LinkedHashMap<String, AutoModeCandidate>()
+        val noIp = mutableListOf<AutoModeCandidate>()
+        for (c in candidates) {
+            val ip = c.ip?.trim().orEmpty()
+            if (ip.isEmpty()) {
+                noIp += c
+                continue
+            }
+            val kept = byIp[ip]
+            byIp[ip] = if (kept == null || preferred(c, kept, openVpnEnabled)) c else kept
+        }
+        return byIp.values.toList() + noIp
+    }
+
+    /** True when [a] must displace [b] for the same IPv4. Total order; see [dedupeByIp]. */
+    private fun preferred(a: AutoModeCandidate, b: AutoModeCandidate, openVpnEnabled: Boolean): Boolean {
+        if (openVpnEnabled && a.openVpnConfigAvailable != b.openVpnConfigAvailable) {
+            return a.openVpnConfigAvailable
+        }
+        val ra = richness(a)
+        val rb = richness(b)
+        if (ra != rb) return ra > rb
+        if (a.score != b.score) return a.score > b.score
+        return (a.hostname ?: "").compareTo(b.hostname ?: "") < 0
+    }
+
+    /** How many transports this row can actually dial. */
+    private fun richness(c: AutoModeCandidate): Int {
+        var n = 0
+        if (c.seTcpPort > 0) n++
+        if (c.seUdpPort > 0 || c.seUdpSupported) n++
+        if (c.sstpSupported) n++
+        if (c.l2tpSupported) n++
+        if (c.openVpnConfigAvailable) n++
+        return n
     }
 
     fun VPNGateConnection.toCandidate(): AutoModeCandidate = AutoModeCandidate(
