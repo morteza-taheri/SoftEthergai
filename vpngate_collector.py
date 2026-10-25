@@ -28,7 +28,7 @@ Outputs:
   servers_openvpn_ranked.json
   servers_sstp_ranked.json
   servers_l2tp_ranked.json
-  servers.csv
+  collector_servers_full.csv   (analysis CSV, NOT the app emergency file)
   collection_report.json
 
 Dependencies:
@@ -76,7 +76,9 @@ OUT_SOFTETHER_RANKED = "servers_softether_ranked.json"
 OUT_OPENVPN_RANKED = "servers_openvpn_ranked.json"
 OUT_SSTP_RANKED = "servers_sstp_ranked.json"
 OUT_L2TP_RANKED = "servers_l2tp_ranked.json"
-OUT_CSV = "servers.csv"
+# NOTE: not the app emergency file. The app-compatible servers.csv is written
+# only by emergency_csv_publisher.py (different schema, UTF-8 without BOM).
+OUT_CSV = "collector_servers_full.csv"
 OUT_REPORT = "collection_report.json"
 OUT_DIAGNOSTICS = "diagnostics_report.json"
 
