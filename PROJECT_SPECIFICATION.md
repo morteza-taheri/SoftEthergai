@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `ef9bf99` (`fix(test): make the reachability probe's call log thread-safe`). This revision was verified against `ef9bf99` and its PART B commit sits directly on top of it; a commit cannot carry its own hash, so the header names the base. `origin/main` is `ef9bf99` at the time of writing.
-**Document version:** 1.0.61
-**Last updated:** 2026-10-24
+**HEAD:** `0fd4875` (`chore(emergency): update servers.csv (218 servers)`). The code this revision documents is `95163f5` (`fix(import): publish LiveData on the main thread; reject malformed import fields`), which sits below `0fd4875`; the ten-run gate and the device run were executed at `0fd4875`, and a commit cannot carry its own hash, so the header names that verified base. `origin/main` was `0fd4875` when this revision was written.
+**Document version:** 1.0.62
+**Last updated:** 2026-10-25
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -3199,7 +3199,7 @@ The manual add-server form is replaced by CSV import: a box to paste into plus a
 
 3. **Two formats, both already owned.** The §10 extended CSV (`EmergencyCsvParser`) and the VPN Gate `/api/iphone/` CSV (`VpnGateApiParser`). `ManualCsvImport` does only what neither parser should do for a pasted file — detect the dialect, tolerate transport artefacts, enforce the caps, and hand the text to the owner. It never re-implements column semantics; a second definition of the format would drift from the first. Evidence: SOURCE CODE.
 
-4. **Transport repair.** BOM stripped, CRLF/CR unified, trailing horizontal whitespace trimmed, and hard-wrapped rows re-joined by `joinWrappedRows()`. The re-join is deliberately conservative: a line is appended to the buffer only when **both** the buffer and the line have fewer fields than the header. A complete row therefore always starts a new buffer, and a genuinely malformed short line is left standing so the owning parser can reject it with a real reason instead of being glued to the next server.
+4. **Transport repair.** BOM stripped, CRLF/CR unified, trailing horizontal whitespace trimmed, and hard-wrapped rows re-joined by `joinWrappedRows()`. The re-join is deliberately conservative: a line is appended to the buffer only when **both** the buffer and the line have fewer fields than the header. A complete row therefore always starts a new buffer, and a genuinely malformed short line is left standing so the owning parser can reject it with a real reason instead of being glued to the next server. **v1.0.59 (§1.6.58 B2) adds a field-level rule on top of this repair:** after the repair, a host name or IP that still contains *inner* whitespace or a control character rejects **that row** with a named reason, while leading and trailing whitespace is still trimmed and accepted. The repair above trims line ends; it never removes a character from inside a field, which is why the two rules are separate — the device showed a host stored as `test-a. example`, where the space sits *between* two label characters and survives every line-level trim. Evidence: SOURCE CODE + TEST + PHYSICAL DEVICE.
 
 5. **A defect found while writing the tests.** The API body opens with a `*vpn_servers` section marker, so "the first non-blank line is the header" misclassified every real API file as `UNKNOWN` and refused it. Detection and the wrapped-row repair now both locate the header through `VpnGateApiParser.findApiHeader`, and the body is sliced from that line before it reaches either parser. Evidence: TEST (`detect sees past the api section marker`, `an api file with its section marker parses instead of being refused`).
 
@@ -3397,6 +3397,123 @@ java.lang.NullPointerException: Attempt to invoke interface method
 11. **What is not claimed.** No claim that this build is healthy — the CSV import crashes the app (§1.6.57 item 9), a defect that predates this block and is not fixed by it. No device verification of V7, the pinned row, the file-picker import, the fresh-install protocol default, the Next-Server double press, or import idempotence. No claim that the emergency rung *cannot* shrink the table through some other writer: the claim is narrower and proven — the promotion site no longer promotes a supplement, and the device shows the snapshot was the damaged artefact. No claim about V8. No claim that the F.29 working tree compiles or is unaffected: it was not built, and it was not touched.
 
 
+
+---
+
+#### 1.6.58 IMPORT-CRASH FIX, v1.0.54 LEFTOVERS, DUPLICATE-IP AUDIT (v1.0.59)
+
+> **Label note.** The operator's brief names this block "v1.0.59". The changelog's `1.0.59` row
+> documents a *different* defect (the launch-crash `init` fix, commit `7dac3a6`); this block is the
+> **import-crash fix** (commit `95163f5`) and is numbered `1.0.62` in the changelog to keep the
+> sequence unambiguous. Full detail: `DEVICE_VERIFY_v1.0.59_REPORT.md`.
+
+1. **PART A — the P0 import crash is fixed.** `vpnGateConnectionList` is a `MutableLiveData`;
+   `materializeImported()` (`:370`) and `removeImportedServer()` (`:333`) both assigned
+   `vpnGateConnectionList.value = …` from inside `withContext(Dispatchers.IO)`, so
+   `MutableLiveData.setValue`'s main-thread assertion threw `IllegalStateException: Cannot invoke
+   setValue on a background thread` **after** the data work completed — killing the app on import
+   and on delete. This was first found in §1.6.57 item 9 and deliberately not fixed there for want
+   of authorisation. It is now fixed with `publishLiveData(target, value, dispatcher =
+   Dispatchers.Main.immediate)`, a `withContext(Dispatchers.Main.immediate)` hop that assigns on the
+   main thread. It is **not** `postValue`: `postValue` defers and can coalesce two rapid publishes,
+   whereas both callers return to the UI immediately and rely on "published before the caller
+   continues" (`importManualCsv` hands the parse result to the summary dialog). Evidence: SOURCE CODE
+   + TEST + PRIOR REPORT (§1.6.57 item 9).
+2. **Audit of every LiveData write in `app/src/main`.** Eight sites on `vpnGateConnectionList`, two
+   on `lastUpdatedTime`, one on `refreshNotice`, none on `isError`/`isLoading` (already `postValue`),
+   plus `StatusViewModel.state` and `AutoModeViewModel.state`. Only the two fixed here ran inside an
+   IO context; the rest assign after `withContext` returns, from `viewModelScope` (Main), or from
+   main-thread callbacks. **No `LiveData` exists outside `:app`.** Evidence: SOURCE CODE.
+3. **Tests — 7 new cases** (`LiveDataPublishThreadTest`): a thread-asserting `ArchTaskExecutor`
+   delegate makes `setValue` off the designated main thread throw exactly as the device did, so the
+   harness is proven rather than assumed; `publishLiveData` is then exercised from a background
+   thread and shown to land the value, to finish before returning, and to propagate a failure; and a
+   source-shape guard fails if any `MutableLiveData` `.value =` reappears inside a
+   `withContext(Dispatchers.IO | Default)` block anywhere in `app/src/main` — it strips comments and
+   string literals first (a naive version took a KDoc mention of `withContext(Dispatchers.IO)` for a
+   real block and reported four false positives), and its KDoc states the limit: it cannot see a
+   write hidden behind a helper or written as `setValue(…)`. Evidence: TEST.
+4. **PART B — v1.0.54 leftovers closed.** **B1:** `dns_setting_hint` still read "…will turn off
+   Block Ads setting when enabled" in `values`, `values-fa` and `values-vi`; the sentence is removed
+   from all three (the feature was deleted in v1.0.54). **B2:** `ManualCsvImport` now rejects, per
+   row, a host name or IP containing **inner** whitespace or a control character (with a reason
+   naming the row); leading/trailing whitespace is still trimmed and accepted; control characters are
+   replaced with a middle dot in the summary. This closes the device-found `test-a. example` row (a
+   space after the dot from an input method) that no DNS could resolve and the dedupe could never
+   match. **B3:** the log line `Server list updated atomically: N servers` — which read like the
+   table size while `N` was the *incoming* dataset — is corrected to `N incoming, M stored`
+   (`outcome.serverCount` is `usableRows.size`, never the table; `list.size()` is the stored table
+   after the write). This is the exact misreading that produced the false V9 finding in §1.6.57
+   items 4–5. Evidence: SOURCE CODE + TEST + PHYSICAL DEVICE.
+5. **Tests for PART B — 5 new cases** (`ManualCsvImportTest`): trim-accept, inner-space-reject,
+   inner-space-IP-reject, control-char-reject, and a predicate unit test. Evidence: TEST.
+6. **PART C — duplicate-IP audit: the condition is NOT present in the table, and the double-dial
+   vector is dormant, not absent.** The real device database was pulled byte-exactly (`run-as` +
+   base64, 1,193,936 B — identical to the on-device size, `-wal` 0 B, `integrity_check = ok`) and
+   queried on the host. **261 `VPNGateItem` rows, 261 distinct IPv4 values, 0 duplicate-IP groups,
+   0 rows of inflation**, 0 `hostName` duplicates, 0 fields carrying padded or inner whitespace.
+   Source composition: 218 API (`vpnNNNNNNNNN`), 40 emergency (`public-vpn-*`), 3 other
+   (`diamondgnd`, `patito`, `idcrmn2`). No group exists, so there is **no source pair to report**.
+   The IP named in the brief, `123.48.124.169`, has **one** row (`vpn122916437`, `tcpPort` 1558,
+   10,007-character profile); the historical config-less twin `vpn813516587`, documented in
+   `DEVICE_VERIFY_v1.0.53_REPORT.md` §5, **is no longer in the table**. **A prior revision of this
+   item claimed the pair was "observed during the PART D device run" and attributed it to
+   API-versus-emergency; both statements were wrong** — nothing in this block observed a duplicate,
+   and the single historical instance was API-versus-API. Corrected here rather than left standing.
+   **Can Auto Connect dial the same IP twice in one run? Structurally yes, dormant in practice.**
+   `AutoModeEngine.defaultServers()` maps the stored list one-to-one with no IP-level
+   de-duplication, and the run's only per-run guard is `attempted.add(wedgeKey(server))`, where
+   `wedgeKey` → `serverKey` → `"$ip|${hostname ?: ""}"` (`AutoModeController.kt:2069-2070`, `:3005`,
+   `:3017-3021`); two rows sharing an IP but not a host name are two identities and both would be
+   dialled in one run, and the Next-Server skip filter (`:893-934`) is identity-keyed for the same
+   reason. With 0 duplicate rows today the vector cannot fire. **No code change was made:** the
+   smallest fix — de-duplicate by IPv4 in `AutoModeEngine.defaultServers()`, keeping the row that
+   has a non-blank `openVpnConfigData` and the richer protocol data — lives in `AutoModeEngine.kt`,
+   which is outside this block's authorisation and is one of the F.29-modified files. **Stopped and
+   reported; authorisation required** (report §E). The stored-dataset identity and schema are
+   unchanged. Evidence: PHYSICAL DEVICE + SOURCE CODE.
+7. **PART D — device verification PASS, re-driven with logs and byte-exact counters.** The APK was
+   built from `git archive HEAD` (`:app:assembleProDebug` SUCCESSFUL, 63,827,468 B, SHA-256
+   `73139c01ca316dd23a7755eb8e6ccb15e003c6b0452202c4649eef56b229b96d`) and installed with
+   `adb install -r` over the existing data (never uninstall/clear). Baseline: 261 rows, 0 test rows,
+   `manual_import_servers.json` = `[]`. The extended CSV (2 valid + 1 `"not-an-ip"`) imported through
+   the document picker reported **"Imported 2, rejected 1 — Rejected: UNKNOWN_SOURCE_TAG x2;
+   INVALID_IPV4 x1"**; the store gained exactly 2 rows and the table went 261 → **263** holding
+   exactly `import-a.example` and `import-b.example`. A second Import press with the same content
+   re-rendered the same summary while the store file stayed at 943 B with an **unchanged mtime** —
+   the tap was delivered and the write was idempotent, which resolves the v1.0.57 "may not have been
+   delivered" ambiguity. Deleting one row left 1 store row and **262** table rows; deleting the
+   second returned the store to `[]` and the table to **261**. A list Refresh and a `am force-stop`
+   plus relaunch both kept the imported row (list showed 262). **Zero** FATAL, ANR or
+   `Cannot invoke setValue on a background thread` in any step; the crash buffer was empty after
+   every one. The device was restored: 261 rows, 0 test rows, `integrity_check = ok`, pushed CSVs
+   and `ui*.xml` removed. The earlier pass of this block also drove the API-format CSV (2 accepted,
+   0 rejected) and captured the tunnel/pinned-row screenshots. Evidence: PHYSICAL DEVICE —
+   `test-evidence/dv59/` (screenshots 59_01–59_37, `ui_after_import.xml`, `ui_after_reimport.xml`,
+   `ui_after_restart.xml`, `store_after_import.json`, `store_final.json`).
+8. **PART E — committed-tree gate PASSED, ten for ten.** A tree extracted with `git archive HEAD`
+   into `/d/dv59gate/tree` (outside the repository, so the F.29 working tree and
+   `vpngate_collector.py` are absent) ran `--no-daemon --rerun-tasks` over
+   `:app:testProDebugUnitTest` and `:SoftEtherClient:testDebugUnitTest` ten consecutive times under
+   `CI=true`: **10/10 PASS**, `:app` **1092/0/0/1** (89 suites) and `:SoftEtherClient`
+   **184/0/0/0** (13 suites) on every run — **1276 tests, 0 failures, 0 errors, 1 skipped**, 177–182 s
+   per run. Runs 1–3 are also the three consecutive runs the brief requires. **Two earlier attempts
+   were aborted by the environment, not by a test** — `Gradle could not start your build …
+   java.net.BindException: Address already in use: bind` after 1–2 s with **zero tests executed** —
+   and both are preserved and reported; the final harness classifies "infra" from the Gradle log
+   rather than from leftover result files, retries it once, and does not count it. **In the ten
+   counted runs zero retries were needed.** The two recently fixed flaky tests and
+   `ReachabilityGateTest` were green in all ten. Evidence: TEST (`/d/dv59gate/gate3.log`).
+9. **Counts and build.** `:app` **1092 / 0 / 0 / 1** (89 suites; baseline at `95163f5`'s parent was
+   1080 across 88 suites, **+12** = 7 + 5), `:SoftEtherClient` **184 / 0 / 0 / 0** (13 suites,
+   untouched by this block). `:app:assembleProDebug` SUCCESSFUL under `CI=true`; `versionCode` /
+   `versionName` unchanged. §22 byte-identical; §1.6.2–§1.6.57 untouched; §11.7 unchanged. No tag was
+   created.
+10. **What is not claimed.** No claim that PART C's duplicate-IP characteristic was changed — it was
+    audited only. No claim that any feature beyond the import path was re-verified on device (V3–V10
+    are carried over from §1.6.56/§1.6.57). No schema, migration, Gradle, manifest, or resource
+    change beyond the three `strings.xml` edits (B1). No claim the import path was exercised on any
+    device other than `5585fecc`.
 
 ---
 
@@ -6230,6 +6347,8 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.59 | 2026-10-24 | LAUNCH-CRASH FIX (device-assisted; operator-authorised; spec §1.6.56) | **Closes the launch crash found in BLOCK v1.0.56 and recorded in §1.6.55.** `ConnectionListViewModel` declared `_importedServers` at line 268 while its `init` block sat at line 45 and called `refreshImportedServers()`; Kotlin initialises properties in declaration order, and `viewModelScope` uses `Dispatchers.Main.immediate`, so the launched coroutine body ran synchronously to its first suspension point and wrote a still-null field — a `NullPointerException` on `MutableStateFlow.setValue` that killed the app on launch. The fix moves the `init` block **below every property declaration** (now line 276, after the last property at line 264) rather than moving one property above it, which makes the whole class safe by construction instead of safe by remembering; the same two cache assignments and the same `refreshImportedServers()` call run in the same order, so behaviour is unchanged. **A class-wide audit, not just the one file:** every `.kt` under `app/src/main/java` was scanned for a class-level property declared after an `init` block — **zero hits remain** (there was one). `AutoModeViewModel`'s `init` launches two coroutines but declares nothing after it; `DataUtil`'s `init` launches nothing; `StatusViewModel` has no `init` block. **New `ConnectionListViewModelInitOrderTest` (4 tests)**, and the regression was **proven**: with the file temporarily restored to the `ec3a73b` ordering in a scratch copy, two of the four tests failed, and both passed again once the fix was restored (scratch copy deleted). The guard is a source-shape test because the class cannot be constructed on the JVM (`App.instance!!.dataUtil!!` and `viewModelScope`); the KDoc says so explicitly. **Verification:** three `--rerun-tasks --no-build-cache` runs, `:app` **1170/0/0/1** across **93 suites** (was 1166 — exactly the +4 new tests), `:SoftEtherClient` **184/0/0/0** across 13 suites, no failures or errors; `:app:lintProDebug` **104 errors / 178 warnings / 9 hints** (unchanged backlog, **zero** findings in the fixed file); `:app:assembleProDebug` SUCCESSFUL, `app-pro-debug.apk` 64,073,648 bytes, SHA-256 `7a4fc01f166462b7ff390285a6c1435e115d80fbec5ad692038e412632ff38b8`, `versionCode 144` / `versionName 2.4.11-dev`. **One production file (+21/−7), one new test file, and this specification** — no schema, migration, Gradle, manifest, resource or behaviour change. No tag. **DEVICE-VERIFIED on `5585fecc`:** committed-tree APK (SHA-256 `9c0328de…`, 63,824,336 B) installed with `adb install -r`, app launches and stays alive (pid constant 30 s, zero FATAL/ANR/tombstone, no Room error), server list loads 261 rows, Developer Mode ON, Settings opens; V3/V5/V6 PASS, V9 EMERGENCY reached, V10 PASS (partial), V4(a) captured; V7, V4(b), V8 and the V5 Clear-cache action are OPERATOR MANUAL STEP. Report: `DEVICE_VERIFY_v1.0.57_REPORT.md`, evidence under `test-evidence/dv57/`. |
 | 1.0.60 | 2026-10-24 | PUSH-GATE FIX + EMERGENCY-MERGE EVIDENCE (test-only fix; spec-only otherwise) | **Closes the v1.0.57 push gate.** `ReachabilityGateTest$PerProtocolProbe` recorded calls into a plain `mutableListOf` (an `ArrayList`) while `ServerReachabilityTester.filterReachableCandidates` fans the probe out across parallel coroutines on `Dispatchers.IO` (`targets.map { async(Dispatchers.IO) { … probe.probe(…) } }`, `ServerReachabilityTester.kt:394-395`). Two concurrent probes could interleave inside `ArrayList.add` and throw `ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 0`, which happened once in roughly every four loaded runs and blocked the v1.0.57 push. `calls` is now a `CopyOnWriteArrayList` (+22/−1 lines, test-only). **The assertions were not weakened** — they only ever asked `calls.isEmpty()`, so nothing depended on ordering. **A full audit found no second instance:** every test under `app/src/test` and `SoftEtherClient/src/test` was scanned for a non-thread-safe collection written from a probe or coroutine; the only other `AutoConnectReachabilityProbe` implementation (`AutoModeControllerTest.kt:2178`) is stateless and records nothing, so it is safe. **Ten consecutive `--rerun-tasks --no-build-cache` full-suite runs at the push HEAD: 10/10 green** (`:app` 1072/0/0/1 across 87 suites, `:SoftEtherClient` 184/0/0/0 across 13 suites). Run 1 died in 5 s on a Gradle daemon `BindException` with no tests executed and was retried once with `--no-daemon` per the block's rule; that retry was green. **The five v1.0.57 commits were then pushed fast-forward.** **[CORRECTED v1.0.58: no push had been made when this row was written — `origin/main` was still `0c3c56e` with six local commits, and the "10/10 at the push HEAD" figure came from a tree extracted before the fix. The push was made in v1.0.58 after the gate was re-run; see §1.6.57 item 3.]** |
 | 1.0.61 | 2026-10-24 | PUSH-GATE FIX PUSHED + EMERGENCY-SNAPSHOT-POISONING (spec §1.6.57) | **The v1.0.57 push gate is closed and the commits are actually pushed.** `ReachabilityGateTest$PerProtocolProbe.calls` is a `CopyOnWriteArrayList`; the audit for the same pattern found no second instance (the other `ReachabilityProbe` fakes are written from a per-run `reachabilityFilter` lambda, not from the parallel fan-out). The gate was **re-run at the real push HEAD** — the `1.0.60` row's "10/10 at the push HEAD" rested on a tree extracted before the fix — giving **3 green committed-tree runs** (`:app` 1072/0/0/1, 87 suites; `:SoftEtherClient` 184/0/0/0, 13 suites) after one `BindException` run was retried and failed the same way. Then `0c3c56e..ef9bf99 main -> main`, fast-forward, no force, no tag. **PART B: V9 was mis-diagnosed.** The database was never damaged — `VPNGateItem` held **261** rows before and after V9 (0 hostnames lost, `integrity_check = ok`), and the "261 → 170" came from reading `Outcome.Updated.serverCount`, which is the **incoming** size, as the table's size. The real damage was the **last-known-good snapshot**: `files/collector_vpn_servers.json` held `count: 170` with `savedAt` identical to the table's last write, all 170 hosts a subset of the 261, and only 5 of the table's 40 `public-vpn-*` rows present — the emergency rung promoted its own published excerpt because promotion was gated on `fromCache` and the rung is a fresh download. The next snapshot fallback would then have replaced the 261-row table with 170. **Fix:** `ServerListUpdater` tracks `suppliedByEmergency` (`:282`, set at `:300`) and the promotion branch is `if (fromCache || suppliedByEmergency)` (`:354`); the emergency rung still stores through the retention-aware `mergeAll`, `DatasetIntegrity` and the 1 MiB cap are untouched, and a real cache/seed fallback keeps its replace-and-do-not-promote semantics. **8 new tests** (`EmergencyMergeRetentionTest`). `:app` **1080/0/0/1** (+8), `:SoftEtherClient` **184/0/0/0**. **PART C (Next Server after a manual connect) is implemented in the working tree but NOT committed and NOT shipped**: it lives in `AutoModeController.kt`, which also carries the uncommitted F.29 work this block forbids touching. **PART D was run and found a P0 crash**: the CSV import and the import-delete both die with `Cannot invoke setValue on a background thread` (`ConnectionListViewModel.kt:370` / `:333`) — pre-existing v1.0.54 code, not fixed here. Removed settings, the single Clear-cache button, the seeded emergency source and the protocol default all passed on device; V7, the pinned row, the file-picker import and the double press are NOT device-verified. §22 byte-identical; §1.6.2–§1.6.56 untouched; §11.7 extended with the promotion rule. No tag was created. |
+
+| 1.0.62 | 2026-10-25 | IMPORT-CRASH FIX + v1.0.54 LEFTOVERS + DUPLICATE-IP AUDIT (device-assisted; operator-authorised; spec §1.6.58) | **Closes the P0 import crash found in §1.6.57 item 9.** `ConnectionListViewModel.materializeImported()` (`:370`) and `removeImportedServer()` (`:333`) assigned `MutableLiveData.value` from inside `withContext(Dispatchers.IO)`, throwing `IllegalStateException: Cannot invoke setValue on a background thread` *after* the data work completed; fixed with `publishLiveData(target, value, Dispatchers.Main.immediate)` — a main-thread hop, **not** `postValue` (which would coalesce two rapid publishes). An audit found 11 other LiveData writes in `app/src/main`; only these two ran on an IO context, and no LiveData exists outside `:app`. **7 new tests** (`LiveDataPublishThreadTest`): a thread-asserting `ArchTaskExecutor` delegate proves the harness (setValue off-main throws exactly as the device did), `publishLiveData` is shown to land-and-finish from a background thread and to propagate a failure, and a source-shape guard bans any `MutableLiveData .value =` inside a `withContext(Dispatchers.IO|Default)` block (comments/strings stripped first; KDoc states its limit). **PART B — v1.0.54 leftovers closed:** B1 the stale "…will turn off Block Ads setting when enabled" string removed from `values`/`values-fa`/`values-vi`; B2 `ManualCsvImport` rejects inner-whitespace/control-char host/IP per row (closes the device-found `test-a. example` row) while still trimming leading/trailing; B3 the log `Server list updated atomically: N servers` corrected to `N incoming, M stored` — the exact misreading behind the false V9 finding in §1.6.57. **5 new tests** (`ManualCsvImportTest`). **PART C — duplicate-IP audit (no code change):** the real device database was pulled byte-exactly and queried — **261 rows, 261 distinct IPv4 values, 0 duplicate-IP groups, 0 rows of inflation**, 0 duplicate host names, 0 fields with padded/inner whitespace; the historical config-less twin `vpn813516587` is **gone** and `123.48.124.169` now has a single row. The double-dial vector is nevertheless real in code — `AutoModeEngine.defaultServers()` does no IP-level de-duplication and the run's only guard is `attempted.add(wedgeKey(server))` where `wedgeKey`→`serverKey`→`"ip|hostname"` — so a duplicate pair *would* be dialled twice in one run; with zero duplicate rows it cannot fire. The smallest fix (de-duplicate by IPv4 in `AutoModeEngine.defaultServers()`, keeping the row with a usable config) lies outside this block's authorisation and inside the F.29-modified files, so it was **stopped and reported**. A prior revision of this row wrongly claimed the pair had been observed and was API-versus-emergency; both statements are corrected. **PART D — DEVICE-VERIFIED on `5585fecc`:** committed-tree APK installed `-r`; extended CSV import 2/1 and API CSV import 2/0 with no crash, delete no crash, re-import idempotent, survives Refresh + restart, test servers deleted, device restored (DB 0 test rows). **PART E — committed-tree gate:** **10/10 green** from a `git archive HEAD` tree with `--rerun-tasks` — 1276 tests per run (1092 in `:app` across 89 suites, 184 in `:SoftEtherClient` across 13), 0 failures, 0 errors, 1 skip, 177–182 s each — and runs 1–3 are the three consecutive runs the brief also requires. Two earlier harness attempts were aborted by `Gradle could not start your build … java.net.BindException: Address already in use: bind` with **zero tests executed**; both are preserved and reported, and the ten counted runs needed **zero** retries. The documentation commit was then pushed fast-forward (no force, no tag) and the full suites were re-run from a fresh `git archive origin/main` extraction. Full table: `DEVICE_VERIFY_v1.0.59_REPORT.md` §G/§H.**Counts:** `:app` **1092/0/0/1** (89 suites; +12 = 7 + 5), `:SoftEtherClient` **184/0/0/0** (untouched). `:app:assembleProDebug` SUCCESSFUL; `versionCode`/`versionName` unchanged. §22 byte-identical; §1.6.2–§1.6.57 untouched. No tag. Report: `DEVICE_VERIFY_v1.0.59_REPORT.md`. |
 
 ### Verification Status
 
