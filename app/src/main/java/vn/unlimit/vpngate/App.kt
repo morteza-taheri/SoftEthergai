@@ -23,6 +23,10 @@ import vn.unlimit.vpngate.data.remote.SourceUrl
 import vn.unlimit.vpngate.db.AppDatabase
 import vn.unlimit.vpngate.db.ExcludedAppDao
 import vn.unlimit.vpngate.db.VPNGateItemDao
+import vn.unlimit.vpngate.history.NetworkTypeClassifier
+import vn.unlimit.vpngate.history.RoomServerHistorySink
+import vn.unlimit.vpngate.history.ServerHistoryDao
+import vn.unlimit.vpngate.history.ServerHistorySink
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
@@ -38,6 +42,25 @@ class App : Application() {
 
     // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
     lateinit var manualServerDao: ManualServerDao
+
+    /**
+     * F.29: durable server history.
+     *
+     * Exposed as its own field (not reached through [vpnGateItemDao]) so a
+     * history read can never be folded into the same transaction as
+     * `replaceAll`'s `deleteAll()`.
+     */
+    lateinit var serverHistoryDao: ServerHistoryDao
+
+    /**
+     * F.29: the single writer every Auto Mode run records through.
+     *
+     * Constructed once here so there is exactly one sink per process; a
+     * second one would still be safe (the DAO transaction is the real
+     * guarantee), but there is no reason for two.
+     */
+    lateinit var serverHistorySink: ServerHistorySink
+        private set
 
     /**
      * v1.0.54 (§1.6.49) PART 4: servers imported from a CSV file or pasted text.
@@ -88,12 +111,19 @@ class App : Application() {
             .addMigrations(AppDatabase.MIGRATION_6_7)
             // RETENTION-IMPL-PHASE-1 (spec §1.6.31): version 7 -> 8 columns.
             .addMigrations(AppDatabase.MIGRATION_7_8)
+            // F.29: version 8 -> 9, the three server-history tables. Purely
+            // additive — see the migration's own comment.
+            .addMigrations(AppDatabase.MIGRATION_8_9)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()
         excludedAppDao = appDatabase.excludedAppDao()
         emergencySourceConfigDao = appDatabase.emergencySourceConfigDao()
         manualServerDao = appDatabase.manualServerDao()
+        serverHistoryDao = appDatabase.serverHistoryDao()
+        // The sink is constructed after the DAO exists but before any Auto Mode
+        // run can start, so a run can never observe a half-built sink.
+        serverHistorySink = RoomServerHistorySink(serverHistoryDao)
 
         // Initialize default excluded apps
         initializeDefaultExcludedApps()

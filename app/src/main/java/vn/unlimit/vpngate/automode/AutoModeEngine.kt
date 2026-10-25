@@ -6,7 +6,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.history.NetworkTypeClassifier
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.utils.DataUtil
@@ -148,6 +150,33 @@ object AutoModeEngine {
                 // ERROR_NO_NETWORK instead of marking every server TIMED_OUT and
                 // handing each one a wedge strike.
                 isNetworkAvailable = { vn.unlimit.vpngate.state.GlobalVpnTracker.isAnyNetworkAvailable() },
+                // F.29 §10: the durable history that may only break
+                // EQUAL-QUALITY ties. Read once per run, on IO (Room's query is
+                // blocking), and degraded to an empty map on any failure — a
+                // history read must never be able to stop or reorder a run.
+                // An empty map is also the correct answer before the first
+                // migration has produced a single row.
+                historyProvider = {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            vn.unlimit.vpngate.App.instance?.serverHistoryDao
+                                ?.historyViews()
+                                ?.associateBy { it.hostName }
+                        }.getOrNull().orEmpty()
+                    }
+                },
+                // F.29 §8/§9: the single writer every outcome is recorded
+                // through. Resolved per run rather than captured at construction
+                // so a controller created before App finished wiring still
+                // records, and so a null sink (no App) means "no history"
+                // instead of a crash inside a live connection attempt.
+                historySink = vn.unlimit.vpngate.App.instance?.serverHistorySink,
+                // F.29 §7: WIFI / CELLULAR / UNKNOWN only, never the VPN
+                // transport. Resolved per call so a run that spans a network
+                // change records the network each attempt actually used.
+                networkTypeProvider = {
+                    NetworkTypeClassifier.current(vn.unlimit.vpngate.App.instance)
+                },
             )
             controller = created
             _state.value = created.state.value

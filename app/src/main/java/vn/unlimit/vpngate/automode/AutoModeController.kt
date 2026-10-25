@@ -181,6 +181,39 @@ class AutoModeController(
      * its own instance and stay isolated from every other test in the suite.
      */
     private val wedgeTracker: WedgeTracker = WedgeTracker.process,
+    /**
+     * F.29: the persisted per-server history used to break **equal-quality** ties.
+     *
+     * A **provider**, read once per run, returning one narrow row per server that
+     * has history. Two rules follow from that and are enforced by the caller:
+     * the ranking never scans the event table, and a failed read is not a
+     * failure — an exception here yields an empty map and the run proceeds on
+     * the existing quality order (`F.29 §10.4`).
+     *
+     * Injected rather than reached for directly so this class keeps no Room, no
+     * Android and no database dependency, exactly like every other input above.
+     * The default returns nothing, which preserves the pre-F.29 ordering for any
+     * caller that does not model history.
+     */
+    private val historyProvider: suspend () -> Map<String, ServerHistoryView> = { emptyMap() },
+    /**
+     * F.29: where terminal connection outcomes are persisted.
+     *
+     * `null` disables recording entirely (the default), so every existing test
+     * and every caller that does not care keeps its current behaviour. Production
+     * supplies [vn.unlimit.vpngate.history.RoomServerHistorySink], which owns the
+     * off-main-thread hop and the error swallowing — see [recordHistory].
+     */
+    private val historySink: ServerHistorySink? = null,
+    /**
+     * F.29: the **physical** network type at the moment of the call.
+     *
+     * Injected for the same reason as [isNetworkAvailable]: `ConnectivityManager`
+     * has no meaning in a JVM test. The default [NetworkType.UNKNOWN] is the
+     * honest answer for a caller that does not model it, and it makes the
+     * ordering conservative (tier 0 becomes unreachable) rather than optimistic.
+     */
+    private val networkTypeProvider: () -> NetworkType = { NetworkType.UNKNOWN },
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
