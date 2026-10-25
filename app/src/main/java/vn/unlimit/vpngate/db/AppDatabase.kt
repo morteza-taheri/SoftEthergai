@@ -10,6 +10,10 @@ import vn.unlimit.vpngate.data.remote.EmergencySourceConfigDao
 import vn.unlimit.vpngate.data.remote.EmergencySourceConfigEntity
 import vn.unlimit.vpngate.data.remote.ManualServerDao
 import vn.unlimit.vpngate.data.remote.ManualServerEntity
+import vn.unlimit.vpngate.history.ServerHistoryDao
+import vn.unlimit.vpngate.history.ServerHistoryEvent
+import vn.unlimit.vpngate.history.ServerHistorySummary
+import vn.unlimit.vpngate.history.ServerProtocolSummary
 import vn.unlimit.vpngate.models.ExcludedApp
 import vn.unlimit.vpngate.models.VPNGateItem
 
@@ -19,8 +23,11 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ExcludedApp::class,
         EmergencySourceConfigEntity::class,
         ManualServerEntity::class,
+        ServerHistorySummary::class,
+        ServerProtocolSummary::class,
+        ServerHistoryEvent::class,
     ],
-    version = 8,
+    version = 9,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -29,6 +36,12 @@ abstract class AppDatabase: RoomDatabase() {
 
     // Z1-IMPL-D (Roadmap §12.5.2 item D): manually entered servers.
     abstract fun manualServerDao(): ManualServerDao
+
+    // F.29: durable server history. Deliberately not reachable through
+    // VPNGateItemDao — a history read must never be able to run inside the
+    // same transaction as `replaceAll`'s deleteAll() and observe a deleted
+    // server list (see ServerHistoryEntities.kt's header).
+    abstract fun serverHistoryDao(): ServerHistoryDao
     
     companion object {
         // Migration from version 2 to 3 - adding seTcpPort and seUdpPort fields
@@ -160,6 +173,103 @@ abstract class AppDatabase: RoomDatabase() {
                 )
                 database.execSQL(
                     "ALTER TABLE VPNGateItem ADD COLUMN healthScore INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        // Migration from version 8 to 9 — F.29: durable server history.
+        //
+        // Three new tables, no column changes, no backfill, and no foreign
+        // keys. Every statement is purely additive, so every stored server,
+        // excluded app, emergency source and manual server survives the
+        // upgrade byte for byte; the history layer simply starts empty, which
+        // is exactly the "unknown, not bad" state the ordering pass expects
+        // for a server with no history row.
+        //
+        // Why no FK: `VPNGateItemDao.replaceAll` is `deleteAll()` +
+        // `insertAll()`, and a cascade on `VPNGateItem.hostName` would delete
+        // the entire history on every refresh. The tables are intentionally
+        // orphans; see ServerHistoryEntities.kt's header.
+        //
+        // Why no SQL DEFAULT clauses on the counters: Room derives NOT NULL
+        // from Kotlin nullability, and a Kotlin `= 0` default is applied by
+        // the constructor, not by SQLite. Adding a SQL DEFAULT would make the
+        // DDL disagree with the KSP-exported 9.json and fail validation.
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `server_history_summary` (" +
+                            "`hostName` TEXT NOT NULL, " +
+                            "`firstObservedAt` INTEGER, " +
+                            "`lastAttemptAt` INTEGER, " +
+                            "`lastSuccessAt` INTEGER, " +
+                            "`lastFailureAt` INTEGER, " +
+                            "`lastTimeoutAt` INTEGER, " +
+                            "`successCount` INTEGER NOT NULL, " +
+                            "`failureCount` INTEGER NOT NULL, " +
+                            "`timeoutCount` INTEGER NOT NULL, " +
+                            "`consecutiveFailures` INTEGER NOT NULL, " +
+                            "`lastSuccessProtocol` TEXT, " +
+                            "`lastSuccessNetwork` TEXT, " +
+                            "`lastFailureReason` TEXT, " +
+                            "`wifiSuccessCount` INTEGER NOT NULL, " +
+                            "`wifiFailureCount` INTEGER NOT NULL, " +
+                            "`cellularSuccessCount` INTEGER NOT NULL, " +
+                            "`cellularFailureCount` INTEGER NOT NULL, " +
+                            "`unknownNetworkSuccessCount` INTEGER NOT NULL, " +
+                            "`unknownNetworkFailureCount` INTEGER NOT NULL, " +
+                            "`qualityRejectionCount` INTEGER NOT NULL, " +
+                            "PRIMARY KEY(`hostName`))"
+                )
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `server_history_protocol` (" +
+                            "`hostName` TEXT NOT NULL, " +
+                            "`protocol` TEXT NOT NULL, " +
+                            "`successCount` INTEGER NOT NULL, " +
+                            "`failureCount` INTEGER NOT NULL, " +
+                            "`timeoutCount` INTEGER NOT NULL, " +
+                            "`lastSuccessAt` INTEGER, " +
+                            "`lastFailureAt` INTEGER, " +
+                            "`lastOutcome` TEXT, " +
+                            "PRIMARY KEY(`hostName`, `protocol`))"
+                )
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `server_history_event` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`hostName` TEXT NOT NULL, " +
+                            "`ip` TEXT, " +
+                            "`eventType` TEXT NOT NULL, " +
+                            "`outcome` TEXT NOT NULL, " +
+                            "`networkType` TEXT NOT NULL, " +
+                            "`protocol` TEXT, " +
+                            "`attemptToken` TEXT, " +
+                            "`durationMs` INTEGER, " +
+                            "`failureReason` TEXT, " +
+                            "`qualityResult` TEXT, " +
+                            "`createdAt` INTEGER NOT NULL)"
+                )
+                // The four indexes are part of the schema, not an optimisation
+                // bolted on afterwards: the DAO's only ranking read and the
+                // success-idempotency check are both lookups these back.
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                            "`index_server_history_event_hostName_createdAt` " +
+                            "ON `server_history_event` (`hostName`, `createdAt`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                            "`index_server_history_event_hostName_protocol_createdAt` " +
+                            "ON `server_history_event` (`hostName`, `protocol`, `createdAt`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                            "`index_server_history_event_eventType_createdAt` " +
+                            "ON `server_history_event` (`eventType`, `createdAt`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                            "`index_server_history_event_attemptToken_eventType` " +
+                            "ON `server_history_event` (`attemptToken`, `eventType`)"
                 )
             }
         }
