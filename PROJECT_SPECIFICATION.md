@@ -4,8 +4,8 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `0fd4875` (`chore(emergency): update servers.csv (218 servers)`). The code this revision documents is `95163f5` (`fix(import): publish LiveData on the main thread; reject malformed import fields`), which sits below `0fd4875`; the ten-run gate and the device run were executed at `0fd4875`, and a commit cannot carry its own hash, so the header names that verified base. `origin/main` was `0fd4875` when this revision was written.
-**Document version:** 1.0.62
+**HEAD:** `51fe1d2` (`chore(collector): write the analysis CSV to collector_servers_full.csv`), the last code commit of this block. The eight commits this section records sit below it; the documentation commits sit on top, and a commit cannot carry its own hash. The ten-run gate was executed at the code HEAD `51fe1d2`.
+**Document version:** 1.0.63
 **Last updated:** 2026-10-25
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
@@ -3517,6 +3517,123 @@ java.lang.NullPointerException: Attempt to invoke interface method
 
 ---
 
+#### 1.6.59 F.29 COMMITTED, NEXT-SERVER-AFTER-MANUAL, ONE-CANDIDATE-PER-IPv4 (v1.0.61)
+
+The uncommitted F.29 work is now history in eight reviewable commits, and the two
+follow-ups the v1.0.60 triage proved independent were built on top of it. Nothing here
+changes what the v1.0.59 rows say; it records what was **committed** and the three
+behaviour rules that changed.
+
+1. **The commit map.** `049c7e3` data layer (history package, `AppDatabase`, `9.json`);
+   `303baaf` wiring (`App.kt`, `AutoModeEngine.kt`, and the controller's three
+   constructor parameters); `2639a42` recording and equal-quality ties; `4b04cd7` the
+   98 tests and the phase-2 report; `9d50166` the bounded read; `acb1a39` Next Server
+   after a manual connect; `afa580b` one candidate per IPv4; `51fe1d2` the collector
+   rename. F.29 is **committed, not released**: no version bump, no tag, and its five
+   device behaviours stay `NOT TESTABLE` until a device run says otherwise. Evidence:
+   git.
+
+2. **The split is reviewable, and one commit does not build on its own.** `049c7e3`,
+   `2639a42` and `4b04cd7` compile from `git archive <commit>` (2m38s, 2m32s, 2m36s).
+   **`303baaf` does not**: the controller's new constructor parameters name
+   `ServerHistoryView`, `ServerHistorySink` and `NetworkType`, whose imports arrive in
+   `2639a42`, so the wiring commit fails with six `Unresolved reference` errors. The
+   defect is in this split, not in the code — moving the seven-line import hunk from
+   `2639a42` into `303baaf` would make every commit buildable, and that is the fix for
+   a future re-split. It was **not** rewritten here because doing so needs a
+   `reset`/`rebase`, both forbidden by the block. Evidence: TEST (per-commit compiles).
+
+3. **Room 8 → 9, unchanged and additive.** Three `CREATE TABLE IF NOT EXISTS` and four
+   `CREATE INDEX IF NOT EXISTS`, no `ALTER`, no `DROP`, no backfill, no foreign key.
+   The four pre-existing tables are byte-identical in `9.json` against `8.json`; only
+   `version` (8 → 9) and `identityHash` (`6f1d1b74…` → `6ba9665e…`) move. On a **copy**
+   of the device database (261 rows, `-wal` 1,165,992 B recovered) the migration took
+   **40.3 ms**, left every row count unchanged and `integrity_check = ok`, and an
+   injected mid-way failure rolled back to version 8 with no partial tables. Evidence:
+   PRIOR REPORT (§1.6.58, BLOCK v1.0.60) + SOURCE CODE + TEST (`Migration8to9Test`,
+   9 cases).
+
+4. **Downgrade is a hard failure, by design and by omission. [NORMATIVE]** The builder
+   registers `MIGRATION_8_9` and calls **no** `fallbackToDestructiveMigration()`
+   anywhere. An older build opening a v9 database therefore throws
+   `IllegalStateException` at open instead of deleting the user's data. That is the
+   safe direction, but it means **a downgrade crashes the app on launch**, there is no
+   downgrade path, and no test covers it. Recorded so the next version bump inherits
+   the warning instead of rediscovering it. Evidence: SOURCE CODE + INFERENCE (Room's
+   documented behaviour).
+
+5. **The tie-break rule and, more importantly, its non-effects. [NORMATIVE]**
+   `sortedForAutoConnect(history, network)` applies the RTT pass first and the history
+   pass **second**, inside the same window of candidates `byQuality` already called
+   equal. Consequences that hold by construction: a server with history can never
+   outrank one with better current quality; the reachability gate still runs afterwards
+   and returns a subsequence, so history can never re-admit a removed endpoint;
+   Protocol Priority is untouched because this orders **servers**, not protocols; and an
+   **empty history map reproduces the pre-F.29 order exactly**
+   (`if (history.isEmpty() || to - from < 2) return`), which is why a fresh install and
+   every existing ordering test are unaffected. It is therefore **not** purely
+   observational — once history exists it can change which equal-quality server is
+   dialled first — but it cannot add, remove or fail a candidate. Evidence: SOURCE CODE
+   + TEST (20 ordering cases; the 1,192 pre-existing cases stay green).
+
+6. **The read is bounded at 1500 ms; the success record at 2000 ms. [NORMATIVE]**
+   `loadHistory()` wraps the provider in `withTimeoutOrNull(HISTORY_READ_TIMEOUT_MS)`
+   and degrades to an empty map, logging once. The bound sits at the call site rather
+   than inside the production lambda in `AutoModeEngine` because that is the single
+   choke point every provider passes through, and the only place a test can exercise
+   it. The blocking Room query is not interruptible: the coroutine stops **waiting** at
+   the suspension boundary, so the run proceeds on time even if the query returns
+   later. On the other side, the success record runs inside
+   `withContext(NonCancellable)` with a 2,000 ms bound, so `stop()` can be delayed by up
+   to two seconds waiting for a record that has already been earned. 1500 ms is chosen
+   to sit under the 2 s write bound and well under the 8 s per-attempt budget. Evidence:
+   SOURCE CODE + TEST (`HistoryReadBoundTest`, 4 cases: hanging, throwing,
+   fast-but-used, stop during the read).
+
+7. **Next Server after a manual connect resumes AFTER the manual server. [NORMATIVE]**
+   When a tunnel is up that this controller never dialled, its own state is
+   `Disconnected`, so `skipToNextServer()` reads the live identity from
+   `GlobalVpnTracker` and continues from the **following** server by `ip|hostname`,
+   resolved against the list the skip re-sorts. It is explicitly **not** "the list minus
+   that server, from the top": that variant re-dialled every server the user had already
+   passed, and it is what the first version of `acb1a39` did — four of the five new
+   tests caught it, and the commit was amended before it was ever pushed. Unknown
+   identity, or a server that has left the list, still starts at the top. The skip sorts
+   **without** history, so the successor is the next stored server and not whatever the
+   tie-break would have promoted. A second press is coalesced by `skipInFlight`.
+   Evidence: SOURCE CODE + TEST (7 cases in `AutoModeNextServerIdentityTest`).
+
+8. **One candidate per IPv4. [NORMATIVE]** `AutoModeEngine.defaultServers()`
+   de-duplicates by address before a run sees the list. The stored dataset, its identity
+   and its schema are untouched — only the candidate list is. The survivor is chosen by
+   a **total** order, so the result does not depend on arrival order: a usable OpenVPN
+   profile while OpenVPN is among the enabled protocols, then the richer verified
+   transport set, then the higher score, then the lexicographically smaller host name.
+   The survivor keeps the **position of the first row** with that address, and rows with
+   no address are all kept (an empty address is not an identity). The precondition is
+   absent on the current device database — 261 rows, 261 distinct addresses — so this is
+   defensive. Evidence: SOURCE CODE + TEST (`AutoModeEngineDedupeTest`, 8 cases) + PRIOR
+   REPORT (§1.6.58 audit).
+
+9. **The collector no longer writes the app's emergency file. [NORMATIVE]**
+   `vpngate_collector.py`'s `OUT_CSV` is `collector_servers_full.csv`. The
+   app-compatible `servers.csv` is produced **only** by `emergency_csv_publisher.py`,
+   which owns a different schema and writes UTF-8 without a BOM. Running the collector
+   previously overwrote a file the publisher maintains. Evidence: SOURCE CODE (+4/−2).
+
+10. **Counts.** F.29 is 1,593 main lines and 1,954 test lines (98 cases); PART B adds 4
+    cases, PART C 5 new ones (7 in that class), PART D 8. `:app` moves from **1092** at
+    `b66e6d6` to **1209** expected; `:SoftEtherClient` stays **184**. The ten-run gate
+    and its exact totals are in `DEVICE_VERIFY_v1.0.61_REPORT.md` §F. Evidence: TEST.
+
+11. **What this section does not claim.** No device behaviour of F.29 is verified by
+    being committed; the ordering change, the migration on a real upgrade, the history
+    rows a real Auto Connect run writes, and Next Server from a real manual tunnel are
+    claimed only once the device run records them. The downgrade path is untested.
+    `303baaf` does not build alone (§2). §22 is byte-identical; §1.6.2–§1.6.58 are
+    untouched. No tag was created.
+---
+
 ## 2. Architecture Overview
 
 ### 2.1 Layering
@@ -6349,6 +6466,8 @@ Only the `pro` flavor exists (`flavorDimensions = ["tier"]`, `app/build.gradle`)
 | 1.0.61 | 2026-10-24 | PUSH-GATE FIX PUSHED + EMERGENCY-SNAPSHOT-POISONING (spec §1.6.57) | **The v1.0.57 push gate is closed and the commits are actually pushed.** `ReachabilityGateTest$PerProtocolProbe.calls` is a `CopyOnWriteArrayList`; the audit for the same pattern found no second instance (the other `ReachabilityProbe` fakes are written from a per-run `reachabilityFilter` lambda, not from the parallel fan-out). The gate was **re-run at the real push HEAD** — the `1.0.60` row's "10/10 at the push HEAD" rested on a tree extracted before the fix — giving **3 green committed-tree runs** (`:app` 1072/0/0/1, 87 suites; `:SoftEtherClient` 184/0/0/0, 13 suites) after one `BindException` run was retried and failed the same way. Then `0c3c56e..ef9bf99 main -> main`, fast-forward, no force, no tag. **PART B: V9 was mis-diagnosed.** The database was never damaged — `VPNGateItem` held **261** rows before and after V9 (0 hostnames lost, `integrity_check = ok`), and the "261 → 170" came from reading `Outcome.Updated.serverCount`, which is the **incoming** size, as the table's size. The real damage was the **last-known-good snapshot**: `files/collector_vpn_servers.json` held `count: 170` with `savedAt` identical to the table's last write, all 170 hosts a subset of the 261, and only 5 of the table's 40 `public-vpn-*` rows present — the emergency rung promoted its own published excerpt because promotion was gated on `fromCache` and the rung is a fresh download. The next snapshot fallback would then have replaced the 261-row table with 170. **Fix:** `ServerListUpdater` tracks `suppliedByEmergency` (`:282`, set at `:300`) and the promotion branch is `if (fromCache || suppliedByEmergency)` (`:354`); the emergency rung still stores through the retention-aware `mergeAll`, `DatasetIntegrity` and the 1 MiB cap are untouched, and a real cache/seed fallback keeps its replace-and-do-not-promote semantics. **8 new tests** (`EmergencyMergeRetentionTest`). `:app` **1080/0/0/1** (+8), `:SoftEtherClient` **184/0/0/0**. **PART C (Next Server after a manual connect) is implemented in the working tree but NOT committed and NOT shipped**: it lives in `AutoModeController.kt`, which also carries the uncommitted F.29 work this block forbids touching. **PART D was run and found a P0 crash**: the CSV import and the import-delete both die with `Cannot invoke setValue on a background thread` (`ConnectionListViewModel.kt:370` / `:333`) — pre-existing v1.0.54 code, not fixed here. Removed settings, the single Clear-cache button, the seeded emergency source and the protocol default all passed on device; V7, the pinned row, the file-picker import and the double press are NOT device-verified. §22 byte-identical; §1.6.2–§1.6.56 untouched; §11.7 extended with the promotion rule. No tag was created. |
 
 | 1.0.62 | 2026-10-25 | IMPORT-CRASH FIX + v1.0.54 LEFTOVERS + DUPLICATE-IP AUDIT (device-assisted; operator-authorised; spec §1.6.58) | **Closes the P0 import crash found in §1.6.57 item 9.** `ConnectionListViewModel.materializeImported()` (`:370`) and `removeImportedServer()` (`:333`) assigned `MutableLiveData.value` from inside `withContext(Dispatchers.IO)`, throwing `IllegalStateException: Cannot invoke setValue on a background thread` *after* the data work completed; fixed with `publishLiveData(target, value, Dispatchers.Main.immediate)` — a main-thread hop, **not** `postValue` (which would coalesce two rapid publishes). An audit found 11 other LiveData writes in `app/src/main`; only these two ran on an IO context, and no LiveData exists outside `:app`. **7 new tests** (`LiveDataPublishThreadTest`): a thread-asserting `ArchTaskExecutor` delegate proves the harness (setValue off-main throws exactly as the device did), `publishLiveData` is shown to land-and-finish from a background thread and to propagate a failure, and a source-shape guard bans any `MutableLiveData .value =` inside a `withContext(Dispatchers.IO|Default)` block (comments/strings stripped first; KDoc states its limit). **PART B — v1.0.54 leftovers closed:** B1 the stale "…will turn off Block Ads setting when enabled" string removed from `values`/`values-fa`/`values-vi`; B2 `ManualCsvImport` rejects inner-whitespace/control-char host/IP per row (closes the device-found `test-a. example` row) while still trimming leading/trailing; B3 the log `Server list updated atomically: N servers` corrected to `N incoming, M stored` — the exact misreading behind the false V9 finding in §1.6.57. **5 new tests** (`ManualCsvImportTest`). **PART C — duplicate-IP audit (no code change):** the real device database was pulled byte-exactly and queried — **261 rows, 261 distinct IPv4 values, 0 duplicate-IP groups, 0 rows of inflation**, 0 duplicate host names, 0 fields with padded/inner whitespace; the historical config-less twin `vpn813516587` is **gone** and `123.48.124.169` now has a single row. The double-dial vector is nevertheless real in code — `AutoModeEngine.defaultServers()` does no IP-level de-duplication and the run's only guard is `attempted.add(wedgeKey(server))` where `wedgeKey`→`serverKey`→`"ip|hostname"` — so a duplicate pair *would* be dialled twice in one run; with zero duplicate rows it cannot fire. The smallest fix (de-duplicate by IPv4 in `AutoModeEngine.defaultServers()`, keeping the row with a usable config) lies outside this block's authorisation and inside the F.29-modified files, so it was **stopped and reported**. A prior revision of this row wrongly claimed the pair had been observed and was API-versus-emergency; both statements are corrected. **PART D — DEVICE-VERIFIED on `5585fecc`:** committed-tree APK installed `-r`; extended CSV import 2/1 and API CSV import 2/0 with no crash, delete no crash, re-import idempotent, survives Refresh + restart, test servers deleted, device restored (DB 0 test rows). **PART E — committed-tree gate:** **10/10 green** from a `git archive HEAD` tree with `--rerun-tasks` — 1276 tests per run (1092 in `:app` across 89 suites, 184 in `:SoftEtherClient` across 13), 0 failures, 0 errors, 1 skip, 177–182 s each — and runs 1–3 are the three consecutive runs the brief also requires. Two earlier harness attempts were aborted by `Gradle could not start your build … java.net.BindException: Address already in use: bind` with **zero tests executed**; both are preserved and reported, and the ten counted runs needed **zero** retries. The documentation commit was then pushed fast-forward (`0fd4875..e40df8e main -> main`, no force, no tag) and the full suites were re-run from a fresh `git archive origin/main` extraction — **1092/0/0/1** (89 suites) and **184/0/0/0** (13 suites), BUILD SUCCESSFUL in 3m 17s. Full table: `DEVICE_VERIFY_v1.0.59_REPORT.md` §G/§H.**Counts:** `:app` **1092/0/0/1** (89 suites; +12 = 7 + 5), `:SoftEtherClient` **184/0/0/0** (untouched). `:app:assembleProDebug` SUCCESSFUL; `versionCode`/`versionName` unchanged. §22 byte-identical; §1.6.2–§1.6.57 untouched. No tag. Report: `DEVICE_VERIFY_v1.0.59_REPORT.md`. |
+
+| 1.0.63 | 2026-10-25 | F.29 COMMITTED + NEXT-SERVER-AFTER-MANUAL + ONE-CANDIDATE-PER-IPv4 (device-assisted; spec §1.6.59) | **The F.29 working tree became eight reviewable commits and the two proven-independent follow-ups landed on top.** F.29: `049c7e3` data layer (three tables, `MIGRATION_8_9`, `9.json`), `303baaf` wiring, `2639a42` recording + equal-quality ties, `4b04cd7` 98 tests + the phase-2 report. Follow-ups: `9d50166` bounds the once-per-run history read at **1500 ms** (degrading to no history, logging once) with 4 tests, `acb1a39` makes Next Server resume **after** a manually-connected server by `ip|hostname` with 7 tests, `afa580b` keeps **one candidate per IPv4** with 8 tests, `51fe1d2` renames the collector's CSV to `collector_servers_full.csv` (+4/−2). **One defect in the split, reported not hidden:** `303baaf` does not compile alone (its new constructor parameters name types whose imports land in `2639a42`); `049c7e3`, `2639a42` and `4b04cd7` do. **`acb1a39` was amended once:** its first version filtered the manual server out and restarted from the top, which re-dialled every server the user had passed — four of the five new tests caught it. Room 8→9 unchanged and additive (3 tables, 4 indexes, no FK, no backfill; the four existing tables byte-identical in the schema JSON). **Downgrade warning [NORMATIVE]:** no `fallbackToDestructiveMigration()`, so an older build opening a v9 database throws instead of wiping — and no test covers that path. The tie-break is recorded with its non-effects (cannot add, remove or fail a candidate; empty history reproduces the pre-F.29 order). §22 byte-identical; §1.6.2–§1.6.58 untouched. No tag, no version bump — F.29 is committed, not released. Report: `DEVICE_VERIFY_v1.0.61_REPORT.md`. |
 
 ### Verification Status
 
