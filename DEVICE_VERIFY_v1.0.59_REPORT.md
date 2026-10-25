@@ -324,7 +324,27 @@ recorded in §H.1.
 
 ### H.1 Post-push standalone gate
 
-_Pending — filled in immediately after the push._
+**Pushed.** `0fd4875..e40df8e main -> main`, fast-forward, `origin/main == HEAD`, **no `--force`**,
+**no tag** (5 tags before, 5 after).
+
+**Standalone gate from the published tree.** A **fresh** extraction was made with
+`git archive origin/main` into `/d/dv59gate/postpush` — a directory that never saw the working tree,
+so nothing uncommitted and no F.29 file could leak in — and the full suites were run once with
+`--no-daemon --rerun-tasks`:
+
+| Target | Result | Counts |
+|---|---|---|
+| `:app:testProDebugUnitTest` | **PASS** | **1092 / 0 / 0 / 1** across **89** suites |
+| `:SoftEtherClient:testDebugUnitTest` | **PASS** | **184 / 0 / 0 / 0** across **13** suites |
+| Build | **BUILD SUCCESSFUL in 3m 17s** | 86 tasks executed |
+
+The published commit therefore reproduces the gate's counts exactly. Evidence: TEST
+(`/d/dv59gate/postpush.log`).
+
+**One documentation commit follows this report.** The results above are written back into this
+section and the specification in a final docs-only commit, pushed fast-forward on top of `e40df8e`.
+That commit touches no source, test, resource, Gradle or manifest file, so it does not require its
+own gate; the code that was gated is exactly the code that is published.
 
 ---
 
