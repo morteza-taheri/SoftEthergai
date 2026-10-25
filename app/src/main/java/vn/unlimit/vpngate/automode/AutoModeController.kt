@@ -20,6 +20,7 @@ import vn.unlimit.vpngate.history.NetworkType
 import vn.unlimit.vpngate.history.ServerHistorySink
 import vn.unlimit.vpngate.history.ServerHistoryView
 import vn.unlimit.vpngate.state.GlobalVpnTracker
+import vn.unlimit.vpngate.state.VpnConnectionStatus
 
 /**
  * Auto Mode orchestration core (Â§27): a thin layer on top of the app's
@@ -875,6 +876,20 @@ enum class AttemptOutcome {
         val isError = current is AutoModeState.Error
 
         if (!connecting && !isConnected && !isError) {
+            // PART C / device finding V7: a manually-connected (externally-owned)
+            // tunnel is live but this controller never ran, so its own `_state`
+            // is still `Disconnected` while the app-wide tracker reports
+            // CONNECTED. The Next-Server button must still advance from the
+            // manually-connected server, exactly as the owned-Connected branch
+            // below does — otherwise the button is dead the entire time a manual
+            // tunnel is up (the precise V7 finding). Read the live tunnel's
+            // identity from the single source of truth rather than from our own
+            // (stale) state.
+            val tracker = GlobalVpnTracker.vpnState.value
+            if (tracker.status == VpnConnectionStatus.CONNECTED) {
+                skipFromExternal(tracker.serverIp, tracker.serverHost)
+                return
+            }
             adapter.log("[AUTO] Skip requested but disconnected or inactive")
             return
         }
@@ -998,6 +1013,81 @@ enum class AttemptOutcome {
 
     fun setSkipSignal(signal: (() -> Unit)?) {
         adapterSkipSignal = signal
+    }
+
+    /**
+     * PART C / device finding V7: the Next-Server continuation for a tunnel this
+     * controller does **not** own (a manual connect). The controller's own
+     * `_state` is `Disconnected` in that case, so [skipToNextServer] routes here
+     * instead of the owned-Connected branch. The behaviour mirrors that branch:
+     * tear the live (external) tunnel down and launch a fresh Auto Connect run
+     * over every server *except* the one the user manually connected to
+     * (identified by `ip|hostname` from [GlobalVpnTracker]).
+     *
+     * The same [transitionLock]/[skipInFlight] coalescing applies, so a burst of
+     * presses collapses into one continuation exactly as the owned branch does.
+     * No `connectedWatcher` is armed and no `connectedCandidate` exists (we never
+     * owned this tunnel), so only the stale OS callback is cleared before
+     * teardown.
+     *
+     * The continuation is the **position after** the manual server, carried by
+     * [resumeFromServerKey] and resolved against the list this skip re-sorts — not
+     * "the list minus that server, from the top", which re-dialled every server the
+     * user had already passed.
+     *
+     * Note: when the underlying stack did not report the server's host/ip to
+     * [GlobalVpnTracker] (SoftEther/OpenVPN publish only `assignedIp`, not
+     * `serverHost`/`serverIp`), the identity is unknown and the run starts from
+     * the top of the list — still "move on from the manual tunnel", just without
+     * a position to resume from. SSTP does publish `serverIp`, so it resumes
+     * exactly. A future improvement is to populate `serverHost`/`serverIp` at
+     * manual-connect time so the resume is exact for every stack.
+     */
+    private fun skipFromExternal(ip: String?, host: String?) {
+        adapter.log("[AUTO] External/manual tunnel skipped by user; trying next")
+        val currentKey = serverKey(ip, host)
+        synchronized(transitionLock) {
+            if (skipInFlight) {
+                adapter.log("[AUTO] Skip already in flight; duplicate request ignored")
+                return
+            }
+            skipInFlight = true
+            // No connectedWatcher was armed (we never owned this tunnel) and no
+            // connectedCandidate exists; just make sure no stale OS callback fires.
+            TunnelStateWatcher.onTunnelLost = null
+            stopLivenessProbe()
+            job?.cancel()
+            job = scope.launch {
+                adapter.disconnect()
+                val remaining = (overrideServers ?: serverProvider())
+                    .withActiveRtt(protocolPriorityProvider())
+                    .sortedForAutoConnect()
+                // v1.0.61: continue AFTER the manually-connected server, exactly as the
+                // owned path does — never from the beginning. The resume key is the same
+                // `ip|hostname` identity the continuation and the wedge ledger use; when
+                // it is unknown, or the server has left the list, runAutoMode finds no
+                // match and starts at the top, which is the honest fallback. Filtering
+                // the server out and restarting at the top (the previous behaviour)
+                // re-dialled every server the user had already passed.
+                if (currentKey != serverKey(null, null)) resumeFromServerKey = currentKey
+                if (remaining.isEmpty()) {
+                    setState(AutoModeState.Error(ERROR_NO_SERVER))
+                    synchronized(transitionLock) { job = null }
+                } else {
+                    synchronized(transitionLock) {
+                        if (!skipInFlight) {
+                            adapter.log("[AUTO] Skip superseded by stop; not relaunching")
+                            job = null
+                        } else {
+                            overrideServers = remaining
+                            // Keep skipInFlight true until runAutoMode publishes a
+                            // non-Connected state (setState owns the clear).
+                            job = scope.launch { runAutoMode() }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**

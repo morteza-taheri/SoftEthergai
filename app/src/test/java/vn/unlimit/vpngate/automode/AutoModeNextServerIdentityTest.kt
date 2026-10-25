@@ -7,8 +7,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import vn.unlimit.vpngate.history.NetworkType
+import vn.unlimit.vpngate.history.ServerHistoryView
+import vn.unlimit.vpngate.state.GlobalVpnTracker
+import vn.unlimit.vpngate.state.VpnConnectionStatus
 
 /**
  * v1.0.42 (§1.6.35 / F6 + F1) — T-NEW-40..43.
@@ -82,6 +87,8 @@ class AutoModeNextServerIdentityTest {
         scope: CoroutineScope,
         adapter: RecordingAdapter,
         timeoutProvider: () -> Long = { 300L },
+        history: Map<String, ServerHistoryView> = emptyMap(),
+        network: NetworkType = NetworkType.WIFI,
         serverProvider: suspend () -> List<AutoModeCandidate>,
     ) = AutoModeController(
         scope = scope,
@@ -90,6 +97,8 @@ class AutoModeNextServerIdentityTest {
         serverProvider = serverProvider,
         attemptTimeoutMsProvider = timeoutProvider,
         wedgeTracker = WedgeTracker(),
+        historyProvider = { history },
+        networkTypeProvider = { network },
     )
 
     private suspend fun AutoModeController.awaitTerminal(timeoutMs: Long = 10_000): AutoModeState {
@@ -272,5 +281,284 @@ class AutoModeNextServerIdentityTest {
             listOf(2_000L, 4_000L),
             adapter.timeouts.take(2),
         )
+    }
+
+    // ── PART C / device finding V7 ──────────────────────────────────────────────
+    /**
+     * Next-Server must work after a MANUAL (externally-owned) connect.
+     *
+     * The controller never ran in this scenario, so its own `_state` is
+     * `Disconnected`; only the app-wide [GlobalVpnTracker] knows a tunnel is up.
+     * Before the PART C fix `skipToNextServer()` bailed at the
+     * "disconnected or inactive" guard and the button did nothing. After the fix
+     * it reads the tracker, tears the manual tunnel down and continues from the
+     * next server.
+     */
+    @Test
+    fun nextServerWorksAfterManualConnect() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val servers = listOf(server("s1"), server("s2"), server("s3"))
+        val c = controller(scope, adapter) { servers }
+
+        // Simulate a manual connect: controller state stays Disconnected, but the
+        // global tracker reports a live tunnel to s1 (host + ip known).
+        GlobalVpnTracker.updateState(
+            VpnConnectionStatus.CONNECTED,
+            protocol = "SoftEther",
+            serverHost = "s1",
+            serverIp = "10.0.0.1",
+        )
+        try {
+            assertFalse(
+                "precondition: controller must believe it is disconnected for a manual tunnel",
+                c.state.value is AutoModeState.Connected,
+            )
+
+            adapter.connects.clear()
+            c.skipToNextServer()
+
+            // Wait for the restart to actually dial (skip launches a coroutine).
+            withTimeoutOrNull(5_000) {
+                while (adapter.connects.isEmpty()) delay(5)
+            }
+            val final = c.awaitTerminal()
+
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            // s1 must be excluded; the run resumes at the next server.
+            assertEquals(
+                "the manually-connected server must be skipped",
+                "s2" to AutoModeProtocol.SOFTETHER_UDP,
+                adapter.connects.first(),
+            )
+            assertEquals(
+                "s1 must never be dialed again after the manual skip",
+                0,
+                adapter.connects.count { it.first == "s1" },
+            )
+            assertTrue(
+                "must log the external skip: ${adapter.logs}",
+                adapter.logs.any { it.contains("External/manual tunnel skipped") },
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    /**
+     * When the stack did not report the manual server's identity, the run starts
+     * from the top of the list (any server) rather than erroring out — still
+     * "move on from the manual tunnel", just without the precise exclusion
+     * (SoftEther/OpenVPN publish only `assignedIp` to the tracker).
+     */
+    @Test
+    fun nextServerAfterManualConnectWithUnknownIdentityStartsFromTop() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val servers = listOf(server("s1"), server("s2"), server("s3"))
+        val c = controller(scope, adapter) { servers }
+
+        // SoftEther/OpenVPN publish only assignedIp to the tracker, so host/ip are
+        // unknown here — mirroring a real manual SoftEther connect.
+        GlobalVpnTracker.updateState(VpnConnectionStatus.CONNECTED, protocol = "SoftEther")
+        try {
+            adapter.connects.clear()
+            c.skipToNextServer()
+
+            withTimeoutOrNull(5_000) {
+                while (adapter.connects.isEmpty()) delay(5)
+            }
+            val final = c.awaitTerminal()
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            // No identity → no exclusion → starts from the top (s1).
+            assertEquals(
+                "without a known identity the run starts from the top",
+                "s1" to AutoModeProtocol.SOFTETHER_UDP,
+                adapter.connects.first(),
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    // ── PART C (v1.0.61) — the continuation contract ────────────────────────────
+    //
+    // The operator's requirement, stated as tests: whenever the app is connected,
+    // Next Server continues from the FOLLOWING server by stable key (ip|hostname)
+    // in the list the user sees - never from the beginning, never the connected
+    // server again, and never re-ordered by something the run did not use.
+
+    private fun view(
+        host: String,
+        success: Int = 0,
+        failures: Int = 0,
+        consecutive: Int = 0,
+        wifi: Int = 0,
+    ) = ServerHistoryView(
+        hostName = host,
+        successCount = success,
+        failureCount = failures,
+        consecutiveFailures = consecutive,
+        lastSuccessAt = if (success > 0) 1_000L else 0L,
+        wifiSuccessCount = wifi,
+        cellularSuccessCount = 0,
+        unknownNetworkSuccessCount = 0,
+    )
+
+    /** Simulate a manual tunnel to [host] and press Next Server once. */
+    private suspend fun manualConnectAndSkip(
+        c: AutoModeController,
+        adapter: RecordingAdapter,
+        host: String,
+        ip: String,
+    ) {
+        GlobalVpnTracker.updateState(
+            VpnConnectionStatus.CONNECTED,
+            protocol = "SoftEther",
+            serverHost = host,
+            serverIp = ip,
+        )
+        adapter.connects.clear()
+        c.skipToNextServer()
+        withTimeoutOrNull(5_000) {
+            while (adapter.connects.isEmpty()) delay(5)
+        }
+    }
+
+    @Test
+    fun nextServerFromTheFifthServerContinuesAtTheSixth() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val servers = (1..8).map { server("s$it") }
+        val c = controller(scope, adapter) { servers }
+        try {
+            manualConnectAndSkip(c, adapter, "s5", "10.0.0.5")
+            val final = c.awaitTerminal()
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            assertEquals(
+                "the fifth server's successor is the sixth",
+                "s6" to AutoModeProtocol.SOFTETHER_UDP,
+                adapter.connects.first(),
+            )
+            assertEquals("s5 must not be dialled again", 0, adapter.connects.count { it.first == "s5" })
+            assertEquals(
+                "the run must not restart from the beginning: ${adapter.connects}",
+                0,
+                adapter.connects.count { it.first in setOf("s1", "s2", "s3", "s4") },
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    @Test
+    fun whenTheSixthServerIsExhaustedTheSeventhIsTried() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val servers = (1..8).map { server("s$it") }
+        adapter.failing += "s6"
+        val c = controller(scope, adapter) { servers }
+        try {
+            manualConnectAndSkip(c, adapter, "s5", "10.0.0.5")
+            val final = c.awaitTerminal()
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            assertEquals(
+                "s6 is tried first, then the run continues to s7",
+                listOf("s6", "s7"),
+                adapter.connects.map { it.first }.take(2),
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    @Test
+    fun aResortBetweenPressesDoesNotShiftTheContinuation() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        var servers = listOf(server("s1"), server("s2"), server("s3"), server("s4"), server("s5"))
+        val c = controller(scope, adapter) { servers }
+        try {
+            // Manual tunnel to s2, first press -> s3 (connected, controller-owned).
+            manualConnectAndSkip(c, adapter, "s2", "10.0.0.2")
+            c.awaitTerminal()
+            assertEquals("s3" to AutoModeProtocol.SOFTETHER_UDP, adapter.connects.first())
+
+            // Re-sort so that "after s3" is s1 in the new order.
+            servers = listOf(server("s5"), server("s4"), server("s3"), server("s1"), server("s2"))
+            adapter.connects.clear()
+            c.skipToNextServer()
+            withTimeoutOrNull(5_000) { while (adapter.connects.isEmpty()) delay(5) }
+            c.awaitTerminal()
+
+            assertEquals(
+                "the continuation follows the run's own snapshot (s4), not the re-sorted list (s1)",
+                "s4",
+                adapter.connects.first().first,
+            )
+            assertEquals("s3 must not be dialled again", 0, adapter.connects.count { it.first == "s3" })
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    @Test
+    fun aConnectedServerMissingFromTheListStartsFromTheTop() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val servers = listOf(server("s1"), server("s2"), server("s3"))
+        val c = controller(scope, adapter) { servers }
+        try {
+            // Identity known, but that server is no longer in the dataset.
+            manualConnectAndSkip(c, adapter, "gone.example", "10.9.9.9")
+            val final = c.awaitTerminal()
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            assertEquals(
+                "nothing matches, so nothing is filtered and the run starts at the top",
+                "s1",
+                adapter.connects.first().first,
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
+    }
+
+    @Test
+    fun theHistoryTieBreakDoesNotChangeWhichServerFollows() = runBlocking {
+        val servers = listOf(server("s1"), server("s2"), server("s3"), server("s4"), server("s5"))
+        // A history that WOULD reorder: s5 proven on this network, s4 on a failure streak.
+        val history = mapOf(
+            "s5" to view("s5", success = 1, wifi = 1),
+            "s4" to view("s4", failures = 3, consecutive = 3),
+        )
+
+        // (a) A normal run does use it - otherwise the assertion below proves nothing.
+        val runScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val runAdapter = RecordingAdapter()
+        val runController = controller(runScope, runAdapter, history = history) { servers }
+        runController.start()
+        runController.awaitTerminal()
+        assertEquals(
+            "precondition: the tie-break must promote s5 in a normal run",
+            "s5",
+            runAdapter.connects.first().first,
+        )
+
+        // (b) The manual continuation sorts WITHOUT history, so it still follows s3 with s4.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val adapter = RecordingAdapter()
+        val c = controller(scope, adapter, history = history) { servers }
+        try {
+            manualConnectAndSkip(c, adapter, "s3", "10.0.0.3")
+            val final = c.awaitTerminal()
+            assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            assertEquals(
+                "the successor is the next stored server (s4), not the history-promoted s5",
+                "s4",
+                adapter.connects.first().first,
+            )
+        } finally {
+            GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
+        }
     }
 }
