@@ -113,8 +113,9 @@ equal-quality ties** (F.29 §10). Added a **stable partition** after that orderi
 | All `automode` tests | **PASS** (no regression from the demotion) |
 | New demotion test | **PASS** |
 | Full `:app:testProDebugUnitTest` + `:SoftEtherClient:testDebugUnitTest` | **BUILD SUCCESSFUL** |
+| **3 genuine consecutive full runs** (`--rerun-tasks`) | **PASS ×3** — each `:app 1273/0/0/1`, `:SoftEtherClient 184/0/0/0` (579 / 508 / 509 s) |
 | Lint `:app:lintProDebug` | **104 errors / 178 warnings / 9 hints** — identical to the v1.0.64/65 backlog; **no new issues** (first is pre-existing `NewApi` `AndroidConnectionAdapter.kt:653`) |
-| `:app:assembleProDebug` | **SUCCESS** — `app-pro-debug.apk` 63,893,140 B |
+| `:app:assembleProDebug` | **SUCCESS** (12:32, 63,893,140 B). A later rebuild was blocked by **Windows Security Center** on a build-cache path; the installable file was recovered by `adb pull` of the installed `base.apk` → `SoftEthergai-v1.0.67-pro-debug.apk` (63,893,140 B). |
 | Device install `-r` | **Success** (data preserved) |
 | Launch | pid 13104, version 2.4.11-dev / 144, **no FATAL/AndroidRuntime crash** |
 
@@ -134,8 +135,8 @@ clear data **NO** · manual DB/snapshot modification **NO**.
 
 ## 9. Open items (not yet done)
 
-- **Ten genuine consecutive full-suite runs** (per-task `--rerun`; UP-TO-DATE does not count). One full
-  run is green; the ten-run stability sweep remains.
+- **Ten genuine consecutive full-suite runs**: **3 of 10 completed, all green** (`1273/0/0/1` + `184/0/0/0`
+  each); the remaining seven were not run (disk/time).
 - **Device matrix A–D**: VPN-disconnected refresh, VPN-connected refresh, mid-refresh disconnect,
   follow-up refresh — plus a UI confirmation that the new "Every week" option renders and that AutoConnect
   picks the demoted server last. (The unit tests cover the ordering logic; the device run is the remaining
