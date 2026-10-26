@@ -140,26 +140,30 @@ class VpnServerRepositoryR4bTest {
     }
 
     @Test
-    fun `tunnel path is chosen when every input holds`() = runBlocking {
+    fun `tunnel leads mirror and a dead tunnel downgrades api and html to physical`() = runBlocking {
         logs.clear()
         tunnelRepository(EmptyFetcher()).refresh()
 
-        // html and api fail on the TUNNEL rung (the fake returns nothing) and
-        // retry on PHYSICAL. The mirror rung does not retry — see
-        // `mirror discovery never reports empty because of the bootstrap list`.
+        // The mirror rung leads with TUNNEL and succeeds via the bootstrap list
+        // (see `mirror discovery never reports empty because of the bootstrap
+        // list`). BLOCK v1.0.65: because every TUNNEL request failed, the
+        // concurrent API+HTML rungs now begin directly on PHYSICAL instead of
+        // re-trying the dead tunnel. Their own PHYSICAL attempt also fails here
+        // (EmptyFetcher), so each then makes the usual last-resort fallback to
+        // the opposite rung — a justified retry, not a blind one.
         assertEquals(
             listOf(
-                "[collector] path=fallback-to-physical source=api",
-                "[collector] path=fallback-to-physical source=html",
-                "[collector] path=tunnel source=api",
-                "[collector] path=tunnel source=html",
+                "[collector] path=fallback-to-tunnel source=api",
+                "[collector] path=fallback-to-tunnel source=html",
+                "[collector] path=physical source=api",
+                "[collector] path=physical source=html",
                 "[collector] path=tunnel source=mirror",
             ),
             logs.sorted(),
         )
         assertTrue(
-            "no plain physical line may appear",
-            logs.none { it == "[collector] path=physical source=api" },
+            "API/HTML must not lead with the dead tunnel: $logs",
+            logs.none { it == "[collector] path=tunnel source=api" || it == "[collector] path=tunnel source=html" },
         )
     }
 
@@ -183,17 +187,18 @@ class VpnServerRepositoryR4bTest {
         logs.clear()
         repeat(iterations) { repo.refresh() }
 
-        // Every run on the TUNNEL rung with a failing bound fetcher emits, per
-        // source: mirror -> a single `path=tunnel` line (the bootstrap mirrors
-        // make it succeed, so it never falls back); api and html -> one
-        // `path=tunnel` line each plus one `path=fallback-to-physical` line
-        // each. Five lines per run, so any dropped `add` shortens the total.
+        // BLOCK v1.0.65 per-run lines with a failing bound fetcher: mirror -> a
+        // single `path=tunnel` line (bootstrap mirrors make it succeed, so it
+        // never falls back); api and html -> one PHYSICAL primary line each
+        // (the same-refresh downgrade) plus one `path=fallback-to-tunnel` line
+        // each (their PHYSICAL attempt fails too). Five lines per run, so any
+        // dropped `add` still shortens the total.
         val perRun = listOf(
             "[collector] path=tunnel source=mirror",
-            "[collector] path=tunnel source=api",
-            "[collector] path=tunnel source=html",
-            "[collector] path=fallback-to-physical source=api",
-            "[collector] path=fallback-to-physical source=html",
+            "[collector] path=physical source=api",
+            "[collector] path=physical source=html",
+            "[collector] path=fallback-to-tunnel source=api",
+            "[collector] path=fallback-to-tunnel source=html",
         )
 
         assertEquals(
@@ -244,9 +249,12 @@ class VpnServerRepositoryR4bTest {
     }
 
     @Test
-    fun `a failed tunnel fetch falls back to physical and actually retries on the physical fetcher`() = runBlocking {
-        // html and api fail on the TUNNEL rung; the physical fetcher counts its
-        // calls, so the retry is provable rather than merely logged.
+    fun `a failed tunnel downgrades api and html onto the physical fetcher`() = runBlocking {
+        // BLOCK v1.0.65: after the mirror's TUNNEL failure, html and api begin
+        // on PHYSICAL rather than re-trying the dead tunnel. The physical
+        // fetcher counts its calls, so their use of it is provable rather than
+        // merely logged. (It returns null too, so each source then makes its
+        // last-resort fallback to the opposite rung.)
         val physical = CountingFetcher()
         logs.clear()
         tunnelRepository(physical).refresh()
@@ -255,14 +263,14 @@ class VpnServerRepositoryR4bTest {
             assertEquals(
                 "wrong log sequence for $tag",
                 listOf(
-                    "[collector] path=tunnel source=$tag",
-                    "[collector] path=fallback-to-physical source=$tag",
+                    "[collector] path=physical source=$tag",
+                    "[collector] path=fallback-to-tunnel source=$tag",
                 ),
                 logs.filter { it.endsWith("source=$tag") },
             )
         }
-        // Both fallbacks must have re-issued the request on the physical fetcher.
-        assertTrue("physical fetcher was never retried (calls=${physical.calls})", physical.calls >= 2)
+        // Both downgraded sources must have issued their request on the physical fetcher.
+        assertTrue("physical fetcher was never used (calls=${physical.calls})", physical.calls >= 2)
     }
 
     @Test

@@ -100,26 +100,29 @@ class VpnServerRepositoryRoutingDynamicTest {
     }
 
     @Test
-    fun `T-NEW-37 resolvePrimary is PHYSICAL for every input without memory evidence`() {
-        // v1.0.52 (§1.6.44) changed what this can assert. `resolvePrimary` is a
-        // projection of `routeLadder(input)` — the *no-memory* ladder — and that
-        // ladder always opens with PHYSICAL: a usable tunnel is offered as the
-        // second rung, never promoted on the strength of the inputs alone.
-        // Promotion needs `PathMemory` evidence and is pinned by
-        // VpnServerRepositoryLadderTest (T-NEW-56b/56c).
+    fun `T-NEW-37 resolvePrimary is VPN-first when a usable bound tunnel exists, PHYSICAL otherwise`() {
+        // BLOCK v1.0.64: `resolvePrimary` is a projection of `routeLadder(input)`
+        // — the *no-memory* ladder. With a usable, bound VPN Network the TUNNEL
+        // rung is the primary; otherwise PHYSICAL leads. The v1.0.41 lesson still
+        // holds: a usable tunnel with no bound network adds no TUNNEL rung.
         for (tunnelUsable in listOf(true, false)) {
             for (hasBoundNetwork in listOf(true, false)) {
+                val expected = if (tunnelUsable && hasBoundNetwork) {
+                    CollectorPath.TUNNEL
+                } else {
+                    CollectorPath.PHYSICAL
+                }
                 assertEquals(
-                    "no input may promote TUNNEL without evidence " +
+                    "resolvePrimary must be VPN-first only when a usable+bound tunnel exists " +
                         "(tunnelUsable=$tunnelUsable, hasBoundNetwork=$hasBoundNetwork)",
-                    CollectorPath.PHYSICAL,
+                    expected,
                     VpnServerRepository.resolvePrimary(
                         CollectorRoutingInput(tunnelUsable, hasBoundNetwork),
                     ),
                 )
             }
         }
-        // The v1.0.41 lesson still holds: a dead tunnel adds no rung at all.
+        // A dead tunnel (usable but unbound) must add no TUNNEL rung.
         assertFalse(
             VpnServerRepository.routeLadder(CollectorRoutingInput(true, false))
                 .contains(CollectorPath.TUNNEL),
@@ -213,7 +216,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         assertTrue(
             "the whole refresh must be bounded by the total deadline",
-            repository.contains("withTimeoutOrNull(MAIN_TIMEOUT_MS) {"),
+            repository.contains("withTimeoutOrNull(mainTimeoutMs) {"),
         )
         assertTrue(
             "a timed-out refresh must say it preserved the DB",

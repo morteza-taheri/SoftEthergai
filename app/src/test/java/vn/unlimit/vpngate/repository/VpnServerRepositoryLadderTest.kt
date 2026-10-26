@@ -72,9 +72,9 @@ class VpnServerRepositoryLadderTest {
     }
 
     @Test
-    fun `T-NEW-55b a usable bound tunnel adds TUNNEL as the second rung`() {
+    fun `T-NEW-55b a usable bound tunnel makes TUNNEL the first rung (VPN-first)`() {
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true),
         )
     }
@@ -102,14 +102,14 @@ class VpnServerRepositoryLadderTest {
     // ── T-NEW-56: promotion needs evidence, never an input ────────────────
 
     @Test
-    fun `T-NEW-56a a usable bound tunnel is NOT promoted on its own`() {
-        // This is the whole behavioural difference from v1.0.45: with a usable
-        // tunnel and no evidence in memory, PHYSICAL still goes first. A tunnel
-        // that is merely up is not evidence that it is the better transport.
+    fun `T-NEW-56a a usable bound tunnel is the primary even with no memory evidence (VPN-first)`() {
+        // BLOCK v1.0.64: with a usable, bound tunnel the TUNNEL rung is the
+        // primary regardless of memory evidence — the collector genuinely
+        // attempts the VPN path first and only falls back to PHYSICAL.
         val memory = FakeClock().memory()
 
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -159,16 +159,16 @@ class VpnServerRepositoryLadderTest {
     }
 
     @Test
-    fun `T-NEW-56e a proven PHYSICAL success never reorders the ladder`() {
-        // The evidence that promotes TUNNEL is specifically *TUNNEL being the
-        // proven path* (or PHYSICAL being blocked). PHYSICAL succeeding is the
-        // default expectation and must leave the order untouched.
+    fun `T-NEW-56e TUNNEL stays first with a usable bound network even when PHYSICAL was the proven path`() {
+        // BLOCK v1.0.64: the VPN-first ordering is driven by the *inputs*
+        // (a usable, bound tunnel), not by memory evidence. A proven PHYSICAL
+        // success no longer keeps PHYSICAL in front once the tunnel is usable.
         val clock = FakeClock()
         val memory = clock.memory()
         memory.recordSuccess(CollectorPath.PHYSICAL)
 
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -407,10 +407,12 @@ class VpnServerRepositoryLadderTest {
     }
 
     @Test
-    fun `T-LADDER-08 a cooldown that expires restores the base order`() {
-        // The end-to-end shape of the automatic ladder: a PHYSICAL failure
-        // promotes TUNNEL, and once the cooldown lapses the ladder returns to
-        // PHYSICAL-first without any user action and without a restart.
+    fun `T-LADDER-08 VPN-first ordering is independent of the PHYSICAL cooldown`() {
+        // BLOCK v1.0.64: the TUNNEL-first ordering is driven by the routing
+        // inputs (a usable, bound tunnel), not by cooldown evidence. A PHYSICAL
+        // failure cools down, but the ladder stays TUNNEL-first for as long as
+        // the tunnel is usable and bound — it does not revert to PHYSICAL-first
+        // when the cooldown lapses.
         val clock = FakeClock()
         val memory = clock.memory(failureCooldownMs = 120_000L)
         memory.recordFailure(CollectorPath.PHYSICAL)
@@ -423,8 +425,8 @@ class VpnServerRepositoryLadderTest {
         clock.now += 120_000L
 
         assertEquals(
-            "after the cooldown the ladder must fall back to PHYSICAL-first",
-            listOf(CollectorPath.PHYSICAL, CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
+            "with a usable+bound tunnel the ladder must stay TUNNEL-first after the cooldown",
+            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }

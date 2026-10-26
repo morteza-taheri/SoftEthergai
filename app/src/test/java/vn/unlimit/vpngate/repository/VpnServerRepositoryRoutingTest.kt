@@ -142,7 +142,9 @@ class VpnServerRepositoryRoutingTest {
     }
 
     // ── Permutation 3 ────────────────────────────────────────────────────────
-    // tunnel UP + PHYSICAL ok → TUNNEL is NOT tried (PHYSICAL-first, primary succeeds).
+    // tunnel UP + PHYSICAL ok → with PHYSICAL passed as the explicit PRIMARY,
+    // TUNNEL is NOT tried (the primary already succeeded). (Routing order is
+    // decided by routeLadder; this suite pins the fetch mechanics per path.)
     @Test
     fun `tunnel up plus PHYSICAL succeeds does not try TUNNEL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
@@ -264,13 +266,13 @@ class VpnServerRepositoryRoutingTest {
         )
     }
 
-    // ── Integration: refresh() is PHYSICAL-first with no memory evidence ─────
-    // The original bug lived in productionRouting(): it did `preferVpn ||= tunnelUp`,
-    // so refresh() tried the tunnel first whenever any tunnel was up. This proves the
-    // v1.0.52 ladder tries PHYSICAL first (and only falls back to TUNNEL) when the
-    // path memory holds no evidence, regardless of tunnel state.
+    // ── Integration: refresh() is VPN-first when a usable bound tunnel exists ──
+    // BLOCK v1.0.64: with a usable, bound VPN Network the ladder tries TUNNEL
+    // first (genuinely attempting the VPN path) and only falls back to PHYSICAL.
+    // This pins the deterministic VPN-first policy, replacing the old
+    // PHYSICAL-first default.
     @Test
-    fun `refresh tries PHYSICAL first even when a tunnel is up and memory is empty`() = runBlocking {
+    fun `refresh tries TUNNEL first when a usable bound tunnel exists, falling back to PHYSICAL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val repo = VpnServerRepository(
             fetcher = physicalFetcher,
@@ -286,30 +288,46 @@ class VpnServerRepositoryRoutingTest {
         // The ladder order line is emitted before any attempt; skip it.
         val firstAttempt = fetchLogs.first { it.startsWith("[fetch]") }
         assertTrue(
-            "the very first routing attempt must be PHYSICAL, not TUNNEL: $fetchLogs",
-            firstAttempt.contains("path=physical"),
+            "the very first routing attempt must be TUNNEL, not PHYSICAL: $fetchLogs",
+            firstAttempt.contains("path=tunnel"),
         )
         assertTrue(
-            "TUNNEL must never be the PRIMARY rung without memory evidence: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=tunnel source") },
+            "TUNNEL must be the PRIMARY rung when a usable+bound tunnel exists: $fetchLogs",
+            fetchLogs.any { it.startsWith("[fetch] path=tunnel source") },
+        )
+        // BLOCK v1.0.65: once MIRROR's TUNNEL attempt has failed, API/HTML are
+        // downgraded to a PHYSICAL primary, so a plain `path=physical source=...`
+        // line is now an expected, justified outcome of the tunnel failure.
+        assertTrue(
+            "the dead tunnel must downgrade API/HTML to PHYSICAL: $fetchLogs",
+            fetchLogs.any { it.contains("tunnelFailedEarly") },
         )
         assertTrue(
-            "every TUNNEL attempt must be a fallback after a PHYSICAL failure: $fetchLogs",
-            fetchLogs.filter { it.startsWith("[fetch] path=tunnel") }
-                .all { it.contains("after physical failed") || it.contains("failed (no result)") },
+            "MIRROR must not lead with PHYSICAL while TUNNEL is offered: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=physical source=mirror") },
         )
-        // And the ladder really did advertise the tunnel as a rung.
         assertTrue(
-            "the ladder order line must list PHYSICAL,TUNNEL,EMERGENCY: $fetchLogs",
-            fetchLogs.any { it == "[ladder] order=PHYSICAL,TUNNEL,EMERGENCY" },
+            "every PHYSICAL attempt must follow the TUNNEL failure: $fetchLogs",
+            fetchLogs.filter { it.startsWith("[fetch] path=physical") }
+                .all {
+                    it.contains("after tunnel failed") ||
+                        it.contains("failed (no result)") ||
+                        it.startsWith("[fetch] path=physical source=api") ||
+                        it.startsWith("[fetch] path=physical source=html")
+                },
+        )
+        // And the ladder really did advertise the tunnel as the first rung.
+        assertTrue(
+            "the ladder order line must list TUNNEL,PHYSICAL,EMERGENCY: $fetchLogs",
+            fetchLogs.any { it == "[ladder] order=TUNNEL,PHYSICAL,EMERGENCY" },
         )
     }
 
-    // ── v1.0.52: a PHYSICAL failure teaches the ladder for the NEXT run ──────
-    // The replacement for the removed manual switch: the collector measures the
-    // physical path failing, and the next refresh promotes TUNNEL on its own.
+    // ── BLOCK v1.0.64: a usable bound tunnel makes every refresh TUNNEL-first ─
+    // The VPN-first ordering is input-driven (a usable+bound tunnel), so it does
+    // not depend on a prior PHYSICAL failure: every run starts on TUNNEL.
     @Test
-    fun `a failed refresh makes the next refresh try TUNNEL first`() = runBlocking {
+    fun `a usable bound tunnel makes refresh try TUNNEL first on every run (deterministic)`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         val repo = VpnServerRepository(
             fetcher = physicalFetcher,
@@ -320,25 +338,29 @@ class VpnServerRepositoryRoutingTest {
             fetchLog = { fetchLogs.add(it) },
         )
 
-        // Run 1: both rungs fail, so PHYSICAL is recorded as failing.
+        // Run 1: a usable+bound tunnel makes TUNNEL the primary immediately.
         repo.refresh()
         assertTrue(
-            "run 1 must have started PHYSICAL-first: $fetchLogs",
-            fetchLogs.contains("[ladder] order=PHYSICAL,TUNNEL,EMERGENCY"),
+            "run 1 must start TUNNEL-first when a usable+bound tunnel exists: $fetchLogs",
+            fetchLogs.contains("[ladder] order=TUNNEL,PHYSICAL,EMERGENCY"),
+        )
+        assertTrue(
+            "run 1's first attempt must be TUNNEL: $fetchLogs",
+            fetchLogs.first { it.startsWith("[fetch]") }.contains("path=tunnel"),
         )
 
         fetchLogs.clear()
 
-        // Run 2: the cooldown from run 1 is still active, so TUNNEL leads.
+        // Run 2: the same inputs still yield the same deterministic order — no
+        // memory evidence is required to prefer the VPN path.
         repo.refresh()
         assertTrue(
-            "run 2 must have promoted TUNNEL from the recorded failure: $fetchLogs",
+            "run 2 must still be TUNNEL-first (deterministic VPN-first): $fetchLogs",
             fetchLogs.contains("[ladder] order=TUNNEL,PHYSICAL,EMERGENCY"),
         )
-        val firstAttempt = fetchLogs.first { it.startsWith("[fetch]") }
         assertTrue(
-            "the first attempt of run 2 must be TUNNEL: $fetchLogs",
-            firstAttempt.contains("path=tunnel"),
+            "run 2's first attempt must be TUNNEL: $fetchLogs",
+            fetchLogs.first { it.startsWith("[fetch]") }.contains("path=tunnel"),
         )
     }
 }
