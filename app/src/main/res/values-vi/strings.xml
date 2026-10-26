@@ -287,6 +287,7 @@
     <string name="setting_server_update_interval_hours">Every %1$d hours</string>
     <string name="setting_server_update_interval_1h">Every hour</string>
     <string name="setting_server_update_interval_24h">Every day</string>
+    <string name="setting_server_update_interval_168h">Every week</string>
 
     <!-- v1.0.55 (V1054_VERIFY_REPORT G-5): v1.0.54 added the CSV-import surface,
          the pinned badge, the cache-clear label and the emergency restore button

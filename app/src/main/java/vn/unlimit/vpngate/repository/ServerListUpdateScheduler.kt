@@ -35,11 +35,11 @@ object ServerListUpdateScheduler {
      * @param lastUpdatedAt epoch millis of the last *successful* update; 0 when
      *   the list has never been refreshed.
      * @param intervalHours the user's configured interval, already clamped to
-     *   1..24 by `DataUtil`.
+     *   1..168 by `DataUtil`.
      * @param now current time, injected so the rule is testable without a clock.
      */
     fun isDue(lastUpdatedAt: Long, intervalHours: Int, now: Long): Boolean {
-        val interval = intervalHours.coerceIn(1, 24)
+        val interval = intervalHours.coerceIn(1, 168)
         // A list that was never successfully updated is due immediately: the
         // alternative is a fresh install that never fills its server list.
         if (lastUpdatedAt <= 0L) return true

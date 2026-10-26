@@ -482,7 +482,7 @@ class DataUtil(context: Context?) {
 
     /** The selectable values, in hours. Index 0 is the default. */
     val serverListUpdateIntervalOptions: IntArray
-        get() = intArrayOf(1, 3, 6, 12, 18, 24)
+        get() = intArrayOf(1, 3, 6, 12, 18, 24, 168)
 
     fun setDeveloperMode(enabled: Boolean) {
         setBooleanSetting(SETTING_DEVELOPER_MODE, enabled)
@@ -614,9 +614,9 @@ class DataUtil(context: Context?) {
             "SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS"
 
         /** Server List Update Interval: default 12 hours, hard bounds 1..24. */
-        const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 12
+        const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
         const val MIN_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 1
-        const val MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 24
+        const val MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
         const val AUTO_LAST_SUCCESS_HOST: String = "AUTO_LAST_SUCCESS_HOST"
         const val AUTO_LAST_SUCCESS_PROTOCOL: String = "AUTO_LAST_SUCCESS_PROTOCOL"
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"

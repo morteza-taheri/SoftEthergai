@@ -460,25 +460,25 @@ class ServerListUpdaterTest {
         assertFalse(ServerListUpdateScheduler.isDue(now - 60_000L, 0, now))
         assertTrue(ServerListUpdateScheduler.isDue(now - hour, 0, now))
         // A stored 9999 must not postpone the update forever either.
-        assertTrue(ServerListUpdateScheduler.isDue(now - 25 * hour, 9999, now))
+        assertTrue(ServerListUpdateScheduler.isDue(now - 169 * hour, 9999, now))
     }
 
     // ---------------------------------------------- interval setting bounds
 
     @Test
-    fun `the server update interval defaults to twelve hours`() {
-        assertEquals(12, DataUtil.DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS)
+    fun `the server update interval defaults to one week`() {
+        assertEquals(168, DataUtil.DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS)
     }
 
     @Test
-    fun `the server update interval is bounded to one through twenty four hours`() {
+    fun `the server update interval is bounded to one through one hundred sixty eight hours`() {
         assertEquals(1, DataUtil.MIN_SERVER_LIST_UPDATE_INTERVAL_HOURS)
-        assertEquals(24, DataUtil.MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS)
+        assertEquals(168, DataUtil.MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS)
     }
 
     @Test
     fun `the selectable intervals all fall inside the allowed range`() {
-        val options = intArrayOf(1, 3, 6, 12, 18, 24)
+        val options = intArrayOf(1, 3, 6, 12, 18, 24, 168)
         val range =
             DataUtil.MIN_SERVER_LIST_UPDATE_INTERVAL_HOURS..DataUtil.MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS
         assertTrue(options.all { it in range })

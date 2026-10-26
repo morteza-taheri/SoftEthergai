@@ -98,10 +98,10 @@ import vn.unlimit.vpngate.viewmodels.ConnectionListViewModel
 import java.text.DateFormat
 
 /**
- * Index of the 12-hour entry in `DataUtil.serverListUpdateIntervalOptions`.
+ * Index of the 1-week (168 h) entry in `DataUtil.serverListUpdateIntervalOptions`.
  * Used only as a UI fallback if the stored value somehow matches no option.
  */
-private const val DEFAULT_SERVER_UPDATE_INTERVAL_INDEX = 3
+private const val DEFAULT_SERVER_UPDATE_INTERVAL_INDEX = 6
 
 /**
  * Redesigned Settings screen: sleek, well-ordered Material 3 layout with compact
@@ -203,6 +203,7 @@ fun SettingsScreen(
         when (hours) {
             1 -> stringResource(R.string.setting_server_update_interval_1h)
             24 -> stringResource(R.string.setting_server_update_interval_24h)
+            168 -> stringResource(R.string.setting_server_update_interval_168h)
             else -> stringResource(R.string.setting_server_update_interval_hours, hours)
         }
     }

@@ -331,6 +331,7 @@
     <string name="setting_server_update_interval_hours">هر %1$d ساعت</string>
     <string name="setting_server_update_interval_1h">هر ساعت</string>
     <string name="setting_server_update_interval_24h">هر روز</string>
+    <string name="setting_server_update_interval_168h">هر هفته</string>
     <string name="setting_cache_clear_label">پاک‌سازی کش</string>
     <string name="setting_cache_clear_subtitle">فقط فایل‌های موقت پاک می‌شوند. فهرست سرورها، سرورهای واردشده، منابع اضطراری، برنامه‌های استثنا و تنظیمات حفظ می‌شوند.</string>
     <string name="emergency_source_restore_default">بازگرداندن منبع پیش‌فرض</string>

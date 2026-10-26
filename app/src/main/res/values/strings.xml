@@ -378,6 +378,7 @@
     <string name="setting_server_update_interval_hours">Every %1$d hours</string>
     <string name="setting_server_update_interval_1h">Every hour</string>
     <string name="setting_server_update_interval_24h">Every day</string>
+    <string name="setting_server_update_interval_168h">Every week</string>
     <!-- Emergency Server Sources (Z1-IMPL-B, Roadmap §12.5.2 item B). Config-only for now: retrieval wiring is item C. -->
     <string name="emergency_source_title">Emergency Server Sources</string>
     <string name="emergency_source_summary">Extra server-list sources kept for when the official sources cannot be reached. They are fetched only when every built-in source has answered "nothing", and only if you add one here.</string>

@@ -99,17 +99,17 @@ class DataUtilDefaultsV1054Test {
         val prefs = DefaultsFakeSharedPreferences()
         val util = dataUtil(prefs)
 
-        assertEquals("default is 12 hours", 12, util.getServerListUpdateIntervalHours())
+        assertEquals("default is 168 hours (1 week)", 168, util.getServerListUpdateIntervalHours())
         assertEquals(
-            listOf(1, 3, 6, 12, 18, 24),
+            listOf(1, 3, 6, 12, 18, 24, 168),
             util.serverListUpdateIntervalOptions.toList(),
         )
 
         util.setServerListUpdateIntervalHours(0)
         assertEquals("0 h is clamped up to the 1 h floor", 1, util.getServerListUpdateIntervalHours())
 
-        util.setServerListUpdateIntervalHours(99)
-        assertEquals("99 h is clamped down to the 24 h ceiling", 24, util.getServerListUpdateIntervalHours())
+        util.setServerListUpdateIntervalHours(999)
+        assertEquals("999 h is clamped down to the 168 h ceiling", 168, util.getServerListUpdateIntervalHours())
 
         util.setServerListUpdateIntervalHours(6)
         assertEquals(6, util.getServerListUpdateIntervalHours())
@@ -122,7 +122,7 @@ class DataUtilDefaultsV1054Test {
         prefs.edit().putInt("SETTING_CACHE_TIME_KEY", 3).apply()
 
         val util = dataUtil(prefs)
-        assertEquals("the setting no longer influences anything", 12, util.getServerListUpdateIntervalHours())
+        assertEquals("the setting no longer influences anything", 168, util.getServerListUpdateIntervalHours())
         assertEquals(
             listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
             util.getAutoModeProtocolPriority(),
