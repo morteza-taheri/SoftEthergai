@@ -1797,7 +1797,44 @@ enum class AttemptOutcome {
             applyHistoryTieBreak(ordered, runStart, runEnd, history, network)
             runStart = runEnd
         }
-        return ordered
+        // v1.0.67 feature 4: a proven-dead endpoint must not keep leading the run.
+        return demoteUnhealthy(ordered, history)
+    }
+
+    /**
+     * v1.0.67 feature 4 — move a host that has NEVER succeeded and has already
+     * failed repeatedly to the back of the queue, so AutoConnect stops spending
+     * its first attempts on a known-bad endpoint. This is a **stable partition**:
+     * the quality/RTT/history order above is preserved inside each group, and with
+     * no history (a fresh install) the list is returned untouched, so pre-v1.0.67
+     * behaviour is bit-identical when there is nothing to learn from.
+     *
+     * It deliberately does NOT promote a historically-good server above a
+     * higher-quality one: F.29 §10 keeps quality first and history as a refinement.
+     * The demotion only removes a proven-dead endpoint from the front; it is still
+     * attempted after every healthy one, which is the "probe one bad server per
+     * run" behaviour the operator asked for.
+     */
+    private fun demoteUnhealthy(
+        ordered: List<AutoModeCandidate>,
+        history: Map<String, ServerHistoryView>,
+    ): List<AutoModeCandidate> {
+        if (history.isEmpty()) return ordered
+        val healthy = ArrayList<AutoModeCandidate>(ordered.size)
+        val demoted = ArrayList<AutoModeCandidate>()
+        for (c in ordered) {
+            if (isRepeatedlyFailing(c, history)) demoted.add(c) else healthy.add(c)
+        }
+        return if (demoted.isEmpty()) ordered else healthy + demoted
+    }
+
+    /** True when history says this host has never succeeded and keeps failing. */
+    private fun isRepeatedlyFailing(
+        c: AutoModeCandidate,
+        history: Map<String, ServerHistoryView>,
+    ): Boolean {
+        val h = history[c.hostname ?: return false] ?: return false
+        return h.successCount == 0 && h.consecutiveFailures >= demoteAfterConsecutiveFailures
     }
 
     /**
@@ -3166,6 +3203,12 @@ enum class AttemptOutcome {
             .thenBy { it.ping }
             .thenBy { it.sessions }
             .thenByDescending { it.score }
+
+    /**
+     * v1.0.67 feature 4: after this many consecutive failures with no success, a
+     * host is demoted behind every healthy server for the rest of the run.
+     */
+    private val demoteAfterConsecutiveFailures = 2
 
     /** Â§7 capability rules. */
     private fun AutoModeProtocol.supports(c: AutoModeCandidate): Boolean = when (this) {

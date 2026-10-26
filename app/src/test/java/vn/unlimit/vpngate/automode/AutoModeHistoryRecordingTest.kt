@@ -419,6 +419,31 @@ class AutoModeHistoryRecordingTest {
     }
 
     @Test
+    fun `a never-succeeded server with a failure streak is demoted behind healthy ones`() {
+        val scope = newScope()
+        val adapter = RecordingAdapter()
+        val history = mapOf(
+            "s_dead" to ServerHistoryView(
+                hostName = "s_dead", successCount = 0, failureCount = 5, consecutiveFailures = 5,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0,
+            ),
+        )
+        val c = controller(scope, adapter, emptyList(), history = history)
+        val sorted = with(c) {
+            // v1.0.67 feature 4: s_dead is the FASTEST, but a never-succeeded
+            // failure streak must fall behind the healthy (no-history) servers so
+            // the run does not spend its first attempts on a proven-dead endpoint.
+            listOf(
+                server("s_dead", speed = 99_000_000L, ping = 10),
+                server("s_ok1", speed = 10_000_000L, ping = 100),
+                server("s_ok2", speed = 1_000L, ping = 900),
+            ).sortedForAutoConnect(history, NetworkType.WIFI)
+        }
+        assertEquals(listOf("s_ok1", "s_ok2", "s_dead"), sorted.map { it.hostname })
+    }
+
+    @Test
     fun `an empty history map leaves the order untouched`() {
         val scope = newScope()
         val adapter = RecordingAdapter()
