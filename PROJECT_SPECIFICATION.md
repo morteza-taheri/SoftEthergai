@@ -3530,8 +3530,9 @@ behaviour rules that changed.
    98 tests and the phase-2 report; `9d50166` the bounded read; `acb1a39` Next Server
    after a manual connect; `afa580b` one candidate per IPv4; `51fe1d2` the collector
    rename. F.29 is **committed, not released**: no version bump, no tag, and its five
-   device behaviours stay `NOT TESTABLE` until a device run says otherwise. Evidence:
-   git.
+   device behaviours were confirmed by the v1.0.61 device run — see §12 for which are
+   now `PHYSICAL DEVICE`-verified and which remain `NOT TESTABLE`. Evidence: git +
+   PHYSICAL DEVICE (§12).
 
 2. **The split is reviewable, and one commit does not build on its own.** `049c7e3`,
    `2639a42` and `4b04cd7` compile from `git archive <commit>` (2m38s, 2m32s, 2m36s).
@@ -3629,9 +3630,22 @@ behaviour rules that changed.
 11. **What this section does not claim.** No device behaviour of F.29 is verified by
     being committed; the ordering change, the migration on a real upgrade, the history
     rows a real Auto Connect run writes, and Next Server from a real manual tunnel are
-    claimed only once the device run records them. The downgrade path is untested.
+    claimed only once the device run records them; those are now recorded in §12 and move from `NOT TESTABLE` to `PHYSICAL DEVICE`-verified. The downgrade path is still untested.
     `303baaf` does not build alone (§2). §22 is byte-identical; §1.6.2–§1.6.58 are
     untouched. No tag was created.
+
+12. **Physical-device verification of F.29 (recorded 2026-10-26; supersedes the `NOT TESTABLE` status of the corresponding items in the Phase-2 report).** Independent re-verification against the device artefacts in `C:/Dev/dv61/devdb/` and the on-device database pulled to `D:/temp/f29db/`, every read done on a **copy** so the originals were never opened for writing. Evidence classes: SOURCE CODE / TEST / PHYSICAL DEVICE / INFERENCE.
+
+   - **Pre-install v8 backup (PHYSICAL DEVICE, read-only copy).** `user_version = 8`, `integrity_check = ok`, `VPNGateItem = 261`, `manual_server = 0`, `excluded_apps = 15`, `emergency_source_config = 1`; the three `server_history_*` tables are **ABSENT** and `room_master_table.identity_hash = 6f1d1b7449c3bf3e3dcefa9d34abc6f2`. No secrets stored.
+   - **Installed v9 database (PHYSICAL DEVICE, read-only copy).** `user_version = 9`, `integrity_check = ok`, `VPNGateItem = 261` (preserved exactly), `manual_server = 0`, `excluded_apps = 15`, `emergency_source_config = 1`; three `server_history_*` tables present; `room_master_table.identity_hash = 6ba9665e0c86feb1d860fa34a4c5f37b`. The migration therefore **ran on the real device** and left every pre-existing row count unchanged.
+   - **Real history rows written (PHYSICAL DEVICE).** 4 `CONNECTED`/`SUCCESS`/`WIFI`/`SOFTETHER_TCP` events, durations 5,998 / 3,471 / 3,780 / 3,513 ms, timestamps 1792932785794–1792932928474 (~2026-10-25 16:20–16:29 local), one per distinct host (4 summary rows, 4 protocol rows, 1:1 with the events). No `FAILURE`, no `CONNECTION_LOST`, no `QUALITY_REJECTED`/`SERVER_FIRST_SEEN` row observed. IPs redacted in the working notes.
+   - **Network classification on real hardware (PHYSICAL DEVICE).** Every recorded event carried `networkType = WIFI`, matching the device's true physical transport (active default network `PARS-M` over `wlan0`, `Transports: WIFI`, `NOT_VPN`). `NetworkTypeClassifier.current(context)` is therefore **validated on a real `ConnectivityManager`** for the WIFI case.
+   - **APK binary identity (PHYSICAL DEVICE + TEST).** The installed `base.apk` was pulled and hashed: SHA-256 `05d7091918ebd918a1051cae917bde69dd15a4122139f307ed0a712ec5fddf69`, `package = vn.unlimit.vpngatepro`, `versionCode = 144`, `versionName = 2.4.11-dev`, 63,889,704 B — identical to the hash recorded for the device-installed build in `DEVICE_VERIFY_v1.0.61_REPORT.md`. The code that was device-verified is the F.29 tree at `HEAD 3fdc3ac`.
+   - **Migration dry-run corroboration (TEST, NOT a physical pass).** The exact `MIGRATION_8_9` DDL (3 `CREATE TABLE IF NOT EXISTS` + 4 `CREATE INDEX IF NOT EXISTS` from `AppDatabase.kt`) applied to a fresh copy of the real v8 backup: `user_version` stayed `8` (the hand DDL does not bump the version; the Room framework does), `integrity_check = ok`, `VPNGateItem` preserved at `261`, `excluded_apps` at `15`, three history tables + four indexes created. Corroborates the DDL; **not** claimed as the device migration pass itself.
+   - **v8 backup vs v9 comparison (INFERENCE).** `VPNGateItem` 261→261 and every settings row count identical; only additions are the three history tables and the four rows written by four real connections (normal usage). No unexplained row loss; no migration-induced corruption.
+   - **Automated tests this pass (TEST).** One full run on the committed tree with JDK 21, `CI=true`, `--offline --rerun-tasks --no-build-cache`: `BUILD SUCCESSFUL`, exit `0`; `:app` **1209 tests / 0 failures / 0 errors / 1 skipped** (97 suites); `:SoftEtherClient` **184 / 0 / 0 / 0** (13 suites). The historical ten-run gate (10/10 green, 1,393 tests) is recorded in `DEVICE_VERIFY_v1.0.61_REPORT.md` §F and is **prior evidence**, not a run repeated here; three consecutive green runs in this pass are **not** claimed.
+   - **Still `NOT TESTABLE` (PHYSICAL DEVICE constraints).** (a) **Cellular classification** — device had airplane mode ON with Wi-Fi ON, no authorization to toggle, so only WIFI is proven. (b) **Next Server after a manual connect** — Server-List manual-connect raises a system permission dialog that could not be dismissed; device-unverified (7 JVM tests only). (c) **Armed-tunnel duplicate-callback path** and **history write against a really locked database** — not exercised on device. (d) **Downgrade path** — throws by design, untested. (e) **Whether history actually improves connection success rate** — unmeasured; needs many runs over days.
+   - **No destructive action.** No `reset`/`clean`/`stash`/`restore`/`commit`/`tag`/`push`; no uninstall, no app-data/clear/DB replace; no production-code, test, dependency or worktree change beyond this documentation update. The working tree has no tracked-file modification other than this specification and the Phase-2 report addendum. Evidence: git + operating principle.
 ---
 
 ## 2. Architecture Overview
