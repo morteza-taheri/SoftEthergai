@@ -88,6 +88,17 @@ object ServerListUpdates {
         val manual = LastManualRows()
         return ServerListUpdater(
             fetch = {
+                // v1.0.63 §3: clear any emergency-origin flag left by a previous
+                // refresh on this updater instance *before* evaluating this run's
+                // fetch. `origin` is instance-scoped state captured by the
+                // `fetchedFromCache` and `store` lambdas below; without this reset
+                // a stale `true` (set by an earlier emergency rung) could leak into
+                // a later primary refresh and wrongly route its single write
+                // through `mergeFallback`. The fetch result below sets `origin`
+                // correctly for this run (true only when the result really is a
+                // cache/stored/seed fallback), so the reset never hides a genuine
+                // fallback classification.
+                origin.value = false
                 // Read the user's own rows before anything that can fail or
                 // throw: the manual merge is not a rung, so it must not
                 // depend on the network having answered.
@@ -117,6 +128,18 @@ object ServerListUpdates {
                 // seconds, and the rows written at the end of this run must be
                 // the ones the user has right now.
                 manual.refresh()
+                // v1.0.63 Part B: the emergency rung is a *supplementary*
+                // source — an excerpt of the same feed, not a fresh network
+                // observation — so its rows must be merged with the stored
+                // dataset rather than force-replaced. Force-replacing via
+                // mergeAll would drop retention metadata and any field the
+                // incoming subset does not carry (e.g. a stored OpenVPN config
+                // or SoftEther UDP support). Flagging the origin true makes the
+                // single write route through mergeFallback — the very path the
+                // snapshot / stored / bundled-seed fallbacks use — which
+                // preserves both. `suppliedByEmergency` is already true, so the
+                // snapshot is still never promoted to last-known-good.
+                origin.value = true
                 emergencyDataset()
             },
         )
@@ -299,7 +322,14 @@ object ServerListUpdates {
             // flag the updater computed from the fetch. REJECT_DEGRADED remains
             // enforced upstream and never reaches this method.
             if (fetchedFromCache()) {
-                dao?.replaceAll(withManualRows(items, manual.rows))
+                // G-F29-1: a fallback (last-known-good snapshot, stored list or
+                // bundled seed) is not a network observation, but it must not
+                // erase the retention metadata already stored for a server.
+                // `VPNGateConnection.toVPNGateItem()` never carries
+                // firstSeenAt / lastSeenAt / healthScore, so a raw replaceAll
+                // would reset them to 0; mergeFallback preserves the stored
+                // values instead.
+                mergeFallback(dao, items, manual.rows, System.currentTimeMillis())
             } else {
                 mergeAll(dao, items, manual.rows, System.currentTimeMillis())
             }
@@ -519,6 +549,113 @@ internal fun mergeAll(
     }
     // Retain stored rows the incoming feed did not mention. This is the whole
     // point of phase 1: a quiet server is kept, not pruned.
+    for (row in stored) {
+        if (row.hostName.trim() !in incomingKeys) merged.add(row)
+    }
+
+    dao.replaceAll(merged)
+}
+
+/**
+ * Merge a *fallback* dataset (the last-known-good snapshot, the stored list or
+ * the bundled seed) into the stored table without erasing retention metadata.
+ *
+ * This is the G-F29-1 fix for the cache branch of [DaoStore.replaceAll]. The
+ * fallback is explicitly classified as **not** representing a new network
+ * observation, so unlike [mergeAll] it must not refresh `lastSeenAt` to `now`
+ * or recompute `healthScore` as if the server had just been measured on the
+ * network.
+ *
+ * For a host that already exists in storage the stored retention values are
+ * kept verbatim:
+ *   - `firstSeenAt`  ← stored (the real first-observation moment)
+ *   - `lastSeenAt`   ← stored (the real last-observation moment; never forged
+ *                       into `now`)
+ *   - `healthScore`  ← stored (a property of the last real observation)
+ *
+ * A host that is genuinely new to storage has no retention history to preserve,
+ * so it follows the same init rules as [mergeAll]: `firstSeenAt = now`,
+ * `lastSeenAt = now`, `healthScore = retentionHealthScore(item, now)`.
+ *
+ * As in [mergeAll], stored rows absent from the fallback are retained unchanged
+ * (a quiet server is never pruned), and the write goes through the
+ * `@Transaction` [VPNGateItemDao.replaceAll]. [mergeAll] itself is unchanged.
+ *
+ * @param now the record timestamp; injected so callers and tests share one
+ *   clock. Used only to initialise brand-new rows, never to overwrite a stored
+ *   `lastSeenAt`.
+ */
+internal fun mergeFallback(
+    dao: VPNGateItemDao?,
+    incoming: List<VPNGateItem>,
+    manualRows: List<VPNGateItem>,
+    now: Long,
+) {
+    if (dao == null) return
+    if (incoming.isEmpty()) return
+
+    val withManual = withManualRows(incoming, manualRows)
+    if (withManual.isEmpty()) return
+
+    val stored = dao.getAll()
+    val storedByHost = stored.associateBy { it.hostName.trim() }
+    val incomingKeys = HashSet<String>(withManual.size * 2)
+    for (row in withManual) incomingKeys.add(row.hostName.trim())
+
+    val merged = ArrayList<VPNGateItem>(stored.size + withManual.size)
+    for (item in withManual) {
+        val key = item.hostName.trim()
+        val prev = storedByHost[key]
+        // v1.0.63 Part B: a supplementary source (emergency snapshot / stored /
+        // bundled-seed) must not erase a stored OpenVPN profile merely because
+        // its CSV representation lacks one. The publisher strips profiles to stay
+        // under the body cap (≈77% of the shipped rows carry none), so an
+        // emergency record for a server the live API had fully populated would
+        // otherwise delete the profile. A blank incoming config is "not
+        // provided"; a stored non-blank profile is a valid known fact and is
+        // kept. No other field is overwritten here — only OpenVPN config has a
+        // clean "absent = not provided" signal; other protocol fields' defaults
+        // are ambiguous and are intentionally left to the incoming value.
+        val openVpnConfigData = if (prev != null &&
+            item.openVpnConfigData.isNullOrBlank() &&
+            !prev.openVpnConfigData.isNullOrBlank()
+        ) {
+            prev.openVpnConfigData
+        } else {
+            item.openVpnConfigData
+        }
+        // v1.0.63 §2.4: a *supplementary* refresh is not a fresh live
+        // observation, so for a host already in storage its quality fields
+        // (score / ping / speed / uptime / sessions / traffic) are taken from
+        // the stored row, never from the incoming excerpt. The emergency CSV
+        // always carries these columns, so "incoming" would otherwise silently
+        // overwrite a measured value with the publisher's copy of the same feed
+        // — which is exactly the staleness §2.4 forbids. A genuinely new host
+        // has no stored measurement, so it falls back to the incoming value.
+        // Protocol/port fields and OpenVPN config follow the field policy
+        // elsewhere in this block; only the quality telemetry is preserved here.
+        val quality = prev ?: item
+        merged.add(
+            item.copy(
+                // A returning server keeps the real retention history stored
+                // for it. lastSeenAt is NOT refreshed to `now` because the
+                // fallback is not a network observation, and healthScore is
+                // preserved rather than recomputed.
+                firstSeenAt = prev?.firstSeenAt ?: now,
+                lastSeenAt = prev?.lastSeenAt ?: now,
+                healthScore = prev?.healthScore ?: retentionHealthScore(item, now),
+                openVpnConfigData = openVpnConfigData,
+                score = quality.score,
+                ping = quality.ping,
+                speed = quality.speed,
+                numVpnSession = quality.numVpnSession,
+                uptime = quality.uptime,
+                totalUser = quality.totalUser,
+                totalTraffic = quality.totalTraffic,
+            )
+        )
+    }
+    // Retain stored rows the fallback did not mention, unchanged.
     for (row in stored) {
         if (row.hostName.trim() !in incomingKeys) merged.add(row)
     }

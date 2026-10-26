@@ -424,8 +424,18 @@ object EmergencyCsvParser {
             issues.add(Issue.NON_BOOLEAN_TOKEN)
         }
         if (udpDeclared == true) {
+            // v1.0.63 Part A: a declared support flag stands on its own. A
+            // missing or zero published UDP port does NOT invalidate the
+            // declaration — it only means no usable endpoint is published, and
+            // we must never fabricate one. Previously the support flag was set
+            // only inside applyPort's callback, which fires only when a port > 0
+            // exists, so a declared-but-portless server (the common emergency-CSV
+            // shape: 237/245 rows declare SE_UDP_Supported=true with no
+            // SE_UDP_Port) silently lost its support flag. Set it unconditionally
+            // here; the port is applied below only when one was actually
+            // published.
+            VpnRecords.setField(server, "protocols.softether.udp.supported", true, SOURCE_TAG)
             applyPort(field("SE_UDP_Port"), issues) { port ->
-                VpnRecords.setField(server, "protocols.softether.udp.supported", true, SOURCE_TAG)
                 VpnRecords.setField(server, "protocols.softether.udp.port", port, SOURCE_TAG)
                 VpnRecords.setField(
                     server,

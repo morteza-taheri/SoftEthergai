@@ -197,4 +197,114 @@ class ServerListRetentionTest {
         // 3 stored + 2 new = 5 rows; nothing pruned in phase 1.
         assertEquals(5, dao.rows.size)
     }
+
+    // ---------------------------------------------------------------------
+    // G-F29-1 regression tests: a fallback (last-known-good snapshot, stored
+    // list or bundled seed) must not erase the retention metadata already
+    // stored for a server, must not forge a fresh observation, and must leave
+    // the network path (mergeAll) untouched.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `T-GF291-A fallback retains existing firstSeenAt, lastSeenAt and healthScore`() {
+        val dao = FakeDao()
+        dao.rows = listOf(
+            item("a.vpngate.net", firstSeen = 1000L, lastSeen = 2000L, health = 100),
+        )
+        val now = 9_000L
+        // The fallback object comes from VPNGateConnection.toVPNGateItem(),
+        // which omits the retention fields (they default to 0) — exactly the
+        // pre-fix bug. Reproducing that here proves the fix preserves storage.
+        mergeFallback(dao, listOf(item("a.vpngate.net")), emptyList(), now)
+
+        assertEquals(1, dao.rows.size)
+        val row = dao.rows[0]
+        assertEquals(1000L, row.firstSeenAt)
+        assertEquals(2000L, row.lastSeenAt)
+        assertEquals(100, row.healthScore)
+    }
+
+    @Test
+    fun `T-GF291-B fallback does not forge lastSeenAt to now`() {
+        val dao = FakeDao()
+        dao.rows = listOf(
+            item("a.vpngate.net", firstSeen = 1000L, lastSeen = 2000L, health = 100),
+        )
+        val now = 9_000L
+        mergeFallback(dao, listOf(item("a.vpngate.net")), emptyList(), now)
+
+        assertEquals(1, dao.rows.size)
+        val row = dao.rows[0]
+        // The fallback is not a network observation, so lastSeenAt must stay at
+        // the real last observation, not `now`.
+        assertEquals(2000L, row.lastSeenAt)
+        // The other two are likewise preserved, not reset to 0.
+        assertEquals(1000L, row.firstSeenAt)
+        assertEquals(100, row.healthScore)
+    }
+
+    @Test
+    fun `T-GF291-C brand-new server via fallback follows init rules`() {
+        val dao = FakeDao()
+        dao.rows = emptyList()
+        val now = 9_000L
+        // New host, both axes measured (score > 0 && ping > 0) -> health 100.
+        mergeFallback(
+            dao,
+            listOf(item("new.vpngate.net", score = 1, ping = 1)),
+            emptyList(),
+            now,
+        )
+
+        assertEquals(1, dao.rows.size)
+        val row = dao.rows[0]
+        // A genuinely new host has no stored history, so it follows the same
+        // init rules as mergeAll.
+        assertEquals(now, row.firstSeenAt)
+        assertEquals(now, row.lastSeenAt)
+        assertEquals(100, row.healthScore)
+    }
+
+    @Test
+    fun `T-GF291-D network mergeAll still refreshes lastSeenAt and recomputes health`() {
+        val dao = FakeDao()
+        dao.rows = listOf(
+            item("a.vpngate.net", firstSeen = 1000L, lastSeen = 2000L, health = 100),
+        )
+        val now = 9_000L
+        // The network path is deliberately NOT changed by G-F29-1.
+        mergeAll(dao, listOf(item("a.vpngate.net")), emptyList(), now)
+
+        assertEquals(1, dao.rows.size)
+        val row = dao.rows[0]
+        assertEquals(1000L, row.firstSeenAt) // preserved
+        assertEquals(now, row.lastSeenAt) // refreshed (network observation)
+        assertEquals(100, row.healthScore) // recomputed from the observation
+    }
+
+    @Test
+    fun `T-GF291-E fallback matches by trimmed host and keeps quiet stored servers`() {
+        val dao = FakeDao()
+        // Stored host carries surrounding whitespace; the fallback mentions the
+        // same host without it — identity is by trimmed hostName.
+        dao.rows = listOf(
+            item(" a.vpngate.net ", firstSeen = 1000L, lastSeen = 2000L, health = 100),
+            item("b.vpngate.net", firstSeen = 500L, lastSeen = 500L, health = 50),
+        )
+        val now = 9_000L
+        mergeFallback(dao, listOf(item("a.vpngate.net")), emptyList(), now)
+
+        val byHost = dao.rows.associateBy { it.hostName.trim() }
+        assertEquals(2, dao.rows.size)
+        // "a" matched by trimmed host -> metadata preserved.
+        val a = byHost["a.vpngate.net"]!!
+        assertEquals(1000L, a.firstSeenAt)
+        assertEquals(2000L, a.lastSeenAt)
+        assertEquals(100, a.healthScore)
+        // "b" was not mentioned by the fallback -> retained unchanged.
+        val b = byHost["b.vpngate.net"]!!
+        assertEquals(500L, b.firstSeenAt)
+        assertEquals(500L, b.lastSeenAt)
+        assertEquals(50, b.healthScore)
+    }
 }

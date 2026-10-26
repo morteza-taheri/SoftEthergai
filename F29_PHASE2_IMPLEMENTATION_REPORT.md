@@ -14,7 +14,7 @@ Three things are true simultaneously, and none of them contradicts the others:
 
 1. **The feature is complete.** Durable server history, per-protocol history, a bounded event log, a physical-network classifier, conservative failure attribution, transactional recording, and history-aware AutoConnect ordering are all implemented and tested on the JVM.
 2. **All automated verification is green.** `:app` 1162 tests / 0 failures / 0 errors / 1 skipped across 92 suites; `:SoftEtherClient` 184 tests / 0 failures across 13 suites; `:app:assembleProDebug` builds an APK; the migration DDL is proven byte-identical (whitespace-insensitive) to the KSP-exported schema.
-3. **Device-dependent verification is blocked.** The phone was unavailable, so five specific behaviours are `NOT TESTABLE — DEVICE UNAVAILABLE` and are **not** claimed as verified.
+3. **Device-dependent verification was later exercised.** As originally written the phone was unavailable and five behaviours were `NOT TESTABLE — DEVICE UNAVAILABLE`. A subsequent device run (BLOCK v1.0.61, `DEVICE_VERIFY_v1.0.61_REPORT.md`) and an independent re-verification (§22) have since moved the real v8→v9 migration, the real history rows, real WIFI classification, and the APK binary identity to **`PHYSICAL DEVICE`-verified**. The cellular classification, the manual-connect Next Server path, the duplicate-callback/locked-DB paths, the downgrade path, and the success-rate question remain `NOT TESTABLE` (§22).
 
 **Two documented deviations** from the approved design were necessary and are recorded rather than absorbed (see §9 and §15 below): the OD-6 "quality barrier" became a transitive tier comparator, and OD-9's "awaited recording" could not be honoured for the `CONNECTION_LOST` event.
 
@@ -397,9 +397,7 @@ It is restated in `PROJECT_SPECIFICATION.md` §11.15.17.8 so it is not lost, and
 
 ## 17. Device-Dependent Verification
 
-**No ADB command was run. No physical-device test was performed. Nothing was installed. No app data was cleared. The phone was unavailable and not connected to the computer.**
-
-The following five items are therefore **`NOT TESTABLE — DEVICE UNAVAILABLE`** and are explicitly **not** claimed as verified anywhere in this report or in the specification:
+**Superseded by §22 (Physical Verification, 2026-10-26).** As originally written, no ADB command had been run and the phone was unavailable. That is no longer true: the device was exercised in BLOCK v1.0.61 (`DEVICE_VERIFY_v1.0.61_REPORT.md`) and independently re-verified against the saved artefacts in §22. The five items below were therefore `NOT TESTABLE — DEVICE UNAVAILABLE` **at the time of original writing**; their current status is in §22.
 
 1. **A real upgrade of an existing v8 database to v9.** The DDL is proven against the exported schema and the migration is additive-only, but no on-device migration ran.
 2. **`NetworkTypeClassifier.current(context)` against a real `ConnectivityManager`.** The pure `classify` is tested; the Android read is not. No Wi-Fi↔cellular handover was observed.
@@ -546,4 +544,151 @@ Explicitly confirmed, every item:
 
 ---
 
-*End of report. Implementation complete; automated verification passed; device verification blocked by device unavailability.*
+---
+
+## 22. Addendum — Physical Verification (2026-10-25 / 2026-10-26)
+
+This section is a **post-hoc physical-verification pass** over the F.29 feature, performed after the
+device became available and the BLOCK v1.0.61 device run had already recorded on-device evidence. It
+does **not** re-implement anything; it re-establishes the existing evidence independently and separates
+it by evidence class. Every database read was performed on a **copy**; the original `v8` backup under
+`C:/Dev/dv61/devdb/` and the on-device `v9` database pulled to `D:/temp/f29db/` were never opened for
+writing. Evidence labels: `[SOURCE CODE]` · `[TEST]` · `[PHYSICAL DEVICE]` · `[INFERENCE]`.
+
+### 22.1 Pre-install v8 backup (isolated, read-only)
+
+| Check | Result |
+|---|---|
+| `user_version` | **8** |
+| `integrity_check` | **ok** |
+| `VPNGateItem` rows | **261** |
+| `manual_server` / `excluded_apps` / `emergency_source_config` | 0 / 15 / 1 |
+| History tables (`server_history_*`) | **ABSENT** |
+| `room_master_table.identity_hash` | `6f1d1b7449c3bf3e3dcefa9d34abc6f2` |
+
+No credentials, VPN config secrets, auth data or personal data are present. `[PHYSICAL DEVICE]`
+
+### 22.2 Installed v9 database (isolated, read-only)
+
+| Check | Result |
+|---|---|
+| `user_version` | **9** |
+| `integrity_check` | **ok** |
+| `VPNGateItem` rows | **261** (preserved exactly from v8) |
+| `manual_server` / `excluded_apps` / `emergency_source_config` | 0 / 15 / 1 |
+| History tables | **present** (`server_history_summary`, `_protocol`, `_event`) |
+| `room_master_table.identity_hash` | `6ba9665e0c86feb1d860fa34a4c5f37b` |
+
+The **real v8→v9 migration ran on the device**: `user_version 8 → 9`, `identity_hash` changed exactly
+as Room predicts, and every pre-existing row count is unchanged. `[PHYSICAL DEVICE]`
+
+### 22.3 History rows written by real Auto Connect runs
+
+Four events were read from `server_history_event`. All four are
+`CONNECTED` / `SUCCESS` / `WIFI` / `SOFTETHER_TCP`:
+
+| id | host (redacted) | network | protocol | durationMs | createdAt (epoch ms) |
+|---|---|---|---|---|---|
+| 1 | `vpn961954281` | WIFI | SOFTETHER_TCP | 5,998 | 1792932785794 |
+| 2 | `public-vpn-183` | WIFI | SOFTETHER_TCP | 3,471 | 1792932840782 |
+| 3 | `vpn606680186` | WIFI | SOFTETHER_TCP | 3,780 | 1792932894165 |
+| 4 | `vpn219429935` | WIFI | SOFTETHER_TCP | 3,513 | 1792932928474 |
+
+Consistency cross-check (IPs redacted in working notes): 4 events ↔ 4 `server_history_summary` rows ↔
+4 `server_history_protocol` rows, **1:1 per distinct host**. No duplicate aggregate, no missing
+aggregate, no `FAILURE` / `CONNECTION_LOST` / `QUALITY_REJECTED` / `SERVER_FIRST_SEEN` row observed.
+`networkType = WIFI` matches the device's true physical transport (active default network `PARS-M`
+over `wlan0`, `Transports: WIFI`, `NOT_VPN`). `[PHYSICAL DEVICE]`
+
+### 22.4 Network classification on real hardware
+
+`NetworkTypeClassifier.current(context)` was exercised against a real `ConnectivityManager` and
+returned `WIFI` for every one of the four recorded connections — the correct value for the device's
+actual physical transport. The classifier is therefore **validated on real hardware for the WIFI case**.
+The **CELLULAR case is NOT TESTABLE** (see §22.7). `[PHYSICAL DEVICE]`
+
+### 22.5 APK binary identity
+
+The installed `base.apk` was pulled and hashed:
+
+- **SHA-256:** `05d7091918ebd918a1051cae917bde69dd15a4122139f307ed0a712ec5fddf69`
+- **package:** `vn.unlimit.vpngatepro` · **versionCode:** `144` · **versionName:** `2.4.11-dev`
+- **size:** 63,889,704 B
+
+This SHA-256 is **identical to the hash recorded for the device-installed build** in
+`DEVICE_VERIFY_v1.0.61_REPORT.md`. The code that was device-verified is therefore exactly the F.29
+tree at `HEAD 3fdc3ac`. `[PHYSICAL DEVICE]` + `[TEST]`
+
+### 22.6 Migration dry-run (corroboration, NOT a physical pass)
+
+The exact `MIGRATION_8_9` DDL (3 `CREATE TABLE IF NOT EXISTS` + 4 `CREATE INDEX IF NOT EXISTS`, copied
+verbatim from `AppDatabase.kt`) was applied to a **fresh copy** of the real v8 backup:
+
+- `user_version` stayed **8** — the hand-written DDL does **not** bump the version; the Room framework
+  does that at the `open()` call. (The device's real upgrade reached 9 because Room ran the framework
+  version bump on top of this DDL.)
+- `integrity_check` = **ok**; `VPNGateItem` preserved at **261**; `excluded_apps` at **15**.
+- The three history tables and four indexes were created.
+
+This corroborates that the DDL is correct and additive. It is explicitly **not** claimed as the on-device
+migration pass itself, which is established by §22.2. `[TEST]`
+
+### 22.7 v8 backup vs v9 comparison (explanations beyond migration alone)
+
+| Item | v8 backup | v9 installed | Delta attributable to |
+|---|---|---|---|
+| `VPNGateItem` | 261 | 261 | — (identical) |
+| `manual_server` | 0 | 0 | — |
+| `excluded_apps` | 15 | 15 | — |
+| `emergency_source_config` | 1 | 1 | — |
+| history tables | absent | 3 present | migration (§22.2) |
+| history rows | 0 | 4 each | 4 real connections (normal usage, §22.3) |
+| `user_version` | 8 | 9 | migration |
+| `room_master identity` | `6f1d1b74…` | `6ba9665e…` | schema version change |
+
+**Conclusion:** every difference between the pre-install v8 backup and the installed v9 database is
+fully explained by the additive Room migration plus the four history rows written by four real
+connections. There is **no unexplained row loss and no migration-induced corruption**. `[INFERENCE]`
+
+### 22.8 Automated tests (this pass)
+
+One full run on the committed tree with JDK 21, `CI=true`, `--offline --rerun-tasks --no-build-cache`:
+
+```
+Command : ./gradlew --offline --rerun-tasks --no-build-cache :app:testProDebugUnitTest :SoftEtherClient:testDebugUnitTest
+Result  : BUILD SUCCESSFUL, exit code 0
+:app    : 1209 tests / 0 failures / 0 errors / 1 skipped  (97 suites)
+:SoftEtherClient : 184 tests / 0 failures / 0 errors / 0 skipped  (13 suites)
+```
+
+The historical **ten-run gate (10/10 green, 1,393 tests)** is recorded in
+`DEVICE_VERIFY_v1.0.61_REPORT.md` §F and is **prior evidence**, not a run repeated here. **Three
+consecutive green runs in this pass are NOT claimed** — only the single run above was executed.
+`[TEST]`
+
+### 22.9 What remains NOT TESTABLE
+
+- **Cellular classification** — the device had airplane mode ON with Wi-Fi ON, so no cellular transport
+  was observable and no authorization to toggle it existed. `NetworkTypeClassifier` is proven only for
+  WIFI.
+- **Next Server after a manual connect** — the Server-List manual-connect flow raises a system
+  permission dialog that could not be dismissed on device; covered by 7 JVM tests only.
+- **Armed-tunnel duplicate-callback path** and **history write against a really locked database** — not
+  exercised on device (covered by fakes in JVM tests).
+- **Downgrade path** — throws by design; no test covers it.
+- **Whether history actually improves connection success rate** — the feature's goal; unmeasured, needs
+  many runs over days.
+- **`QUALITY_REJECTED` / `SERVER_FIRST_SEEN` producers** — still absent (reserved by design); no event
+  of either type was observed.
+
+### 22.10 Change confirmation for this addendum
+
+No `reset` / `clean` / `stash` / `restore` / `commit` / `tag` / `push`. No uninstall, no app-data or
+database clear, no database replace. No production-code, test, dependency or worktree change beyond this
+documentation update and the parallel §1.6.59 §12 addendum. The working tree has no tracked-file
+modification other than the two documentation files. `[SOURCE CODE]` + operating principle.
+
+*End of report. Implementation complete; automated verification passed; physical-device verification of
+the v8→v9 migration, real history rows, WIFI classification and APK identity is now established —
+several prior `NOT TESTABLE — DEVICE UNAVAILABLE` items are superseded by §22, while the cellular,
+manual-connect, duplicate-callback, locked-DB, downgrade and success-rate items remain `NOT TESTABLE`.*

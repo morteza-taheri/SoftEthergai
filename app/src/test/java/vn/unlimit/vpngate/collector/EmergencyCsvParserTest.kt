@@ -409,6 +409,165 @@ class EmergencyCsvParserTest {
         assertEquals(1, issuesOf(result)[Issue.UDP_PORT_WITHOUT_DECLARED_SUPPORT])
     }
 
+    // ── v1.0.63 Part A: a declared flag must survive a missing port ───────
+
+    @Test
+    fun `declared softether udp support with no published port is still supported`() {
+        // The common emergency-CSV shape: SE_UDP_Supported=true, SE_UDP_Port
+        // empty. Before v1.0.63 the support flag was set only inside the port
+        // callback, so it was silently dropped here — the Part A defect.
+        val result = EmergencyCsvParser.parse(
+            body(row("SE_UDP_Supported" to "true", "SE_UDP_Port" to "")),
+        )
+
+        assertTrue(result is Result.Valid)
+        val softether = VpnRecords.protocol(validRecords(result)[0], "softether")
+        assertTrue(
+            "declared support must survive an absent port",
+            VpnRecords.bool(VpnRecords.transport(softether, "udp")["supported"]),
+        )
+        // Crucially, no port is fabricated from nothing.
+        assertNull(VpnRecords.transport(softether, "udp")["port"])
+    }
+
+    @Test
+    fun `declared softether udp support with a zero port is still supported`() {
+        val result = EmergencyCsvParser.parse(
+            body(row("SE_UDP_Supported" to "true", "SE_UDP_Port" to "0")),
+        )
+
+        assertTrue(result is Result.Valid)
+        val softether = VpnRecords.protocol(validRecords(result)[0], "softether")
+        assertTrue(
+            VpnRecords.bool(VpnRecords.transport(softether, "udp")["supported"]),
+        )
+        assertNull(VpnRecords.transport(softether, "udp")["port"])
+    }
+
+    @Test
+    fun `empty softether udp columns leave the transport unsupported`() {
+        val result = EmergencyCsvParser.parse(
+            body(row("SE_UDP_Supported" to "", "SE_UDP_Port" to "")),
+        )
+
+        assertTrue(result is Result.Valid)
+        val softether = VpnRecords.protocol(validRecords(result)[0], "softether")
+        assertFalse(
+            VpnRecords.bool(VpnRecords.transport(softether, "udp")["supported"]),
+        )
+        assertNull(VpnRecords.transport(softether, "udp")["port"])
+    }
+
+    @Test
+    fun `declared support and a valid port keep both through the mapper`() {
+        // Full chain: CSV -> record -> VPNGateConnection, asserting the Auto
+        // Connect eligibility input (seUdpSupported) matches the declaration.
+        val result = EmergencyCsvParser.parse(
+            body(row("SE_UDP_Supported" to "true", "SE_UDP_Port" to "1194")),
+        )
+        val conn = VpnConnectionMapper.toConnection(validRecords(result)[0])!!
+
+        assertTrue(conn.seUdpSupported)
+        assertEquals(1194, conn.seUdpPort)
+        // Eligibility rule: (seUdpSupported || seUdpPort > 0) && seTcpPort > 0
+        assertTrue(
+            "(seUdpSupported || seUdpPort>0) && seTcpPort>0",
+            (conn.seUdpSupported || conn.seUdpPort > 0) && conn.seTcpPort > 0,
+        )
+    }
+
+    @Test
+    fun `declared support with no port satisfies the tcp-gated eligibility`() {
+        val result = EmergencyCsvParser.parse(
+            body(
+                row(
+                    "SE_UDP_Supported" to "true",
+                    "SE_UDP_Port" to "",
+                    "SE_TCP_Port" to "443",
+                ),
+            ),
+        )
+        val conn = VpnConnectionMapper.toConnection(validRecords(result)[0])!!
+
+        assertTrue(conn.seUdpSupported)
+        assertEquals(0, conn.seUdpPort)
+        assertTrue(
+            "eligibility still needs a TCP port",
+            (conn.seUdpSupported || conn.seUdpPort > 0) && conn.seTcpPort > 0,
+        )
+    }
+
+    @Test
+    fun `declared support without a tcp port is ineligible`() {
+        val result = EmergencyCsvParser.parse(
+            body(
+                row(
+                    "SE_UDP_Supported" to "true",
+                    "SE_UDP_Port" to "",
+                    "SE_TCP_Port" to "0",
+                ),
+            ),
+        )
+        val conn = VpnConnectionMapper.toConnection(validRecords(result)[0])!!
+
+        assertTrue(conn.seUdpSupported)
+        assertFalse(
+            "no TCP port -> not eligible",
+            (conn.seUdpSupported || conn.seUdpPort > 0) && conn.seTcpPort > 0,
+        )
+    }
+
+    @Test
+    fun `manual csv import shares the emergency parser fix`() {
+        // ManualCsvImport delegates APP_CSV to EmergencyCsvParser with the
+        // manual source tag, so the same declaration must survive there too.
+        val result = EmergencyCsvParser.parse(
+            body(row("SE_UDP_Supported" to "true", "SE_UDP_Port" to "")),
+            SourceIdentity.MANUAL_TAG,
+        )
+
+        assertTrue(result is Result.Valid)
+        val softether = VpnRecords.protocol(validRecords(result)[0], "softether")
+        assertTrue(
+            VpnRecords.bool(VpnRecords.transport(softether, "udp")["supported"]),
+        )
+        assertNull(VpnRecords.transport(softether, "udp")["port"])
+    }
+
+    @Test
+    fun `a 24-row emergency feed keeps portless-but-declared udp support`() {
+        // A 24-row feed where every row declares SE_UDP_Supported=true and
+        // only a fifth publish a UDP port; each must keep its declaration.
+        val rows = (0 until 24).map { i ->
+            row(
+                "HostName" to "vpn-$i",
+                "IP" to "203.0.113.$i",
+                "SE_UDP_Supported" to "true",
+                "SE_UDP_Port" to if (i % 5 == 0) "1194" else "",
+            )
+        }
+        val result = EmergencyCsvParser.parse(body(*rows.toTypedArray()))
+
+        assertTrue(result is Result.Valid)
+        val records = validRecords(result)
+        assertEquals(24, records.size)
+        records.forEachIndexed { i, rec ->
+            val softether = VpnRecords.protocol(rec, "softether")
+            assertTrue(
+                "row $i must keep declared support",
+                VpnRecords.bool(VpnRecords.transport(softether, "udp")["supported"]),
+            )
+            if (i % 5 == 0) {
+                assertEquals(
+                    1194,
+                    VpnUtil.toInt(VpnRecords.transport(softether, "udp")["port"]),
+                )
+            } else {
+                assertNull(VpnRecords.transport(softether, "udp")["port"])
+            }
+        }
+    }
+
     @Test
     fun `undecodable openvpn config keeps the record without openvpn`() {
         // §10.4: an optional-decode failure retains the record and marks the
