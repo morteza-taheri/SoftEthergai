@@ -35,7 +35,7 @@ import vn.unlimit.vpngate.utils.ExcludedAppsSeeder
 class App : Application() {
     var dataUtil: DataUtil? = null
         private set
-    private lateinit var appDatabase: AppDatabase
+    internal lateinit var appDatabase: AppDatabase
     lateinit var vpnGateItemDao: VPNGateItemDao
     lateinit var excludedAppDao: ExcludedAppDao
     lateinit var emergencySourceConfigDao: EmergencySourceConfigDao
@@ -114,6 +114,8 @@ class App : Application() {
             // F.29: version 8 -> 9, the three server-history tables. Purely
             // additive — see the migration's own comment.
             .addMigrations(AppDatabase.MIGRATION_8_9)
+            // BLOCK v1.0.69 PART 1: version 9 -> 10, additive history columns.
+            .addMigrations(AppDatabase.MIGRATION_9_10)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()

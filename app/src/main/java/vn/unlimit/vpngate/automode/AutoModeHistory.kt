@@ -125,3 +125,29 @@ internal fun Map<String, ServerHistoryView>.viewOf(candidate: AutoModeCandidate)
     if (key.isEmpty()) return null
     return this[key]
 }
+
+/**
+ * BLOCK v1.0.69 PART 2 (Option A) — move at most ONE eligible candidate to
+ * position `startAt + 1` (the second attempt), so it is tried only when the first
+ * pick fails. Pure and testable; the controller supplies [key] and [eligible].
+ *
+ * The first pick (`startAt`) is never chosen, and if no candidate is eligible the
+ * list is returned unchanged (never a fabricated candidate). Only that single move
+ * happens — the rest of the ranked order, reachability, protocol eligibility and
+ * IPv4 dedup are untouched.
+ */
+internal fun <T> List<T>.withExplorationSecond(
+    startAt: Int,
+    key: (T) -> String,
+    eligible: (T) -> Boolean,
+): List<T> {
+    if (size <= startAt + 1) return this
+    val firstKey = key(this[startAt])
+    val exploreAt = (startAt + 1 until size).firstOrNull { i ->
+        key(this[i]) != firstKey && eligible(this[i])
+    } ?: return this
+    val reordered = toMutableList()
+    val candidate = reordered.removeAt(exploreAt)
+    reordered.add(startAt + 1, candidate)
+    return reordered
+}

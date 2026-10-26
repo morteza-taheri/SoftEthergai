@@ -51,6 +51,14 @@ object HistoryCounters {
                 cellularSuccessCount = base.cellularSuccessCount + record.ifNetwork(NetworkType.CELLULAR),
                 unknownNetworkSuccessCount =
                 base.unknownNetworkSuccessCount + record.ifNetwork(NetworkType.UNKNOWN),
+                // v1.0.69 PART 1: a success on this network clears that network's
+                // failure streak; the other networks' streaks are untouched.
+                wifiConsecutiveFailures =
+                if (record.networkType == NetworkType.WIFI) 0 else base.wifiConsecutiveFailures,
+                cellularConsecutiveFailures =
+                if (record.networkType == NetworkType.CELLULAR) 0 else base.cellularConsecutiveFailures,
+                unknownConsecutiveFailures =
+                if (record.networkType == NetworkType.UNKNOWN) 0 else base.unknownConsecutiveFailures,
             )
 
             HistoryEventType.PROTOCOL_ATTEMPT -> when {
@@ -84,6 +92,13 @@ object HistoryCounters {
                     base.cellularFailureCount + record.ifNetwork(NetworkType.CELLULAR),
                     unknownNetworkFailureCount =
                     base.unknownNetworkFailureCount + record.ifNetwork(NetworkType.UNKNOWN),
+                    // v1.0.69 PART 1: the same-network failure streak.
+                    wifiConsecutiveFailures =
+                    base.wifiConsecutiveFailures + record.ifNetwork(NetworkType.WIFI),
+                    cellularConsecutiveFailures =
+                    base.cellularConsecutiveFailures + record.ifNetwork(NetworkType.CELLULAR),
+                    unknownConsecutiveFailures =
+                    base.unknownConsecutiveFailures + record.ifNetwork(NetworkType.UNKNOWN),
                 )
                 // Abandoned without a verdict — every protocol timed out, or was
                 // skipped locally. Recorded, not counted.

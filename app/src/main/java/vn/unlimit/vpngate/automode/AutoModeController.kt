@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
@@ -496,6 +497,16 @@ enum class AttemptOutcome {
         const val HISTORY_WRITE_TIMEOUT_MS: Long = 2_000L
 
         /**
+         * BLOCK v1.0.69 PART 1C (OD-9): total persistence attempts for the
+         * Connected record. A transient lock/failure gets a bounded retry; after
+         * this many attempts the failure is logged and dropped.
+         */
+        const val HISTORY_MAX_ATTEMPTS: Int = 3
+
+        /** OD-9: linear backoff between persistence attempts (milliseconds). */
+        const val HISTORY_RETRY_BACKOFF_MS: Long = 300L
+
+        /**
          * v1.0.61 (§1.6.59): the bound on the once-per-run history read.
          *
          * The read is advisory, so it must never be able to delay a run. 1500 ms is
@@ -705,6 +716,8 @@ enum class AttemptOutcome {
         // happened to favour the first press.
         if (state !is AutoModeState.Connected) {
             skipInFlight = false
+            // BLOCK v1.0.69 PART 1A: leaving Connected closes the quality window.
+            connectedAt = 0L
         }
         _state.value = state
         onStateChange?.invoke(state)
@@ -902,6 +915,8 @@ enum class AttemptOutcome {
         }
 
         if (isConnected) {
+            // BLOCK v1.0.69 PART 1A: the user is leaving a just-connected server.
+            recordQualityRejectIfEligible(connectedCandidate)
             // v1.0.42 (§1.6.35 / F6): identity, not IP. The Next-Server
             // continuation uses the `ip|hostname` key, so the skip filter uses
             // the same one — an IP-only filter also drops a *different* server
@@ -1397,6 +1412,20 @@ enum class AttemptOutcome {
     private var connectedCandidate: AutoModeCandidate? = null
 
     /**
+     * BLOCK v1.0.69 PART 1A — when the current tunnel was published Connected
+     * (epoch ms). Bounds the quality-rejection window; reset to 0 by [setState]
+     * whenever the state leaves Connected.
+     */
+    @Volatile
+    private var connectedAt: Long = 0L
+
+    /**
+     * BLOCK v1.0.69 PART 1A — per-server 10 s dedup for quality rejections, so
+     * Try Next and disconnect for the same server within the window count once.
+     */
+    private val qualityRejectWindow = vn.unlimit.vpngate.history.QualityRejectWindow()
+
+    /**
      * F.29: the protocol the currently established tunnel was built over.
      *
      * Captured at the success transition and cleared by [reportArmedTunnelLoss],
@@ -1607,6 +1636,8 @@ enum class AttemptOutcome {
 
     /** Â§3/Â§29-Test10: pressing while Connected disconnects via the normal flow. */
     fun disconnectNow() {
+        // BLOCK v1.0.69 PART 1A: capture the just-connected server before clearing it.
+        recordQualityRejectIfEligible(connectedCandidate)
         connectedWatcher?.cancel()
         connectedWatcher = null
         TunnelStateWatcher.onTunnelLost = null
@@ -2048,7 +2079,7 @@ enum class AttemptOutcome {
         // rule, and it is why an empty `kept` cannot be read on its own: before
         // D1 that read as "keep everything", which silently undid the removal of a
         // genuinely dead network.
-        val servers = when {
+        var servers = when {
             gate == null -> qualitySorted
             gate.kept.isNotEmpty() -> {
                 adapter.log("[AUTO] Reachable servers selected: ${gate.kept.size}")
@@ -2107,6 +2138,21 @@ enum class AttemptOutcome {
             0
         }
         resumeFromServerKey = null
+
+        // BLOCK v1.0.69 PART 2 (Option A) — exactly one exploration candidate,
+        // placed SECOND (startAt+1) so it runs only if the first pick fails. The
+        // candidate is a previously-failed/uncertain server (tier >= INCONCLUSIVE,
+        // never a proven current-network success) and never the first pick; if none
+        // is eligible the ranked list is unchanged. Reachability, protocol
+        // eligibility, IPv4 dedup and VPN-first routing are untouched.
+        servers = servers.withExplorationSecond(
+            startAt = startAt,
+            key = { serverKey(it) },
+            eligible = {
+                historyTierOf(history.viewOf(it), runNetworkType).ordinal >=
+                    HistoryTier.INCONCLUSIVE.ordinal
+            },
+        )
 
         for (i in startAt until servers.size) {
             val server = servers[i]
@@ -2813,6 +2859,8 @@ enum class AttemptOutcome {
                 // R8: remember the exact candidate so an unexpected disconnect can
                 // name it and re-seed it as the first reconnect candidate.
                 connectedCandidate = server
+                // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
+                connectedAt = System.currentTimeMillis()
                 setState(
                     AutoModeState.Connected(
                         hostname = server.hostname,
@@ -2847,6 +2895,7 @@ enum class AttemptOutcome {
                         networkType = lastAttemptNetwork,
                         token = lastAttemptToken,
                         startedAt = lastAttemptStartedAt,
+                        maxAttempts = HISTORY_MAX_ATTEMPTS,
                     )
                 }
                 return
@@ -2955,6 +3004,48 @@ enum class AttemptOutcome {
      *  3. it is not fire-and-forget, except where the caller has no coroutine to
      *     wait in (see [recordLoss]).
      */
+    /**
+     * BLOCK v1.0.69 PART 1A — record ONE quality rejection for [server] when the
+     * user abandons a just-established tunnel.
+     *
+     * Semantics (grounded in the real lifecycle): a quality rejection is the user
+     * leaving a **Connected** server within [QualityRejectWindow.QUALITY_REJECT_WINDOW_MS]
+     * of the connection, via Try Next or disconnect. It is NOT a network failure
+     * and does NOT touch any failure/timeout/consecutive counter — only
+     * `qualityRejectionCount` (HistoryCounters.QUALITY_REJECTED).
+     *
+     * Dedup key = the server identity (`hostName`): Try Next and disconnect for the
+     * same server within the window produce at most one record; a different server
+     * is never suppressed.
+     *
+     * The Connecting case is deliberately NOT recorded: the controller exposes no
+     * attempt-server identity field (only `currentServerIndex`), so it cannot be
+     * attributed safely without an architectural change. Reported as a limitation.
+     */
+    private fun recordQualityRejectIfEligible(server: AutoModeCandidate?) {
+        if (server == null) return
+        val host = server.hostname?.trim().orEmpty()
+        if (host.isEmpty()) return
+        val connectedAtMs = connectedAt
+        if (connectedAtMs <= 0L) return
+        val now = System.currentTimeMillis()
+        if (now - connectedAtMs > vn.unlimit.vpngate.history.QualityRejectWindow.QUALITY_REJECT_WINDOW_MS) return
+        if (!qualityRejectWindow.shouldRecord(host)) return
+        val protocol = connectedProtocolForHistory
+        scope.launch {
+            recordHistory(
+                server = server,
+                protocol = protocol,
+                eventType = HistoryEventType.QUALITY_REJECTED,
+                outcome = HistoryOutcome.NEUTRAL,
+                reason = null,
+                networkType = safeNetworkType(),
+                token = null,
+                startedAt = connectedAtMs.takeIf { it > 0L },
+            )
+        }
+    }
+
     private suspend fun recordHistory(
         server: AutoModeCandidate,
         protocol: AutoModeProtocol?,
@@ -2964,8 +3055,9 @@ enum class AttemptOutcome {
         networkType: NetworkType,
         token: String?,
         startedAt: Long?,
-    ) {
-        val sink = historySink ?: return
+        maxAttempts: Int = 1,
+    ): Boolean {
+        val sink = historySink ?: return false
         val now = System.currentTimeMillis()
         val record = HistoryRecord(
             hostName = server.hostname?.trim().orEmpty(),
@@ -2979,17 +3071,34 @@ enum class AttemptOutcome {
             failureReason = reason,
             at = now,
         )
-        try {
-            withTimeoutOrNull(HISTORY_WRITE_TIMEOUT_MS) { sink.record(record) }
-                ?: adapter.log("[HISTORY] write timed out; connection result unchanged")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            adapter.log(
-                "[HISTORY] write failed for ${eventType.name}: " +
-                    "${e.javaClass.simpleName}: ${e.message}",
-            )
+        val attempts = maxAttempts.coerceAtLeast(1)
+        var attempt = 0
+        while (attempt < attempts) {
+            attempt++
+            val ok = try {
+                withTimeoutOrNull(HISTORY_WRITE_TIMEOUT_MS) {
+                    sink.record(record)
+                    true
+                } ?: false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                adapter.log(
+                    "[HISTORY] write failed for ${eventType.name} " +
+                        "(attempt $attempt/$attempts): ${e.javaClass.simpleName}: ${e.message}",
+                )
+                false
+            }
+            if (ok) return true
+            if (attempt < attempts) {
+                // OD-9: bounded linear backoff. This runs inside the caller's
+                // NonCancellable block; stop() never awaits it, so teardown is
+                // not delayed by the backoff.
+                delay(HISTORY_RETRY_BACKOFF_MS * attempt)
+            }
         }
+        adapter.log("[HISTORY] final write failed for ${eventType.name} after $attempt attempt(s)")
+        return false
     }
 
     /**

@@ -136,6 +136,15 @@ class ServerListUpdater(
 
         /** Atomically swap the stored dataset. Only ever called with a valid, non-empty list. */
         fun replaceAll(items: List<VPNGateItem>)
+
+        /**
+         * BLOCK v1.0.69 PART 1B — atomically replace the stored dataset AND stamp
+         * the history refresh markers for the same hosts in **one** real Room
+         * transaction. The default has no history store, so it just replaces.
+         */
+        fun replaceAllAndMarkSeen(items: List<VPNGateItem>, marker: Long) {
+            replaceAll(items)
+        }
     }
 
     /** Why an update ended the way it did. */
@@ -252,6 +261,8 @@ class ServerListUpdater(
         // queued behind the running one.
         if (!gate.tryLock()) return Outcome.SkippedConcurrent
         running = true
+        // BLOCK v1.0.69 PART 1B: one stable refresh marker for every accepted row.
+        val refreshMarker = System.currentTimeMillis()
         try {
             var downloaded = try {
                 fetch()
@@ -347,7 +358,14 @@ class ServerListUpdater(
             }
 
             return try {
-                store.replaceAll(usableRows)
+                // BLOCK v1.0.69 PART 1B: only a fresh network observation advances
+                // the history markers; a fallback/emergency dataset is not a new
+                // observation. The marker was captured once at the top of update().
+                if (fromCache || suppliedByEmergency) {
+                    store.replaceAll(usableRows)
+                } else {
+                    store.replaceAllAndMarkSeen(usableRows, refreshMarker)
+                }
                 // Only now, after the dataset is stored and known good, does
                 // it become the last-known-good fallback. A rejected dataset
                 // never reaches this point, so it can never poison it.

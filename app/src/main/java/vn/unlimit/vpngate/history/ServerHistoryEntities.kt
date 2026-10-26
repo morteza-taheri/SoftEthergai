@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.history
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -85,6 +86,32 @@ data class ServerHistorySummary(
      * a home and so no caller can silently invent one.
      */
     val qualityRejectionCount: Int = 0,
+
+    // ── BLOCK v1.0.69 PART 1 (Room 9→10, additive) ──────────────────────
+
+    /**
+     * Marker (refresh start time, epoch ms) of the most recent accepted refresh
+     * that contained this host. `null` until the host is seen in a refresh.
+     */
+    val lastRefreshSeenAt: Long? = null,
+
+    /**
+     * The refresh marker at which this host was FIRST listed. Written once and
+     * never moved, so "new in this refresh" == `firstListedAt == currentMarker`.
+     */
+    val firstListedAt: Long? = null,
+
+    /** Consecutive server-attributable failures observed while on Wi-Fi. */
+    @ColumnInfo(defaultValue = "0")
+    val wifiConsecutiveFailures: Int = 0,
+
+    /** Consecutive server-attributable failures observed while on cellular. */
+    @ColumnInfo(defaultValue = "0")
+    val cellularConsecutiveFailures: Int = 0,
+
+    /** Consecutive server-attributable failures observed on an unknown network. */
+    @ColumnInfo(defaultValue = "0")
+    val unknownConsecutiveFailures: Int = 0,
 ) {
     /** The narrow read model the ordering pass consumes. */
     fun toView(): ServerHistoryView = ServerHistoryView(
@@ -96,6 +123,14 @@ data class ServerHistorySummary(
         wifiSuccessCount = wifiSuccessCount,
         cellularSuccessCount = cellularSuccessCount,
         unknownNetworkSuccessCount = unknownNetworkSuccessCount,
+        // v1.0.69 PART 1 additions (read by the scorer):
+        timeoutCount = timeoutCount,
+        qualityRejectionCount = qualityRejectionCount,
+        wifiConsecutiveFailures = wifiConsecutiveFailures,
+        cellularConsecutiveFailures = cellularConsecutiveFailures,
+        unknownConsecutiveFailures = unknownConsecutiveFailures,
+        lastRefreshSeenAt = lastRefreshSeenAt,
+        firstListedAt = firstListedAt,
     )
 }
 

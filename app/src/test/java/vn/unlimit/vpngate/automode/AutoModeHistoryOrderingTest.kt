@@ -261,4 +261,48 @@ class AutoModeHistoryOrderingTest {
         assertTrue(comparator.compare(candidate("a"), candidate("zzz")) < 0)
         assertTrue(comparator.compare(candidate("zzz"), candidate("a")) > 0)
     }
+
+    // ── BLOCK v1.0.69 PART 2 (Option A): exactly-one exploration placement ──
+
+    @Test
+    fun `exploration moves exactly one eligible candidate to the second position`() {
+        val list = listOf(candidate("a"), candidate("b"), candidate("c"), candidate("d"))
+        val out = list.withExplorationSecond(
+            startAt = 0,
+            key = { it.hostname!! },
+            eligible = { it.hostname == "c" || it.hostname == "d" },
+        )
+        // "c" is the first eligible non-first candidate and moves to index 1.
+        assertEquals(listOf("a", "c", "b", "d"), out.map { it.hostname })
+    }
+
+    @Test
+    fun `no eligible candidate leaves the ranked order unchanged`() {
+        val list = listOf(candidate("a"), candidate("b"), candidate("c"))
+        val out = list.withExplorationSecond(startAt = 0, key = { it.hostname!! }, eligible = { false })
+        assertEquals(listOf("a", "b", "c"), out.map { it.hostname })
+    }
+
+    @Test
+    fun `the first pick is never selected as the exploration candidate`() {
+        val list = listOf(candidate("a"), candidate("b"))
+        val out = list.withExplorationSecond(
+            startAt = 0,
+            key = { it.hostname!! },
+            eligible = { it.hostname == "a" }, // only the first pick is eligible
+        )
+        assertEquals("the first pick must stay first", listOf("a", "b"), out.map { it.hostname })
+    }
+
+    @Test
+    fun `a run starting later still places exploration second from that start`() {
+        val list = listOf(candidate("a"), candidate("b"), candidate("c"), candidate("d"))
+        val out = list.withExplorationSecond(
+            startAt = 2, // resume-from-server: first pick is "c"
+            key = { it.hostname!! },
+            eligible = { it.hostname == "d" },
+        )
+        assertEquals(listOf("a", "b", "c", "d"), out.map { it.hostname })
+        // "d" was already immediately after "c"; nothing needs to move.
+    }
 }

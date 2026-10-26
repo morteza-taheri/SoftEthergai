@@ -43,7 +43,14 @@ interface ServerHistoryDao {
             "IFNULL(lastSuccessAt, 0) AS lastSuccessAt, " +
             "wifiSuccessCount AS wifiSuccessCount, " +
             "cellularSuccessCount AS cellularSuccessCount, " +
-            "unknownNetworkSuccessCount AS unknownNetworkSuccessCount " +
+            "unknownNetworkSuccessCount AS unknownNetworkSuccessCount, " +
+            "timeoutCount AS timeoutCount, " +
+            "qualityRejectionCount AS qualityRejectionCount, " +
+            "wifiConsecutiveFailures AS wifiConsecutiveFailures, " +
+            "cellularConsecutiveFailures AS cellularConsecutiveFailures, " +
+            "unknownConsecutiveFailures AS unknownConsecutiveFailures, " +
+            "lastRefreshSeenAt AS lastRefreshSeenAt, " +
+            "firstListedAt AS firstListedAt " +
             "FROM server_history_summary",
     )
     fun historyViews(): List<ServerHistoryView>
@@ -119,5 +126,37 @@ interface ServerHistoryDao {
         HistoryCounters.nextProtocol(existingProtocol, record)?.let { upsertProtocol(it) }
 
         insertEvent(ServerHistoryEvent.fromRecord(record))
+    }
+
+    /**
+     * BLOCK v1.0.69 PART 1B — idempotent refresh-marker update for the accepted
+     * dataset, called inside the shared server-list transaction. Creates a
+     * zero-attempt summary row for a newly listed host (OD-6: zero attempts is
+     * "no history", never "bad") and stamps `firstListedAt` only when absent;
+     * always advances `lastRefreshSeenAt`. Never touches any counter.
+     */
+    @Transaction
+    fun markSeen(hostNames: List<String>, marker: Long) {
+        for (raw in hostNames) {
+            val host = raw.trim()
+            if (host.isEmpty()) continue
+            val current = summary(host)
+            if (current == null) {
+                upsertSummary(
+                    ServerHistorySummary(
+                        hostName = host,
+                        firstListedAt = marker,
+                        lastRefreshSeenAt = marker,
+                    ),
+                )
+            } else if (current.lastRefreshSeenAt != marker) {
+                upsertSummary(
+                    current.copy(
+                        lastRefreshSeenAt = marker,
+                        firstListedAt = current.firstListedAt ?: marker,
+                    ),
+                )
+            }
+        }
     }
 }

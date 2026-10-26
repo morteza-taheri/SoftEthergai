@@ -27,7 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ServerProtocolSummary::class,
         ServerHistoryEvent::class,
     ],
-    version = 9,
+    version = 10,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -270,6 +270,33 @@ abstract class AppDatabase: RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS " +
                             "`index_server_history_event_attemptToken_eventType` " +
                             "ON `server_history_event` (`attemptToken`, `eventType`)"
+                )
+            }
+        }
+
+        // Migration from version 9 to 10 — BLOCK v1.0.69 PART 1: additive history
+        // columns. All five are additive; the three NOT NULL counters carry
+        // DEFAULT 0 so every existing row survives untouched, and the two
+        // nullable timestamps start NULL. No destructive fallback, no backfill.
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN `lastRefreshSeenAt` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN `firstListedAt` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN " +
+                        "`wifiConsecutiveFailures` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN " +
+                        "`cellularConsecutiveFailures` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN " +
+                        "`unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

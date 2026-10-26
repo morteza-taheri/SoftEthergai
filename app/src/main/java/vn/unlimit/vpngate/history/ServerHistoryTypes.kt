@@ -217,11 +217,35 @@ data class ServerHistoryView(
     val wifiSuccessCount: Int,
     val cellularSuccessCount: Int,
     val unknownNetworkSuccessCount: Int,
+    // ── BLOCK v1.0.69 PART 1 ───────────────────────────────────────────
+    val timeoutCount: Int = 0,
+    val qualityRejectionCount: Int = 0,
+    val wifiConsecutiveFailures: Int = 0,
+    val cellularConsecutiveFailures: Int = 0,
+    val unknownConsecutiveFailures: Int = 0,
+    val lastRefreshSeenAt: Long? = null,
+    val firstListedAt: Long? = null,
 ) {
     /** Successes proven on [network]. For [NetworkType.UNKNOWN] this is its own bucket. */
     fun successesOn(network: NetworkType): Int = when (network) {
         NetworkType.WIFI -> wifiSuccessCount
         NetworkType.CELLULAR -> cellularSuccessCount
         NetworkType.UNKNOWN -> unknownNetworkSuccessCount
+    }
+
+    /**
+     * BLOCK v1.0.69 (OD-6): history exists only when an **attempt** was recorded.
+     * A summary row can be created by a refresh for a host that was never
+     * attempted, so "row exists" is not "has history"; such a row must score
+     * exactly like no row at all.
+     */
+    val hasHistory: Boolean
+        get() = successCount + failureCount + timeoutCount > 0
+
+    /** Consecutive server-attributable failures on [network] (PART 1). */
+    fun consecutiveFailuresOn(network: NetworkType): Int = when (network) {
+        NetworkType.WIFI -> wifiConsecutiveFailures
+        NetworkType.CELLULAR -> cellularConsecutiveFailures
+        NetworkType.UNKNOWN -> unknownConsecutiveFailures
     }
 }

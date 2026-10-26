@@ -7,6 +7,7 @@ import vn.unlimit.vpngate.data.remote.ManualServer
 import vn.unlimit.vpngate.data.remote.ManualServerDao
 import vn.unlimit.vpngate.data.remote.SourceIdentity
 import vn.unlimit.vpngate.db.VPNGateItemDao
+import vn.unlimit.vpngate.history.ServerHistoryDao
 import vn.unlimit.vpngate.merger.VpnServerMerger
 import vn.unlimit.vpngate.models.VPNGateItem
 import vn.unlimit.vpngate.parser.EmergencyCsvParser
@@ -58,9 +59,12 @@ object ServerListUpdates {
     ): ServerListUpdater = build(repository, dao, acceptCacheFallback = false)
 
     /** [forUpdateTrigger] for a caller that only has an application instance. */
-    fun forUpdateTrigger(app: vn.unlimit.vpngate.App): ServerListUpdater = forUpdateTrigger(
+    fun forUpdateTrigger(app: vn.unlimit.vpngate.App): ServerListUpdater = build(
         repository = VpnServerRepository(cacheDir = app.filesDir),
         dao = app.vpnGateItemDao,
+        acceptCacheFallback = false,
+        historyDao = app.serverHistoryDao,
+        database = app.appDatabase,
     )
 
     /**
@@ -73,15 +77,20 @@ object ServerListUpdates {
     ): ServerListUpdater = build(repository, dao, acceptCacheFallback = true)
 
     /** [forAcquisition] for a caller that only has an application instance. */
-    fun forAcquisition(app: vn.unlimit.vpngate.App): ServerListUpdater = forAcquisition(
+    fun forAcquisition(app: vn.unlimit.vpngate.App): ServerListUpdater = build(
         repository = VpnServerRepository(cacheDir = app.filesDir),
         dao = app.vpnGateItemDao,
+        acceptCacheFallback = true,
+        historyDao = app.serverHistoryDao,
+        database = app.appDatabase,
     )
 
     private fun build(
         repository: VpnServerRepository,
         dao: VPNGateItemDao?,
         acceptCacheFallback: Boolean,
+        historyDao: ServerHistoryDao? = null,
+        database: androidx.room.RoomDatabase? = null,
     ): ServerListUpdater {
         val capability = LastFetchCapability()
         val origin = LastFetchOrigin()
@@ -122,7 +131,7 @@ object ServerListUpdates {
             },
             fetchCapability = { capability.value },
             fetchedFromCache = { origin.value },
-            store = daoStore(repository, dao, manual, capability) { origin.value },
+            store = daoStore(repository, dao, manual, capability, historyDao, database) { origin.value },
             emergencyFetch = {
                 // Re-read at this rung too: the emergency fetch can take
                 // seconds, and the rows written at the end of this run must be
@@ -273,6 +282,8 @@ object ServerListUpdates {
         dao: VPNGateItemDao?,
         manual: LastManualRows,
         capability: LastFetchCapability,
+        historyDao: ServerHistoryDao? = null,
+        database: androidx.room.RoomDatabase? = null,
         fetchedFromCache: () -> Boolean = { false },
     ): ServerListUpdater.Store = object : ServerListUpdater.Store {
         override fun currentCount(): Int = dao?.count() ?: 0
@@ -332,6 +343,22 @@ object ServerListUpdates {
                 mergeFallback(dao, items, manual.rows, System.currentTimeMillis())
             } else {
                 mergeAll(dao, items, manual.rows, System.currentTimeMillis())
+            }
+        }
+
+        // BLOCK v1.0.69 PART 1B — one real transaction for the server rows and the
+        // history markers. `replaceAll`'s inner @Transaction joins this outer one,
+        // so a failure rolls both back together.
+        override fun replaceAllAndMarkSeen(items: List<VPNGateItem>, marker: Long) {
+            val db = database
+            val hd = historyDao
+            if (db == null || hd == null) {
+                replaceAll(items)
+                return
+            }
+            db.runInTransaction {
+                replaceAll(items)
+                hd.markSeen(items.map { it.hostName }, marker)
             }
         }
 

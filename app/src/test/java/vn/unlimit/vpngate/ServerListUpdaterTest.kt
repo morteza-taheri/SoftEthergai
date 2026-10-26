@@ -484,4 +484,39 @@ class ServerListUpdaterTest {
         assertTrue(options.all { it in range })
         assertTrue("12 hours must be selectable", options.contains(12))
     }
+
+    // ── BLOCK v1.0.69 PART 1B: the atomic server+history write is used ONLY
+    //    for a fresh network observation, never for a cache/emergency fallback. ──
+
+    @Test
+    fun `a fresh network observation uses the combined atomic write and a fallback does not`() = runBlocking {
+        class RecordingStore : ServerListUpdater.Store {
+            var items: List<VPNGateItem> = emptyList()
+            var combined = 0
+            var plain = 0
+            override fun currentCount(): Int = items.size
+            override fun replaceAll(items: List<VPNGateItem>) {
+                this.items = items
+                plain++
+            }
+            override fun replaceAllAndMarkSeen(items: List<VPNGateItem>, marker: Long) {
+                this.items = items
+                combined++
+            }
+        }
+
+        val freshStore = RecordingStore()
+        ServerListUpdater(fetch = { serversN(20) }, store = freshStore).update()
+        assertEquals("fresh observation must use the combined atomic write", 1, freshStore.combined)
+        assertEquals("fresh observation must not use the plain write", 0, freshStore.plain)
+
+        val fallbackStore = RecordingStore()
+        ServerListUpdater(
+            fetch = { serversN(20) },
+            fetchedFromCache = { true },
+            store = fallbackStore,
+        ).update()
+        assertEquals("a cache fallback must not mark fresh observations", 0, fallbackStore.combined)
+        assertEquals("a cache fallback uses the plain write", 1, fallbackStore.plain)
+    }
 }
