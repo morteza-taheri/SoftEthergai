@@ -93,6 +93,20 @@ internal fun combineAutoModeState(
 }
 
 /**
+ * BLOCK v1.0.68 PART A — whether "Try Next Server" must be enabled for a given
+ * *display* state. Derived from the same combined [AutoModeDisplayState.display]
+ * the hero button renders from, so an external/manual tunnel (controller
+ * `Disconnected`, display `Connected(isExternal=true)`) keeps the button enabled;
+ * the controller's `skipToNextServer()` already routes that case through
+ * `skipFromExternal` (AutoModeController.kt:890).
+ *
+ * Enabled for Connecting / Connected / Error; disabled only when the display is
+ * genuinely Disconnected.
+ */
+internal fun tryNextEnabled(display: AutoModeState): Boolean =
+    display !is AutoModeState.Disconnected
+
+/**
  * Thin bridge between [AutoModeEngine] and the Auto Mode screen.
  * The engine is a process-wide singleton so the run survives
  * fragment navigation.

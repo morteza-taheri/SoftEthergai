@@ -125,6 +125,7 @@ import vn.unlimit.vpngate.state.VpnConnectionStatus
 import vn.unlimit.vpngate.ui.theme.MonospaceStyle
 import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.viewmodels.AutoModeDisplayState
+import vn.unlimit.vpngate.viewmodels.tryNextEnabled
 import vn.unlimit.vpngate.viewmodels.AutoModeViewModel
 import vn.unlimit.vpngate.viewmodels.combineAutoModeState
 import vn.unlimit.vpngate.ui.screens.settings.SettingSwitchRow
@@ -423,8 +424,12 @@ fun AutoModeScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Try Next Server Button
-            // Active during Connecting, Connected, and Error. Disabled during Disconnected.
-            val canTryNext = state !is AutoModeState.Disconnected
+            // Active during Connecting, Connected (incl. external) and Error; disabled only when
+            // the *display* state is genuinely Disconnected. Deriving this from `displayState.display`
+            // (the same combined state the hero button renders) is BLOCK v1.0.68 PART A: for a
+            // manual/external tunnel the controller is Disconnected, so the old `state !is
+            // Disconnected` wrongly disabled the button; skipToNextServer() already handles it.
+            val canTryNext = tryNextEnabled(displayState.display)
             FilledTonalButton(
                 onClick = { viewModel.tryNextServer() },
                 enabled = canTryNext,

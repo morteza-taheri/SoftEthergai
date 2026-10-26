@@ -148,4 +148,35 @@ class AutoModeDisplayStateTest {
         assertFalse(out.isExternal)
         assertFalse("Error + tap means retry, i.e. start", out.tapMeansDisconnect)
     }
+
+    // ── BLOCK v1.0.68 PART A: "Try Next Server" enablement ──────────────
+
+    @Test
+    fun `try next is disabled only when the display is genuinely Disconnected`() {
+        assertFalse(tryNextEnabled(AutoModeState.Disconnected))
+    }
+
+    @Test
+    fun `try next is enabled while Connecting, Connected and Error`() {
+        assertTrue(tryNextEnabled(runConnecting))
+        assertTrue(tryNextEnabled(runConnected))
+        assertTrue(tryNextEnabled(AutoModeState.Error("no server answered")))
+    }
+
+    @Test
+    fun `try next stays enabled for an external connected tunnel`() {
+        // PART A defect: for a manual/external tunnel the controller is
+        // Disconnected, so the old `state !is Disconnected` disabled the button
+        // while the screen showed "Connected (external)". Deriving from the
+        // display state fixes it; skipToNextServer() routes this via skipFromExternal.
+        val externalConnected = combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.CONNECTED)
+        assertTrue(externalConnected.isExternal)
+        assertTrue("external connected must keep Try Next enabled", tryNextEnabled(externalConnected.display))
+
+        val externalConnecting = combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.CONNECTING)
+        assertTrue("external connecting must keep Try Next enabled", tryNextEnabled(externalConnecting.display))
+
+        val reallyIdle = combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.DISCONNECTED)
+        assertFalse("nothing is up, so Try Next is disabled", tryNextEnabled(reallyIdle.display))
+    }
 }
