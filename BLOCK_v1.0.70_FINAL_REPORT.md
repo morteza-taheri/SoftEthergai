@@ -111,13 +111,15 @@ The origin labels themselves are only visible while a tunnel is up; no VPN conne
 
 ## H. PART F — gates
 
-- **F1 (ten consecutive full-suite runs)** — re-run on the FINAL commit `2bc0b8f` from one clean
-  `git archive` copy: **RUN_1..RUN_10 all EXIT=0**; APP **1364 tests / 1 skipped / 0 failures /
-  0 errors** (includes the 5 new `Migration10to11Test` cases), SEC **184 / 0 / 0 / 0**.
-  Final lint on that commit: **102 errors / 178 warnings / 9 hints** — **two errors FEWER than the
+- **F1 (ten consecutive full-suite runs)** — FINAL GATE, re-run on the FINAL commit `f39a390` from one
+  clean `git archive` copy: **RUN_1..RUN_10 all EXIT=0** (RUN_1 = 476 s incl. cold compile; RUN_2..10 =
+  28–35 s each, test tasks forced with `--rerun`); APP **1370 tests / 1 skipped / 0 failures /
+  0 errors**, SEC **184 / 0 / 0 / 0**.
+  Final lint on `f39a390`: **102 errors / 178 warnings / 9 hints** — **two errors FEWER than the
   104 baseline and ZERO new findings** (the reduction is the removal of the two dead-string
   MissingTranslation errors; the earlier 103/179/9 reading on `9b83238` is superseded).
-  (An earlier ten-run gate on `9b83238` was also 10/10 green; it was superseded by the 10→11 migration fix.)
+  (Earlier ten-run gates on `9b83238` and `2bc0b8f` were also 10/10 green; superseded by the
+  hero-disconnect fix and the server-list update fixes that follow.)
 - **F2**: §12.9 written (origin labels, stages, session tried-set, ordering rule with constants and a
   worked numeric example, fast path, remembered protocol, cooldown, absent-refresh rule, exploration,
   quality-reject semantics, D-1..D-9 verbatim, OD note, six-requirements→schema mapping, deferred
