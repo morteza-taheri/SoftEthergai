@@ -97,3 +97,38 @@ All under `test-evidence/v1075_device_backup/`.
 - A refresh whose dataset PASSES the size floor (both mirrors returned ~100 of 400, so the accept path
   with `markSeen`/`incrementMissedRefresh` did not run in these two attempts; the guard path did).
 - Fresh-install defaults and the first-run excluded-apps seed (need a data clear, prohibited).
+
+## 8. Operator-reported bug and fix — the green button reconnected instead of disconnecting
+
+**Report (operator, 2026-10-27):** with the tunnel up, pressing the green hero button did not
+disconnect permanently — the tunnel came straight back up.
+
+**Root cause (two layers, both confirmed on the device):**
+1. `AutoModeScreen`'s hero always calls `startAutoModeWithAllChecks()`; in the Connected state that
+   reached the controller's Connected branch, which — after BLOCK v1.0.75 PART B — delegated to
+   `skipToNextServer()` ("move on" = start the next candidate). So the tunnel dropped and a new run
+   reconnected it. Fix: the Connected branch now means **disconnect only** (`ad08107`, `6e2a93a`);
+   "move on" stays exclusively on the dedicated Try Next button.
+2. Even with that fixed, `stop()` was the wrong primitive: a successful run has already finished, so
+   `isRunning == false` and `stop()` publishes Disconnected **without tearing the tunnel down** — device
+   evidence at 16:14: the log said `Disconnect requested from the connected state` while `tun0` was
+   still up 12 s later. Fix: call `disconnectNow()` (always issues the teardown, ends ownership, clears
+   the session tried-set).
+
+**Physical verification (fixed build, `adb install -r`, 16:22–16:23):**
+```
+[AUTO] Connected successfully            (16:22:52, SOFTETHER_TCP)
+[AUTO] Disconnect requested from the connected state   (16:23:02)
+[AUTO] Re-entrant teardown completion observed ... NOOP_REENTRANT   (16:23:03)
+```
+- `tun0` and `VPN CONNECTED`: **0 at t = 3 s, 6 s, 10 s, 20 s and 30 s** after the press — the tunnel
+  stays down.
+- **No `[AUTO] Started` / `Trying #` after the press** (grep of all AutoMode lines ≥ 16:23:02: 0 hits) —
+  no new run, no Auto-Reconnect.
+- The new unit test asserts the adapter actually receives a `disconnect` call, so this class of bug
+  (state says Disconnected while the tunnel lives) cannot regress silently.
+
+**Test-suite note:** two timing-sensitive tests (`buttonPressDuringAnInFlightSkipStopsInsteadOfStartingASecondRun`,
+`VpnServerRepositoryVpnFirstGuardsTest > D …`) failed once in a full-suite run and pass in isolation and
+in two consecutive full runs afterwards — pre-existing flakiness of the same family documented in those
+files, not caused by this fix.
