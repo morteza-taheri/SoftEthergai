@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.repository
 
 import android.util.Log
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -751,11 +752,22 @@ class VpnServerRepository(
         // This is not a downgrade — the retry never touches the physical path
         // (REQ-ROUTE-001 is preserved).
         if (path == CollectorPath.TUNNEL &&
-            GlobalVpnTracker.currentVpnNetwork() != null &&
             GlobalVpnTracker.isTunnelUsableForRouting()
         ) {
-            val rebuilt = runCatching { boundFetcherFactory() }.getOrNull()
-            if (rebuilt != null && rebuilt !== boundFetcher) {
+            // Wait out a VPN network handover window (bounded, 8 s): after a
+            // reconnect the Network object the run captured may already be gone
+            // while the tracker is about to publish its replacement
+            // (device: "System VPN network lost: 156" → "available: 158" 4 s
+            // later). Rebuild the fetcher from whatever network is current.
+            var rebuilt: HttpFetcher? = null
+            val deadline = System.currentTimeMillis() + 8_000L
+            while (System.currentTimeMillis() < deadline && rebuilt == null) {
+                if (GlobalVpnTracker.currentVpnNetwork() != null) {
+                    rebuilt = runCatching { boundFetcherFactory() }.getOrNull()
+                }
+                if (rebuilt == null) delay(500)
+            }
+            if (rebuilt != null) {
                 fetchLog("[fetch] path=tunnel rebind retry source=$sourceTag (stale VPN network suspected)")
                 val retry = fetch(rebuilt)
                 if (retry != null && succeeded(retry)) {
