@@ -256,6 +256,7 @@
     <string name="automode_origin_auto_connect">توسط اتصال خودکار شروع شد</string>
     <string name="automode_origin_auto_reconnect">به‌طور خودکار دوباره وصل شد (اتصال مجدد خودکار)</string>
     <string name="automode_origin_manual">به‌صورت دستی وصل شد</string>
+    <string name="auto_mode_error_no_more_untried">سرور امتحان‌نشده‌ای در این جلسه نمانده است — همهٔ سرورها امتحان شده‌اند. قطع کنید یا سرور اضافه کنید و دوباره تلاش کنید.</string>
     <string name="title_home">لیست سرورها</string>
     <string name="server_list_count">%1$d سرور</string>
     <string name="server_list_last_updated">آخرین بروزرسانی: %1$s</string>

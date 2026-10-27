@@ -491,6 +491,11 @@ fun AutoModeScreen(
                                 ) -> error.message
                                 error.message == AutoModeController.ERROR_NO_SERVER ->
                                     stringResource(R.string.auto_mode_error_no_server)
+                                // BLOCK v1.0.75 (D-2): every candidate of the
+                                // session has been tried — say so instead of the
+                                // generic failure text.
+                                error.message == AutoModeController.ERROR_NO_MORE_UNTRIED ->
+                                    stringResource(R.string.auto_mode_error_no_more_untried)
                                 error.message == AutoModeController.ERROR_NO_ENABLED_PROTOCOL ->
                                     stringResource(R.string.auto_mode_error_no_enabled_protocol)
                                 error.message == AutoModeController.ERROR_VPN_PERMISSION ->

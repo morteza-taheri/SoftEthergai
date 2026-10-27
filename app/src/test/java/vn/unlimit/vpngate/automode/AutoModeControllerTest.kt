@@ -31,6 +31,9 @@ class AutoModeControllerTest {
         val failing = mutableSetOf<String>()
         val connectThrowing = mutableSetOf<String>()
         val slow = mutableSetOf<String>()
+        /** BLOCK v1.0.75 (D-1): hosts whose FIRST awaitTunnel hangs, later waits fail fast. */
+        val slowFirstOnly = mutableSetOf<String>()
+        private val slowFirstLatched = mutableSetOf<String>()
         var delayMs: Long = 0
         var permissionMissing = false
         /**
@@ -157,6 +160,25 @@ class AutoModeControllerTest {
         override suspend fun awaitTunnel(protocol: AutoModeProtocol, timeoutMs: Long): Boolean {
             val hostname = logs.lastOrNull { it.startsWith("connect:") }
                 ?.removePrefix("connect:") ?: return false
+            // BLOCK v1.0.75 (D-1): hosts whose FIRST awaitTunnel hangs (skip-
+            // interruptible) and whose later waits fail fast — lets a test skip
+            // protocol 1 and observe protocol 2 of the same server without a
+            // second hang.
+            if (hostname in slowFirstOnly) {
+                // First wait hangs (skip-interruptible); later waits fail fast
+                // so the walk moves on to the next server.
+                if (hostname in slowFirstLatched) return false
+                slowFirstLatched += hostname
+                val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                activeWait = deferred
+                try {
+                    return kotlinx.coroutines.withTimeoutOrNull(timeoutMs + 60_000) {
+                        deferred.await()
+                    } ?: false
+                } finally {
+                    activeWait = null
+                }
+            }
             if (hostname in slow) {
                 // A hung connect: never reports a tunnel on its own; only a
                 // skip (complete(false) via skipCurrent) or the timeout ends it.
@@ -651,24 +673,19 @@ class AutoModeControllerTest {
         c.stop()
     }
 
-    // Test 10: pressing while Connected goes back to Disconnected but starts a continuation run
+    // Test 10, updated by BLOCK v1.0.75 (D-2): pressing while Connected is the
+    // Try-Next action — with a single already-tried server it reports the
+    // exhausted-session terminal and never re-dials the connected server.
     @Test
     fun pressWhileConnectedDisconnects() = runBlocking {
         val c = controller(servers = listOf(server("s1")))
         // v1.0.55 (V1054_VERIFY_REPORT G-3): this test used to read
         // `c.state.value` and `c.isRunning` synchronously after the press. Both
-        // are races, not assertions: the OP-R6 continuation runs on
+        // are races, not assertions: the continuation runs on
         // Dispatchers.Default, so between `onButtonPressed()` returning and the
         // test thread reading the field the continuation can already have
-        // published its own terminal (`Error(no_compatible_server)`). That is
-        // how this test failed 2 of 10 full-suite runs while passing in
-        // isolation.
-        //
-        // The rule it is actually asserting is a SEQUENCE — the press publishes
-        // Disconnected, and then a continuation runs to its own terminal — so
-        // the sequence is what gets recorded, through the same `onStateChange`
-        // hook production uses. `state` is a conflating StateFlow and cannot
-        // answer "did Disconnected ever happen?".
+        // published its own terminal. The sequence is recorded through the same
+        // `onStateChange` hook production uses.
         val seen = java.util.Collections.synchronizedList(ArrayList<AutoModeState>())
         c.onStateChange = { seen += it }
 
@@ -678,15 +695,18 @@ class AutoModeControllerTest {
         c.onButtonPressed()
 
         val terminal = c.awaitTerminal()
-        assertTrue("expected the continuation to exhaust the list, got $terminal", terminal is AutoModeState.Error)
-        assertEquals(AutoModeController.ERROR_NO_SERVER, (terminal as AutoModeState.Error).message)
+        assertTrue("expected the exhausted-session terminal, got $terminal", terminal is AutoModeState.Error)
+        assertEquals(
+            AutoModeController.ERROR_NO_MORE_UNTRIED,
+            (terminal as AutoModeState.Error).message,
+        )
 
         val connectedAt = seen.indexOfFirst { it is AutoModeState.Connected }
-        val disconnectedAt = seen.indexOfFirst { it is AutoModeState.Disconnected }
-        assertTrue("the press must publish Disconnected, saw $seen", disconnectedAt >= 0)
+        val errorAt = seen.indexOfFirst { it is AutoModeState.Error }
+        assertTrue("the press must end in the exhausted-session error, saw $seen", errorAt >= 0)
         assertTrue(
-            "Disconnected must follow the Connected it ends, saw $seen",
-            connectedAt >= 0 && disconnectedAt > connectedAt,
+            "the error must follow the Connected it ends, saw $seen",
+            connectedAt >= 0 && errorAt > connectedAt,
         )
     }
 
@@ -1124,9 +1144,56 @@ val sstp = AutoModeCandidate(
         val terminal = c.awaitTerminal()
         c.setSkipSignal(null)
         skipper.cancel()
-        assertTrue(terminal is AutoModeState.Connected)
+        assertTrue("expected Connected(s2), got $terminal; logs=${adapter.logs.takeLast(25)}", terminal is AutoModeState.Connected)
         assertEquals("s2", (terminal as AutoModeState.Connected).hostname)
-        assertTrue("[AUTO] Server skipped by user" in adapter.logs)
+        assertTrue(
+            "[AUTO] Protocol skipped by user must be logged; logs=${adapter.logs.takeLast(20)}",
+            adapter.logs.any { it.contains("[AUTO] Protocol skipped by user") },
+        )
+    }
+
+    /**
+     * BLOCK v1.0.75 (D-1) — ONE press while connecting skips the CURRENT
+     * PROTOCOL attempt and continues with the NEXT PROTOCOL of the SAME server;
+     * the next server is reached only after that server's protocols are
+     * exhausted. The cancelled attempt is recorded NEUTRAL
+     * (ATTEMPT_CANCELLED/USER_CANCELLED), never a server failure.
+     */
+    @Test
+    fun skipDuringProtocolOneTriesProtocolTwoOfTheSameServer() = runBlocking {
+        adapter.slowFirstOnly += "s1"
+        val c = controller(
+            servers = listOf(server("s1"), server("s2")),
+            timeout = 60_000,
+            priorities = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+        )
+        // Mirror the production wiring: the skip signal fails the in-flight wait.
+        c.setSkipSignal { adapter.skipCurrent() }
+        val skipper = CoroutineScope(Dispatchers.Default)
+        skipper.launch {
+            kotlinx.coroutines.delay(300)
+            c.skipToNextServer() // ONE press, while s1/TCP is in flight
+        }
+        c.start()
+        val terminal = c.awaitTerminal()
+        c.setSkipSignal(null)
+        skipper.cancel()
+
+        assertTrue("expected s2 to connect, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals(
+            "D-1: the press cancels s1/TCP, continues with s1/UDP, and reaches s2 " +
+                "only after s1's protocols are exhausted: ${adapter.connects}",
+            listOf(
+                "s1" to AutoModeProtocol.SOFTETHER_TCP,
+                "s1" to AutoModeProtocol.SOFTETHER_UDP,
+                "s2" to AutoModeProtocol.SOFTETHER_TCP,
+            ),
+            adapter.connects.toList(),
+        )
+        assertTrue(
+            "the cancelled attempt is recorded NEUTRAL: ${adapter.logs}",
+            adapter.logs.any { it.contains("Protocol skipped by user") },
+        )
     }
 
     // Try next server while CONNECTED: must disconnect the live tunnel and
@@ -1155,7 +1222,7 @@ val sstp = AutoModeCandidate(
         assertEquals("s2", (final as AutoModeState.Connected).hostname)
         assertEquals(1, adapter.logs.count { it == "connect:s1" })
         assertEquals(1, adapter.logs.count { it == "connect:s2" })
-        assertTrue("[AUTO] Connected server skipped by user; trying next" in adapter.logs)
+        assertTrue(adapter.logs.any { it.startsWith("[AUTO] Connected server skipped by user; trying next") })
     }
 
     /**
@@ -2983,9 +3050,12 @@ val sstp = AutoModeCandidate(
         c.onButtonPressed() // last server (index 1) → resume index 2 == size
         val second = c.awaitTerminal()
 
-        assertTrue("expected ERROR_NO_SERVER, got $second", second is AutoModeState.Error)
+        assertTrue(
+            "expected the exhausted-session terminal, got $second",
+            second is AutoModeState.Error,
+        )
         assertEquals(
-            AutoModeController.ERROR_NO_SERVER,
+            AutoModeController.ERROR_NO_MORE_UNTRIED,
             (second as AutoModeState.Error).message,
         )
         assertTrue(
@@ -3485,7 +3555,7 @@ val sstp = AutoModeCandidate(
         )
         assertTrue(
             "the user's intent must be logged: ${adapter.logs}",
-            adapter.logs.contains("[AUTO] Connected server skipped by user; trying next"),
+            adapter.logs.any { it.startsWith("[AUTO] Connected server skipped by user; trying next") },
         )
     }
 

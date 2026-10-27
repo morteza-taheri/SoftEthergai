@@ -128,6 +128,13 @@ class AutoModeNextServerIdentityTest {
      * s2, i.e. at s4. The old index continuation would have started at index 2,
      * which now names s2 again: the same server the user just asked to leave.
      */
+    /**
+     * BLOCK v1.0.75 (D-2): the continuation is the BEST UNTRIED candidate of
+     * the run ordering, keyed by identity. The resort cannot re-offer a server
+     * the session already tried (s1 failed, s2 connected — both tried), so the
+     * first dial after the press is s3 — the best untried candidate in the new
+     * order — and neither s1 nor s2 is ever dialled again.
+     */
     @Test
     fun aResortDoesNotShiftTheContinuation() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -147,17 +154,17 @@ class AutoModeNextServerIdentityTest {
 
         adapter.connects.clear()
         adapter.failing.clear()
-        c.onButtonPressed() // Connected press → continue after s2
+        c.onButtonPressed() // Connected press → best untried candidate
         c.awaitTerminal()
 
         assertEquals(
-            "the continuation must start after s2's IDENTITY, not after its old index",
-            "s4" to AutoModeProtocol.SOFTETHER_UDP,
+            "the continuation dials the BEST UNTRIED candidate (s3), never a tried one",
+            "s3" to AutoModeProtocol.SOFTETHER_UDP,
             adapter.connects.first(),
         )
         assertTrue(
-            "the run must say where it resumed: ${adapter.logs}",
-            adapter.logs.any { it.contains("Continuing after") },
+            "tried servers must not be dialled again: ${adapter.connects}",
+            adapter.connects.none { it.first in setOf("s1", "s2") },
         )
     }
 
@@ -171,8 +178,15 @@ class AutoModeNextServerIdentityTest {
      * `pressingWhileConnectedToTheLastServerEndsWithoutRestarting` still pins.
      * The genuine "not found" case is a server that dropped out of the list.
      */
+    /**
+     * BLOCK v1.0.75 (D-2): the connected server has left the dataset. The
+     * tried-set survives (s1 failed, s2 connected — both tried), so the
+     * continuation dials the best UNTRIED candidate of the new list — s3 — and
+     * the failed s1 is never re-dialled. The old position-resume restart at
+     * the top would have re-dialled a server the session already proved bad.
+     */
     @Test
-    fun aVanishedServerRestartsFromTheTopAndLogsIt() = runBlocking {
+    fun aVanishedServerFallsBackToTheBestUntried() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val adapter = RecordingAdapter()
         val order1 = listOf(server("s1"), server("s2"), server("s3"))
@@ -193,13 +207,9 @@ class AutoModeNextServerIdentityTest {
         val second = c.awaitTerminal()
 
         assertEquals(
-            "a vanished server must restart at the top, not silently resume somewhere else",
-            "s1" to AutoModeProtocol.SOFTETHER_UDP,
+            "the continuation must dial the best UNTRIED server (s3), not the already-failed s1",
+            "s3" to AutoModeProtocol.SOFTETHER_UDP,
             adapter.connects.first(),
-        )
-        assertTrue(
-            "the fallback must be logged: ${adapter.logs}",
-            adapter.logs.any { it.contains("no longer in the list; starting from the top") },
         )
         assertTrue("expected a terminal state, got $second", second is AutoModeState.Connected)
     }
@@ -212,6 +222,15 @@ class AutoModeNextServerIdentityTest {
      * hostname. Connected to the second one, "Try next server" must fall back to
      * the first. An IP-only filter would drop **both** and end the run with
      * `ERROR_NO_SERVER`.
+     */
+    /**
+     * The skip bookkeeping uses the same `ip|hostname` identity as the
+     * continuation. Two servers share one IP (NAT / load-balancer shape) and
+     * differ by hostname: the run tries s2 (fails) and connects s3, so BOTH are
+     * tried in this session. BLOCK v1.0.75 (D-2): pressing Try Next now finds
+     * no untried candidate — s2 was genuinely tried and must not be re-offered
+     * just because it shares s3's IP. The distinct keys are what let s3 connect
+     * while s2 was marked tried in the first place.
      */
     @Test
     fun skipFiltersByIdentityNotByIp() = runBlocking {
@@ -229,26 +248,18 @@ class AutoModeNextServerIdentityTest {
         adapter.connects.clear()
         adapter.failing.clear()
         c.skipToNextServer()
-        // `skipToNextServer()` launches its restart in a coroutine, so for a
-        // moment the state is still the previous `Connected`. Waiting only for
-        // the terminal condition would therefore return that stale state with
-        // no dial at all; wait for the dial (or for the run to fail) first.
-        withTimeoutOrNull(5_000) {
-            while (adapter.connects.isEmpty() && c.state.value is AutoModeState.Connected) delay(5)
-        }
         val second = c.awaitTerminal()
 
-        assertTrue(
-            "the skip must dial the remaining server: ${adapter.logs}",
-            adapter.connects.isNotEmpty(),
-        )
+        assertTrue("expected the exhausted-session terminal, got $second", second is AutoModeState.Error)
         assertEquals(
-            "a different server on the same IP must survive the skip filter",
-            "s2" to AutoModeProtocol.SOFTETHER_UDP,
-            adapter.connects.first(),
+            "both same-IP servers were tried in this session",
+            AutoModeController.ERROR_NO_MORE_UNTRIED,
+            (second as AutoModeState.Error).message,
         )
-        assertTrue("expected Connected, got $second", second is AutoModeState.Connected)
-        assertEquals("s2", (second as AutoModeState.Connected).hostname)
+        assertTrue(
+            "the failed same-IP sibling must not be re-dialled: ${adapter.connects}",
+            adapter.connects.none { it.first == "s2" },
+        )
     }
 
     // ── T-NEW-43 ─────────────────────────────────────────────────────────────
@@ -425,8 +436,13 @@ class AutoModeNextServerIdentityTest {
         }
     }
 
+    /**
+     * BLOCK v1.0.75 (D-2): on a manual tunnel the session starts with the
+     * connected server ({s5}); Next dials the BEST UNTRIED candidate of the
+     * ordering — s1 — and the manual server is never dialled again.
+     */
     @Test
-    fun nextServerFromTheFifthServerContinuesAtTheSixth() = runBlocking {
+    fun nextServerOnAManualTunnelDialsTheBestUntried() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val adapter = RecordingAdapter()
         val servers = (1..8).map { server("s$it") }
@@ -436,36 +452,34 @@ class AutoModeNextServerIdentityTest {
             val final = c.awaitTerminal()
             assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
             assertEquals(
-                "the fifth server's successor is the sixth",
-                "s6" to AutoModeProtocol.SOFTETHER_UDP,
+                "the best untried candidate is the top of the ordering (s1)",
+                "s1" to AutoModeProtocol.SOFTETHER_UDP,
                 adapter.connects.first(),
             )
             assertEquals("s5 must not be dialled again", 0, adapter.connects.count { it.first == "s5" })
-            assertEquals(
-                "the run must not restart from the beginning: ${adapter.connects}",
-                0,
-                adapter.connects.count { it.first in setOf("s1", "s2", "s3", "s4") },
-            )
         } finally {
             GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
         }
     }
 
     @Test
-    fun whenTheSixthServerIsExhaustedTheSeventhIsTried() = runBlocking {
+    fun whenTheUntriedHeadFailsTheWalkContinuesToTheNextUntried() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val adapter = RecordingAdapter()
         val servers = (1..8).map { server("s$it") }
-        adapter.failing += "s6"
+        adapter.failing += setOf("s1", "s2", "s3", "s4", "s6")
         val c = controller(scope, adapter) { servers }
         try {
             manualConnectAndSkip(c, adapter, "s5", "10.0.0.5")
             val final = c.awaitTerminal()
             assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
+            // D-2: the walk starts at the best untried (s1) and the normal
+            // server walk carries on over untried candidates — s5 (the manual
+            // server, tried) is skipped, failures rotate on, s7 connects.
             assertEquals(
-                "s6 is tried first, then the run continues to s7",
-                listOf("s6", "s7"),
-                adapter.connects.map { it.first }.take(2),
+                "the walk dials untried candidates in ordering order",
+                listOf("s1", "s2", "s3", "s4", "s6", "s7"),
+                adapter.connects.map { it.first },
             )
         } finally {
             GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
@@ -479,12 +493,12 @@ class AutoModeNextServerIdentityTest {
         var servers = listOf(server("s1"), server("s2"), server("s3"), server("s4"), server("s5"))
         val c = controller(scope, adapter) { servers }
         try {
-            // Manual tunnel to s2, first press -> s3 (connected, controller-owned).
+            // Manual tunnel to s2, first press -> best untried (s1) connects.
             manualConnectAndSkip(c, adapter, "s2", "10.0.0.2")
             c.awaitTerminal()
-            assertEquals("s3" to AutoModeProtocol.SOFTETHER_UDP, adapter.connects.first())
+            assertEquals("s1" to AutoModeProtocol.SOFTETHER_UDP, adapter.connects.first())
 
-            // Re-sort so that "after s3" is s1 in the new order.
+            // Re-sort; the tried-set (s2 seeded, s1 visited) survives it.
             servers = listOf(server("s5"), server("s4"), server("s3"), server("s1"), server("s2"))
             adapter.connects.clear()
             c.skipToNextServer()
@@ -492,11 +506,16 @@ class AutoModeNextServerIdentityTest {
             c.awaitTerminal()
 
             assertEquals(
-                "the continuation follows the run's own snapshot (s4), not the re-sorted list (s1)",
-                "s4",
+                "the continuation dials the best UNTRIED candidate in the new order (s5), " +
+                    "never a tried one (s1, s2)",
+                "s5",
                 adapter.connects.first().first,
             )
-            assertEquals("s3 must not be dialled again", 0, adapter.connects.count { it.first == "s3" })
+            assertEquals(
+                "tried servers must not be dialled again: ${adapter.connects}",
+                0,
+                adapter.connects.count { it.first in setOf("s1", "s2") },
+            )
         } finally {
             GlobalVpnTracker.updateState(VpnConnectionStatus.DISCONNECTED, protocol = "SoftEther")
         }
@@ -524,7 +543,7 @@ class AutoModeNextServerIdentityTest {
     }
 
     @Test
-    fun theHistoryTieBreakDoesNotChangeWhichServerFollows() = runBlocking {
+    fun theContinuationUsesTheSameHistoryAwareOrderingAsTheRun() = runBlocking {
         val servers = listOf(server("s1"), server("s2"), server("s3"), server("s4"), server("s5"))
         // A history that WOULD reorder: s5 proven on this network, s4 on a failure streak.
         val history = mapOf(
@@ -544,7 +563,9 @@ class AutoModeNextServerIdentityTest {
             runAdapter.connects.first().first,
         )
 
-        // (b) The manual continuation sorts WITHOUT history, so it still follows s3 with s4.
+        // (b) BLOCK v1.0.75 (D-2): the manual continuation sorts WITH history —
+        // the same ordering the run uses — so the best untried candidate is the
+        // history-promoted s5, and the demoted s4 stays behind it.
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val adapter = RecordingAdapter()
         val c = controller(scope, adapter, history = history) { servers }
@@ -553,8 +574,8 @@ class AutoModeNextServerIdentityTest {
             val final = c.awaitTerminal()
             assertTrue("expected Connected, got $final", final is AutoModeState.Connected)
             assertEquals(
-                "the successor is the next stored server (s4), not the history-promoted s5",
-                "s4",
+                "the best untried candidate under the run's own ordering is the promoted s5",
+                "s5",
                 adapter.connects.first().first,
             )
         } finally {

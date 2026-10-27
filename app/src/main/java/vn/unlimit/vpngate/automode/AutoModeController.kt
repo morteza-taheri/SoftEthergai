@@ -581,6 +581,9 @@ enum class AttemptOutcome {
         )
 
         const val ERROR_NO_SERVER = "no_compatible_server"
+
+        /** BLOCK v1.0.75 (D-2): every candidate of this session has been tried. */
+        const val ERROR_NO_MORE_UNTRIED = "no_more_untried_servers"
         const val ERROR_VPN_PERMISSION = "vpn_permission_missing"
 
         /**
@@ -849,6 +852,19 @@ enum class AttemptOutcome {
     private var runOrigin: ConnectionOrigin = ConnectionOrigin.AUTO_CONNECT
 
     /**
+     * BLOCK v1.0.75 (D-2) — the servers this SESSION has already tried, keyed
+     * `ip|hostname` ([serverKey]). A session starts when the user starts Auto
+     * Connect from Disconnected — and for a Try Next on a manual tunnel it
+     * starts with the connected server as its first entry; it ends when the
+     * user disconnects. The run loop adds every server it visits; Try-Next-
+     * while-Connected picks the FIRST candidate of the run ordering that is
+     * not in this set and supports an enabled protocol — and never wraps
+     * silently once every candidate has been tried.
+     */
+    @Volatile
+    private var sessionTriedKeys: MutableSet<String> = HashSet()
+
+    /**
      * User-requested skip of the current server (Try next server button).
      * - While Connecting: aborts the in-flight attempt and moves on.
      * - While Connected (the run is done but the connected watcher is
@@ -939,7 +955,7 @@ enum class AttemptOutcome {
             val connectedState: AutoModeState.Connected? = current
             val currentKey = connectedCandidate?.let { serverKey(it) }
                 ?: connectedState?.let { serverKey(it.ip, it.hostname) }
-            adapter.log("[AUTO] Connected server skipped by user; trying next")
+            adapter.log("[AUTO] Connected server skipped by user; trying next ($currentKey)")
             synchronized(transitionLock) {
                 // v1.0.54 (§1.6.46) PART 1 / R-1: the state is still Connected
                 // here, so without this guard a second press would re-enter this
@@ -968,16 +984,31 @@ enum class AttemptOutcome {
                 // two loops dialling the same list.
                 job = scope.launch {
                     adapter.disconnect()
-                    val remaining = remainingCandidates.ifEmpty {
-                        val all = (overrideServers ?: serverProvider())
-                            .withActiveRtt(protocolPriorityProvider())
-                            .sortedForAutoConnect()
-                        if (currentKey != null) all.filterNot { serverKey(it) == currentKey } else all
+                    // BLOCK v1.0.75 (D-2): Next-while-Connected picks the FIRST
+                    // candidate, in the same ordering the run uses (quality with
+                    // the history-aware tie-break), that this session has not
+                    // tried and that supports an enabled protocol. The
+                    // reachability gate still applies lazily inside the
+                    // relaunched walk. When every candidate has been tried, the
+                    // state says so — never a silent wrap.
+                    val priorities = protocolPriorityProvider()
+                    val all = (overrideServers ?: serverProvider())
+                        .withActiveRtt(priorities)
+                        .sortedForAutoConnect(loadHistory(), safeNetworkType())
+                    val untried = all.filter {
+                        serverKey(it) !in sessionTriedKeys &&
+                            usableProtocols(it, priorities).isNotEmpty()
                     }
-                    if (remaining.isEmpty()) {
-                        adapter.log("[AUTO] No more servers to try")
+                    // The walk starts at the first untried candidate and runs
+                    // over the untried tail of the ordering; reachability and
+                    // the exploration pick apply inside the walk itself.
+                    val remaining = all
+                        .dropWhile { it !== untried.firstOrNull() }
+                        .filter { serverKey(it) !in sessionTriedKeys }
+                    if (untried.isEmpty() || remaining.isEmpty()) {
+                        adapter.log("[AUTO] No more untried servers in this session")
                         // The Error state clears `skipInFlight` in setState.
-                        setState(AutoModeState.Error(ERROR_NO_SERVER))
+                        setState(AutoModeState.Error(ERROR_NO_MORE_UNTRIED))
                         synchronized(transitionLock) { job = null }
                     } else {
                         synchronized(transitionLock) {
@@ -1091,19 +1122,31 @@ enum class AttemptOutcome {
             job?.cancel()
             job = scope.launch {
                 adapter.disconnect()
-                val remaining = (overrideServers ?: serverProvider())
-                    .withActiveRtt(protocolPriorityProvider())
-                    .sortedForAutoConnect()
-                // v1.0.61: continue AFTER the manually-connected server, exactly as the
-                // owned path does — never from the beginning. The resume key is the same
-                // `ip|hostname` identity the continuation and the wedge ledger use; when
-                // it is unknown, or the server has left the list, runAutoMode finds no
-                // match and starts at the top, which is the honest fallback. Filtering
-                // the server out and restarting at the top (the previous behaviour)
-                // re-dialled every server the user had already passed.
-                if (currentKey != serverKey(null, null)) resumeFromServerKey = currentKey
-                if (remaining.isEmpty()) {
-                    setState(AutoModeState.Error(ERROR_NO_SERVER))
+                // BLOCK v1.0.75 (D-2): the manual tunnel the user just left is
+                // the FIRST entry of the session's tried set. Next picks the
+                // FIRST candidate of the run ordering that is untried and
+                // supports an enabled protocol — best-first, not
+                // position-after-manual — and never wraps silently. When the
+                // stack did not report the server's host/ip the identity is
+                // unknown; seeding it is then a no-op against real candidates
+                // and the pick starts at the top, which is the honest fallback.
+                if (currentKey != serverKey(null, null)) {
+                    sessionTriedKeys = HashSet(listOf(currentKey))
+                }
+                val priorities = protocolPriorityProvider()
+                val all = (overrideServers ?: serverProvider())
+                    .withActiveRtt(priorities)
+                    .sortedForAutoConnect(loadHistory(), safeNetworkType())
+                val untried = all.filter {
+                    serverKey(it) !in sessionTriedKeys &&
+                        usableProtocols(it, priorities).isNotEmpty()
+                }
+                val remaining = all
+                    .dropWhile { it !== untried.firstOrNull() }
+                    .filter { serverKey(it) !in sessionTriedKeys }
+                if (untried.isEmpty() || remaining.isEmpty()) {
+                    adapter.log("[AUTO] No more untried servers in this session")
+                    setState(AutoModeState.Error(ERROR_NO_MORE_UNTRIED))
                     synchronized(transitionLock) { job = null }
                 } else {
                     synchronized(transitionLock) {
@@ -1509,6 +1552,8 @@ enum class AttemptOutcome {
             // R8: a user stop ends the ownership record; no reconnect may name it.
             connectedCandidate = null
             pendingReconnectServer = null
+            // BLOCK v1.0.75 (D-2): a user stop ends the session as well.
+            sessionTriedKeys.clear()
             if (!isRunning) {
                 setState(AutoModeState.Disconnected)
                 return
@@ -1638,13 +1683,14 @@ enum class AttemptOutcome {
                 // therefore reaches the service ahead of the new run's first
                 // ACTION_CONNECT without making this (synchronous) handler
                 // suspend.
-                resumeFromServerKey = connectedCandidate?.let { serverKey(it) }
-                disconnectNow()
-                // BLOCK v1.0.75 (D-3): pressing while connected is the user's
-                // Next-Server action — the replacement run is user-driven, so
-                // the origin stays AUTO_CONNECT even after an AUTO_RECONNECT run.
-                runOrigin = ConnectionOrigin.AUTO_CONNECT
-                start()
+                // v1.0.31 (OP-R6 / D-5): pressing while connected means "move on".
+                // BLOCK v1.0.75 (D-2): "move on" IS Try-Next semantics — the
+                // first untried candidate of the session — so the hero press
+                // delegates to the same path the Try Next button uses (quality
+                // reject on leave, coalescing, teardown and the D-2 selection
+                // included). A press landing inside the coalescing window was
+                // already handled above as a stop (R-1).
+                skipToNextServer()
             }
         }
     }
@@ -1679,6 +1725,9 @@ enum class AttemptOutcome {
         // reconnect a tunnel the user deliberately closed.
         connectedCandidate = null
         pendingReconnectServer = null
+        // BLOCK v1.0.75 (D-2): a user disconnect ends the session — the next
+        // Auto Connect run starts with a fresh tried-set.
+        sessionTriedKeys.clear()
         if (isRunning) {
             // Cancel the active run, then clean up the tunnel.
             job?.cancel()
@@ -2201,6 +2250,11 @@ enum class AttemptOutcome {
             val key = wedgeKey(server)
             if (!attempted.add(key)) continue
 
+            // BLOCK v1.0.75 (D-2): everything the walk visits counts as tried
+            // for the session — attempted, rejected, wedge-excluded or
+            // connected — so Try Next never re-offers it.
+            sessionTriedKeys.add(serverKey(server))
+
             // FIX-3: a server that has already wedged this process twice is skipped for the
             // rest of the session. Checked here — after de-duplication and before any dial —
             // so an excluded server consumes no retry budget, no attempt counter and, above
@@ -2370,7 +2424,7 @@ enum class AttemptOutcome {
                 if (!currentCoroutineContext().isActive) return
 
                 if (skipRequested.get()) {
-                    adapter.log("[AUTO] Server skipped by user")
+                    adapter.log("[AUTO] Protocol skipped by user; trying the next protocol of this server")
                     skipRequested.set(false)
                     adapter.disconnect()
                     connectedProtocol = null
@@ -2387,7 +2441,13 @@ enum class AttemptOutcome {
                         token = attemptToken,
                         startedAt = attemptStartedAt,
                     )
-                    break // user skip: next SERVER (not next protocol)
+                    // BLOCK v1.0.75 (D-1): ONE press skips the CURRENT PROTOCOL
+                    // attempt (cancelled through the adapter, stale-callback safe
+                    // via the attempt token) and continues with the next enabled
+                    // protocol of the SAME server. The next server is reached
+                    // only when this server's protocols are exhausted — the
+                    // cancel itself is recorded NEUTRAL above.
+                    continue
                 }
 
                 if (outcome == AttemptOutcome.TUNNEL_UP) {

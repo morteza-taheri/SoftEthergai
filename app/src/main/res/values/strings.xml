@@ -291,6 +291,7 @@
     <string name="automode_origin_auto_connect">Started by Auto Connect</string>
     <string name="automode_origin_auto_reconnect">Reconnected automatically (Auto-Reconnect)</string>
     <string name="automode_origin_manual">Connected manually</string>
+    <string name="auto_mode_error_no_more_untried">No more untried servers in this session — every server has been tried. Disconnect or add servers and try again.</string>
     <string name="title_home">Server List</string>
     <string name="server_list_count">%1$d servers</string>
     <string name="server_list_last_updated">Last updated: %1$s</string>
