@@ -284,7 +284,6 @@
     <string name="auto_mode_permission_battery_desc">To ensure the VPN remains connected without being stopped by Android in the background, please disable battery optimization.</string>
     <string name="auto_mode_permission_battery_allow">Configure</string>
     <string name="auto_mode_permission_battery_skip">Later</string>
-    <string name="auto_mode_connected_secure">Connected &amp; Protected</string>
     <!-- BLOCK v1.0.75 (D-3): the Auto Mode status answers WHY the tunnel is up.
          The origin label replaces the old "Connected (manual)" placeholder with
          the three real origins; unused legacy subtitles removed. -->
