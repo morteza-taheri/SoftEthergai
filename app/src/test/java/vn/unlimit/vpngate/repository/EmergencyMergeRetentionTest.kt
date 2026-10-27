@@ -249,9 +249,13 @@ class EmergencyMergeRetentionTest {
     // --------------------------------------------- the integrity gate stands
 
     @Test
-    fun `a degraded emergency file is still refused`() = runBlocking {
-        // The device held 103 OpenVPN profiles. An emergency file with none is
-        // exactly the truncation `DatasetIntegrity` exists to refuse.
+    fun `an emergency excerpt is accepted but never promoted to last-known-good`() = runBlocking {
+        // BLOCK v1.0.75 UPDATE: a profile-less emergency excerpt used to be
+        // refused outright by the OpenVPN-profile rule, so the emergency rung
+        // never refreshed anything. mergeAll now PRESERVES the stored profile
+        // bytes (server-list update fix), so accepting it can no longer degrade
+        // the dataset — the rule that still MUST hold is the V9 one: an
+        // emergency dataset is never promoted to last-known-good.
         val store = FakeStore(
             (1..261).map { row("stored-$it", profile = it <= 103) },
         )
@@ -263,15 +267,12 @@ class EmergencyMergeRetentionTest {
 
         val outcome = updater.update()
 
+        assertEquals(1, store.replaceCount)
         assertEquals(
-            ServerListUpdater.Outcome.Preserved(
-                ServerListUpdater.Reason.DEGRADED_DATASET,
-                261,
-            ),
-            outcome,
+            "the emergency rung must never overwrite the last-known-good snapshot",
+            0,
+            store.snapshotWrites,
         )
-        assertEquals(0, store.replaceCount)
-        assertEquals(0, store.snapshotWrites)
     }
 
     @Test

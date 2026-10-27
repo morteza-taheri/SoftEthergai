@@ -205,18 +205,22 @@ class ServerListUpdaterDatasetTest {
     }
 
     @Test
-    fun aProfileFreeCandidateIsStillRefusedByTheStage23Rule() = runBlocking {
+    fun aProfileFreeCandidateIsAcceptedAndProfilesSurviveTheMerge() = runBlocking {
+        // BLOCK v1.0.75 FIX: a profile-free feed (the outside-tunnel shape)
+        // used to be dropped entirely, so the list never updated outside a
+        // tunnel. It is accepted now; the profile bytes survive in mergeAll
+        // (pinned in EmergencyMergePolicyTest).
         val stored = (1..60).map { server("stored-$it") }
         val candidate = (1..60).map { server("candidate-$it", profile = false) }
         val store = FakeStore(stored)
 
         val outcome = ServerListUpdater(fetch = { candidate }, store = store).update()
 
-        assertEquals(
-            ServerListUpdater.Outcome.Preserved(ServerListUpdater.Reason.DEGRADED_DATASET, 60),
-            outcome,
-        )
-        assertEquals(0, store.replaceCount)
+        assertEquals(1, store.replaceCount)
+        // A FRESH accepted dataset IS promoted to last-known-good (the V9 rule
+        // only forbids promotion from cache/emergency datasets).
+        assertEquals(1, store.snapshotWrites)
+        assertEquals(60, store.items.size)
     }
 
     // ------------------------------------------ G: protocol collapse

@@ -680,6 +680,13 @@ internal fun mergeAll(
                     firstSeenAt = prev?.firstSeenAt ?: now,
                     lastSeenAt = now,
                     healthScore = retentionHealthScore(item, now),
+                    // BLOCK v1.0.75 FIX (server-list update): a feed fetched
+                    // WITHOUT a tunnel cannot carry OpenVPN profile bytes (the
+                    // profile API is tunnel-only). Overwriting a stored profile
+                    // with null would turn a connectable server into an
+                    // unconnectable one, so the stored bytes survive until the
+                    // feed can supply the real thing again.
+                    openVpnConfigData = item.openVpnConfigData ?: prev?.openVpnConfigData,
                 )
             )
     }

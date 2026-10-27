@@ -349,8 +349,18 @@ class ServerListUpdater(
                         "(hostName is the primary key; the collector merges on IP)",
                 )
             }
+            // BLOCK v1.0.75 FIX (server-list update): a feed fetched WITHOUT a
+            // tunnel carries no OpenVPN profile bytes, so this used to preserve
+            // the stored list forever — the list never updated outside a tunnel.
+            // mergeAll now PRESERVES the stored profile bytes for servers the
+            // feed lists and retains every server it does not, so accepting a
+            // profile-less feed can no longer lose a profile. The check is kept
+            // for the log.
             if (dropsOpenVpnProfiles(usableRows)) {
-                return Outcome.Preserved(Reason.DEGRADED_DATASET, store.currentCount())
+                CollectorLog.d(
+                    "Feed carries no OpenVPN profile; accepted anyway — mergeAll " +
+                        "preserves stored profile bytes and retains unlisted servers",
+                )
             }
 
             // Stage 2C-B: the dataset must also be worth storing. Everything

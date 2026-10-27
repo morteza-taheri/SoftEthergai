@@ -264,6 +264,25 @@ class EmergencyMergePolicyTest {
         assertFalse("a 10-row excerpt must be refused against a 261-row store", verdict.accepted)
     }
 
+    // ── BLOCK v1.0.75 FIX (server-list update) ─────────────────────────────
+
+    @Test
+    fun `mergeAll preserves stored OpenVPN profiles when the feed has none`() {
+        val dao = FakeDao()
+        dao.replaceAll((1..3).map { item("stored-$it", openVpnConfigData = "client\nproto tcp\n") })
+        assertEquals(3, dao.countWithOpenVpnConfig())
+
+        // A profile-less feed (the outside-tunnel shape) refreshes the servers.
+        val feed = (1..3).map { item("stored-$it") }
+        runBlocking { mergeAll(dao, feed, emptyList(), now = 5_000L) }
+
+        assertEquals(
+            "the merge must not wipe the stored OpenVPN profile bytes",
+            3,
+            dao.countWithOpenVpnConfig(),
+        )
+    }
+
     // ── §4.12 primary refresh behavior unchanged ──────────────────────────
 
     @Test
