@@ -6873,11 +6873,14 @@ no-network never set the clock; a success on that network clears it.
 
 ### 12.9.7 Absent-from-refresh demotion (D-8/C6)
 
-`server_history_summary.missedRefreshCount` (folded into Room **version 10** — no installed build ever
-opened v10, latest saved device DB `user_version = 9`). `markSeen` resets it to 0 for listed hosts;
-one UPDATE (`incrementMissedRefresh(marker)`) ages every row an ACCEPTED FRESH refresh did not list.
-Emergency/cache datasets route to plain `replaceAll` and never age rows. `>= 2` with no success on the
-current network → demoted, never deleted.
+`server_history_summary.missedRefreshCount` arrives with **Room 10 → 11** (`MIGRATION_10_11`), together
+with the three `*LastFailureAt` columns. v10 DID ship: the live device DB reported `user_version = 10`
+on 2026-10-27 (pulled read-only before installing), so the columns could NOT be folded into 10 — that
+would break Room's identity check on every upgraded device. `markSeen` resets `missedRefreshCount` to 0
+for listed hosts; one UPDATE (`incrementMissedRefresh(marker)`) ages every row an ACCEPTED FRESH
+refresh did not list. Emergency/cache datasets route to plain `replaceAll` and never age rows.
+`>= 2` with no success on the current network → demoted, never deleted. Verified on the real device:
+uv 10 (25 columns) → uv 11 (29 columns), row counts unchanged, `integrity_check: ok`.
 
 ### 12.9.8 Exploration (C7)
 
@@ -6955,4 +6958,4 @@ installing a newer build; this block folds its columns into version 10 only beca
 | 1.0.72 | 2026-10-27 | Physical-device verification of the retention quota (CSV import, duplicate handling, persistence, localized feedback). Evidence: `V1.0.72_PHYSICAL_DEVICE_QUOTA_VERIFICATION_REPORT.md`. |
 | 1.0.73 | 2026-10-27 | Quota/persistence reconciliation: 19/19 boundary tests, full regression 1335/1/0/0 + 184/0/0/0, lint 104/178/9. Room count and quota-at-limit display remain NOT OBSERVABLE / NOT TESTABLE. Evidence: `V1.0.73_FINAL_QUOTA_RECONCILIATION_REPORT.md`. |
 | 1.0.74 | 2026-10-27 | Final quota audit: evidence re-established live (device 5585fecc, 5 JSON records ×1, fresh 19/19 rerun). Verdicts: implementation PASS, physical PARTIAL. Evidence: `V1.0.74_FINAL_QUOTA_AUDIT_REPORT.md`. |
-| 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 10` gains `missedRefreshCount` and the three `*LastFailureAt` columns (folded — v10 never shipped; latest device DB copy is user_version 9). Migration verified on a copy of the real device DB (row counts unchanged, integrity ok, column-by-column parity with `10.json`). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
+| 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |

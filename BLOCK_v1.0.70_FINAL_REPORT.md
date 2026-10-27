@@ -27,8 +27,12 @@ fast-forward to `origin/main` (operator granted full commit+push authorization i
   `history/*`.
 - v1.0.69 PART 2 (`withExplorationSecond`): **committed** `08c6abe` — `AutoModeController.kt:2148`.
   Superseded by C7 (kept for reference; the controller no longer calls it).
-- **Room 10 shipped? NO** — latest saved device DB `test-evidence/dv61/final.db` (2026-10-25) has
-  `user_version = 9`; no copy anywhere is 10. Therefore C6's columns were FOLDED into version 10.
+- **Room 10 shipped? CORRECTED — YES.** PART 0 concluded "no" from the newest *saved* copy
+  (`dv61/final.db`, 2026-10-25, uv 9). The LIVE device database, pulled read-only on 2026-10-27,
+  reports **`user_version = 10`** with 25 summary columns: the installed build already opened the
+  Room-10 schema. The C6 columns therefore ship as a real **MIGRATION_10_11** (`d8f5fc8`), NOT as a
+  fold into 10 — folding would break Room's identity check on every upgraded device. `10.json` was
+  restored to the shipped 25-column schema and `11.json` exported.
 - All six CONTEXT claims (0.3 a–f) confirmed with file:line (see `BLOCK_v1.0.70_PART0_INVENTORY.md`).
 
 ## C. PART A — connection origin (D-3)
@@ -85,12 +89,25 @@ fast-forward to `origin/main` (operator granted full commit+push authorization i
 - **D3 dynamic update path**: ladder tests (`EmergencyLadderWiringTest`, merge/retention tests), refresh
   deadline (`ServerListRefreshDeadlineTest`), cancellable fetch (`HttpFetcherCancellationTest`).
 
-## G. PART E — migration on a COPY of the real device DB
+## G. PART E — migration verification
 
-`test-evidence/dv61/final.db` (uv 9) copied, MIGRATION_9_10 applied to the copy:
-uv → 10; rows unchanged (VPNGateItem 261, summary 4, protocol 4, event 4); `integrity_check` ok;
-29 columns vs 29 JSON fields; order/type/notnull/default parity: **NONE mismatches**. Copy deleted.
-Device itself never written.
+**G1 — on a copy (earlier):** `test-evidence/dv61/final.db` (uv 9) copied, the then-current
+MIGRATION_9_10 applied: uv → 10, rows unchanged, integrity ok, 29/29 column parity. Superseded by G2.
+
+**G2 — on the REAL device (PHYSICAL DEVICE EVIDENCE):**
+1. Read-only backup pulled BEFORE installing: `test-evidence/v1075_device_backup/` (main+wal+shm,
+   binary-exact via `exec-out`): **uv = 10, 25 summary columns, rows {VPNGateItem 400, summary 20,
+   protocol 27, event 160}**.
+2. APK built from `git archive d8f5fc8` (`:app:assembleProDebug`), installed with `adb install -r`
+   (no uninstall, no data clear), launched via the launcher intent.
+3. After launch: **uv = 11, 29 summary columns** (…, `missedRefreshCount`, `wifiLastFailureAt`,
+   `cellularLastFailureAt`, `unknownLastFailureAt`), **row counts identical** {400, 20, 27, 160},
+   `integrity_check: ok`, process alive, **zero new crash/ANR entries today**.
+4. Screenshot `test-evidence/v1075_device_backup/screen_after_launch.png`: Auto Mode screen renders
+   ("Disconnected / Tap to connect", Auto-Reconnect ON, live log) — the new build is healthy.
+
+The origin labels themselves are only visible while a tunnel is up; no VPN connection was attempted
+(see K).
 
 ## H. PART F — gates
 
@@ -118,6 +135,8 @@ Device itself never written.
 | 3 | `ManualServerQuotaTest` 19/19 (unchanged) | TEST |
 | 4 | Device identity/version 144 / 2.4.11-dev | PHYSICAL |
 | 5 | Migration parity on DB copy (uv 9→10) | PHYSICAL+TEST |
+| 5b | **Real-device migration 10→11**: uv 10/25 cols → uv 11/29 cols, rows identical, integrity ok | PHYSICAL |
+| 5c | Device backup before install (`test-evidence/v1075_device_backup/`) + post-launch screenshot | PHYSICAL |
 | 6 | 12 excluded packages in asset | SOURCE |
 | 7 | Origin/TryNext/history tests listed above | TEST |
 
