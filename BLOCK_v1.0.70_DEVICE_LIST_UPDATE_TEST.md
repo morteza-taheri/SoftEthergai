@@ -156,3 +156,41 @@ I/VPNGateViewModel: Server list updated atomically: 98 incoming, 485 stored (sna
 - History: all 20 tracked hosts were listed by the feed → `markSeen` reset their
   `missedRefreshCount` (0 aged rows) — the D-8 path exercised live
 - `PRAGMA integrity_check: ok`; screenshot `screen_list_updated.png`
+
+## 8c. Second operator report: "pressing update disconnects the tunnel" — root-caused
+
+Timeline captured on the device (final build, emergency source disabled, tunnel up):
+```
+19:21:57.723  D/AutoMode: [AUTO] No proof of life for 15000ms; tunnel considered lost
+19:21:58.125  D/VpnGateCollector: Binding socket to network 196 failed: EPERM   (the update's fetches)
+19:22:06.155  [ladder] all rungs failed; preserving DB      (after the bounded 8 s rebind wait)
+```
+**The update press does NOT disconnect the tunnel.** The `TunnelLivenessProbe` (TCP connect to
+1.1.1.1:443 through the tunnel, every 8 s) found no proof of life on the connected VPN Gate server, so
+the watchdog declared the tunnel dead and Auto-Reconnect re-established it — repeatedly (VPN network
+ids 156→158→160→162, one every ~25–30 s, timestamps independent of any update press). The update's
+fetches then landed in a lost window and failed with EPERM on the dead Network object.
+
+Fixes shipped for the update path under these conditions:
+1. `SIZE_COLLAPSE` no longer applies to fresh network feeds (the recorded baseline had been poisoned
+   by the emergency source's 245 CSV rows — `SETTING_LAST_ACCEPTED_DATASET_SIZE = 245`).
+2. A TUNNEL-rung failure triggers one **rebind retry with a bounded 8 s wait** for the tracker's next
+   VPN network (heals both the stale-Network EPERM and a handover window).
+Remaining honest limitation: when the connected server fails the probe continuously, the tunnel flaps
+by design (black-hole detection working); during the lost windows no fetch can succeed. That is a
+probe-target/product question (change 1.1.1.1:443 or the 15 s silence window), not an update-path bug.
+
+## 9. emergency_csv_publisher.py (operator question)
+
+Operates with sane defaults; key arguments (SOURCE: `build_parser()`, emergency_csv_publisher.py):
+`--config collector.toml` · `--max-servers 500` · `--output emergency-sources/servers.csv` ·
+`--url-output app/src/main/res/values/emergency_defaults.xml` · `--published-raw-url` ·
+`--health-check-timeout 3.0` / `--health-check-concurrency 20` / `--health-check-retries 1` ·
+`--mirror-fallbacks 3` · `--api-only` · `--min-rows 10` · `--max-bytes 900000` ·
+`--min-previous-for-ratio 20` · `--min-healthy-ratio 0.2` · `--force` · `--repo-dir` · `--no-push` ·
+`--dry-run` · `--verbose` · `--log-file`.
+
+`1.bat` was added to the repository root: a pass-through wrapper that runs
+`python emergency_csv_publisher.py <args>` from the project directory (`1.bat` = full publish with
+commit+push; `1.bat --dry-run` = local only; `1.bat --help` = all arguments; any argparse flag passes
+through; pauses on a bare double-click).
