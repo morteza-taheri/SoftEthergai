@@ -4,9 +4,11 @@ import android.net.Network
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import vn.unlimit.vpngate.data.model.CollectorLog
 import java.io.IOException
 import java.net.InetAddress
@@ -228,7 +230,7 @@ class OkHttpFetcher(
                     .header("Connection", "keep-alive")
                     .build()
 
-                client.newCall(request).execute().use { raw ->
+                callWithCancel(request).use { raw ->
                     val status = raw.code
                     val location = raw.header("Location")
                     val isRedirect = status in 300..399
@@ -322,6 +324,51 @@ class OkHttpFetcher(
 
             if (requestDelayMs > 0) delay(requestDelayMs)
             return response
+        }
+    }
+
+    /**
+     * v1.0.69 (overnight consolidation) — B-1 fix: make a blocking OkHttp
+     * exchange cancellation-cooperative.
+     *
+     * Previously [get] called [OkHttpClient.newCall].execute() directly inside
+     * [withContext]; a blocking call on the IO dispatcher is not cooperatively
+     * cancellable. When the surrounding coroutine was cancelled — e.g. the
+     * 45 s [MAIN_TIMEOUT_MS] deadline in VpnServerRepository fires — the socket
+     * kept reading until OkHttp's own connect(10 s) + read(15 s) budget elapsed
+     * (once per redirect hop), which is why device runs were observed hanging
+     * for 128 s / 139 s instead of the nominal 45 s.
+     *
+     * The fix registers a completion handler that cancels the underlying [Call]
+     * the moment the coroutine is cancelled, so the blocked read is interrupted
+     * immediately and the socket is released. Success-path behaviour, timeouts,
+     * DNS and redirect handling are unchanged.
+     */
+    private suspend fun callWithCancel(request: Request): Response {
+        val call = client.newCall(request)
+        return suspendCancellableCoroutine { cont ->
+            // Cancel the underlying OkHttp Call the moment the coroutine is
+            // cancelled, so a blocked read is interrupted immediately and the
+            // socket is released rather than lingering until OkHttp's own
+            // connect(10 s) + read(15 s) budget elapses.
+            cont.invokeOnCancellation { call.cancel() }
+            try {
+                val raw = call.execute()
+                if (cont.isActive) {
+                    cont.resumeWith(Result.success(raw))
+                } else {
+                    // Cancelled between execute() returning and this check:
+                    // we already own the response, so close it to avoid a leak.
+                    raw.close()
+                }
+            } catch (e: IOException) {
+                // On cancellation invokeOnCancellation has already called
+                // call.cancel(), which makes execute() throw IOException.
+                // Do not resume a cancelled continuation.
+                if (cont.isActive) {
+                    cont.resumeWith(Result.failure(e))
+                }
+            }
         }
     }
 }
