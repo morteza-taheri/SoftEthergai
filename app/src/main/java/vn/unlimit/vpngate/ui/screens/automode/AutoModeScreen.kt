@@ -121,6 +121,7 @@ import vn.unlimit.vpngate.automode.AutoModeEngine
 import vn.unlimit.vpngate.automode.AutoModeLogStore
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
+import vn.unlimit.vpngate.automode.ConnectionOrigin
 import vn.unlimit.vpngate.state.VpnConnectionStatus
 import vn.unlimit.vpngate.ui.theme.MonospaceStyle
 import vn.unlimit.vpngate.utils.DataUtil
@@ -522,7 +523,7 @@ fun AutoModeScreen(
                     ServerInfoCard(
                         hostname = s.hostname,
                         ip = s.ip,
-                        protocol = s.protocol.id.replace('_', ' '),
+                        protocol = s.protocol?.id?.replace('_', ' ').orEmpty(),
                         speed = s.speed,
                         ping = s.ping,
                         attempt = s.attempt,
@@ -533,7 +534,7 @@ fun AutoModeScreen(
                     ServerInfoCard(
                         hostname = s.hostname,
                         ip = s.ip,
-                        protocol = s.protocol.id.replace('_', ' '),
+                        protocol = s.protocol?.id?.replace('_', ' ').orEmpty(),
                         speed = s.speed,
                         ping = s.ping,
                         attempt = null,
@@ -699,12 +700,15 @@ private fun AutoConnectHeroButton(
             glowColor = Color(0x4D10B981),
             icon = Icons.Rounded.Shield,
             titleRes = R.string.auto_mode_state_connected,
-            // BUG-1: say so when the tunnel is up but this screen did not
-            // establish it, so "Connected" is not mistaken for an Auto Mode win.
-            subtitleRes = if (isExternal) {
-                R.string.auto_mode_state_connected_external
-            } else {
-                R.string.auto_mode_connected_secure
+            // BLOCK v1.0.75 (D-3): the subtitle answers WHY the tunnel is up —
+            // "started by Auto Connect" / "reconnected automatically" /
+            // "connected manually" — so a manual tunnel is never mistaken for
+            // an Auto Mode win and a reconnect is never mistaken for a fresh
+            // user start.
+            subtitleRes = when (state.origin) {
+                ConnectionOrigin.AUTO_CONNECT -> R.string.automode_origin_auto_connect
+                ConnectionOrigin.AUTO_RECONNECT -> R.string.automode_origin_auto_reconnect
+                ConnectionOrigin.MANUAL -> R.string.automode_origin_manual
             },
         )
         is AutoModeState.Error -> StateConfig(
@@ -858,17 +862,23 @@ private fun ServerInfoCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                ) {
-                    Text(
-                        text = protocol,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
+                // BLOCK v1.0.75 (D-3): the protocol chip is shown ONLY when a
+                // concrete protocol is known — a MANUAL tunnel with an ambiguous
+                // tracker label ("SoftEther", "OpenVPN") shows no protocol at
+                // all rather than a fabricated one.
+                if (protocol.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Text(
+                            text = protocol,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
                 }
             }
 

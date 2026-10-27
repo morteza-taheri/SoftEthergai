@@ -181,6 +181,10 @@
     <string name="auto_mode_state_connecting">Đang kết nối…</string>
     <string name="auto_mode_state_connected">Đã kết nối</string>
     <string name="auto_mode_state_error">Lỗi</string>
+    <!-- BLOCK v1.0.75 (D-3): why the tunnel is up -->
+    <string name="automode_origin_auto_connect">Được bắt đầu bằng Tự động kết nối</string>
+    <string name="automode_origin_auto_reconnect">Đã tự động kết nối lại (Tự động kết nối lại)</string>
+    <string name="automode_origin_manual">Đã kết nối thủ công</string>
     <string name="auto_mode_attempt_progress">Đang thử máy chủ %1$d / %2$d</string>
     <string name="auto_mode_attempt_n_of_m">Lần thử: %1$d / %2$d</string>
     <string name="auto_mode_server_name">Máy chủ: %1$s</string>

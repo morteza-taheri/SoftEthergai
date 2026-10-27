@@ -197,9 +197,20 @@ object AutoModeEngine {
                     is AutoModeState.Connecting -> AutoModeNotifier.notifyConnecting(
                         appContext, state.hostname, state.attempt, state.total,
                     )
-                    is AutoModeState.Connected -> AutoModeNotifier.notifyConnected(
-                        appContext, state.hostname, state.protocol.id,
-                    )
+                    is AutoModeState.Connected -> {
+                        // BLOCK v1.0.75 (D-3): the protocol is nullable now so a
+                        // MANUAL tunnel never displays a fabricated one. A run
+                        // Connected always knows its protocol; if it were ever
+                        // null there is nothing honest to notify, so clear.
+                        val protocolId = state.protocol?.id
+                        if (protocolId == null) {
+                            AutoModeNotifier.clear(appContext)
+                        } else {
+                            AutoModeNotifier.notifyConnected(
+                                appContext, state.hostname, protocolId,
+                            )
+                        }
+                    }
                     else -> AutoModeNotifier.clear(appContext)
                 }
             }

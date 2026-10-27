@@ -176,20 +176,43 @@ sealed class AutoModeState {
     data class Connecting(
         val hostname: String?,
         val ip: String?,
-        val protocol: AutoModeProtocol,
+        val protocol: AutoModeProtocol?,
         val speed: Long,
         val ping: Int,
         val attempt: Int,
         val total: Int,
+        /** BLOCK v1.0.75 (D-3): why this run is up. Set by the controller at start. */
+        val origin: ConnectionOrigin = ConnectionOrigin.AUTO_CONNECT,
     ) : AutoModeState()
 
     data class Connected(
         val hostname: String?,
         val ip: String?,
-        val protocol: AutoModeProtocol,
+        /**
+         * BLOCK v1.0.75 (D-3): nullable so a MANUAL tunnel shows only the protocol
+         * the tracker actually knows — a fabricated placeholder never appears.
+         */
+        val protocol: AutoModeProtocol?,
         val speed: Long,
         val ping: Int,
+        /** BLOCK v1.0.75 (D-3): why the tunnel is up. */
+        val origin: ConnectionOrigin = ConnectionOrigin.AUTO_CONNECT,
     ) : AutoModeState()
 
     data class Error(val message: String) : AutoModeState()
+}
+
+/**
+ * BLOCK v1.0.75 (D-3) — the reason the currently displayed tunnel is up.
+ *
+ * [AUTO_CONNECT] — a run the user started (Next-Server continuations keep it).
+ * [AUTO_RECONNECT] — the run [AutoModeController.onUnexpectedDisconnect] started
+ * after a tunnel it owned was lost. [MANUAL] — a live tunnel Auto Mode does not
+ * own (user connected through another screen; displayed with the REAL server
+ * identity from GlobalVpnTracker and no fabricated protocol).
+ */
+enum class ConnectionOrigin {
+    AUTO_CONNECT,
+    AUTO_RECONNECT,
+    MANUAL,
 }

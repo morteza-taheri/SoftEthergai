@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
+import vn.unlimit.vpngate.automode.ConnectionOrigin
 import vn.unlimit.vpngate.state.VpnConnectionStatus
 
 /**
@@ -178,5 +179,125 @@ class AutoModeDisplayStateTest {
 
         val reallyIdle = combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.DISCONNECTED)
         assertFalse("nothing is up, so Try Next is disabled", tryNextEnabled(reallyIdle.display))
+    }
+
+    // ── BLOCK v1.0.75 PART A (D-3): the connection origin ───────────────
+
+    @Test
+    fun `a run Connected keeps the origin the controller stamped on it`() {
+        val autoConnect = runConnected.copy(origin = ConnectionOrigin.AUTO_CONNECT)
+        val out = combineAutoModeState(autoConnect, VpnConnectionStatus.DISCONNECTED)
+        assertSame(autoConnect, out.display)
+        assertEquals(ConnectionOrigin.AUTO_CONNECT, (out.display as AutoModeState.Connected).origin)
+        assertFalse(out.isExternal)
+    }
+
+    @Test
+    fun `a reconnect run reports AUTO_RECONNECT through the combination`() {
+        val reconnected = runConnected.copy(origin = ConnectionOrigin.AUTO_RECONNECT)
+        val out = combineAutoModeState(reconnected, VpnConnectionStatus.CONNECTED)
+        // The run owns the display even while the tracker also says CONNECTED.
+        assertEquals(ConnectionOrigin.AUTO_RECONNECT, (out.display as AutoModeState.Connected).origin)
+        assertFalse(out.isExternal)
+    }
+
+    @Test
+    fun `every origin survives the combination for Connecting runs`() {
+        for (origin in ConnectionOrigin.entries) {
+            val connecting = runConnecting.copy(origin = origin)
+            val out = combineAutoModeState(connecting, VpnConnectionStatus.CONNECTED)
+            assertEquals("origin $origin must pass through untouched", origin, (out.display as AutoModeState.Connecting).origin)
+            assertFalse(out.isExternal)
+        }
+    }
+
+    @Test
+    fun `an external tunnel reports MANUAL with the REAL tracker identity`() {
+        val out = combineAutoModeState(
+            AutoModeState.Disconnected,
+            VpnConnectionStatus.CONNECTED,
+            externalHost = "manual.example.net",
+            externalIp = "198.51.100.9",
+            externalProtocolId = "SSTP",
+        )
+
+        val shown = out.display as AutoModeState.Connected
+        assertTrue(out.isExternal)
+        assertEquals("the manual tunnel shows its REAL host, not null", "manual.example.net", shown.hostname)
+        assertEquals("198.51.100.9", shown.ip)
+        assertEquals("the tracker names ONE transport, so it is shown", AutoModeProtocol.MS_SSTP, shown.protocol)
+        assertEquals(ConnectionOrigin.MANUAL, shown.origin)
+    }
+
+    @Test
+    fun `an external tunnel with an ambiguous protocol shows NO protocol`() {
+        for (ambiguous in listOf("SoftEther", "OpenVPN", null)) {
+            val out = combineAutoModeState(
+                AutoModeState.Disconnected,
+                VpnConnectionStatus.CONNECTED,
+                externalHost = "manual.example.net",
+                externalIp = "198.51.100.9",
+                externalProtocolId = ambiguous,
+            )
+            val shown = out.display as AutoModeState.Connected
+            assertNull("protocol '$ambiguous' must never be fabricated", shown.protocol)
+            assertEquals(ConnectionOrigin.MANUAL, shown.origin)
+        }
+    }
+
+    @Test
+    fun `an external CONNECTING tunnel reports MANUAL with the real identity`() {
+        val out = combineAutoModeState(
+            AutoModeState.Disconnected,
+            VpnConnectionStatus.CONNECTING,
+            externalHost = "manual.example.net",
+            externalIp = "198.51.100.9",
+            externalProtocolId = "SSTP",
+        )
+        val shown = out.display as AutoModeState.Connecting
+        assertTrue(out.isExternal)
+        assertEquals("manual.example.net", shown.hostname)
+        assertEquals(AutoModeProtocol.MS_SSTP, shown.protocol)
+        assertEquals(ConnectionOrigin.MANUAL, shown.origin)
+    }
+
+    @Test
+    fun `an external tunnel after a run error still reports MANUAL`() {
+        val out = combineAutoModeState(
+            AutoModeState.Error("no server answered"),
+            VpnConnectionStatus.CONNECTED,
+            externalHost = "manual.example.net",
+            externalIp = "198.51.100.9",
+            externalProtocolId = "SSTP",
+        )
+        val shown = out.display as AutoModeState.Connected
+        assertTrue(out.isExternal)
+        assertEquals(ConnectionOrigin.MANUAL, shown.origin)
+        assertTrue("the run error is preserved for the error card", out.modeState is AutoModeState.Error)
+    }
+
+    @Test
+    fun `external defaults keep the no-fabrication rule when the caller passes no identity`() {
+        // Legacy 2-arg callers (tests, future call sites): the synthesized
+        // external state must not invent host, IP or protocol.
+        val out = combineAutoModeState(AutoModeState.Disconnected, VpnConnectionStatus.CONNECTED)
+        val shown = out.display as AutoModeState.Connected
+        assertNull(shown.hostname)
+        assertNull(shown.ip)
+        assertNull(shown.protocol)
+        assertEquals(ConnectionOrigin.MANUAL, shown.origin)
+    }
+
+    // ── BLOCK v1.0.75 PART A: the tracker-label → protocol mapping ──────
+
+    @Test
+    fun `tracker protocol labels map honestly`() {
+        assertEquals(AutoModeProtocol.MS_SSTP, AutoModeProtocol.fromTrackerId("SSTP"))
+        assertEquals(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.fromTrackerId("SOFTETHER_TCP"))
+        assertEquals(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.fromTrackerId("SOFTETHER_UDP"))
+        assertNull(AutoModeProtocol.fromTrackerId("SoftEther"))
+        assertNull(AutoModeProtocol.fromTrackerId("OpenVPN"))
+        assertNull(AutoModeProtocol.fromTrackerId("something-else"))
+        assertNull(AutoModeProtocol.fromTrackerId(null))
     }
 }

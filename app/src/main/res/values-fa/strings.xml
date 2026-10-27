@@ -253,7 +253,9 @@
     <string name="auto_mode_permission_battery_desc">برای جلوگیری از قطع شدن اتصال وی‌پی‌ان در پس‌زمینه توسط اندروید، لطفاً مصرف باتری را روی حالت بدون محدودیت قرار دهید.</string>
     <string name="auto_mode_permission_battery_allow">تنظیم</string>
     <string name="auto_mode_permission_battery_skip">بعداً</string>
-    <string name="auto_mode_connected_secure">متصل و ایمن</string>
+    <string name="automode_origin_auto_connect">توسط اتصال خودکار شروع شد</string>
+    <string name="automode_origin_auto_reconnect">به‌طور خودکار دوباره وصل شد (اتصال مجدد خودکار)</string>
+    <string name="automode_origin_manual">به‌صورت دستی وصل شد</string>
     <string name="title_home">لیست سرورها</string>
     <string name="server_list_count">%1$d سرور</string>
     <string name="server_list_last_updated">آخرین بروزرسانی: %1$s</string>

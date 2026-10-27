@@ -12,6 +12,7 @@ import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.automode.AutoModeEngine
 import vn.unlimit.vpngate.automode.AutoModeProtocol
 import vn.unlimit.vpngate.automode.AutoModeState
+import vn.unlimit.vpngate.automode.ConnectionOrigin
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 import vn.unlimit.vpngate.state.VpnConnectionStatus
 import vn.unlimit.vpngate.utils.DataUtil
@@ -58,6 +59,9 @@ data class AutoModeDisplayState(
 internal fun combineAutoModeState(
     modeState: AutoModeState,
     tunnelStatus: VpnConnectionStatus,
+    externalHost: String? = null,
+    externalIp: String? = null,
+    externalProtocolId: String? = null,
 ): AutoModeDisplayState {
     if (modeState is AutoModeState.Connected) {
         return AutoModeDisplayState(modeState, tunnelStatus, modeState, true, false)
@@ -66,22 +70,29 @@ internal fun combineAutoModeState(
         return AutoModeDisplayState(modeState, tunnelStatus, modeState, true, false)
     }
 
+    // BLOCK v1.0.75 (D-3): an external tunnel is displayed with its REAL
+    // identity from GlobalVpnTracker — host, IP, and the protocol ONLY when the
+    // tracker names one concrete transport (never a fabricated placeholder).
+    // The origin is MANUAL: the status answers "why is the tunnel up" with
+    // "connected manually".
     val external = when (tunnelStatus) {
         VpnConnectionStatus.CONNECTED -> AutoModeState.Connected(
-            hostname = null,
-            ip = null,
-            protocol = AutoModeProtocol.SOFTETHER_TCP,
+            hostname = externalHost,
+            ip = externalIp,
+            protocol = AutoModeProtocol.fromTrackerId(externalProtocolId),
             speed = 0L,
             ping = 0,
+            origin = ConnectionOrigin.MANUAL,
         )
         VpnConnectionStatus.CONNECTING -> AutoModeState.Connecting(
-            hostname = null,
-            ip = null,
-            protocol = AutoModeProtocol.SOFTETHER_TCP,
+            hostname = externalHost,
+            ip = externalIp,
+            protocol = AutoModeProtocol.fromTrackerId(externalProtocolId),
             speed = 0L,
             ping = 0,
             attempt = 0,
             total = 0,
+            origin = ConnectionOrigin.MANUAL,
         )
         else -> null
     }
@@ -136,7 +147,15 @@ class AutoModeViewModel(application: Application) : AndroidViewModel(application
             combine(
                 AutoModeEngine.stateFlow,
                 GlobalVpnTracker.vpnState,
-            ) { modeState, global -> combineAutoModeState(modeState, global.status) }
+            ) { modeState, global ->
+                combineAutoModeState(
+                    modeState,
+                    global.status,
+                    externalHost = global.serverHost,
+                    externalIp = global.serverIp,
+                    externalProtocolId = global.protocol,
+                )
+            }
                 .collectLatest { _displayState.value = it }
         }
     }

@@ -839,6 +839,16 @@ enum class AttemptOutcome {
     private var resumeFromServerKey: String? = null
 
     /**
+     * BLOCK v1.0.75 (D-3) — why the current run is up. Set by every start path
+     * before the run is launched: [ConnectionOrigin.AUTO_CONNECT] for user
+     * presses (the Next-Server continuations keep it), [ConnectionOrigin
+     * .AUTO_RECONNECT] for the restart inside [onUnexpectedDisconnect]. Read
+     * when the Connecting/Connected states are published.
+     */
+    @Volatile
+    private var runOrigin: ConnectionOrigin = ConnectionOrigin.AUTO_CONNECT
+
+    /**
      * User-requested skip of the current server (Try next server button).
      * - While Connecting: aborts the in-flight attempt and moves on.
      * - While Connected (the run is done but the connected watcher is
@@ -992,8 +1002,11 @@ enum class AttemptOutcome {
                                 adapter.log("[AUTO] Skip superseded by stop; not relaunching")
                                 job = null
                             } else {
-                                overrideServers = remaining
-                                // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is
+                            overrideServers = remaining
+                            // BLOCK v1.0.75 (D-3): a Next-Server continuation is a
+                            // user-driven run — it keeps AUTO_CONNECT (D-1/D-2).
+                            runOrigin = ConnectionOrigin.AUTO_CONNECT
+                            // v1.0.54 (§1.6.46) PART 1 / R-1: `skipInFlight` is
                                 // deliberately NOT cleared here. It stays true until
                                 // `runAutoMode()` publishes a non-Connected state,
                                 // because until then the state still reads Connected
@@ -1099,6 +1112,9 @@ enum class AttemptOutcome {
                             job = null
                         } else {
                             overrideServers = remaining
+                            // BLOCK v1.0.75 (D-3): pressing Next on a MANUAL tunnel
+                            // hands control to a user-driven Auto Mode run.
+                            runOrigin = ConnectionOrigin.AUTO_CONNECT
                             // Keep skipInFlight true until runAutoMode publishes a
                             // non-Connected state (setState owns the clear).
                             job = scope.launch { runAutoMode() }
@@ -1342,6 +1358,9 @@ enum class AttemptOutcome {
                 it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
             }
         }
+        // BLOCK v1.0.75 (D-3): this run exists because the tunnel we owned was
+        // lost — the status must say "reconnected automatically".
+        runOrigin = ConnectionOrigin.AUTO_RECONNECT
         start()
     }
 
@@ -1554,6 +1573,7 @@ enum class AttemptOutcome {
         }
         overrideServers = null
         resetReconnectBudget()
+        runOrigin = ConnectionOrigin.AUTO_CONNECT
         start()
         return true
     }
@@ -1588,6 +1608,7 @@ enum class AttemptOutcome {
                 // A fresh start always begins at the top of the list.
                 resumeFromServerKey = null
                 resetReconnectBudget()
+                runOrigin = ConnectionOrigin.AUTO_CONNECT
                 start()
             }
             is AutoModeState.Connecting -> stop()
@@ -1619,6 +1640,10 @@ enum class AttemptOutcome {
                 // suspend.
                 resumeFromServerKey = connectedCandidate?.let { serverKey(it) }
                 disconnectNow()
+                // BLOCK v1.0.75 (D-3): pressing while connected is the user's
+                // Next-Server action — the replacement run is user-driven, so
+                // the origin stays AUTO_CONNECT even after an AUTO_RECONNECT run.
+                runOrigin = ConnectionOrigin.AUTO_CONNECT
                 start()
             }
         }
@@ -2271,6 +2296,7 @@ enum class AttemptOutcome {
                         ping = server.ping,
                         attempt = attempt,
                         total = servers.size,
+                        origin = runOrigin,
                     )
                 )
 
@@ -2872,6 +2898,7 @@ enum class AttemptOutcome {
                         protocol = connectedProtocol,
                         speed = server.speed,
                         ping = server.ping,
+                        origin = runOrigin,
                     )
                 )
                 // Set BEFORE the watcher is armed: an OS-level loss can be

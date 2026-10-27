@@ -20,6 +20,19 @@ enum class AutoModeProtocol(val id: String) {
         const val DEFAULT_ID = "SOFTETHER_UDP"
 
         /**
+         * BLOCK v1.0.75 (D-3) — maps a GlobalVpnTracker protocol label to a
+         * concrete [AutoModeProtocol], or null when the label cannot honestly
+         * name ONE protocol. "SoftEther" (transport unknown) and "OpenVPN"
+         * (transport unknown) deliberately map to null: the manual-tunnel
+         * display must never fabricate TCP vs UDP.
+         */
+        fun fromTrackerId(id: String?): AutoModeProtocol? = when (id) {
+            null -> null
+            "SSTP" -> MS_SSTP
+            else -> entries.firstOrNull { it.id == id }
+        }
+
+        /**
          * AUTOCONNECT-AUDIT D-7: the protocol [id] names, or **null** when it names none.
          *
          * This used to fall back to [SOFTETHER_UDP], so any unrecognised string — a value
