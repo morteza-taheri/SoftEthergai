@@ -1678,7 +1678,15 @@ enum class AttemptOutcome {
                     adapter.log("[AUTO] Skip in flight; button press treated as stop")
                 }
                 adapter.log("[AUTO] Disconnect requested from the connected state")
-                stop()
+                // [disconnectNow], NOT [stop]: a successful run has already
+                // finished, so `isRunning` is false and [stop] returns after
+                // publishing Disconnected WITHOUT tearing the tunnel down —
+                // device evidence 2026-10-27: the state read Disconnected while
+                // tun0 stayed up. [disconnectNow] always issues the teardown,
+                // ends ownership (R8: no Auto-Reconnect for a deliberate
+                // disconnect), clears the session tried-set and publishes
+                // Disconnected.
+                disconnectNow()
             }
         }
     }

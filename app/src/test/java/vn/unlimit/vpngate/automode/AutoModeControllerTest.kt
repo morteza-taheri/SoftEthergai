@@ -699,6 +699,14 @@ class AutoModeControllerTest {
         )
         assertEquals("a disconnect must not dial anything", emptyList<Pair<String?, AutoModeProtocol>>(), adapter.connects.toList())
         assertFalse("the run must not be running after a disconnect", c.isRunning)
+        // The teardown is issued on the controller's scope; wait for the fake to
+        // observe it before asserting (bounded, so a missing teardown fails fast).
+        withTimeoutOrNull(2_000) { while (adapter.logs.none { it == "disconnect" }) delay(5) }
+        assertTrue(
+            "the adapter must receive a real teardown (device bug 2026-10-27: the " +
+                "state read Disconnected while tun0 stayed up): ${adapter.logs.takeLast(10)}",
+            adapter.logs.any { it == "disconnect" },
+        )
         assertTrue("Disconnected must appear after Connected, saw $seen", seen.any { it is AutoModeState.Disconnected })
     }
 
