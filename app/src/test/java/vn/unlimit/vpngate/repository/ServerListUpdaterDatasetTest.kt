@@ -47,6 +47,16 @@ class ServerListUpdaterDatasetTest {
 
         override fun currentDataset(): List<VPNGateItem> = items
 
+        // BLOCK v1.0.75 FIX: these tests treat the stored list as the previous
+        // accepted observation, so the explicit baseline mirrors it.
+        override fun lastAcceptedFreshSize(): Int = items.size
+
+        override fun recordAcceptedFreshSize(size: Int) {
+            lastRecordedSize = size
+        }
+
+        var lastRecordedSize: Int = 0
+
         override fun replaceAll(items: List<VPNGateItem>) {
             this.items = items
             replaceCount++

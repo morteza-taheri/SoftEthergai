@@ -258,7 +258,9 @@ class EmergencyMergePolicyTest {
     fun `DatasetIntegrity rejects a degraded emergency excerpt vs a healthy store`() {
         val stored = (1..261).map { item("stored-$it") }
         val emergency = (1..10).map { item("emg-$it") }
-        val verdict = DatasetIntegrity.evaluate(emergency, stored, SourceCapability.UNKNOWN)
+        val verdict = DatasetIntegrity.evaluate(
+            emergency, stored, SourceCapability.UNKNOWN, lastAcceptedSize = stored.size,
+        )
         assertFalse("a 10-row excerpt must be refused against a 261-row store", verdict.accepted)
     }
 

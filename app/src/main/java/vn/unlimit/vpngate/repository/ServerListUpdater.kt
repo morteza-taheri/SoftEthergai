@@ -126,6 +126,20 @@ class ServerListUpdater(
         fun currentDataset(): List<VPNGateItem> = emptyList()
 
         /**
+         * BLOCK v1.0.75 FIX — the size of the last ACCEPTED fresh network
+         * dataset, or 0 when unknown.
+         *
+         * The stored table is a RETENTION union (up to 500 rows, including rows
+         * an emergency merge added), so comparing a live ~100-server feed
+         * against it trips the 50 % collapse floor forever. This is the size
+         * the previous accepted response actually had.
+         */
+        fun lastAcceptedFreshSize(): Int = 0
+
+        /** Record the size of a fresh dataset that was just accepted. */
+        fun recordAcceptedFreshSize(size: Int) {}
+
+        /**
          * Persist [items] as the new last-known-good snapshot, once they have
          * been accepted and the table already holds them. Implementations must
          * never destroy the previous snapshot before the new one is safely
@@ -348,7 +362,18 @@ class ServerListUpdater(
             } catch (e: Exception) {
                 SourceCapability.UNKNOWN
             }
-            val verdict = DatasetIntegrity.evaluate(usableRows, store.currentDataset(), capability)
+            // BLOCK v1.0.75 FIX: a FRESH network response is judged against the
+            // last accepted fresh dataset (or bootstraps when none is recorded
+            // yet). A cache/emergency candidate is NOT a fresh observation and
+            // keeps its strict rule: judged against what is stored right now.
+            val baselineForThisRun = store.lastAcceptedFreshSize().takeIf { it > 0 }
+                ?: if (fromCache || suppliedByEmergency) store.currentCount() else 0
+            val verdict = DatasetIntegrity.evaluate(
+                usableRows,
+                store.currentDataset(),
+                capability,
+                lastAcceptedSize = baselineForThisRun,
+            )
             if (!verdict.accepted) {
                 CollectorLog.d(
                     "Dataset rejected (${verdict.defect}): ${verdict.detail}; " +
@@ -365,6 +390,10 @@ class ServerListUpdater(
                     store.replaceAll(usableRows)
                 } else {
                     store.replaceAllAndMarkSeen(usableRows, refreshMarker)
+                    // BLOCK v1.0.75 FIX: remember what a REAL fresh response
+                    // looked like, so the next one is judged against it rather
+                    // than against the retention union.
+                    store.recordAcceptedFreshSize(usableRows.size)
                 }
                 // Only now, after the dataset is stored and known good, does
                 // it become the last-known-good fallback. A rejected dataset

@@ -123,7 +123,7 @@ class DatasetIntegrityTest {
         // a stored list of 100 � that is truncation, not churn.
         val stored = uniform(100)
         val candidate = uniform(12, "tiny")
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertFalse(verdict.accepted)
         assertEquals(DatasetDefect.SIZE_COLLAPSE, verdict.defect)
     }
@@ -132,7 +132,7 @@ class DatasetIntegrityTest {
         val stored = healthy(100)
         // 85% of the stored size: normal churn, far from the ratio floor.
         val candidate = healthy(85, "smaller")
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertTrue(verdict.accepted)
     }
 
@@ -143,15 +143,15 @@ class DatasetIntegrityTest {
         val justAbove = uniform((stored.size * ratio).toInt() + 1, "above")
         val justBelow = uniform((stored.size * ratio).toInt() - 1, "below")
 
-        assertTrue(DatasetIntegrity.evaluate(justAbove, stored, full).accepted)
-        assertFalse(DatasetIntegrity.evaluate(justBelow, stored, full).accepted)
+        assertTrue(DatasetIntegrity.evaluate(justAbove, stored, full, lastAcceptedSize = stored.size).accepted)
+        assertFalse(DatasetIntegrity.evaluate(justBelow, stored, full, lastAcceptedSize = stored.size).accepted)
     }
 
     @Test
     fun aCandidateLargerThanTheStoredListIsAccepted() {
         val stored = healthy(20)
         val candidate = healthy(250, "bigger")
-        assertTrue(DatasetIntegrity.evaluate(candidate, stored, full).accepted)
+        assertTrue(DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size).accepted)
     }
 
     @Test
@@ -171,7 +171,7 @@ class DatasetIntegrityTest {
         val candidate = (1..100).map {
             server("candidate-$it", seTcp = true, seUdp = true, ovpnTcp = true, profile = true)
         }
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertFalse(verdict.accepted)
         assertEquals(DatasetDefect.PROTOCOL_COLLAPSE, verdict.defect)
         assertTrue(verdict.detail.startsWith("SSTP"))
@@ -183,7 +183,7 @@ class DatasetIntegrityTest {
         val candidate = (1..100).map {
             server("candidate-$it", seTcp = true, sstp = true, ovpnTcp = true, profile = true)
         }
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertFalse(verdict.accepted)
         assertEquals(DatasetDefect.PROTOCOL_COLLAPSE, verdict.defect)
         assertTrue(verdict.detail.startsWith("SoftEther UDP"))
@@ -206,7 +206,7 @@ class DatasetIntegrityTest {
                 profile = true,
             )
         }
-        assertTrue(DatasetIntegrity.evaluate(candidate, stored, full).accepted)
+        assertTrue(DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size).accepted)
     }
 
     @Test
@@ -225,7 +225,7 @@ class DatasetIntegrityTest {
         // protocol held by 15 of them is noise, not a collapse.
         val stored = (1..23).map { i -> server("stored-$i", seTcp = true, sstp = i <= 15) }
         val candidate = (1..23).map { server("candidate-$it", seTcp = true) }
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertTrue(verdict.accepted)
     }
 
@@ -248,7 +248,7 @@ class DatasetIntegrityTest {
                 profile = i <= 5,
             )
         }
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertFalse(verdict.accepted)
         assertEquals(DatasetDefect.PROFILE_COLLAPSE, verdict.defect)
     }
@@ -260,7 +260,7 @@ class DatasetIntegrityTest {
         // source without an API feed is not a corruption.
         val stored = uniform(100)
         val candidate = uniform(100, "candidate", profile = false)
-        val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
+        val verdict = DatasetIntegrity.evaluate(candidate, stored, full, lastAcceptedSize = stored.size)
         assertTrue(verdict.detail, verdict.accepted)
     }
 
@@ -272,7 +272,7 @@ class DatasetIntegrityTest {
         // SoftEther/SSTP/L2TP facts. Losing them is a source limitation.
         val stored = healthy(100)
         val apiOnly = (1..100).map { server("api-$it", ovpnTcp = true, profile = true) }
-        val verdict = DatasetIntegrity.evaluate(apiOnly, stored, SourceCapability.API_ONLY)
+        val verdict = DatasetIntegrity.evaluate(apiOnly, stored, SourceCapability.API_ONLY, lastAcceptedSize = stored.size)
         assertTrue(
             "an API-only dataset must not be rejected for SoftEther: ${verdict.detail}",
             verdict.accepted,
@@ -283,7 +283,7 @@ class DatasetIntegrityTest {
     fun anHtmlOnlyRunIsNotPunishedForHavingNoProfiles() {
         val stored = healthy(100)
         val htmlOnly = healthy(100, "html")
-        val verdict = DatasetIntegrity.evaluate(htmlOnly, stored, SourceCapability.HTML_ONLY)
+        val verdict = DatasetIntegrity.evaluate(htmlOnly, stored, SourceCapability.HTML_ONLY, lastAcceptedSize = stored.size)
         assertTrue(verdict.accepted)
     }
 
@@ -294,11 +294,11 @@ class DatasetIntegrityTest {
         val stored = healthy(100)
         val apiOnly = (1..100).map { server("api-$it", ovpnTcp = true, profile = true) }
         assertTrue(
-            DatasetIntegrity.evaluate(apiOnly, stored, SourceCapability.API_ONLY).accepted
+            DatasetIntegrity.evaluate(apiOnly, stored, SourceCapability.API_ONLY, lastAcceptedSize = stored.size).accepted
         )
         assertEquals(
             DatasetDefect.PROTOCOL_COLLAPSE,
-            DatasetIntegrity.evaluate(apiOnly, stored, full).defect,
+            DatasetIntegrity.evaluate(apiOnly, stored, full, lastAcceptedSize = stored.size).defect,
         )
     }
 
@@ -344,7 +344,7 @@ class DatasetIntegrityTest {
         val stored = previousObservation + older
         val live = healthy(99, "live")
 
-        val verdict = DatasetIntegrity.evaluate(live, stored, full)
+        val verdict = DatasetIntegrity.evaluate(live, stored, full, lastAcceptedSize = 100)
 
         assertTrue(
             "a live feed of 99 against a previous observation of 100 must be accepted " +
@@ -358,7 +358,7 @@ class DatasetIntegrityTest {
         val stored = healthy(100, "prev").onEach { it.lastSeenAt = 2_000L }
         val truncated = healthy(10, "live")
 
-        val verdict = DatasetIntegrity.evaluate(truncated, stored, full)
+        val verdict = DatasetIntegrity.evaluate(truncated, stored, full, lastAcceptedSize = 100)
 
         assertFalse("10 of 100 is a collapse and must stay rejected", verdict.accepted)
         assertEquals(DatasetDefect.SIZE_COLLAPSE, verdict.defect)
@@ -372,11 +372,42 @@ class DatasetIntegrityTest {
         val older = uniform(300, "old").onEach { it.lastSeenAt = 1_000L }
         val live = uniform(99, "live")
 
-        val verdict = DatasetIntegrity.evaluate(live, previous + older, full)
+        val verdict = DatasetIntegrity.evaluate(live, previous + older, full, lastAcceptedSize = 99)
 
         assertTrue(
             "99 of the previous 100 must not look like a protocol collapse: ${verdict.detail}",
             verdict.accepted,
         )
+    }
+
+    // ------------------------------------------------- BLOCK v1.0.75 FIX (2)
+    // The explicit last-accepted size is the authoritative baseline: the stored
+    // union can be inflated by an emergency merge (device: the newest
+    // lastSeenAt group was 250 rows while the live feed was ~98).
+
+    @Test
+    fun `an explicit last-accepted baseline accepts a live feed over an inflated union`() {
+        val stored = healthy(250, "union").onEach { it.lastSeenAt = 5_000L } +
+            healthy(150, "old").onEach { it.lastSeenAt = 1_000L }
+        val live = healthy(98, "live")
+
+        val verdict = DatasetIntegrity.evaluate(live, stored, full, lastAcceptedSize = 98)
+
+        assertTrue(
+            "98 against an accepted baseline of 98 must pass even with a 400-row union: " +
+                verdict.detail,
+            verdict.accepted,
+        )
+    }
+
+    @Test
+    fun `an explicit last-accepted baseline still rejects a truncated response`() {
+        val stored = healthy(250, "union").onEach { it.lastSeenAt = 5_000L }
+        val truncated = healthy(20, "live")
+
+        val verdict = DatasetIntegrity.evaluate(truncated, stored, full, lastAcceptedSize = 98)
+
+        assertFalse("20 of an accepted 98 is a collapse", verdict.accepted)
+        assertEquals(DatasetDefect.SIZE_COLLAPSE, verdict.defect)
     }
 }

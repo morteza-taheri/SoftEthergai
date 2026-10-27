@@ -292,6 +292,20 @@ object ServerListUpdates {
 
         override fun currentDataset(): List<VPNGateItem> = dao?.getAll().orEmpty()
 
+        // BLOCK v1.0.75 FIX: the baseline for the size-collapse check is the
+        // last ACCEPTED fresh dataset, persisted in DataUtil — never the
+        // retention union.
+        override fun lastAcceptedFreshSize(): Int =
+            runCatching {
+                vn.unlimit.vpngate.App.instance?.dataUtil?.getLastAcceptedDatasetSize() ?: 0
+            }.getOrDefault(0)
+
+        override fun recordAcceptedFreshSize(size: Int) {
+            runCatching {
+                vn.unlimit.vpngate.App.instance?.dataUtil?.setLastAcceptedDatasetSize(size)
+            }
+        }
+
         // VPNGateItemDao.replaceAll is @Transaction and refuses an empty
         // list, so this swap is atomic and can never blank the table.
         //

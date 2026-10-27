@@ -254,6 +254,12 @@ object DatasetIntegrity {
         candidate: List<VPNGateItem>,
         stored: List<VPNGateItem>,
         capability: SourceCapability,
+        /**
+         * BLOCK v1.0.75 FIX: the size of the last ACCEPTED fresh dataset, when
+         * the caller knows it. 0 = unknown, in which case the baseline is
+         * derived from [stored] (the pre-fix behaviour).
+         */
+        lastAcceptedSize: Int = 0,
     ): DatasetVerdict {
         if (candidate.size < MIN_ACCEPTABLE_DATASET_SIZE) {
             return DatasetVerdict(
@@ -297,28 +303,51 @@ object DatasetIntegrity {
         val candidateCoverage = coverage(candidate)
         val baselineCoverage = coverage(baseline)
 
-        val sizeFloor = baseline.size * MIN_RELATIVE_DATASET_RATIO
+        // BLOCK v1.0.75 FIX: with no RECORDED baseline the union is not a
+        // comparable baseline — it mixes retention rows and emergency-merge rows
+        // (device: the newest group was 250 rows while the live feed was ~98), so
+        // comparing against it rejected every refresh forever. The first fresh
+        // response is therefore judged by the absolute floor only, and the
+        // updater records its size so the NEXT response is checked strictly.
+        if (lastAcceptedSize <= 0) {
+            return DatasetVerdict(
+                accepted = true,
+                detail = "no recorded baseline; accepting and recording ${candidate.size} server(s)",
+            )
+        }
+
+        // The explicit size of the last ACCEPTED fresh dataset is the only
+        // baseline free of retention/emergency inflation.
+        val sizeFloor = lastAcceptedSize * MIN_RELATIVE_DATASET_RATIO
         if (candidate.size < sizeFloor) {
             return DatasetVerdict(
                 accepted = false,
                 defect = DatasetDefect.SIZE_COLLAPSE,
-                detail = "candidate ${candidate.size} server(s) vs previous observation " +
-                    "${baseline.size} of ${stored.size} stored (ratio floor $MIN_RELATIVE_DATASET_RATIO)",
+                detail = "candidate ${candidate.size} server(s) vs last accepted $lastAcceptedSize " +
+                    "(stored union ${stored.size}; ratio floor $MIN_RELATIVE_DATASET_RATIO)",
             )
         }
 
         // A source that cannot publish a column at all must not be judged as
         // having lost it.
+        //
+        // BLOCK v1.0.75 FIX: coverage is compared as a SHARE of each dataset,
+        // not as absolute counts. The stored union is larger than a live feed by
+        // design, so absolute counts made every live feed look like a protocol
+        // collapse (e.g. 98 SSTP servers against 250 stored). A real collapse —
+        // a transport vanishing from the response — still trips this.
         if (capability.providesProtocolColumns) {
             for ((label, count) in PROTOCOLS) {
                 val storedCount = count(baselineCoverage)
                 if (storedCount < MIN_PROTOCOL_COVERAGE_BASELINE) continue
-                val candidateCount = count(candidateCoverage)
-                if (candidateCount < storedCount * MIN_PROTOCOL_COVERAGE_RATIO) {
+                val storedShare = storedCount.toDouble() / baseline.size
+                val candidateShare = count(candidateCoverage).toDouble() / candidate.size
+                if (candidateShare < storedShare * MIN_PROTOCOL_COVERAGE_RATIO) {
                     return DatasetVerdict(
                         accepted = false,
                         defect = DatasetDefect.PROTOCOL_COLLAPSE,
-                        detail = "$label collapsed from $storedCount to $candidateCount server(s)",
+                        detail = "$label collapsed from ${"%.0f".format(storedShare * 100)}% " +
+                            "to ${"%.0f".format(candidateShare * 100)}% of the dataset",
                     )
                 }
             }
@@ -332,13 +361,17 @@ object DatasetIntegrity {
                 // updater's own dropsOpenVpnProfiles rule; this check exists
                 // for the partial collapse, where a few surviving profiles
                 // would otherwise look like success.
+                val storedShare = storedProfiles.toDouble() / baseline.size
+                val candidateShare = candidateProfiles.toDouble() / candidate.size
                 if (candidateProfiles > 0 &&
-                    candidateProfiles < storedProfiles * MIN_PROFILE_COVERAGE_RATIO
+                    candidateShare < storedShare * MIN_PROFILE_COVERAGE_RATIO
                 ) {
                     return DatasetVerdict(
                         accepted = false,
                         defect = DatasetDefect.PROFILE_COLLAPSE,
-                        detail = "OpenVPN profiles collapsed from $storedProfiles to $candidateProfiles",
+                        detail = "OpenVPN profiles collapsed from " +
+                            "${"%.0f".format(storedShare * 100)}% to " +
+                            "${"%.0f".format(candidateShare * 100)}% of the dataset",
                     )
                 }
             }

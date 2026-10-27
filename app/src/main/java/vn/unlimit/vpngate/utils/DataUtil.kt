@@ -480,6 +480,22 @@ class DataUtil(context: Context?) {
         )
     }
 
+    /**
+     * BLOCK v1.0.75 FIX — the size of the last ACCEPTED fresh network dataset.
+     *
+     * This is the only honest baseline for the size-collapse check: the stored
+     * table is a RETENTION union (up to 500 rows, including rows an emergency
+     * merge added), while a live feed is ~100 servers. Comparing the two
+     * rejected every refresh on the device (400 vs ~100, floor 50 %).
+     * 0 means "unknown" — the check then falls back to the stored dataset.
+     */
+    fun getLastAcceptedDatasetSize(): Int =
+        getIntSetting(SETTING_LAST_ACCEPTED_DATASET_SIZE, 0).coerceAtLeast(0)
+
+    fun setLastAcceptedDatasetSize(size: Int) {
+        setIntSetting(SETTING_LAST_ACCEPTED_DATASET_SIZE, size.coerceAtLeast(0))
+    }
+
     /** The selectable values, in hours. Index 0 is the default. */
     val serverListUpdateIntervalOptions: IntArray
         get() = intArrayOf(1, 3, 6, 12, 18, 24, 168)
@@ -614,6 +630,10 @@ class DataUtil(context: Context?) {
 
         const val SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS: String =
             "SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS"
+
+        /** BLOCK v1.0.75 FIX: size of the last accepted fresh dataset (0 = unknown). */
+        const val SETTING_LAST_ACCEPTED_DATASET_SIZE: String =
+            "SETTING_LAST_ACCEPTED_DATASET_SIZE"
 
         /** Server List Update Interval: default 12 hours, hard bounds 1..24. */
         const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
