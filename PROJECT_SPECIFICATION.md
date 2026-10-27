@@ -6827,6 +6827,14 @@ candidate in the run ordering (history-aware, reachability gate applied lazily i
 not in the tried set and supports an enabled protocol, then runs the normal walk over the untried tail.
 If none remains the state is `ERROR_NO_MORE_UNTRIED` ("no more untried servers") — never a silent wrap.
 
+**BLOCK v1.0.75 FIX (operator decision, 2026-10-27, device report):** the GREEN hero button while
+Connected means a **permanent disconnect** — it must never start a new run. "Move on" lives exclusively
+on the dedicated "Try next server" button. The Connected branch therefore calls `disconnectNow()`
+(which always issues the teardown, ends ownership so Auto-Reconnect cannot resurrect a deliberate
+disconnect, and clears the session tried-set); `stop()` is not used here because it publishes
+Disconnected without a teardown once the run has finished. Device-verified: after the press `tun0` and
+`VPN CONNECTED` read 0 for 30 s and no new run starts.
+
 ### 12.9.3 Ordering rule, constants and worked example (D-4, C2)
 
 Pipeline inside `sortedForAutoConnect(history, network, now)`:
@@ -6881,6 +6889,20 @@ for listed hosts; one UPDATE (`incrementMissedRefresh(marker)`) ages every row a
 refresh did not list. Emergency/cache datasets route to plain `replaceAll` and never age rows.
 `>= 2` with no success on the current network → demoted, never deleted. Verified on the real device:
 uv 10 (25 columns) → uv 11 (29 columns), row counts unchanged, `integrity_check: ok`.
+
+**BLOCK v1.0.75 FIX (operator report, 2026-10-27: the server list never updated):** the size-collapse
+gate compared the live feed (~98 servers) against the RETENTION UNION (400 rows — two weeks of kept
+servers), so every refresh was rejected forever. Three fixes, device-verified:
+1. the size baseline is the **last accepted fresh dataset size**, persisted
+   (`SETTING_LAST_ACCEPTED_DATASET_SIZE`); when unrecorded, the first fresh response is accepted by the
+   absolute floor and its size recorded;
+2. protocol/profile coverage is compared as a **share of each dataset** (a transport vanishing still
+   trips the gate; a smaller-but-healthy live feed does not);
+3. a feed fetched WITHOUT a tunnel carries no OpenVPN profiles — it is accepted, and `mergeAll`
+   **preserves the stored profile bytes** for listed servers while retaining unlisted ones.
+Device evidence: `Collected 98 servers` → `Server list updated atomically: 98 incoming, 485 stored
+(snapshot saved)`; `VPNGateItem` 400 → 485 rows; integrity ok. A cache/emergency candidate keeps its
+strict rule (judged against what is stored right now).
 
 ### 12.9.8 Exploration (C7)
 
