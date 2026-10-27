@@ -140,30 +140,25 @@ class VpnServerRepositoryR4bTest {
     }
 
     @Test
-    fun `tunnel leads mirror and a dead tunnel downgrades api and html to physical`() = runBlocking {
+    fun `tunnel is the only rung for every source when the VPN is active`() = runBlocking {
         logs.clear()
         tunnelRepository(EmptyFetcher()).refresh()
 
-        // The mirror rung leads with TUNNEL and succeeds via the bootstrap list
-        // (see `mirror discovery never reports empty because of the bootstrap
-        // list`). BLOCK v1.0.65: because every TUNNEL request failed, the
-        // concurrent API+HTML rungs now begin directly on PHYSICAL instead of
-        // re-trying the dead tunnel. Their own PHYSICAL attempt also fails here
-        // (EmptyFetcher), so each then makes the usual last-resort fallback to
-        // the opposite rung — a justified retry, not a blind one.
+        // REQ-ROUTE-001 (v1.0.70): with a usable, bound tunnel every source
+        // uses TUNNEL and nothing else. The mirror succeeds via the bootstrap
+        // list; api and html fail on the tunnel and are NOT retried on
+        // PHYSICAL.
         assertEquals(
             listOf(
-                "[collector] path=fallback-to-tunnel source=api",
-                "[collector] path=fallback-to-tunnel source=html",
-                "[collector] path=physical source=api",
-                "[collector] path=physical source=html",
+                "[collector] path=tunnel source=api",
+                "[collector] path=tunnel source=html",
                 "[collector] path=tunnel source=mirror",
             ),
             logs.sorted(),
         )
         assertTrue(
-            "API/HTML must not lead with the dead tunnel: $logs",
-            logs.none { it == "[collector] path=tunnel source=api" || it == "[collector] path=tunnel source=html" },
+            "no PHYSICAL attempt may happen while the VPN is active: $logs",
+            logs.none { it.contains("path=physical") },
         )
     }
 
@@ -187,18 +182,14 @@ class VpnServerRepositoryR4bTest {
         logs.clear()
         repeat(iterations) { repo.refresh() }
 
-        // BLOCK v1.0.65 per-run lines with a failing bound fetcher: mirror -> a
-        // single `path=tunnel` line (bootstrap mirrors make it succeed, so it
-        // never falls back); api and html -> one PHYSICAL primary line each
-        // (the same-refresh downgrade) plus one `path=fallback-to-tunnel` line
-        // each (their PHYSICAL attempt fails too). Five lines per run, so any
-        // dropped `add` still shortens the total.
+        // REQ-ROUTE-001 per-run lines with a failing bound fetcher: mirror ->
+        // one `path=tunnel` line (bootstrap mirrors make it succeed); api and
+        // html -> one `path=tunnel` line each and NO fallback. Three lines per
+        // run, so any dropped `add` still shortens the total.
         val perRun = listOf(
             "[collector] path=tunnel source=mirror",
-            "[collector] path=physical source=api",
-            "[collector] path=physical source=html",
-            "[collector] path=fallback-to-tunnel source=api",
-            "[collector] path=fallback-to-tunnel source=html",
+            "[collector] path=tunnel source=api",
+            "[collector] path=tunnel source=html",
         )
 
         assertEquals(
@@ -238,23 +229,20 @@ class VpnServerRepositoryR4bTest {
     }
 
     @Test
-    fun `missing bind factory degrades to PHYSICAL rather than to the TUNNEL rung`() = runBlocking {
+    fun `missing bind factory fails without a physical fallback`() = runBlocking {
         logs.clear()
         tunnelRepository(EmptyFetcher(), boundFetcher = null).refresh()
 
         assertTrue(
-            "expected PHYSICAL when nothing can be bound, got $logs",
-            logs.isNotEmpty() && logs.all { it.startsWith("[collector] path=physical") },
+            "no source may be dialled on PHYSICAL while the VPN is active, got $logs",
+            logs.none { it.startsWith("[collector] path=physical") },
         )
     }
 
     @Test
-    fun `a failed tunnel downgrades api and html onto the physical fetcher`() = runBlocking {
-        // BLOCK v1.0.65: after the mirror's TUNNEL failure, html and api begin
-        // on PHYSICAL rather than re-trying the dead tunnel. The physical
-        // fetcher counts its calls, so their use of it is provable rather than
-        // merely logged. (It returns null too, so each source then makes its
-        // last-resort fallback to the opposite rung.)
+    fun `a failed tunnel is not retried on the physical fetcher`() = runBlocking {
+        // REQ-ROUTE-001: html and api stay on TUNNEL; the physical fetcher is
+        // never touched, so its call count is the proof.
         val physical = CountingFetcher()
         logs.clear()
         tunnelRepository(physical).refresh()
@@ -262,15 +250,11 @@ class VpnServerRepositoryR4bTest {
         for (tag in listOf("html", "api")) {
             assertEquals(
                 "wrong log sequence for $tag",
-                listOf(
-                    "[collector] path=physical source=$tag",
-                    "[collector] path=fallback-to-tunnel source=$tag",
-                ),
+                listOf("[collector] path=tunnel source=$tag"),
                 logs.filter { it.endsWith("source=$tag") },
             )
         }
-        // Both downgraded sources must have issued their request on the physical fetcher.
-        assertTrue("physical fetcher was never used (calls=${physical.calls})", physical.calls >= 2)
+        assertEquals("physical fetcher must not be used (calls=${physical.calls})", 0, physical.calls)
     }
 
     @Test
@@ -295,9 +279,9 @@ class VpnServerRepositoryR4bTest {
     }
 
     @Test
-    fun `an empty mirror list counts as failure and retries on physical`() = runBlocking {
+    fun `an empty mirror list counts as failure with no physical retry`() = runBlocking {
         // discoverMirrors() reports failure as an empty list, not null — the
-        // case a plain `result == null` fallback would silently have missed.
+        // case a plain `result == null` check would silently have missed.
         val repo = VpnServerRepository(
             fetcher = EmptyFetcher(),
             cacheDir = tempFolder.newFolder(),
@@ -314,18 +298,10 @@ class VpnServerRepositoryR4bTest {
             succeeded = { it.isNotEmpty() },
         ) { emptyList<String>() }
 
-        // v1.0.27 — D-2 fix: a total failure (primary TUNNEL + PHYSICAL fallback
-        // both empty) returns null; the caller treats null as empty via
-        // `.orEmpty()`. The user-visible behaviour — retry on PHYSICAL — is
-        // asserted by the log lines below.
+        // REQ-ROUTE-001: an empty result is a failure, and the failure is
+        // reported — the request is not retried on PHYSICAL.
         assertNull(mirrors)
-        assertEquals(
-            listOf(
-                "[collector] path=tunnel source=mirror",
-                "[collector] path=fallback-to-physical source=mirror",
-            ),
-            logs,
-        )
+        assertEquals(listOf("[collector] path=tunnel source=mirror"), logs)
     }
 
     @Test
@@ -381,10 +357,8 @@ class VpnServerRepositoryR4bTest {
 
         assertNull(result)
         assertEquals(
-            listOf(
-                "[collector] path=tunnel source=api",
-                "[collector] path=fallback-to-physical source=api",
-            ),
+            "REQ-ROUTE-001: a null tunnel result is a failure with no PHYSICAL retry",
+            listOf("[collector] path=tunnel source=api"),
             logs,
         )
     }

@@ -17,9 +17,7 @@ import vn.unlimit.vpngate.data.persistence.CollectorSnapshotStore
 import vn.unlimit.vpngate.data.remote.CollectorPath
 import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
 import vn.unlimit.vpngate.data.remote.HttpFetcher
-import vn.unlimit.vpngate.data.remote.HttpResponse
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
-import vn.unlimit.vpngate.data.remote.RedirectPolicy
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
 import vn.unlimit.vpngate.data.remote.VpnGateHtmlSource
 import vn.unlimit.vpngate.data.remote.VpnGateMirrorSource
@@ -130,7 +128,6 @@ class VpnServerRepository(
 
     companion object {
         private const val MAIN_TIMEOUT_MS = 45_000L
-        private const val MIRROR_TIMEOUT_MS = 30_000L
         private const val RAW_CAPTURE_LIMIT = 512 * 1024
         private const val TAG = "VpnServerRepository"
 
@@ -294,34 +291,20 @@ class VpnServerRepository(
             memory: PathMemory? = null,
         ): List<CollectorPath> {
             val tunnelRungAvailable = input.tunnelUsable && input.hasBoundNetwork
-            // BLOCK v1.0.64 — deterministic VPN-first policy.
+            // v1.0.70 (REQ-ROUTE-001) — VPN-only while active.
             //
-            // When a usable, bound VPN Network exists the TUNNEL rung is the
-            // PRIMARY: it is genuinely attempted (bounded by the fetcher's own
-            // connect/read timeouts) and its outcome is recorded by
-            // [fetchOnChosenPath] into [PathMemory]. PHYSICAL is the immediate
-            // fallback and EMERGENCY stays last. When no usable+bound VPN Network
-            // exists the TUNNEL rung is not offered, so PHYSICAL leads and
-            // EMERGENCY remains last.
+            // When a usable, bound VPN Network exists the ONLY network rung is
+            // TUNNEL. PHYSICAL is deliberately absent: a VPN-bound failure must
+            // be reported, not silently retried over Wi-Fi/cellular. When no
+            // usable+bound VPN Network exists, PHYSICAL (the Android default
+            // network) is the only network rung. EMERGENCY stays last in both
+            // cases; it is a separate dataset source, not a transport fallback.
             val ladder = if (tunnelRungAvailable) {
-                mutableListOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL)
+                mutableListOf(CollectorPath.TUNNEL)
             } else {
                 mutableListOf(CollectorPath.PHYSICAL)
             }
             ladder += CollectorPath.EMERGENCY
-
-            // Retained for API stability. Under the BLOCK v1.0.64 policy the
-            // TUNNEL rung is already first whenever it is available, so this
-            // evidence-based promotion is a no-op in that case and only restates
-            // the front position.
-            if (tunnelRungAvailable && memory != null) {
-                val physicalBlocked = memory.isCoolingDown(CollectorPath.PHYSICAL)
-                val tunnelProven = memory.preferred() == CollectorPath.TUNNEL
-                if (physicalBlocked || tunnelProven) {
-                    ladder.remove(CollectorPath.TUNNEL)
-                    ladder.add(0, CollectorPath.TUNNEL)
-                }
-            }
             return ladder
         }
 
@@ -486,23 +469,13 @@ class VpnServerRepository(
             runCatching { productionBoundFetcher() }.getOrNull() ?: fetcher
         val boundFetcher: HttpFetcher? = bindHttpFetcher()
 
-        // BLOCK v1.0.65 §4 — per-refresh TUNNEL transport probe. Source-level
-        // success is NOT a reliable tunnel-health signal: MIRROR discovery
-        // always appends the built-in bootstrap mirrors, so it "succeeds" even
-        // when every TUNNEL request failed, and therefore never records a
-        // TUNNEL failure into [pathMemory]. The probe watches the actual bound
-        // transport responses instead. It lives only for this refresh, so it
-        // can never suppress the tunnel beyond the run that observed it fail.
-        val tunnelProbe = TunnelTransportProbe()
-        val probedBoundFetcher: HttpFetcher? = boundFetcher?.let { tunnelProbe.wrap(it) }
-
         val records = coroutineScope {
             val cachedMirrors = runCatching {
                 vn.unlimit.vpngate.App.instance?.dataUtil?.getCachedMirrors().orEmpty()
             }.getOrDefault(emptyList())
 
             val mirrorsDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_MIRROR, primary, probedBoundFetcher, { it.isNotEmpty() }, physicalFetcher) { f ->
+                fetchOnChosenPath(SOURCE_TAG_MIRROR, primary, boundFetcher, { it.isNotEmpty() }, physicalFetcher) { f ->
                     VpnGateMirrorSource(f).discoverMirrors(cachedMirrors)
                 }
             }
@@ -515,41 +488,20 @@ class VpnServerRepository(
                 }
             }
 
-            // BLOCK v1.0.65 §4 — same-refresh tunnel memory. The mirror rung is
-            // the first and has already completed above. If its TUNNEL attempt
-            // failed, the probe now shows TUNNEL requests with no successful
-            // response, so the concurrent API+HTML rungs begin on PHYSICAL
-            // instead of paying another full tunnel timeout. Bounded and safe:
-            //   - it only short-circuits the *tunnel* attempt for the remaining
-            //     rungs of THIS refresh; it never skips a source (API/HTML still
-            //     run, just on the physical network);
-            //   - it does not permanently suppress the tunnel — the probe is
-            //     per-refresh, and the next refresh re-derives `primary` from
-            //     [routeLadder], which keeps TUNNEL first whenever a usable,
-            //     bound VPN Network exists (cooldown is not used for ordering);
-            //   - the mirror's own behaviour is unchanged (it still leads with
-            //     TUNNEL and falls back to PHYSICAL on its own).
-            val apiHtmlPrimary = if (
-                probedBoundFetcher != null &&
-                primary == CollectorPath.TUNNEL &&
-                tunnelProbe.failedWithoutSuccess()
-            ) {
-                fetchLog("[ladder] tunnelFailedEarly; API/HTML begin on PHYSICAL")
-                CollectorPath.PHYSICAL
-            } else {
-                primary
-            }
-
+            // REQ-ROUTE-001 (v1.0.70): every source uses the one rung chosen
+            // for this refresh. There is no same-refresh downgrade to PHYSICAL
+            // and no cross-rung retry — a dead VPN path is reported, not
+            // bypassed.
             val apiDeferred = async {
                 // Canonical CSV only: a mirror's CSV schema is undefined
                 // for this project, so it is never fed to the API parser.
                 // A null result IS the failure signal for this source.
-                fetchOnChosenPath(SOURCE_TAG_API, apiHtmlPrimary, probedBoundFetcher, { true }, physicalFetcher) { f ->
+                fetchOnChosenPath(SOURCE_TAG_API, primary, boundFetcher, { true }, physicalFetcher) { f ->
                     VpnGateApiSource(f).fetch()
                 }
             }
             val htmlDeferred = async {
-                fetchOnChosenPath(SOURCE_TAG_HTML, apiHtmlPrimary, probedBoundFetcher, { true }, physicalFetcher) { f ->
+                fetchOnChosenPath(SOURCE_TAG_HTML, primary, boundFetcher, { true }, physicalFetcher) { f ->
                     VpnGateHtmlSource(f).fetch(mirrors)
                 }
             }
@@ -737,41 +689,6 @@ class VpnServerRepository(
         runCatching { GlobalVpnTracker.isSelfExcludedFromOwnTunnel().name }.getOrNull() ?: "UNKNOWN"
 
     /**
-     * BLOCK v1.0.65 §4 — observes the *actual* TUNNEL transport responses for
-     * a single refresh.
-     *
-     * This is deliberately not [PathMemory]: source-level success cannot see a
-     * dead tunnel, because MIRROR discovery falls back to the built-in
-     * bootstrap mirrors and therefore reports success even when every TUNNEL
-     * request returned nothing. The probe counts real bound-fetcher responses,
-     * so "the tunnel is dead" means "at least one TUNNEL request was attempted
-     * and not one of them returned a response".
-     *
-     * Scope is one refresh only: a new instance is created per [refreshLocked],
-     * so a failure observed here can never suppress the tunnel on a later run.
-     * Requests that are cancelled (e.g. a race loser) throw rather than return
-     * and are therefore not counted as failures.
-     */
-    private class TunnelTransportProbe {
-        private val attempts = java.util.concurrent.atomic.AtomicInteger(0)
-        private val successes = java.util.concurrent.atomic.AtomicInteger(0)
-
-        fun wrap(delegate: HttpFetcher): HttpFetcher = object : HttpFetcher {
-            override suspend fun get(url: String, redirectPolicy: RedirectPolicy?): HttpResponse? {
-                val response = delegate.get(url, redirectPolicy)
-                attempts.incrementAndGet()
-                if (response != null) {
-                    successes.incrementAndGet()
-                }
-                return response
-            }
-        }
-
-        /** True only when TUNNEL was genuinely tried and nothing came back. */
-        fun failedWithoutSuccess(): Boolean = attempts.get() > 0 && successes.get() == 0
-    }
-
-    /**
      * Runs one source's fetch on the transport [path] chose for this run.
      *
      * The source tag is part of the log line because the transport is chosen
@@ -782,8 +699,12 @@ class VpnServerRepository(
      * `result != null`, because the three sources do not report failure the
      * same way: `VpnGateApiSource.fetch` and `VpnGateHtmlSource.fetch` return
      * null, while `VpnGateMirrorSource.discoverMirrors` returns an empty
-     * list. Keying the fallback on null alone would silently never retry the
-     * mirror discovery.
+     * list.
+     *
+     * **v1.0.70 (REQ-ROUTE-001): exactly one rung per source.** There is no
+     * fallback to the opposite network path. When [path] is TUNNEL a failure is
+     * returned and logged; it is never retried over PHYSICAL. When [path] is
+     * PHYSICAL the Android default network is used.
      *
      * @param boundFetcher the already-built VPN-bound fetcher, or null when
      *   the VPN rung was asked for but no network was available.
@@ -796,17 +717,18 @@ class VpnServerRepository(
         physicalFetcher: HttpFetcher = fetcher,
         fetch: suspend (HttpFetcher) -> T?,
     ): T? {
-        // A TUNNEL attempt needs a bound VPN network. If none is available the
-        // rung is unusable, so degrade to PHYSICAL without claiming a fallback
-        // we did not perform.
+        // REQ-ROUTE-001 (v1.0.70): a source uses exactly the rung chosen for
+        // this refresh. When the VPN is active the rung is TUNNEL and a failure
+        // is reported — never silently retried over the physical network. When
+        // the VPN is inactive the rung is PHYSICAL and the default network is
+        // used. EMERGENCY is a separate dataset source, not a fallback of this
+        // request.
         if (path == CollectorPath.TUNNEL && boundFetcher == null) {
-            fetchLog("[fetch] path=physical (tunnel rung unavailable)")
-            pathLog("[collector] path=physical source=$sourceTag")
-            return fetch(physicalFetcher)
+            fetchLog("[fetch] path=tunnel unavailable (no bound VPN network); no physical fallback")
+            return null
         }
 
-        // --- primary rung ---
-        val primaryResult = if (path == CollectorPath.TUNNEL) {
+        val result = if (path == CollectorPath.TUNNEL) {
             fetchLog("[fetch] path=tunnel source=$sourceTag")
             pathLog("[collector] path=tunnel source=$sourceTag")
             fetch(boundFetcher!!)
@@ -815,47 +737,19 @@ class VpnServerRepository(
             pathLog("[collector] path=physical source=$sourceTag")
             fetch(physicalFetcher)
         }
-        if (primaryResult != null && succeeded(primaryResult)) {
+        if (result != null && succeeded(result)) {
             // v1.0.52 (§1.6.44): remember the transport that actually worked.
             pathMemory.recordSuccess(path)
-            return primaryResult
+            return result
         }
-        // The primary transport produced nothing for this source: start its
-        // cooldown so the NEXT ladder can skip it in favour of the tunnel.
+        // The chosen transport produced nothing for this source. Record the
+        // failure and stop: no cross-rung retry, by policy.
         pathMemory.recordFailure(path)
-
-        // --- fallback to the opposite main rung, only when it is reachable ---
-        val fallback =
-            if (path == CollectorPath.PHYSICAL) CollectorPath.TUNNEL else CollectorPath.PHYSICAL
-        val canFallback = when (fallback) {
-            CollectorPath.TUNNEL -> boundFetcher != null
-            CollectorPath.PHYSICAL -> true
-            CollectorPath.EMERGENCY -> false
-        }
-        if (!canFallback) {
-            // Diagnostic only — the `[collector]` stream stays clean so existing
-            // per-source log assertions are unaffected.
-            fetchLog("[fetch] path=physical failed (no result); no fallback (tunnel down)")
-            return null
-        }
-
-        // Emit the rung names lowercase so the [fetch] diagnostics read
-        // `path=physical` / `path=tunnel` / `fallback-to-*` consistently.
-        fetchLog("[fetch] path=${path.name.lowercase()} failed (no result); falling back to ${fallback.name.lowercase()}")
-        pathLog("[collector] path=fallback-to-${fallback.name.lowercase()} source=$sourceTag")
-        val fallbackResult = if (fallback == CollectorPath.TUNNEL) {
-            fetch(boundFetcher!!)
+        if (path == CollectorPath.TUNNEL) {
+            fetchLog("[fetch] path=tunnel failed (no result); no physical fallback (VPN active)")
         } else {
-            fetch(physicalFetcher)
+            fetchLog("[fetch] path=physical failed (no result)")
         }
-        if (fallbackResult != null && succeeded(fallbackResult)) {
-            // v1.0.52 (§1.6.44): the fallback transport is now the proven one.
-            pathMemory.recordSuccess(fallback)
-            fetchLog("[fetch] path=${fallback.name.lowercase()} succeeded after ${path.name.lowercase()} failed")
-            return fallbackResult
-        }
-        pathMemory.recordFailure(fallback)
-        fetchLog("[fetch] path=${fallback.name.lowercase()} failed (no result)")
         return null
     }
 

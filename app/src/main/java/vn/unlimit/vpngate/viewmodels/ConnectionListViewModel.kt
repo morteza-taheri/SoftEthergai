@@ -26,6 +26,7 @@ import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.models.VPNGateConnectionList
 import vn.unlimit.vpngate.models.VPNGateItem
 import vn.unlimit.vpngate.repository.ManualServerStore
+import vn.unlimit.vpngate.repository.ImportOutcome
 import vn.unlimit.vpngate.repository.ServerListUpdates
 import vn.unlimit.vpngate.repository.withManualRows
 import vn.unlimit.vpngate.repository.ServerListUpdateScheduler
@@ -176,60 +177,68 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
             ?: MutableStateFlow(emptyList())
 
     /**
-     * Stores one manually entered server. Returns false when the input is
-     * not a dialable server — not an IPv4 address, a port outside
-     * 1..65535, or a protocol the record layer does not know — so the caller
-     * can refuse it at the boundary instead of it vanishing silently.
+     * Stores one manually entered server.
+     *
+     * REQ-RETENTION-003/004 (v1.0.71): this is now suspending and returns an
+     * [AddOutcome], because "did it store?" has three answers the caller must
+     * be able to tell apart — stored, invalid input, and *manual quota
+     * reached*. The previous Boolean form could only say "no" and would have
+     * left a full quota looking like a typo.
      *
      * The published [manualServers] flow is the confirmation, exactly like
      * the emergency-source list.
      */
-    fun addManualServer(
+    suspend fun addManualServer(
         host: String,
         portText: String,
         protocol: String,
         label: String?,
         notes: String?,
-    ): Boolean {
-        val store = manualServerStore ?: return false
+    ): vn.unlimit.vpngate.repository.AddOutcome {
+        val store = manualServerStore ?: return vn.unlimit.vpngate.repository.AddOutcome.InvalidInput
         val port = VpnUtil.clean(portText).toIntOrNull()
         val accepted = ManualServer.isValidHost(host) &&
             port != null && ManualServer.isValidPort(port) &&
             ManualServer.isValidProtocol(protocol)
-        if (!accepted) return false
-        viewModelScope.launch {
-            // v1.0.26: write-through. Storing the manual server is not enough
-            // for it to be visible — the main list is built from VPNGateItem,
-            // and before this the only writer of that table was an *accepted*
-            // refresh. So the user added a server, saw it in Settings, and saw
-            // nothing in the list until some later refresh happened to be
-            // accepted (a restart only looked like the fix because it triggers
-            // one). Materialising here makes the add visible immediately.
-            //
-            // The merge is `store.materialize`, which delegates to the same
-            // `withManualRows` the refresh path uses, so the preservation
-            // invariant is identical on both paths: an address the network
-            // already serves is not duplicated, and no other row is dropped —
-            // `replaceAll` is given the current table plus the manual rows.
-            val published = withContext(Dispatchers.IO) {
-                if (!store.add(host, portText, protocol, label, notes)) {
-                    return@withContext null
-                }
-                val itemDao = App.instance?.vpnGateItemDao ?: return@withContext null
-                val merged = store.materialize(itemDao.getAll())
-                // `replaceAll` refuses an empty list, and an empty merge would
-                // mean the row we just stored did not survive validation — in
-                // which case writing nothing is the correct outcome.
-                if (merged.isEmpty()) return@withContext null
-                itemDao.replaceAll(merged)
-                merged
-            }
-            if (published != null) {
-                vpnGateConnectionList.value =
-                    VPNGateConnectionList().fromVPNGateItems(published)
-            }
+        if (!accepted) return vn.unlimit.vpngate.repository.AddOutcome.InvalidInput
+
+        // v1.0.26: write-through. Storing the manual server is not enough
+        // for it to be visible — the main list is built from VPNGateItem,
+        // and before this the only writer of that table was an *accepted*
+        // refresh. So the user added a server, saw it in Settings, and saw
+        // nothing in the list until some later refresh happened to be
+        // accepted (a restart only looked like the fix because it triggers
+        // one). Materialising here makes the add visible immediately.
+        //
+        // The merge is `store.materialize`, which delegates to the same
+        // `withManualRows` the refresh path uses, so the preservation
+        // invariant is identical on both paths: an address the network
+        // already serves is not duplicated, and no other row is dropped —
+        // `replaceAll` is given the current table plus the manual rows.
+        val outcome = withContext(Dispatchers.IO) {
+            store.addDetailed(host, portText, protocol, label, notes)
         }
-        return true
+        if (outcome !is vn.unlimit.vpngate.repository.AddOutcome.Stored) return outcome
+
+        val published = withContext(Dispatchers.IO) {
+            val itemDao = App.instance?.vpnGateItemDao ?: return@withContext null
+            val merged = store.materialize(itemDao.getAll())
+            // `replaceAll` refuses an empty list, and an empty merge would
+            // mean the row we just stored did not survive validation — in
+            // which case writing nothing is the correct outcome.
+            if (merged.isEmpty()) return@withContext null
+            // REQ-RETENTION-007: a write-through is a completed retention
+            // operation, so it must leave the table inside the total capacity
+            // too — the manual rows are protected, the network rows are
+            // ranked and trimmed.
+            val capped = capForRetention(merged)
+            itemDao.replaceAll(capped)
+            capped
+        }
+        if (published != null) {
+            publishLiveData(vpnGateConnectionList, VPNGateConnectionList().fromVPNGateItems(published))
+        }
+        return outcome
     }
 
     fun removeManualServer(id: Long) {
@@ -294,23 +303,32 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         refreshImportedServers()
     }
 
-    suspend fun importManualCsv(text: String): vn.unlimit.vpngate.repository.ManualCsvImport.Result {
+    suspend fun importManualCsv(text: String): ImportOutcome {
         val store = importStore
-            ?: return vn.unlimit.vpngate.repository.ManualCsvImport.Result.Failure(
-                vn.unlimit.vpngate.repository.ManualCsvImport.Reason.PARSE_ERROR,
-                "storage unavailable",
+            ?: return ImportOutcome(
+                vn.unlimit.vpngate.repository.ManualCsvImport.Result.Failure(
+                    vn.unlimit.vpngate.repository.ManualCsvImport.Reason.PARSE_ERROR,
+                    "storage unavailable",
+                )
             )
         val result = withContext(Dispatchers.IO) {
             vn.unlimit.vpngate.repository.ManualCsvImport.parse(text, System.currentTimeMillis())
         }
-        if (result is vn.unlimit.vpngate.repository.ManualCsvImport.Result.Success) {
-            withContext(Dispatchers.IO) {
-                store.add(result.items)
+        if (result !is vn.unlimit.vpngate.repository.ManualCsvImport.Result.Success) {
+            return ImportOutcome(result)
+        }
+        // REQ-RETENTION-003: the rows go through the quota gate, not straight
+        // into the file. `stored` is what was actually persisted, so the
+        // summary the user sees cannot claim an import that did not happen.
+        val stored = withContext(Dispatchers.IO) {
+            val quota = store.addWithinQuota(result.items)
+            if (quota.stored > 0) {
                 materializeImported()
                 _importedServers.value = store.items()
             }
+            quota
         }
-        return result
+        return ImportOutcome(result, stored)
     }
 
     /**
@@ -364,24 +382,56 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         val itemDao = App.instance?.vpnGateItemDao ?: return
         val store = importStore ?: return
         val current = itemDao.getAll()
-        val legacy = manualServerDao
-        val legacyRows = if (legacy == null) {
-            emptyList()
-        } else {
-            ManualServerStore(legacy).toItems(
-                legacy.listEnabled().map { ManualServer.fromEntity(it) },
-            )
-        }
-        val merged = withManualRows(current, legacyRows + store.items())
+        val merged = withManualRows(current, userRows())
         if (merged.isEmpty()) return
-        itemDao.replaceAll(merged)
+        // REQ-RETENTION-007: an import is a completed retention operation, so
+        // the stored table must end inside the total capacity. The user's own
+        // rows are protected by host name; only collected rows are ranked and
+        // trimmed.
+        val capped = capForRetention(merged)
+        itemDao.replaceAll(capped)
         // v1.0.59 (PART A): NOT `vpnGateConnectionList.value = …`. This function
         // runs inside `withContext(Dispatchers.IO)` at every call site, and
         // `MutableLiveData.setValue` asserts the main thread — the device threw
         // `IllegalStateException: Cannot invoke setValue on a background thread`
         // here after a successful import, killing the app. See [publishLiveData].
-        publishLiveData(vpnGateConnectionList, VPNGateConnectionList().fromVPNGateItems(merged))
+        publishLiveData(vpnGateConnectionList, VPNGateConnectionList().fromVPNGateItems(capped))
     }
+
+    /**
+     * Every user-supplied row: the enabled `manual_server` rows plus the
+     * imported CSV rows.
+     *
+     * The two surfaces are the app's whole definition of "manual server", and
+     * both are re-emitted on every write. Kept in one place so the merge, the
+     * retention cap and the quota all agree on what counts as user data.
+     */
+    private suspend fun userRows(): List<VPNGateItem> {
+        val legacyDao = manualServerDao
+        val legacyRows = if (legacyDao == null) {
+            emptyList()
+        } else {
+            ManualServerStore(legacyDao).toItems(
+                legacyDao.listEnabled().map { ManualServer.fromEntity(it) },
+            )
+        }
+        return legacyRows + importStore?.items().orEmpty()
+    }
+
+    /** [userRows] as the set of host names the retention cap must never prune. */
+    private suspend fun userHostNames(): Set<String> =
+        userRows().mapTo(HashSet()) { it.hostName.trim() }
+
+    /**
+     * REQ-RETENTION-007 — trims [rows] to the total capacity, protecting every
+     * user-supplied row and ranking the collected ones with the single
+     * retention policy in [capRetainedServers].
+     */
+    private suspend fun capForRetention(rows: List<VPNGateItem>): List<VPNGateItem> =
+        vn.unlimit.vpngate.repository.capRetainedServers(
+            rows = rows,
+            manualHostNames = userHostNames(),
+        )
 
     /** §33: provenance dump + raw sources for the debug panel. */
     fun debugPayload(conn: VPNGateConnection): VpnServerRepository.DebugPayload? =

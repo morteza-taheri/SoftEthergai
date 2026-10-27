@@ -417,4 +417,8 @@
     <string name="manual_server_unrecognized">Unrecognised CSV: the header must be the app CSV or the VPN Gate API CSV</string>
     <string name="manual_server_import_failed">Nothing was imported</string>
     <string name="manual_server_import_error">Import failed</string>
+    <!-- v1.0.71 (REQ-RETENTION-004): shown when the manual-server quota is
+         full. 10% of the total capacity is always reserved for servers
+         obtained from the normal update, so the manual limit is 450 of 500. -->
+    <string name="manual_server_quota_reached">Manual server limit reached. Manually added servers: %1$d of %2$d. Total server-list capacity: %3$d.</string>
 </resources>

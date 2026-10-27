@@ -352,4 +352,5 @@
     <string name="manual_server_unrecognized">CSV ناشناخته: سرسطر باید CSV اپ یا CSV API وِی‌پی‌ان‌گیت باشد</string>
     <string name="manual_server_import_failed">چیزی وارد نشد</string>
     <string name="manual_server_import_error">وارد کردن ناموفق بود</string>
+    <string name="manual_server_quota_reached">محدودیت سرورهای دستی پر شده است. سرورهای دستی: %1$d از %2$d. ظرفیت کل فهرست سرورها: %3$d.</string>
 </resources>

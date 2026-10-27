@@ -313,5 +313,6 @@
     <string name="manual_server_unrecognized">Không nhận dạng được CSV: dòng tiêu đề phải là CSV của ứng dụng hoặc CSV của API VPN Gate</string>
     <string name="manual_server_import_failed">Không có gì được nhập</string>
     <string name="manual_server_import_error">Nhập thất bại</string>
+    <string name="manual_server_quota_reached">Đã đạt giới hạn máy chủ thủ công. Máy chủ thêm thủ công: %1$d trên %2$d. Tổng dung lượng danh sách máy chủ: %3$d.</string>
 
 </resources>

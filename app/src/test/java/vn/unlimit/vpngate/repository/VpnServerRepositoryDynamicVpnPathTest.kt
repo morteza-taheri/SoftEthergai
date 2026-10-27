@@ -93,11 +93,11 @@ class VpnServerRepositoryDynamicVpnPathTest {
         )
     }
 
-    // ── B: usable + bound VPN → TUNNEL leads the ladder ──────────────────────
+    // ── B: usable + bound VPN → TUNNEL is the only network rung ──────────────
     @Test
     fun `B usable bound VPN makes TUNNEL the primary rung`() {
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true),
         )
     }
@@ -118,40 +118,25 @@ class VpnServerRepositoryDynamicVpnPathTest {
         assertFalse("TUNNEL must not be offered for a dead tunnel", result.contains(CollectorPath.TUNNEL))
     }
 
-    // ── E: refresh() with usable+bound tunnel → TUNNEL first, PHYSICAL fallback
+    // ── E: refresh() with usable+bound tunnel → TUNNEL only, no PHYSICAL ─────
     @Test
-    fun `E refresh attempts TUNNEL first and falls back to PHYSICAL on tunnel failure`() = runBlocking {
+    fun `E refresh attempts TUNNEL only and never falls back to PHYSICAL`() = runBlocking {
         collectorLogs.clear(); fetchLogs.clear()
         repoWith(CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true)).first.refresh()
 
         val firstAttempt = fetchLogs.first { it.startsWith("[fetch]") }
         assertTrue("the very first attempt must be TUNNEL: $fetchLogs", firstAttempt.contains("path=tunnel"))
         assertTrue(
-            "ladder order must be TUNNEL,PHYSICAL,EMERGENCY: $fetchLogs",
-            fetchLogs.any { it == "[ladder] order=TUNNEL,PHYSICAL,EMERGENCY" },
-        )
-        // BLOCK v1.0.65: after MIRROR's TUNNEL attempt fails, API/HTML are
-        // downgraded to a PHYSICAL primary (a plain `path=physical source=...`
-        // line). A PHYSICAL line is therefore legitimate either as that
-        // downgrade or as a fallback after a TUNNEL failure — but MIRROR itself
-        // must never lead with PHYSICAL while the tunnel is offered.
-        assertTrue(
-            "the dead tunnel must downgrade API/HTML to PHYSICAL: $fetchLogs",
-            fetchLogs.any { it.contains("tunnelFailedEarly") },
+            "ladder order must be TUNNEL,EMERGENCY (REQ-ROUTE-001): $fetchLogs",
+            fetchLogs.any { it == "[ladder] order=TUNNEL,EMERGENCY" },
         )
         assertTrue(
-            "MIRROR must not lead with PHYSICAL while TUNNEL is offered: $fetchLogs",
-            fetchLogs.none { it.startsWith("[fetch] path=physical source=mirror") },
+            "no PHYSICAL attempt may happen while the VPN is active: $fetchLogs",
+            fetchLogs.none { it.startsWith("[fetch] path=physical") },
         )
         assertTrue(
-            "every PHYSICAL attempt must follow the TUNNEL failure: $fetchLogs",
-            fetchLogs.filter { it.startsWith("[fetch] path=physical") }
-                .all {
-                    it.contains("after tunnel failed") ||
-                        it.contains("failed (no result)") ||
-                        it.startsWith("[fetch] path=physical source=api") ||
-                        it.startsWith("[fetch] path=physical source=html")
-                },
+            "every source must report the tunnel failure instead of bypassing it: $fetchLogs",
+            fetchLogs.any { it.contains("no physical fallback (VPN active)") },
         )
     }
 
@@ -173,31 +158,38 @@ class VpnServerRepositoryDynamicVpnPathTest {
         assertEquals("TUNNEL must be the preferred path after success", CollectorPath.TUNNEL, mem.preferred())
     }
 
-    // ── G: TUNNEL fails + PHYSICAL succeeds → both outcomes recorded ─────────
+    // ── G: TUNNEL fails → no PHYSICAL fallback (REQ-ROUTE-001) ──────────────
     @Test
-    fun `G tunnel failure and physical success are both recorded independently`() = runBlocking {
+    fun `G a tunnel failure is recorded and never retried on PHYSICAL`() = runBlocking {
         val (r, mem) = repoWith(CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true))
-        r.fetchOnChosenPath<String>(
+        var physicalCalls = 0
+        val result = r.fetchOnChosenPath<String>(
             sourceTag = "html",
             path = CollectorPath.TUNNEL,
             boundFetcher = tunnelFetcher,
             succeeded = { true },
-            physicalFetcher = physicalFetcher,
+            physicalFetcher = object : HttpFetcher {
+                override suspend fun get(url: String, redirectPolicy: RedirectPolicy?): Nothing? {
+                    physicalCalls++
+                    return null
+                }
+            },
         ) { f ->
             when (f) {
                 tunnelFetcher -> null
-                physicalFetcher -> "PHYSICAL_OK"
-                else -> null
+                else -> "PHYSICAL_OK"
             }
         }
 
+        assertNull("a failed VPN request must return null, not a physical body", result)
+        assertEquals("PHYSICAL must never be dialled while the VPN is active", 0, physicalCalls)
         assertTrue("TUNNEL failure must be recorded", mem.isCoolingDown(CollectorPath.TUNNEL))
-        assertEquals("PHYSICAL success must be the preferred path", CollectorPath.PHYSICAL, mem.preferred())
+        assertNull("no path should be preferred after the tunnel failure", mem.preferred())
     }
 
-    // ── H: both rungs fail → both recorded as failures (independent) ─────────
+    // ── H: tunnel failure records only TUNNEL; PHYSICAL is not attempted ────
     @Test
-    fun `H both rungs failing records both as failures independently`() = runBlocking {
+    fun `H a tunnel failure records TUNNEL only, never PHYSICAL`() = runBlocking {
         val (r, mem) = repoWith(CollectorRoutingInput(tunnelUsable = true, hasBoundNetwork = true))
         r.fetchOnChosenPath<String>(
             sourceTag = "html",
@@ -208,8 +200,11 @@ class VpnServerRepositoryDynamicVpnPathTest {
         ) { null }
 
         assertTrue("TUNNEL failure must be recorded", mem.isCoolingDown(CollectorPath.TUNNEL))
-        assertTrue("PHYSICAL failure must be recorded", mem.isCoolingDown(CollectorPath.PHYSICAL))
-        assertNull("no path should be preferred after both fail", mem.preferred())
+        assertFalse(
+            "PHYSICAL must not be recorded as failed — it was never dialled",
+            mem.isCoolingDown(CollectorPath.PHYSICAL),
+        )
+        assertNull("no path should be preferred after the tunnel failure", mem.preferred())
     }
 
     // ── I: EMERGENCY always last, never promoted, never a fallback rung ──────
@@ -316,7 +311,7 @@ class VpnServerRepositoryDynamicVpnPathTest {
         r.refresh()
         assertTrue(
             "second run (tunnel up) must take TUNNEL first",
-            fetchLogs.any { it == "[ladder] order=TUNNEL,PHYSICAL,EMERGENCY" },
+            fetchLogs.any { it == "[ladder] order=TUNNEL,EMERGENCY" },
         )
     }
 
@@ -337,15 +332,19 @@ class VpnServerRepositoryDynamicVpnPathTest {
                     val mem = PathMemory()
                     seed(mem)
                     val result = ladder(tu, hb, mem)
-                    assertTrue("must contain PHYSICAL ($tu,$hb)", result.contains(CollectorPath.PHYSICAL))
                     assertEquals("EMERGENCY last ($tu,$hb)", CollectorPath.EMERGENCY, result.last())
                     assertEquals("EMERGENCY once ($tu,$hb)", 1, result.count { it == CollectorPath.EMERGENCY })
                     assertEquals("no duplicates ($tu,$hb)", result.size, result.toSet().size)
-                    assertTrue("size 2 or 3 ($tu,$hb)", result.size in 2..3)
+                    assertEquals("exactly two rungs ($tu,$hb)", 2, result.size)
                     assertEquals(
                         "TUNNEL iff usable&&bound ($tu,$hb)",
                         result.contains(CollectorPath.TUNNEL),
                         tu && hb,
+                    )
+                    assertEquals(
+                        "PHYSICAL only when the VPN is inactive ($tu,$hb)",
+                        result.contains(CollectorPath.PHYSICAL),
+                        !(tu && hb),
                     )
                 }
             }

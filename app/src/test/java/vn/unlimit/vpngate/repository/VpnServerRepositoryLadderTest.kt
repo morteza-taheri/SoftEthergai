@@ -74,7 +74,7 @@ class VpnServerRepositoryLadderTest {
     @Test
     fun `T-NEW-55b a usable bound tunnel makes TUNNEL the first rung (VPN-first)`() {
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true),
         )
     }
@@ -109,7 +109,7 @@ class VpnServerRepositoryLadderTest {
         val memory = FakeClock().memory()
 
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -121,7 +121,7 @@ class VpnServerRepositoryLadderTest {
         memory.recordFailure(CollectorPath.PHYSICAL)
 
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -133,7 +133,7 @@ class VpnServerRepositoryLadderTest {
         memory.recordSuccess(CollectorPath.TUNNEL)
 
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -168,7 +168,7 @@ class VpnServerRepositoryLadderTest {
         memory.recordSuccess(CollectorPath.PHYSICAL)
 
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }
@@ -206,28 +206,26 @@ class VpnServerRepositoryLadderTest {
                     val label = "ladder(tunnelUsable=$tunnelUsable, " +
                         "hasBoundNetwork=$hasBoundNetwork, memoryState=$index)=$result"
 
-                    assertTrue("$label must contain PHYSICAL", result.contains(CollectorPath.PHYSICAL))
-                    assertEquals(
-                        "$label must end with EMERGENCY — it is the last rung, never promoted",
-                        CollectorPath.EMERGENCY,
-                        result.last(),
-                    )
+                    assertTrue("$label must end with EMERGENCY — it is the last rung, never promoted",
+                        CollectorPath.EMERGENCY == result.last())
                     assertEquals(
                         "$label must list EMERGENCY exactly once",
                         1,
                         result.count { it == CollectorPath.EMERGENCY },
                     )
                     assertEquals("$label must not repeat a rung", result.size, result.toSet().size)
-                    assertTrue("$label must have 2 or 3 rungs", result.size in 2..3)
+                    assertEquals("$label must be exactly two rungs (v1.0.70: one network rung + EMERGENCY)", 2, result.size)
                     assertEquals(
                         "$label: TUNNEL may appear only when the tunnel is usable and bound",
                         result.contains(CollectorPath.TUNNEL),
                         tunnelUsable && hasBoundNetwork,
                     )
-                    // The promotion is a reorder, never an addition or removal.
-                    assertTrue(
-                        "$label must always keep PHYSICAL before EMERGENCY",
-                        result.indexOf(CollectorPath.PHYSICAL) < result.indexOf(CollectorPath.EMERGENCY),
+                    // REQ-ROUTE-001: PHYSICAL exists only when the VPN is not
+                    // active — it is never a fallback for an active tunnel.
+                    assertEquals(
+                        "$label: PHYSICAL appears only when the VPN is inactive",
+                        result.contains(CollectorPath.PHYSICAL),
+                        !(tunnelUsable && hasBoundNetwork),
                     )
                 }
             }
@@ -418,7 +416,7 @@ class VpnServerRepositoryLadderTest {
         memory.recordFailure(CollectorPath.PHYSICAL)
 
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
 
@@ -426,7 +424,7 @@ class VpnServerRepositoryLadderTest {
 
         assertEquals(
             "with a usable+bound tunnel the ladder must stay TUNNEL-first after the cooldown",
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = true, hasBoundNetwork = true, memory = memory),
         )
     }

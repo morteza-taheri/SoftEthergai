@@ -69,6 +69,74 @@ class ManualImportStore(private val file: File) {
         AddResult(added, updated)
     }
 
+    /**
+     * REQ-RETENTION-003 (v1.0.71) — the quota-aware import.
+     *
+     * [add] is the storage primitive: it writes whatever it is given. This is
+     * the **production** entry point, because an imported row is a manually
+     * added server and must not be able to push the user past the manual
+     * quota by arriving in a file instead of in the form.
+     *
+     * The whole operation — counting the new rows, deciding how many fit and
+     * writing — runs inside one [ManualServerAdmission] critical section, so
+     * a concurrent import and form-add cannot both take the last slot.
+     *
+     * A batch is **partially** admitted rather than refused whole: rows that
+     * already exist are updates and always apply (they take no slot), and as
+     * many genuinely new rows as still fit are stored. Anything refused is
+     * counted in [QuotaAddResult.quotaRejected] and reported to the user, so
+     * the caller never claims success for a row that was not persisted.
+     */
+    suspend fun addWithinQuota(
+        items: List<VPNGateItem>,
+        admission: ManualServerAdmission = productionManualServerAdmission(),
+    ): QuotaAddResult {
+        var newRows = 0
+        var added = 0
+        var updated = 0
+
+        val decision = admission.admit(
+            requested = {
+                // Counted from the persisted file, not from a caller-supplied
+                // list: a stale UI list is exactly what the quota must not
+                // trust. Duplicates (same trimmed hostName) are not new.
+                val current = read().mapTo(HashSet()) { it.hostName.trim() }
+                newRows = items.count { it.hostName.trim().let { k -> k.isNotEmpty() && k !in current } }
+                newRows
+            },
+        ) { allowance ->
+            synchronized(lock) {
+                val current = read().associateByTo(LinkedHashMap()) { it.hostName.trim() }
+                var slots = allowance
+                for (item in items) {
+                    val key = item.hostName.trim()
+                    if (key.isEmpty()) continue
+                    if (current.containsKey(key)) {
+                        updated++
+                    } else {
+                        if (slots <= 0) continue
+                        slots--
+                        added++
+                    }
+                    current[key] = item
+                }
+                if (added > 0 || updated > 0) write(current.values.toList())
+            }
+        }
+
+        // The gate always runs the write — a full quota must not stop the
+        // update half of a batch — and `allowance` is how many *new* rows this
+        // pass may add. Anything beyond it is counted as quota-rejected.
+        return QuotaAddResult(
+            added = added,
+            updated = updated,
+            quotaRejected = (newRows - added).coerceAtLeast(0),
+            manualCount = decision.manualCount,
+            quota = admission.quota,
+            totalCapacity = admission.totalCapacity,
+        )
+    }
+
     fun remove(hostName: String): Boolean = synchronized(lock) {
         val key = hostName.trim()
         val current = read()
@@ -85,6 +153,25 @@ class ManualImportStore(private val file: File) {
 
     data class AddResult(val added: Int, val updated: Int) {
         val total: Int get() = added + updated
+    }
+
+    /**
+     * REQ-RETENTION-003/004 — what one quota-aware import actually did.
+     *
+     * Every field is a fact about persisted state, so the caller can build the
+     * user-facing message without a second query and without overstating the
+     * result: [added] + [updated] were written, [quotaRejected] were refused
+     * because the manual quota was full.
+     */
+    data class QuotaAddResult(
+        val added: Int,
+        val updated: Int,
+        val quotaRejected: Int,
+        val manualCount: Int,
+        val quota: Int,
+        val totalCapacity: Int,
+    ) {
+        val stored: Int get() = added + updated
     }
 
     // ── storage ──────────────────────────────────────────────────────────

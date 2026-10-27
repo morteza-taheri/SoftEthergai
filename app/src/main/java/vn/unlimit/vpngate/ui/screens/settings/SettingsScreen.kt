@@ -71,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -113,6 +114,13 @@ fun SettingsScreen(
     onNavigateHomeRequested: () -> Unit,
 ) {
     val context = LocalContext.current
+    // v1.0.71: resource lookups below go through LocalResources rather than
+    // LocalContext.current so they stay configuration-aware. `context` is kept
+    // for the non-resource uses (Toast, intents, managers); the older
+    // `context.getString(...)` calls in this file are the pre-existing
+    // LocalContextGetResourceValueCall backlog, which this change does not add
+    // to.
+    val resources = LocalResources.current
     val app = context.applicationContext as App
     val dataUtil = remember { app.dataUtil!! }
     val prefs = remember {
@@ -257,21 +265,39 @@ fun SettingsScreen(
      * pasted profile can contain a private address.
      */
     suspend fun runImport(text: String): String {
-        val result = connectionListViewModel.importManualCsv(text)
+        val outcome = connectionListViewModel.importManualCsv(text)
+        val result = outcome.parse
         return when (result) {
             is ManualCsvImport.Result.Success -> {
+                // REQ-RETENTION-003/004 (v1.0.71): the counts come from what the
+                // quota-aware store actually persisted, not from how many rows
+                // the parser recognised — otherwise a full manual quota would
+                // read as a successful import of rows that were never stored.
+                val stored = outcome.stored
+                val imported = stored?.stored ?: 0
+                val rejected = result.rejectedCount + (stored?.quotaRejected ?: 0)
                 val base = context.getString(
                     R.string.manual_server_result,
-                    result.items.size,
-                    result.rejectedCount,
+                    imported,
+                    rejected,
                 )
-                if (result.rejectedReasons.isEmpty()) {
+                val withReasons = if (result.rejectedReasons.isEmpty()) {
                     base
                 } else {
                     base + " — " + context.getString(
                         R.string.manual_server_reject_reasons,
                         result.rejectedReasons.joinToString("; "),
                     )
+                }
+                if (stored != null && stored.quotaRejected > 0) {
+                    withReasons + "\n" + resources.getString(
+                        R.string.manual_server_quota_reached,
+                        stored.manualCount,
+                        stored.quota,
+                        stored.totalCapacity,
+                    )
+                } else {
+                    withReasons
                 }
             }
             is ManualCsvImport.Result.Failure -> when (result.reason) {
@@ -1040,11 +1066,12 @@ fun SettingsScreen(
 
     if (showAutoTimeoutPicker) {
         // v1.0.46 (§1.6.39) CHANGE B: floor raised 5 -> 8 (operator
-        // requirement). Default (12) and max (60) are unchanged. `autoTimeout`
-        // comes from DataUtil.getAutoModeTimeoutSeconds(), which clamps on
-        // read, so a value stored by an older build at 5..7 arrives here as 8
-        // and `indexOf` always finds it.
-        val values = (8..60).toList()
+        // requirement). v1.0.70 (REQ-TIMEOUT-001): the approved range is
+        // 8..30 with a 12 s default. `autoTimeout` comes from
+        // DataUtil.getAutoModeTimeoutSeconds(), which clamps on read, so a
+        // value stored by an older build at 31..60 arrives here as 30 and
+        // `indexOf` always finds it.
+        val values = (8..30).toList()
         SingleChoiceDialog(
             title = stringResource(R.string.setting_auto_timeout_label),
             options = values.map { "$it seconds" },

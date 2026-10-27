@@ -130,23 +130,23 @@ class VpnServerRepositoryRoutingDynamicTest {
     }
 
     @Test
-    fun `T-NEW-38 the fallback rung is unchanged and the fetcher holds no decision`() {
+    fun `T-NEW-38 there is no opposite-rung fallback and the fetcher holds no decision`() {
         val repository = repositorySource()
-        assertTrue(
-            "fetchOnChosenPath must still compute an opposite rung to fall back to",
+        assertFalse(
+            "REQ-ROUTE-001: fetchOnChosenPath must not compute an opposite rung",
             repository.contains("val canFallback = when (fallback)"),
         )
-        assertTrue(
-            "the TUNNEL fallback must still require a bound fetcher",
-            repository.contains("CollectorPath.TUNNEL -> boundFetcher != null"),
+        assertFalse(
+            "no `falling back to` diagnostic may survive in the collector",
+            repository.contains("falling back to"),
         )
         assertTrue(
-            "the PHYSICAL fallback must stay unconditional",
-            repository.contains("CollectorPath.PHYSICAL -> true"),
+            "a TUNNEL failure must be reported, not bypassed",
+            repository.contains("no physical fallback (VPN active)"),
         )
         assertTrue(
-            "EMERGENCY must never be a fallback rung (it carries no network)",
-            repository.contains("CollectorPath.EMERGENCY -> false"),
+            "an unavailable TUNNEL rung must fail without a physical request",
+            repository.contains("tunnel unavailable (no bound VPN network); no physical fallback"),
         )
 
         // v1.0.52 (§1.6.44): the routing decision no longer lives in the
@@ -323,30 +323,27 @@ class VpnServerRepositoryRoutingDynamicTest {
     }
 
     @Test
-    fun `T-LADDER-23 fetchOnChosenPath feeds the path memory on both rungs`() {
+    fun `T-LADDER-23 fetchOnChosenPath records the chosen rung's outcome`() {
         val repository = repositorySource()
         val body = repository.substringAfter("internal suspend fun <T> fetchOnChosenPath(")
             .substringBefore("private fun ")
 
         assertTrue(
-            "a successful primary rung must be remembered",
+            "a successful rung must be remembered",
             body.contains("pathMemory.recordSuccess(path)"),
         )
         assertTrue(
-            "a failed primary rung must start that path's cooldown",
+            "a failed rung must start that path's cooldown",
             body.contains("pathMemory.recordFailure(path)"),
         )
-        assertTrue(
-            "a successful fallback must become the proven transport",
-            body.contains("pathMemory.recordSuccess(fallback)"),
-        )
-        assertTrue(
-            "a failed fallback must also be cooled down",
-            body.contains("pathMemory.recordFailure(fallback)"),
+        assertFalse(
+            "REQ-ROUTE-001: no fallback rung may be recorded",
+            body.contains("pathMemory.recordSuccess(fallback)") ||
+                body.contains("pathMemory.recordFailure(fallback)"),
         )
         // The tunnel-unavailable short-circuit returns before any memory write:
         // a rung that was never attempted must not be recorded as failed.
-        val shortCircuitAt = body.indexOf("tunnel rung unavailable")
+        val shortCircuitAt = body.indexOf("tunnel unavailable (no bound VPN network)")
         val firstRecordAt = body.indexOf("pathMemory.record")
         assertTrue("the short-circuit must exist", shortCircuitAt >= 0)
         assertTrue("the memory must be written", firstRecordAt >= 0)
@@ -375,13 +372,17 @@ class VpnServerRepositoryRoutingDynamicTest {
             )
         }
         val dataUtil = sourceOf("src/main/java/vn/unlimit/vpngate/utils/DataUtil.kt")
+        assertTrue(
+            "REQ-TIMEOUT-001: the auto-mode timeout default must be 12 s",
+            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
+        )
         assertFalse(
-            "the auto-mode timeout must not have drifted back to 12 s",
-            dataUtil.contains("SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
+            "no stale 8 s default may survive",
+            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8)"),
         )
         assertTrue(
-            "the auto-mode timeout default must be 8 s",
-            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8)"),
+            "REQ-TIMEOUT-001: the range must be clamped to 8..30",
+            dataUtil.contains(".coerceIn(8, 30)"),
         )
     }
 }

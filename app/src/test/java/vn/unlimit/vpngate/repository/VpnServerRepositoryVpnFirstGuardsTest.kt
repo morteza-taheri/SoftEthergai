@@ -199,10 +199,10 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         )
     }
 
-    // ===================================== C: tunnel fails, physical succeeds
+    // ============================ C: tunnel fails, no physical retry
 
     @Test
-    fun `C tunnel fails then physical fallback completes and persists once`() = runBlocking {
+    fun `C tunnel failure is reported and never retried on physical`() = runBlocking {
         val tunnel = RecordingFetcher(fail = true) // TUNNEL always fails
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
         val dao = FakeDao()
@@ -216,19 +216,25 @@ class VpnServerRepositoryVpnFirstGuardsTest {
 
         val outcome = ServerListUpdates.forUpdateTrigger(repo, dao).update()
 
-        assertTrue("expected an accepted update, got $outcome", outcome is ServerListUpdater.Outcome.Updated)
-        assertEquals("the valid PHYSICAL response must be accepted", 1, dao.replaceAllCalls)
-        assertTrue("PHYSICAL must have been used as fallback", physical.calls > 0)
+        assertTrue(
+            "a failed VPN request must preserve the store, got $outcome",
+            outcome is ServerListUpdater.Outcome.Preserved,
+        )
+        assertEquals("no write may occur when the VPN request failed", 0, dao.replaceAllCalls)
+        assertEquals(
+            "PHYSICAL must never be dialled while the VPN is active",
+            0,
+            physical.calls,
+        )
         assertTrue("TUNNEL must have been attempted", tunnel.calls > 0)
     }
 
-    // ============================ D: same-refresh tunnel memory (BLOCK v1.0.65)
+    // ==================== D: no same-refresh downgrade to PHYSICAL
 
     @Test
-    fun `D tunnel fails on mirror so API and HTML skip the dead tunnel`() = runBlocking {
-        // MIRROR leads with TUNNEL (and fails); with BLOCK v1.0.65 the
-        // concurrent API+HTML rungs must begin on PHYSICAL instead of paying
-        // another full tunnel timeout.
+    fun `D a dead tunnel never downgrades API or HTML to PHYSICAL`() = runBlocking {
+        // REQ-ROUTE-001 supersedes the v1.0.65 downgrade: a dead VPN path is
+        // reported, not bypassed.
         val tunnel = RecordingFetcher(fail = true)
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
         val fetchLog = mutableListOf<String>()
@@ -244,22 +250,19 @@ class VpnServerRepositoryVpnFirstGuardsTest {
 
         val outcome = ServerListUpdates.forUpdateTrigger(repo, dao).update()
 
-        assertTrue("refresh must still complete on PHYSICAL: $fetchLog", outcome is ServerListUpdater.Outcome.Updated)
-        assertTrue(
-            "the same-refresh tunnel-memory must engage after the mirror failure; log=$fetchLog",
-            fetchLog.any { it.contains("tunnelFailedEarly") },
-        )
-        // Behavioural proof of the BLOCK v1.0.65 downgrade: MIRROR leads with
-        // TUNNEL (and fails), so the concurrent API+HTML rungs must begin on
-        // PHYSICAL and must NOT re-attempt the dead tunnel.
+        assertTrue("refresh must preserve the store: $fetchLog", outcome is ServerListUpdater.Outcome.Preserved)
+        assertEquals("no write may occur on a failed VPN run", 0, dao.replaceAllCalls)
+        assertEquals("PHYSICAL must never be dialled while the VPN is active", 0, physical.calls)
         val tunnelMirror = fetchLog.count { it.contains("path=tunnel") && it.contains("source=mirror") }
         val tunnelApi = fetchLog.count { it.contains("path=tunnel") && it.contains("source=api") }
         val tunnelHtml = fetchLog.count { it.contains("path=tunnel") && it.contains("source=html") }
         assertEquals("MIRROR must attempt TUNNEL once", 1, tunnelMirror)
-        assertEquals("API must NOT re-attempt the dead tunnel", 0, tunnelApi)
-        assertEquals("HTML must NOT re-attempt the dead tunnel", 0, tunnelHtml)
-        assertTrue("PHYSICAL must have delivered the dataset", physical.calls > 0)
-        assertEquals("exactly one authoritative write", 1, dao.replaceAllCalls)
+        assertEquals("API must attempt TUNNEL once", 1, tunnelApi)
+        assertEquals("HTML must attempt TUNNEL once", 1, tunnelHtml)
+        assertTrue(
+            "there must be no same-refresh downgrade marker: $fetchLog",
+            fetchLog.none { it.contains("tunnelFailedEarly") },
+        )
     }
 
     // ============================================= E: both paths fail
@@ -291,11 +294,11 @@ class VpnServerRepositoryVpnFirstGuardsTest {
 
     @Test
     fun `F outer deadline expires without accepting late data or writing`() = runBlocking {
-        val tunnel = RecordingFetcher(fail = true)
-        // PHYSICAL parks forever; the outer deadline must cut it.
+        // The TUNNEL request parks forever; the outer deadline must cut it.
         val gate = CompletableDeferred<Unit>()
         val entered = CompletableDeferred<Unit>()
-        val physical = RecordingFetcher(html = htmlSample, csv = csv(20), gate = gate, entered = entered)
+        val tunnel = RecordingFetcher(html = htmlSample, csv = csv(20), gate = gate, entered = entered)
+        val physical = RecordingFetcher(fail = true)
         val dao = FakeDao()
         val fetchLog = mutableListOf<String>()
         val repo = buildRepo(
@@ -326,10 +329,10 @@ class VpnServerRepositoryVpnFirstGuardsTest {
     // =================================== G: tunnel network disappears
 
     @Test
-    fun `G missing VPN network degrades to PHYSICAL without hanging`() = runBlocking {
+    fun `G missing VPN network fails without a physical fallback`() = runBlocking {
         // routing says a usable+bound VPN Network exists, but the factory
-        // returns null (binding failed / network vanished): the rung must
-        // degrade to PHYSICAL without attempting a tunnel socket.
+        // returns null (binding failed / network vanished): the request must
+        // fail, not silently use the physical network.
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
         val fetchLog = mutableListOf<String>()
         val repo = buildRepo(
@@ -343,12 +346,12 @@ class VpnServerRepositoryVpnFirstGuardsTest {
 
         val result = repo.refresh()
 
-        assertNotNull("PHYSICAL must still deliver a dataset", result)
+        assertNull("an unavailable VPN rung must produce no dataset", result)
         assertTrue(
-            "the no-bound-network degradation must be logged",
-            fetchLog.any { it.contains("tunnel rung unavailable") },
+            "the no-bound-network failure must be logged",
+            fetchLog.any { it.contains("tunnel unavailable (no bound VPN network)") },
         )
-        assertTrue("PHYSICAL must have been used", physical.calls > 0)
+        assertEquals("PHYSICAL must not be dialled while the VPN is active", 0, physical.calls)
     }
 
     // ============================================ H: emergency rung intact
@@ -360,7 +363,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         // and EmergencyMergePolicyTest. Here we lock the structural invariant
         // that the ladder never promotes EMERGENCY and always ends with it.
         assertEquals(
-            listOf(CollectorPath.TUNNEL, CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.TUNNEL, CollectorPath.EMERGENCY),
             VpnServerRepository.routeLadder(CollectorRoutingInput(true, true)),
         )
         assertEquals(
@@ -370,6 +373,11 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         assertTrue(
             "EMERGENCY must never be first",
             VpnServerRepository.routeLadder(CollectorRoutingInput(true, true)).first() != CollectorPath.EMERGENCY,
+        )
+        assertTrue(
+            "PHYSICAL must not be offered while the VPN is active",
+            VpnServerRepository.routeLadder(CollectorRoutingInput(true, true))
+                .none { it == CollectorPath.PHYSICAL },
         )
     }
 

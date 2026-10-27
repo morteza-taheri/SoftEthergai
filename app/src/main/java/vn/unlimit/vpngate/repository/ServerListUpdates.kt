@@ -332,6 +332,11 @@ object ServerListUpdates {
             // wholesale exactly as before. `fetchedFromCache` is the origin
             // flag the updater computed from the fetch. REJECT_DEGRADED remains
             // enforced upstream and never reaches this method.
+            // REQ-RET-001: one history query supplies the success-count rank
+            // used by the 500 cap. Absent history is 0 ("no history").
+            val successCounts = runCatching {
+                historyDao?.historyViews()?.associate { it.hostName.trim() to it.successCount }
+            }.getOrNull().orEmpty()
             if (fetchedFromCache()) {
                 // G-F29-1: a fallback (last-known-good snapshot, stored list or
                 // bundled seed) is not a network observation, but it must not
@@ -340,9 +345,9 @@ object ServerListUpdates {
                 // firstSeenAt / lastSeenAt / healthScore, so a raw replaceAll
                 // would reset them to 0; mergeFallback preserves the stored
                 // values instead.
-                mergeFallback(dao, items, manual.rows, System.currentTimeMillis())
+                mergeFallback(dao, items, manual.rows, System.currentTimeMillis(), successCounts)
             } else {
-                mergeAll(dao, items, manual.rows, System.currentTimeMillis())
+                mergeAll(dao, items, manual.rows, System.currentTimeMillis(), successCounts)
             }
         }
 
@@ -505,6 +510,89 @@ internal fun withManualRows(
 }
 
 // -------------------------------------------------------------------------
+// REQ-RET-001 (v1.0.70) / REQ-RETENTION-001..002 (v1.0.71): server capacity.
+// -------------------------------------------------------------------------
+
+/**
+ * The approved maximum retained server dataset — the **single authoritative
+ * capacity value**. `MAX_TOTAL_SERVERS` in the specification is this constant;
+ * there is no second copy of the number anywhere in the app.
+ *
+ * Every other capacity figure (the reserved share, the manual-server quota) is
+ * **derived** from it by [reservedCapacity] and [manualServerQuota]. Change this
+ * one number and both follow automatically.
+ */
+internal const val MAX_RETAINED_SERVERS: Int = 500
+
+/**
+ * REQ-RETENTION-002 — the share of the total capacity that is always kept free
+ * of manually added servers, in percent.
+ *
+ * This is a percentage, not a count: the count is
+ * `ceil(MAX_RETAINED_SERVERS × 10%)`, so it scales with the capacity above and
+ * can never drift out of step with it.
+ */
+internal const val RESERVED_CAPACITY_PERCENT: Int = 10
+
+/**
+ * REQ-RETENTION-002 — the number of slots reserved from manual-server
+ * allocation: `ceil(total × 10%)`.
+ *
+ * Integer arithmetic only — `(total * 10 + 99) / 100` is exactly
+ * `ceil(total * 10 / 100)` for every non-negative total, with no floating-point
+ * rounding to drift on values such as 501 (→ 51, not 50).
+ */
+internal fun reservedCapacity(total: Int = MAX_RETAINED_SERVERS): Int {
+    if (total <= 0) return 0
+    val scaled = total.toLong() * RESERVED_CAPACITY_PERCENT
+    return ((scaled + 99) / 100).toInt()
+}
+
+/**
+ * REQ-RETENTION-002 — the maximum number of manually added servers:
+ * `total − reservedCapacity(total)`.
+ *
+ * Derived on every call, never stored: 500 → 450, 501 → 450, 1000 → 900.
+ */
+internal fun manualServerQuota(total: Int = MAX_RETAINED_SERVERS): Int =
+    (total - reservedCapacity(total)).coerceAtLeast(0)
+
+/**
+ * REQ-RET-001 — cap [rows] at [cap] using the approved priority order:
+ * **quality → protocol breadth → successful-connection history → recency**.
+ *
+ * Manual/imported rows are never pruned: they are excluded from the ranking and
+ * kept in full. If they alone exceed [cap], all of them are kept (the
+ * alternative would delete user-supplied data, which no requirement permits).
+ *
+ * The tie-break is deterministic (trimmed `hostName` ascending) so two runs over
+ * the same input produce the same set. It is **not** a quality weight.
+ *
+ * @param successCounts per-host success counts from `server_history_summary`;
+ *   absent entries count as 0, which is exactly "no history".
+ */
+internal fun capRetainedServers(
+    rows: List<VPNGateItem>,
+    manualHostNames: Set<String>,
+    successCounts: Map<String, Int> = emptyMap(),
+    cap: Int = MAX_RETAINED_SERVERS,
+): List<VPNGateItem> {
+    if (rows.size <= cap) return rows
+    val manual = rows.filter { it.hostName.trim() in manualHostNames }
+    val network = rows.filter { it.hostName.trim() !in manualHostNames }
+    val room = (cap - manual.size).coerceAtLeast(0)
+    if (network.size <= room) return rows
+    val kept = network.sortedWith(
+        compareByDescending<VPNGateItem> { it.healthScore }
+            .thenByDescending { VPNGateItem.connectOptions(it) }
+            .thenByDescending { successCounts[it.hostName.trim()] ?: 0 }
+            .thenByDescending { it.lastSeenAt }
+            .thenBy { it.hostName.trim() },
+    ).take(room)
+    return manual + kept
+}
+
+// -------------------------------------------------------------------------
 // RETENTION-IMPL-PHASE-1 (spec §1.6.31): Cumulative Server Retention, phase 1.
 // -------------------------------------------------------------------------
 
@@ -545,6 +633,7 @@ internal fun mergeAll(
     incoming: List<VPNGateItem>,
     manualRows: List<VPNGateItem>,
     now: Long,
+    successCounts: Map<String, Int> = emptyMap(),
 ) {
     if (dao == null) return
     if (incoming.isEmpty()) return
@@ -580,7 +669,14 @@ internal fun mergeAll(
         if (row.hostName.trim() !in incomingKeys) merged.add(row)
     }
 
-    dao.replaceAll(merged)
+    // REQ-RET-001: the retained dataset is capped at 500, manual rows protected.
+    dao.replaceAll(
+        capRetainedServers(
+            rows = merged,
+            manualHostNames = manualRows.map { it.hostName.trim() }.toSet(),
+            successCounts = successCounts,
+        ),
+    )
 }
 
 /**
@@ -617,6 +713,7 @@ internal fun mergeFallback(
     incoming: List<VPNGateItem>,
     manualRows: List<VPNGateItem>,
     now: Long,
+    successCounts: Map<String, Int> = emptyMap(),
 ) {
     if (dao == null) return
     if (incoming.isEmpty()) return
@@ -687,7 +784,14 @@ internal fun mergeFallback(
         if (row.hostName.trim() !in incomingKeys) merged.add(row)
     }
 
-    dao.replaceAll(merged)
+    // REQ-RET-001: the retained dataset is capped at 500, manual rows protected.
+    dao.replaceAll(
+        capRetainedServers(
+            rows = merged,
+            manualHostNames = manualRows.map { it.hostName.trim() }.toSet(),
+            successCounts = successCounts,
+        ),
+    )
 }
 
 /**

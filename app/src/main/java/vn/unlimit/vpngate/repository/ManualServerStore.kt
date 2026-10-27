@@ -24,7 +24,17 @@ import vn.unlimit.vpngate.models.VPNGateItem
  * data — the one thing in the server list that is not an observation of a
  * feed — so it must not be able to fail because a host was unreachable.
  */
-class ManualServerStore(private val dao: ManualServerDao) {
+class ManualServerStore(
+    private val dao: ManualServerDao,
+    /**
+     * REQ-RETENTION-003 (v1.0.71): the manual-server quota boundary.
+     *
+     * Defaulted so every existing construction site — including the read-only
+     * one in [manualServerRows] — keeps working unchanged. The default is the
+     * shared production instance, so all stores serialize on one lock.
+     */
+    private val admission: ManualServerAdmission = productionManualServerAdmission(),
+) {
 
     /** The full list for Settings, including disabled rows. */
     fun observeAll(): Flow<List<ManualServer>> =
@@ -46,6 +56,11 @@ class ManualServerStore(private val dao: ManualServerDao) {
      * else), so a bare DNS name would be accepted here and then silently
      * dropped by the merge. Refusing it keeps the Settings UI honest; DNS
      * resolution for manual entries is a later phase's problem.
+     *
+     * REQ-RETENTION-003 (v1.0.71): this also returns false when the manual
+     * quota is full. Callers that need to tell "invalid" from "full" apart —
+     * to show the user why — use [addDetailed]; this Boolean form stays for
+     * the existing call sites that only ask "did it store?".
      */
     suspend fun add(
         host: String,
@@ -53,41 +68,80 @@ class ManualServerStore(private val dao: ManualServerDao) {
         protocol: String,
         label: String?,
         notes: String?,
-    ): Boolean {
-        val hostRaw = VpnUtil.clean(host)
-        if (!ManualServer.isValidHost(hostRaw)) return false
+    ): Boolean = addDetailed(host, portText, protocol, label, notes) is AddOutcome.Stored
 
-        val port = VpnUtil.clean(portText).toIntOrNull() ?: return false
-        if (!ManualServer.isValidPort(port)) return false
+    /**
+     * REQ-RETENTION-003 — the quota-aware form of [add].
+     *
+     * The quota check and the insert run inside one critical section
+     * ([ManualServerAdmission.admit]), and the duplicate lookup happens
+     * *inside* it too: two concurrent submissions of the same new host can
+     * therefore never both decide "this is new" and consume two slots.
+     *
+     * A re-submitted `(host, port, protocol)` is an edit, not a new record, so
+     * it is admitted even when the quota is full — see [AddOutcome.Stored].
+     */
+    suspend fun addDetailed(
+        host: String,
+        portText: String,
+        protocol: String,
+        label: String?,
+        notes: String?,
+    ): AddOutcome {
+        val hostRaw = VpnUtil.clean(host)
+        if (!ManualServer.isValidHost(hostRaw)) return AddOutcome.InvalidInput
+
+        val port = VpnUtil.clean(portText).toIntOrNull() ?: return AddOutcome.InvalidInput
+        if (!ManualServer.isValidPort(port)) return AddOutcome.InvalidInput
 
         val proto = ManualServer.normalizeProtocol(protocol)
-        if (!ManualServer.isValidProtocol(proto)) return false
+        if (!ManualServer.isValidProtocol(proto)) return AddOutcome.InvalidInput
 
         val hostKey = VpnUtil.normalizeHost(hostRaw)
         val now = System.currentTimeMillis()
-        val existing = try {
-            dao.findByKey(hostKey, port, proto)
-        } catch (e: Exception) {
-            null
+        var existing: ManualServerEntity? = null
+
+        val decision = admission.admit(
+            requested = {
+                // Re-entering an existing server keeps its id and its original
+                // creation order — the user is editing a decision, not making a
+                // second one — so it asks for no new slot.
+                existing = try {
+                    dao.findByKey(hostKey, port, proto)
+                } catch (e: Exception) {
+                    null
+                }
+                if (existing != null) 0 else 1
+            },
+        ) { allowance ->
+            // A full quota must still allow an edit (allowance 0 is fine when
+            // the row already exists); it must never allow a new row.
+            if (existing == null && allowance <= 0) return@admit false
+            dao.upsert(
+                ManualServerEntity(
+                    id = existing?.id ?: 0L,
+                    host = hostKey,
+                    port = port,
+                    protocol = proto,
+                    label = label?.let { VpnUtil.clean(it) }?.ifEmpty { null },
+                    notes = notes?.let { VpnUtil.clean(it) }?.ifEmpty { null },
+                    enabled = true,
+                    createdAt = existing?.createdAt ?: now,
+                    updatedAt = now,
+                )
+            )
+            true
         }
 
-        // Re-entering an existing server keeps its id and its original
-        // creation order — the user is editing a decision, not making a
-        // second one.
-        dao.upsert(
-            ManualServerEntity(
-                id = existing?.id ?: 0L,
-                host = hostKey,
-                port = port,
-                protocol = proto,
-                label = label?.let { VpnUtil.clean(it) }?.ifEmpty { null },
-                notes = notes?.let { VpnUtil.clean(it) }?.ifEmpty { null },
-                enabled = true,
-                createdAt = existing?.createdAt ?: now,
-                updatedAt = now,
+        return if (decision.value) {
+            AddOutcome.Stored(updated = existing != null)
+        } else {
+            AddOutcome.QuotaReached(
+                manualCount = decision.manualCount,
+                quota = admission.quota,
+                totalCapacity = admission.totalCapacity,
             )
-        )
-        return true
+        }
     }
 
     /**
