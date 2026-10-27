@@ -70,8 +70,11 @@ android {
             signingConfig signingConfigs.pro
             // v1.0.38 (§1.6.30): version bump past 2.4.10 — HEAD and tag
             // p2.4.10 had shared the 2.4.10/143 identity for 60+ commits.
-            versionCode 144
-            versionName "2.4.11"
+            // v2.4.12 (145) — BLOCK v1.0.75: origin labels, two-stage Try Next,
+            // history-driven fast connect, Room 10->11, the hero-disconnect fix
+            // and the server-list update fixes (device-verified 2026-10-27).
+            versionCode 145
+            versionName "2.4.12"
         }
     }
 

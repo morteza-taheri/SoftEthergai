@@ -6958,6 +6958,14 @@ protocol order, v1.0.37 no-terminal contract).
 Network-identity hashing; staged probing; connect-time statistics; extending the Iranian app list; a
 rescan button — all need on-device measurements and are out of scope for this block.
 
+**Deferred to the next block (operator, 2026-10-27):** make the Auto-Reconnect loop guard configurable
+in Settings — `RECONNECT_MAX_ATTEMPTS` (currently a compile-time constant `5` at
+`AutoModeController.kt:658`) and optionally `RECONNECT_WINDOW_MS` (currently fixed 10 minutes,
+`:665`). Proposed shape: a DataUtil accessor (`getAutoReconnectMaxAttempts()`, default 5, clamped
+1..10), a Settings row under the Auto-Reconnect toggle (strings en/fa/vi), and the controller reading
+it through the existing injection pattern. The window stays fixed unless the operator asks otherwise.
+Not implemented in this block to keep the release scope contained.
+
 ### 12.9.13 Downgrade warning
 
 An older build opening a newer database fails Room's identity check. Back up the DB copy before
@@ -6981,3 +6989,4 @@ installing a newer build; this block folds its columns into version 10 only beca
 | 1.0.73 | 2026-10-27 | Quota/persistence reconciliation: 19/19 boundary tests, full regression 1335/1/0/0 + 184/0/0/0, lint 104/178/9. Room count and quota-at-limit display remain NOT OBSERVABLE / NOT TESTABLE. Evidence: `V1.0.73_FINAL_QUOTA_RECONCILIATION_REPORT.md`. |
 | 1.0.74 | 2026-10-27 | Final quota audit: evidence re-established live (device 5585fecc, 5 JSON records ×1, fresh 19/19 rerun). Verdicts: implementation PASS, physical PARTIAL. Evidence: `V1.0.74_FINAL_QUOTA_AUDIT_REPORT.md`. |
 | 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
+| v2.4.12 (145) | 2026-10-27 | **Release.** BLOCK v1.0.75 shipped: connection-origin labels, two-stage Try Next with the session tried-set, history-driven fast connect (known-good first, per-network demotion, fast path, remembered protocol, cooldown, missed-refresh demotion, single exploration), Room 10→11, the hero-disconnect fix and the server-list update fixes — all device-verified 2026-10-27 (see `BLOCK_v1.0.70_FINAL_REPORT.md`, `BLOCK_v1.0.70_DEVICE_LIST_UPDATE_TEST.md`). Deferred to the next block: configurable Auto-Reconnect attempt limit (§12.9.12). |
