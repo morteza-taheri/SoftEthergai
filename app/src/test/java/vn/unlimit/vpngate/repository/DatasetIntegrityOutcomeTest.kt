@@ -45,7 +45,10 @@ class DatasetIntegrityOutcomeTest {
     private fun verdictFor(
         candidate: List<VPNGateItem>,
         stored: List<VPNGateItem>,
-    ) = DatasetIntegrity.evaluate(candidate, stored, SourceCapability.FULL, lastAcceptedSize = stored.size)
+    ) = DatasetIntegrity.evaluate(
+        candidate, stored, SourceCapability.FULL,
+        lastAcceptedSize = stored.size, strictSizeBaseline = true,
+    )
 
     private fun outcomeFor(
         candidate: List<VPNGateItem>,

@@ -260,6 +260,20 @@ object DatasetIntegrity {
          * derived from [stored] (the pre-fix behaviour).
          */
         lastAcceptedSize: Int = 0,
+        /**
+         * BLOCK v1.0.75 FIX (device evidence 18:01: a 99-row tunnel feed was
+         * rejected against a recorded baseline of 245 — an earlier acceptance
+         * had counted the EMERGENCY source's 245 CSV rows as "fresh", so the
+         * baseline was poisoned the moment the operator disabled that source).
+         *
+         * A fresh network feed is therefore **never** size-rejected: its size
+         * legitimately varies with which supplementary sources are enabled, and
+         * the retention merge cannot shrink the stored set anyway. The recorded
+         * [lastAcceptedSize] is kept for the record only. Size rejection exists
+         * solely in [strictSizeBaseline] mode (cache/emergency candidates),
+         * where the baseline is the stored dataset itself.
+         */
+        strictSizeBaseline: Boolean = false,
     ): DatasetVerdict {
         if (candidate.size < MIN_ACCEPTABLE_DATASET_SIZE) {
             return DatasetVerdict(
@@ -303,29 +317,33 @@ object DatasetIntegrity {
         val candidateCoverage = coverage(candidate)
         val baselineCoverage = coverage(baseline)
 
-        // BLOCK v1.0.75 FIX: with no RECORDED baseline the union is not a
-        // comparable baseline — it mixes retention rows and emergency-merge rows
-        // (device: the newest group was 250 rows while the live feed was ~98), so
-        // comparing against it rejected every refresh forever. The first fresh
-        // response is therefore judged by the absolute floor only, and the
-        // updater records its size so the NEXT response is checked strictly.
-        if (lastAcceptedSize <= 0) {
-            return DatasetVerdict(
-                accepted = true,
-                detail = "no recorded baseline; accepting and recording ${candidate.size} server(s)",
-            )
-        }
-
-        // The explicit size of the last ACCEPTED fresh dataset is the only
-        // baseline free of retention/emergency inflation.
-        val sizeFloor = lastAcceptedSize * MIN_RELATIVE_DATASET_RATIO
-        if (candidate.size < sizeFloor) {
-            return DatasetVerdict(
-                accepted = false,
-                defect = DatasetDefect.SIZE_COLLAPSE,
-                detail = "candidate ${candidate.size} server(s) vs last accepted $lastAcceptedSize " +
-                    "(stored union ${stored.size}; ratio floor $MIN_RELATIVE_DATASET_RATIO)",
-            )
+        // BLOCK v1.0.75 FIX (second iteration, device evidence 18:01): a FRESH
+        // network feed is never size-rejected. Its size legitimately varies with
+        // which supplementary sources are enabled (the emergency CSV alone is
+        // 245 rows; the live API ~98), and the retention merge cannot shrink the
+        // stored set — so a size ratio could only ever produce false
+        // rejections (device: a 99-row tunnel feed refused against a recorded
+        // baseline of 245). Truncation is still caught by the share-based
+        // coverage checks below and by the emergency rung's own rules.
+        //
+        // Size rejection survives ONLY in [strictSizeBaseline] mode — a
+        // cache/emergency candidate, judged against what is stored right now.
+        if (strictSizeBaseline) {
+            if (lastAcceptedSize <= 0) {
+                return DatasetVerdict(
+                    accepted = true,
+                    detail = "no comparable stored dataset (${stored.size} server(s))",
+                )
+            }
+            val sizeFloor = lastAcceptedSize * MIN_RELATIVE_DATASET_RATIO
+            if (candidate.size < sizeFloor) {
+                return DatasetVerdict(
+                    accepted = false,
+                    defect = DatasetDefect.SIZE_COLLAPSE,
+                    detail = "candidate ${candidate.size} server(s) vs last accepted $lastAcceptedSize " +
+                        "(stored union ${stored.size}; ratio floor $MIN_RELATIVE_DATASET_RATIO)",
+                )
+            }
         }
 
         // A source that cannot publish a column at all must not be judged as

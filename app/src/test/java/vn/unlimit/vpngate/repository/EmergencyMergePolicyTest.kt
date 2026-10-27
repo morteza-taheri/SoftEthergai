@@ -260,6 +260,7 @@ class EmergencyMergePolicyTest {
         val emergency = (1..10).map { item("emg-$it") }
         val verdict = DatasetIntegrity.evaluate(
             emergency, stored, SourceCapability.UNKNOWN, lastAcceptedSize = stored.size,
+            strictSizeBaseline = true,
         )
         assertFalse("a 10-row excerpt must be refused against a 261-row store", verdict.accepted)
     }

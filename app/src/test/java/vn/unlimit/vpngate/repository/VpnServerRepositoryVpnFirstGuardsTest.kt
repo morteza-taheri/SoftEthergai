@@ -136,7 +136,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
     fun `A VPN absent selects PHYSICAL and never invokes the tunnel`() = runBlocking {
         val tunnel = RecordingFetcher(html = htmlSample, csv = csv(20))
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
         val repo = buildRepo(
             tunnelUsable = false,
             hasBoundNetwork = false,
@@ -171,7 +171,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         val tunnel = RecordingFetcher(html = htmlSample, csv = csv(20))
         // PHYSICAL carries valid bodies too, so we can detect if it is touched.
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
         val repo = buildRepo(
             tunnelUsable = true,
             hasBoundNetwork = true,
@@ -237,7 +237,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         // reported, not bypassed.
         val tunnel = RecordingFetcher(fail = true)
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
         val dao = FakeDao()
         val repo = buildRepo(
             tunnelUsable = true,
@@ -300,7 +300,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         val tunnel = RecordingFetcher(html = htmlSample, csv = csv(20), gate = gate, entered = entered)
         val physical = RecordingFetcher(fail = true)
         val dao = FakeDao()
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
         val repo = buildRepo(
             tunnelUsable = true,
             hasBoundNetwork = true,
@@ -334,7 +334,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
         // returns null (binding failed / network vanished): the request must
         // fail, not silently use the physical network.
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
         val repo = buildRepo(
             tunnelUsable = true,
             hasBoundNetwork = true,
@@ -387,7 +387,7 @@ class VpnServerRepositoryVpnFirstGuardsTest {
     fun `I each refresh re-evaluates current network state`() = runBlocking {
         val tunnel = RecordingFetcher(html = htmlSample, csv = csv(20))
         val physical = RecordingFetcher(html = htmlSample, csv = csv(20))
-        val fetchLog = mutableListOf<String>()
+        val fetchLog = java.util.concurrent.CopyOnWriteArrayList<String>()
 
         // Refresh 1: VPN up, tunnel works.
         val repo = buildRepo(

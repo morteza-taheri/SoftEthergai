@@ -372,17 +372,22 @@ class ServerListUpdater(
             } catch (e: Exception) {
                 SourceCapability.UNKNOWN
             }
-            // BLOCK v1.0.75 FIX: a FRESH network response is judged against the
-            // last accepted fresh dataset (or bootstraps when none is recorded
-            // yet). A cache/emergency candidate is NOT a fresh observation and
-            // keeps its strict rule: judged against what is stored right now.
-            val baselineForThisRun = store.lastAcceptedFreshSize().takeIf { it > 0 }
-                ?: if (fromCache || suppliedByEmergency) store.currentCount() else 0
+            // BLOCK v1.0.75 FIX: a FRESH network response is never size-rejected
+            // (its size varies with which supplementary sources are enabled; the
+            // retention merge cannot shrink the store). A cache/emergency
+            // candidate is NOT a fresh observation and keeps the strict rule:
+            // judged against what is stored right now.
+            val baselineForThisRun = if (fromCache || suppliedByEmergency) {
+                store.currentCount()
+            } else {
+                store.lastAcceptedFreshSize()
+            }
             val verdict = DatasetIntegrity.evaluate(
                 usableRows,
                 store.currentDataset(),
                 capability,
                 lastAcceptedSize = baselineForThisRun,
+                strictSizeBaseline = fromCache || suppliedByEmergency,
             )
             if (!verdict.accepted) {
                 CollectorLog.d(
