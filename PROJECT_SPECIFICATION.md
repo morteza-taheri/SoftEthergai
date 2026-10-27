@@ -6797,6 +6797,149 @@ arithmetic error (`bc` missing), and a multi-file `grep -c` produced unusable ou
 
 ---
 
+## §12.9 — Auto Mode: connection origin, two-stage Try Next, history-driven fast connect (v1.0.75)
+
+Normative. Code comments label this block "BLOCK v1.0.75" because the v1.0.70 label was already
+consumed by REQ-TIMEOUT-001/REQ-PROTO-001 (see the revision record).
+
+### 12.9.1 Connection origin (D-3)
+
+`AutoModeState.Connected`/`Connecting` carry `origin: ConnectionOrigin` ∈
+{`AUTO_CONNECT`, `AUTO_RECONNECT`, `MANUAL`}. `AUTO_RECONNECT` is stamped only by
+`onUnexpectedDisconnect`'s restart; every user-started run (button, `startOrRefuseIfNoServers`) is
+`AUTO_CONNECT`, and both Next-Server continuations keep it. An external tunnel is `MANUAL` and is
+displayed with the REAL `GlobalVpnTracker` host/IP; its protocol is shown only when the tracker names
+one concrete transport (`SSTP` → `MS_SSTP`, exact `AutoModeProtocol.id`s), never a fabricated
+placeholder. The hero subtitle renders the origin ("Started by Auto Connect" /
+"Reconnected automatically (Auto-Reconnect)" / "Connected manually", en/fa/vi).
+
+### 12.9.2 Two-stage Try Next (D-1, D-2)
+
+**Stage 1 — while Connecting:** one press cancels the CURRENT PROTOCOL attempt through the adapter
+(stale-callback safe via the attempt token), records `ATTEMPT_CANCELLED`/`USER_CANCELLED` as NEUTRAL,
+and continues with the next enabled protocol of the SAME server; the next server is reached only when
+that server's protocols are exhausted. `skipInFlight` coalescing is unchanged.
+
+**Stage 2 — while Connected:** the controller keeps a session tried-set keyed `ip|hostname`
+(`serverKey`). A session starts when the user starts Auto Connect from Disconnected, ends on user
+disconnect/stop, and for a manual tunnel starts as `{the connected server}`. Next selects the FIRST
+candidate in the run ordering (history-aware, reachability gate applied lazily inside the walk) that is
+not in the tried set and supports an enabled protocol, then runs the normal walk over the untried tail.
+If none remains the state is `ERROR_NO_MORE_UNTRIED` ("no more untried servers") — never a silent wrap.
+
+### 12.9.3 Ordering rule, constants and worked example (D-4, C2)
+
+Pipeline inside `sortedForAutoConnect(history, network, now)`:
+
+1. quality sort (`byQuality`: speed>0, speed, ping>0, ping, sessions, score) — unchanged;
+2. RTT pass and history tie-break **inside equal-quality windows only** — unchanged;
+3. **known-good promotion** (D-4): up to `KNOWN_GOOD_MAX = 3` servers with
+   `successesOn(network) > 0`, `lastSuccessAt` within `KNOWN_GOOD_WINDOW_DAYS = 14`, no
+   `lastFailureAtOn(network) > lastSuccessAt`, and `qualityRejectionCount == 0` go first, keeping
+   their relative order; the rest keep the quality order. `network == UNKNOWN` → no promotion.
+4. **demotion** (C2): stable partition to the back when `consecutiveFailuresOn(network) >= 2`, or
+   `qualityRejectionCount >= QUALITY_REJECT_DEMOTE_AFTER = 2` with no success on this network, or
+   `missedRefreshCount >= MISSED_REFRESH_DEMOTE_AFTER = 2` with no success on this network.
+
+Fresh install (empty history) is bit-identical to the pre-block order.
+
+**Worked example** (network = WIFI, now = T): servers A (speed 90 M), B (50 M), C (1 M);
+history: C succeeded on Wi-Fi at T−1 d with no later Wi-Fi failure and no rejection; B has
+`wifiConsecutiveFailures = 2`. Order after quality: A, B, C. Known-good promotion → C, A, B.
+Demotion moves B (2 consecutive Wi-Fi failures) behind → **C, A, B**. With network = UNKNOWN the
+result is **A, C, B** (no promotion; demotion still applies in the UNKNOWN bucket only).
+
+### 12.9.4 Fast path (C3/D-5)
+
+A USER-STARTED run (not a Next continuation — `overrideServers == null` — and not a reconnect
+override) first dials the best known-good server with its **remembered protocol** (D-6: `lastSuccessProtocol`
+when still enabled and usable), BEFORE the quality sort and the reachability probe, using the normal
+per-attempt timeout. Logs: `[AUTO] Fast path: known-good <host> via <proto>` and
+`Fast path succeeded|failed in <ms>`. On failure the server is marked attempted (not re-dialled by the
+run) and the normal pipeline continues. Next/reconnect runs never take the fast path.
+
+### 12.9.5 Remembered protocol (D-6)
+
+For a server WITH a verified success, its enabled+usable protocols are ordered with
+`lastSuccessProtocol` first; the user's global order and enablement are otherwise untouched. A
+protocol the user disabled is never introduced.
+
+### 12.9.6 Per-network cooldown (D-7)
+
+A server with a server-attributable failure on the CURRENT network (`lastFailureAtOn(network)`)
+within `FAILURE_COOLDOWN_MS = 30 min` is moved behind every non-cooling candidate (stable). It is
+still tried when nothing else remains — never dropped. Timeouts alone, local errors, cancellations and
+no-network never set the clock; a success on that network clears it.
+
+### 12.9.7 Absent-from-refresh demotion (D-8/C6)
+
+`server_history_summary.missedRefreshCount` (folded into Room **version 10** — no installed build ever
+opened v10, latest saved device DB `user_version = 9`). `markSeen` resets it to 0 for listed hosts;
+one UPDATE (`incrementMissedRefresh(marker)`) ages every row an ACCEPTED FRESH refresh did not list.
+Emergency/cache datasets route to plain `replaceAll` and never age rows. `>= 2` with no success on the
+current network → demoted, never deleted.
+
+### 12.9.8 Exploration (C7)
+
+Exactly ONE candidate per run: a previously attempted server (`hasHistory`, `lastAttemptAt != null`)
+with no success on the current network, chosen by the OLDEST `lastAttemptAt`. Never a never-attempted
+server; never the first pick; placed SECOND by default, `EXPLORATION_FIRST_EVERY_K_RUNS > 0` switches
+to first on every K-th run. (Supersedes the v1.0.69 PART 2 `withExplorationSecond` position rule.)
+
+### 12.9.9 Quality-reject semantics
+
+Leaving a Connected server via Try Next or Disconnect within `QUALITY_REJECT_WINDOW_MS` (10 s) records
+one NEUTRAL `QUALITY_REJECTED` per server; any disconnect within 10 s counts. A manual tunnel is never
+counted. It touches only `qualityRejectionCount`, never failure/timeout/consecutive counters.
+
+### 12.9.10 Operator decisions (verbatim)
+
+D-1 Try Next WHILE CONNECTING: next protocol of the same server first, then the next server.
+D-2 Try Next WHILE CONNECTED: switch to the best candidate not yet tried/rejected in this session
+(stable key ip|hostname); never silently wrap.
+D-3 The Auto Mode status shows WHY the tunnel is up: "started by Auto Connect" / "reconnected
+automatically (Auto-Reconnect)" / "connected manually"; for a manual tunnel show the REAL server and
+protocol; never a fabricated protocol.
+D-4 History influence = "known-good first": at most K=3 servers with a verified success on the CURRENT
+network type within N=14 days and no later server-attributable failure or quality rejection on that same
+network type go first; the rest keep the quality order.
+D-5 Last-known-good fast path before the full probe.
+D-6 Per-server remembered protocol (waives OD-4 only for servers WITH history; never enables a protocol
+the user disabled).
+D-7 Per-network failure cooldown.
+D-8 Servers absent from fresh refreshes are demoted (never deleted).
+D-9 NOT in this block: network-identity hashing, staged probing, connect-time statistics, extending the
+Iranian app list, a rescan button (record them as deferred, with the reason: they need on-device
+measurements).
+
+OD-1..OD-9 (unchanged): history tables; hostName identity; timeouts counted separately; quality reject
+by user action within 10 s of a connection; durable success events; history UI in phase 2; plus the
+standing product decisions (VPN-first routing, per-attempt timeout, one candidate per IPv4, user's
+protocol order, v1.0.37 no-terminal contract).
+
+### 12.9.11 The six history requirements → schema mapping
+
+| Requirement | Column(s) |
+|---|---|
+| 1. Successes/failures per server | `successCount`, `failureCount`, `timeoutCount` |
+| 2. Per-network behaviour | `wifi/cellular/unknown SuccessCount`, `…ConsecutiveFailures`, `…LastFailureAt` |
+| 3. Recency | `lastAttemptAt`, `lastSuccessAt`, `lastFailureAt` |
+| 4. Remembered protocol | `lastSuccessProtocol`, `lastSuccessNetwork` |
+| 5. Quality rejection | `qualityRejectionCount` (+ `server_history_event`) |
+| 6. Freshness of the dataset | `lastRefreshSeenAt`, `firstListedAt`, `missedRefreshCount` |
+
+### 12.9.12 Deferred (D-9, reasons)
+
+Network-identity hashing; staged probing; connect-time statistics; extending the Iranian app list; a
+rescan button — all need on-device measurements and are out of scope for this block.
+
+### 12.9.13 Downgrade warning
+
+An older build opening a newer database fails Room's identity check. Back up the DB copy before
+installing a newer build; this block folds its columns into version 10 only because v10 never shipped.
+
+---
+
 ### v1.0.64–v1.0.70 — revision record (2026-10-27)
 
 | Version | Date | Summary |
@@ -6809,3 +6952,7 @@ arithmetic error (`bc` missing), and a multi-file `grep -c` produced unusable ou
 | 1.0.69 | 2026-10-26 | Room 9→10 additive history columns; refresh markers; quality-rejection window; OD-9 durable Connected retries; exactly-one exploration candidate. |
 | 1.0.70 | 2026-10-27 | **This revision.** Approved baseline recorded in §12.8: protocol order UDP→TCP→SSTP, timeout 12/8/30, 500-server retention, max connections 4/8, Developer Mode/logging OFF, Custom DNS OFF, VPN-only routing while active, tunnel-state authority, connection-origin requirement. Documentation audit completed; implementation gaps classified in §12.8. |
 | 1.0.71 | 2026-10-27 | **Targeted retention phase.** §12.8.1 records the derived manual-server quota: reserved = `ceil(total × 10%)`, manual = `total − reserved`, i.e. **500 / 50 / 450**. Enforcement moved to the persistence boundary (`ManualServerAdmission`) covering both the `manual_server` table and the CSV import; duplicates take no slot; imports admit what fits and report the rest; over-cap data is preserved and only refused further growth; the total cap is also applied to the two write-through paths. §12.8.2 records the provenance audit (explicit persisted surfaces, no migration). No Room schema, version-code or routing change. |
+| 1.0.72 | 2026-10-27 | Physical-device verification of the retention quota (CSV import, duplicate handling, persistence, localized feedback). Evidence: `V1.0.72_PHYSICAL_DEVICE_QUOTA_VERIFICATION_REPORT.md`. |
+| 1.0.73 | 2026-10-27 | Quota/persistence reconciliation: 19/19 boundary tests, full regression 1335/1/0/0 + 184/0/0/0, lint 104/178/9. Room count and quota-at-limit display remain NOT OBSERVABLE / NOT TESTABLE. Evidence: `V1.0.73_FINAL_QUOTA_RECONCILIATION_REPORT.md`. |
+| 1.0.74 | 2026-10-27 | Final quota audit: evidence re-established live (device 5585fecc, 5 JSON records ×1, fresh 19/19 rerun). Verdicts: implementation PASS, physical PARTIAL. Evidence: `V1.0.74_FINAL_QUOTA_AUDIT_REPORT.md`. |
+| 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 10` gains `missedRefreshCount` and the three `*LastFailureAt` columns (folded — v10 never shipped; latest device DB copy is user_version 9). Migration verified on a copy of the real device DB (row counts unchanged, integrity ok, column-by-column parity with `10.json`). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
