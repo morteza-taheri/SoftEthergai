@@ -2857,29 +2857,29 @@ val sstp = AutoModeCandidate(
      * nothing pinned any of them, so the drift was invisible to CI. This pins
      * the two that are reachable from the JVM; the spec figure is asserted by
      * §6.7 R5 / §6.8 themselves. (v1.0.46: the *range floor* moved 5 → 8;
-     * v1.0.52 §1.6.44 TASK B.2: the *default* moved 12 → 8, i.e. down to that
-     * floor, so the asserted figure is now 8 on both sides.)
+     * v1.0.52: the *default* moved 12 → 8; **v1.0.70 (REQ-TIMEOUT-001):
+     * default 12 s, range 8..30**.)
      */
     @Test
     fun defaultAttemptTimeoutMatchesTheSettingsDefault() {
         assertEquals(
-            "the controller fallback must equal the shipped Settings default (8 s)",
-            8_000L,
+            "the controller fallback must equal the shipped Settings default (12 s)",
+            12_000L,
             AutoModeController.DEFAULT_ATTEMPT_TIMEOUT_MS,
         )
         val dataUtil = sourceOf("src/main/java/vn/unlimit/vpngate/utils/DataUtil.kt")
         assertTrue(
-            "DataUtil must default SETTING_AUTO_MODE_TIMEOUT_SECONDS to 8",
-            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8)"),
+            "DataUtil must default SETTING_AUTO_MODE_TIMEOUT_SECONDS to 12",
+            dataUtil.contains("getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
         )
         assertTrue(
-            "the timeout must stay clamped to the documented 8..60 range " +
-                "(v1.0.46 raised the floor from 5 to 8)",
-            dataUtil.contains(".coerceIn(8, 60)"),
+            "the timeout must stay clamped to the approved 8..30 range " +
+                "(v1.0.70 REQ-TIMEOUT-001)",
+            dataUtil.contains(".coerceIn(8, 30)"),
         )
         assertFalse(
-            "no stale 12 s default may survive in DataUtil: $dataUtil",
-            dataUtil.contains("SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12)"),
+            "no stale 8 s default may survive in DataUtil: $dataUtil",
+            dataUtil.contains("SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8)"),
         )
     }
 

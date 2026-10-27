@@ -296,20 +296,20 @@ class DataUtil(context: Context?) {
     /** Marks the battery optimisation prompt as shown; see [hasAskedBatteryOptimization]. */
     fun setAskedBatteryOptimization() = setBooleanSetting(SETTING_BATTERY_OPT_ASKED, true)
 
-    // §3 §4 §5 Auto Mode connection timeout per-server (8–60 seconds, default 8)
+    // §3 §4 §5 Auto Mode connection timeout per-server (8–30 seconds, default 12)
     //
     // v1.0.46: minimum raised from 5 to 8 seconds (operator requirement).
-    // v1.0.52 (§1.6.44) TASK B.2: the DEFAULT moves 12 -> 8 seconds, so the
-    // default is now the floor: a fresh install gives each protocol attempt
-    // 8 s, and Auto Connect walks protocols and servers faster. The maximum
-    // (60) is unchanged. Both the reader and the writer clamp, so a value
-    // stored by an older build at 5/6/7 reads back as 8 and any stored value
-    // in 8..60 keeps working untouched.
+    // v1.0.52 (§1.6.44) TASK B.2: the default moved 12 -> 8 seconds.
+    // v1.0.70 (REQ-TIMEOUT-001): the approved baseline restores the DEFAULT to
+    // 12 seconds and lowers the CEILING from 60 to 30, keeping the 8 s floor.
+    // Both the reader and the writer clamp, so a value stored by an older build
+    // outside 8..30 (e.g. 60) reads back as 30 with no migration, and a stored
+    // 5/6/7 reads back as 8.
     fun getAutoModeTimeoutSeconds(): Int =
-        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 8).coerceIn(8, 60)
+        getIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, 12).coerceIn(8, 30)
 
     fun setAutoModeTimeoutSeconds(seconds: Int) {
-        setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(8, 60))
+        setIntSetting(SETTING_AUTO_MODE_TIMEOUT_SECONDS, seconds.coerceIn(8, 30))
     }
 
     /**
@@ -545,14 +545,16 @@ class DataUtil(context: Context?) {
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
 
         /**
-         * v1.0.54 (§1.6.47) PART 2.4: the profile a fresh install starts with —
-         * SoftEther TCP first, then SoftEther UDP, both enabled (operator
-         * requirement). It is an ORDER, so the first entry is attempted first
-         * on every server.
+         * v1.0.54 (§1.6.47) PART 2.4: the profile a fresh install starts with.
+         * v1.0.70 (REQ-PROTO-001): the approved order is SoftEther UDP first,
+         * then SoftEther TCP, then Microsoft SSTP. It is an ORDER, so the first
+         * entry is attempted first on every server; a stored user choice always
+         * wins over this default.
          */
         val DEFAULT_AUTO_PROTOCOL_PRIORITY: List<AutoModeProtocol> = listOf(
-            AutoModeProtocol.SOFTETHER_TCP,
             AutoModeProtocol.SOFTETHER_UDP,
+            AutoModeProtocol.SOFTETHER_TCP,
+            AutoModeProtocol.MS_SSTP,
         )
 
         /**

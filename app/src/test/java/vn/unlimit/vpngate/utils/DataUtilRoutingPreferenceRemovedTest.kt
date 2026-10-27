@@ -162,8 +162,8 @@ class DataUtilRoutingPreferenceRemovedTest {
             DataUtil(withStaleKey).getAutoReconnectInAutoMode(),
         )
         assertEquals(
-            "the default timeout is 8 s regardless of the stale key",
-            8,
+            "the default timeout is 12 s regardless of the stale key (REQ-TIMEOUT-001)",
+            12,
             DataUtil(withStaleKey).getAutoModeTimeoutSeconds(),
         )
     }

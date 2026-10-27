@@ -31,19 +31,25 @@ class DataUtilDefaultsV1054Test {
     // ── PART 2.4: fresh install ───────────────────────────────────────────
 
     @Test
-    fun `unset protocol profile defaults to SoftEther TCP then UDP`() {
+    fun `unset protocol profile defaults to SoftEther UDP then TCP then SSTP`() {
         assertEquals(
-            listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+            listOf(
+                AutoModeProtocol.SOFTETHER_UDP,
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.MS_SSTP,
+            ),
             dataUtil().getAutoModeProtocolPriority(),
         )
     }
 
     @Test
-    fun `the default is both SoftEther transports and nothing else`() {
+    fun `the default is the approved three protocols and nothing else`() {
         val default = DataUtil.DEFAULT_AUTO_PROTOCOL_PRIORITY
-        assertEquals(2, default.size)
+        assertEquals(3, default.size)
+        assertEquals(AutoModeProtocol.SOFTETHER_UDP, default[0])
+        assertEquals(AutoModeProtocol.SOFTETHER_TCP, default[1])
+        assertEquals(AutoModeProtocol.MS_SSTP, default[2])
         assertTrue(default.none { it == AutoModeProtocol.L2TP_IPSEC })
-        assertTrue(default.none { it == AutoModeProtocol.MS_SSTP })
         assertTrue(default.none { it == AutoModeProtocol.OPENVPN_TCP })
         assertTrue(default.none { it == AutoModeProtocol.OPENVPN_UDP })
     }
@@ -124,7 +130,11 @@ class DataUtilDefaultsV1054Test {
         val util = dataUtil(prefs)
         assertEquals("the setting no longer influences anything", 168, util.getServerListUpdateIntervalHours())
         assertEquals(
-            listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP),
+            listOf(
+                AutoModeProtocol.SOFTETHER_UDP,
+                AutoModeProtocol.SOFTETHER_TCP,
+                AutoModeProtocol.MS_SSTP,
+            ),
             util.getAutoModeProtocolPriority(),
         )
     }

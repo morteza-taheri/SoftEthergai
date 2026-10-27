@@ -5,17 +5,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * v1.0.46 (§1.6.39) — T-NEW-70..72: the Auto Mode timeout range is 8..60.
- * Updated in v1.0.52 (§1.6.44) TASK B.2, which moved the DEFAULT from 12 to 8.
- *
- * CHANGE B (v1.0.46) raised the floor from 5 to 8 seconds. The maximum (60) is
- * unchanged, so this file pins all three numbers: the default, the floor and the
- * ceiling. v1.0.52 lowered the default to the floor, so the default is now 8 and
- * "no stored value" and "a value below the floor" converge on the same number.
+ * v1.0.46 (§1.6.39) — T-NEW-70..72: the Auto Mode timeout range.
+ * v1.0.52 moved the default 12 -> 8; **v1.0.70 (REQ-TIMEOUT-001) restores the
+ * default to 12 s and narrows the range to 8..30** (the ceiling was 60).
  *
  * The clamp lives in **both** the reader and the writer. Clamping on read is
  * what makes the change safe for an existing install: a value of 5, 6 or 7
- * written by an older build reads back as 8 without a migration.
+ * written by an older build reads back as 8 without a migration, and a stored
+ * 31..60 reads back as 30.
  *
  * Uses [DataUtil]'s `internal constructor(sharedPreferences)` seam, so no
  * Android runtime is needed.
@@ -24,13 +21,13 @@ class DataUtilTimeoutRangeTest {
 
     private fun dataUtil() = DataUtil(TimeoutFakeSharedPreferences())
 
-    // ── T-NEW-70: the default is now 8 (was 12 before v1.0.52) ────────────
+    // ── T-NEW-70: the default is 12 (v1.0.70) ─────────────────────────────
 
     @Test
-    fun `T-NEW-70 the default timeout with no stored value is 8 seconds`() {
+    fun `T-NEW-70 the default timeout with no stored value is 12 seconds`() {
         assertEquals(
-            "v1.0.52 (§1.6.44) TASK B.2 lowered the default from 12 to the 8 s floor",
-            8,
+            "v1.0.70 (REQ-TIMEOUT-001) sets the default to 12 s",
+            12,
             dataUtil().getAutoModeTimeoutSeconds(),
         )
     }
@@ -80,13 +77,13 @@ class DataUtilTimeoutRangeTest {
     // ── T-NEW-72: the ceiling and the exact floor still hold ──────────────
 
     @Test
-    fun `T-NEW-72 setting 100 seconds is clamped down to 60 and 8 is stored as 8`() {
+    fun `T-NEW-72 setting 100 seconds is clamped down to 30 and 8 is stored as 8`() {
         val dataUtil = dataUtil()
 
         dataUtil.setAutoModeTimeoutSeconds(100)
         assertEquals(
-            "the maximum must stay 60 s",
-            60,
+            "the v1.0.70 maximum is 30 s",
+            30,
             dataUtil.getAutoModeTimeoutSeconds(),
         )
 
@@ -101,10 +98,24 @@ class DataUtilTimeoutRangeTest {
     @Test
     fun `T-NEW-72b in-range values pass through untouched`() {
         val dataUtil = dataUtil()
-        for (seconds in listOf(9, 12, 30, 59, 60)) {
+        for (seconds in listOf(8, 9, 12, 29, 30)) {
             dataUtil.setAutoModeTimeoutSeconds(seconds)
             assertEquals("$seconds s is in range and must round-trip", seconds, dataUtil.getAutoModeTimeoutSeconds())
         }
+    }
+
+    @Test
+    fun `T-NEW-72c a legacy value above the new ceiling reads back as 30`() {
+        // An install that stored 60 under the old 8..60 range must not keep a
+        // value the Settings picker can no longer show.
+        val prefs = TimeoutFakeSharedPreferences()
+        prefs.edit().putInt(DataUtil.SETTING_AUTO_MODE_TIMEOUT_SECONDS, 60).apply()
+
+        assertEquals(
+            "clamp-on-read brings a legacy 60 s down to the approved 30 s ceiling",
+            30,
+            DataUtil(prefs).getAutoModeTimeoutSeconds(),
+        )
     }
 }
 

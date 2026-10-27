@@ -538,8 +538,12 @@ enum class AttemptOutcome {
          * Production never reaches this value: `AutoModeEngine.ensure()` always
          * injects the user's setting explicitly. It exists for direct
          * construction (tests, library callers).
+         *
+         * v1.0.70 (REQ-TIMEOUT-001): the approved default is 12 s again, with
+         * the range 8..30. This constant, `DataUtil.getAutoModeTimeoutSeconds()`
+         * and the Settings picker must stay one number.
          */
-        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 8_000L
+        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 12_000L
 
         /**
          * v1.0.32 (AUTOCONNECT-FIX-2, BUG-B): how many `NATIVE_BUSY` refusals on the
