@@ -545,4 +545,75 @@ class AutoModeHistoryRecordingTest {
             sink.records.all { it.networkType == NetworkType.UNKNOWN },
         )
     }
+
+    // ==================================================================
+    // BLOCK v1.0.69 PART 1 — producer wiring that the pure tests cannot see
+    // ==================================================================
+
+    /**
+     * PART 1A producer: leaving a just-connected server via the user's
+     * Disconnect action must emit exactly one NEUTRAL QUALITY_REJECTED record.
+     * The window/dedup decision itself is pinned by [QualityRejectWindowTest];
+     * this test proves the controller actually calls it, with the right event
+     * type and outcome, and never touches a failure counter.
+     */
+    @Test
+    fun `disconnecting a just-connected server records one neutral quality rejection`() = runBlocking {
+        val adapter = RecordingAdapter()
+        val sink = RecordingSink()
+        val c = controller(newScope(), adapter, listOf(server("s1")), sink = sink)
+
+        c.start()
+        val terminal = c.awaitTerminal()
+        assertTrue("expected Connected, got $terminal", terminal is AutoModeState.Connected)
+
+        c.disconnectNow()
+
+        // The producer dispatches its write onto the controller scope.
+        withTimeoutOrNull(2_000) {
+            while (sink.records.none { it.eventType == HistoryEventType.QUALITY_REJECTED }) delay(10)
+        }
+        val rejects = sink.records.filter { it.eventType == HistoryEventType.QUALITY_REJECTED }
+        assertEquals(
+            "exactly one quality rejection per disconnect: ${sink.records.map { it.eventType }}",
+            1,
+            rejects.size,
+        )
+        assertEquals(
+            "a quality rejection is neutral, never a server failure",
+            HistoryOutcome.NEUTRAL,
+            rejects.single().outcome,
+        )
+    }
+
+    /**
+     * OD-9: the durable CONNECTED write is retried up to
+     * `HISTORY_MAX_ATTEMPTS` with bounded backoff, so two transient database
+     * failures must still end in a third, successful attempt — and must not
+     * change the connection result.
+     */
+    @Test
+    fun `a transient CONNECTED history write is retried up to three attempts`() = runBlocking {
+        val adapter = RecordingAdapter()
+        var connectedAttempts = 0
+        val sink = object : vn.unlimit.vpngate.history.ServerHistorySink {
+            override suspend fun record(record: HistoryRecord) {
+                if (record.eventType != HistoryEventType.CONNECTED) return
+                connectedAttempts++
+                if (connectedAttempts <= 2) throw IllegalStateException("transient lock")
+            }
+        }
+        val c = controller(newScope(), adapter, listOf(server("s1")), sink = sink)
+
+        c.start()
+        val terminal = c.awaitTerminal()
+        withTimeoutOrNull(3_000) { while (connectedAttempts < 3) delay(10) }
+
+        assertTrue("the connection must still succeed, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals(
+            "two transient failures then success must be exactly three attempts",
+            3,
+            connectedAttempts,
+        )
+    }
 }
