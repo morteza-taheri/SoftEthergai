@@ -751,14 +751,16 @@ class VpnServerRepository(
         // tracker's CURRENT VPN network and retry the same TUNNEL rung once.
         // This is not a downgrade — the retry never touches the physical path
         // (REQ-ROUTE-001 is preserved).
-        if (path == CollectorPath.TUNNEL &&
-            GlobalVpnTracker.isTunnelUsableForRouting()
-        ) {
+        if (path == CollectorPath.TUNNEL) {
             // Wait out a VPN network handover window (bounded, 8 s): after a
             // reconnect the Network object the run captured may already be gone
             // while the tracker is about to publish its replacement
             // (device: "System VPN network lost: 156" → "available: 158" 4 s
-            // later). Rebuild the fetcher from whatever network is current.
+            // later, cycling every ~25 s while the connected server flaps).
+            // Rebuild the fetcher from whatever network is CURRENT — deliberately
+            // NOT gated on isTunnelUsableForRouting(), which reads false in the
+            // exact lost-window this retry exists for. If no network returns
+            // within the window the run fails as before.
             var rebuilt: HttpFetcher? = null
             val deadline = System.currentTimeMillis() + 8_000L
             while (System.currentTimeMillis() < deadline && rebuilt == null) {
