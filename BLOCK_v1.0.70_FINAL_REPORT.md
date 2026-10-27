@@ -146,13 +146,18 @@ text is recorded here as superseded, not silently ignored.
 
 ## K. Device-dependent follow-up list (NOT verified)
 
-1. Fast-path timing vs the full flow on a real network.
-2. Reachability probe duration with the new ordering.
-3. Try Next stage-1 (protocol-first) and stage-2 (best untried) on a real connect.
-4. Origin labels on the real status screen (AUTO_CONNECT / AUTO_RECONNECT / MANUAL).
-5. Fresh-install defaults (needs data clear).
-6. First-run excluded-apps seed.
-7. Migration on the real device DB (verified on a copy only).
+Updated 2026-10-27 15:57 after the physical test (`BLOCK_v1.0.70_DEVICE_LIST_UPDATE_TEST.md`):
+
+| Item | Status now |
+|---|---|
+| 1. Fast-path timing vs the full flow | **NOT OBSERVED** — every live run had `overrideServers` set (Next/continuation), so C3 correctly skipped the fast path; no fast-path log line appeared |
+| 2. Reachability probe duration | **OBSERVED** — 608 endpoints across TCP>UDP, selected 372, ≈4.6 s (15:53:04.774 → 15:53:09.364) |
+| 3. Try Next stage-1 / stage-2 on a real connect | **OBSERVED (stage 2)** — `Connected server skipped by user; trying next (182.218.189.61|vpn516059434)`; stage-1 (protocol-first skip) not triggered live |
+| 4. Origin labels on the real status screen | **VERIFIED** — "Started by Auto Connect" rendered with the real server/protocol (SOFTETHER TCP, then UDP after a reconnect) |
+| 5. Fresh-install defaults | **NOT TESTABLE** — needs a data clear (prohibited) |
+| 6. First-run excluded-apps seed | **NOT TESTABLE** — needs a fresh install |
+| 7. Migration on the real device DB | **VERIFIED** — uv 10/25 cols → uv 11/29 cols, rows unchanged, integrity ok |
+| 8. Server-list update inside/outside the tunnel | **VERIFIED** — `order=TUNNEL,EMERGENCY` + `path=tunnel` inside; `order=PHYSICAL,EMERGENCY` + `bind-physical` outside; both preserved 400 servers via the dataset guard |
 
 ## L. Deferred (D-9)
 
