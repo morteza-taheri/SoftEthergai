@@ -154,7 +154,9 @@ class AutoModeNextServerIdentityTest {
 
         adapter.connects.clear()
         adapter.failing.clear()
-        c.onButtonPressed() // Connected press → best untried candidate
+        // BLOCK v1.0.75 FIX: "move on" is the Try Next button (the hero is a
+        // plain disconnect now).
+        c.skipToNextServer()
         c.awaitTerminal()
 
         assertEquals(
@@ -203,7 +205,8 @@ class AutoModeNextServerIdentityTest {
 
         adapter.connects.clear()
         adapter.failing.clear()
-        c.onButtonPressed() // s2 is gone from the new list
+        // BLOCK v1.0.75 FIX: "move on" is the Try Next button.
+        c.skipToNextServer() // s2 is gone from the new list
         val second = c.awaitTerminal()
 
         assertEquals(

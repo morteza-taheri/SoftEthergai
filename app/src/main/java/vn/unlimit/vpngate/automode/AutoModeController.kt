@@ -1658,39 +1658,27 @@ enum class AttemptOutcome {
             }
             is AutoModeState.Connecting -> stop()
             is AutoModeState.Connected -> {
-                // v1.0.54 (§1.6.46) PART 1 / R-1: while a Next-Server skip is
-                // being prepared, the state still reads Connected — and it can
-                // keep reading Connected for as long as the teardown and list
-                // resolution take. A press in that window is NOT treated as a
-                // second skip (that is the R-1 double-dial), but it is also not
-                // swallowed: §3 says the button means "disconnect" whenever the
-                // state is Connected, and ignoring a stop press for a whole
-                // teardown would break that contract. So it stops, which also
-                // cancels the pending continuation.
+                // BLOCK v1.0.75 FIX (operator report 2026-10-27): the GREEN hero
+                // button means "disconnect", permanently — it must never start a
+                // new run. Before this fix the Connected branch moved on to the
+                // next candidate, so the user pressed the button, the tunnel
+                // dropped and immediately came back up — which is not a
+                // disconnect at all.
+                //
+                // "Move on" now lives ONLY on the dedicated "Try next server"
+                // button ([skipToNextServer]) — a different user intent that
+                // keeps the D-1/D-2 semantics.
+                //
+                // [stop] tears the tunnel down, ends ownership (R8: a deliberate
+                // user disconnect is never Auto-Reconnected) and publishes
+                // Disconnected. A press landing while a Next-Server skip is being
+                // prepared also stops — it cancels the pending continuation,
+                // which is exactly what "disconnect" means there (R-1).
                 if (skipInFlight) {
                     adapter.log("[AUTO] Skip in flight; button press treated as stop")
-                    stop()
-                    return
                 }
-                // v1.0.31 (OP-R6 / D-5): pressing while connected means "move
-                // on", not "start over". Record the position after the server
-                // that connected, then tear down and run again from there.
-                //
-                // Ordering: [disconnectNow] issues the teardown request
-                // synchronously (it is enqueued before the state is published —
-                // see its comment), and [runAutoMode] then resolves the server
-                // list and probes before its first `connect()`. The DISCONNECT
-                // therefore reaches the service ahead of the new run's first
-                // ACTION_CONNECT without making this (synchronous) handler
-                // suspend.
-                // v1.0.31 (OP-R6 / D-5): pressing while connected means "move on".
-                // BLOCK v1.0.75 (D-2): "move on" IS Try-Next semantics — the
-                // first untried candidate of the session — so the hero press
-                // delegates to the same path the Try Next button uses (quality
-                // reject on leave, coalescing, teardown and the D-2 selection
-                // included). A press landing inside the coalescing window was
-                // already handled above as a stop (R-1).
-                skipToNextServer()
+                adapter.log("[AUTO] Disconnect requested from the connected state")
+                stop()
             }
         }
     }

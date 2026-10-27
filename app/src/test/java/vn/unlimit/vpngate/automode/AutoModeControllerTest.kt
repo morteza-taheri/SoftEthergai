@@ -673,41 +673,33 @@ class AutoModeControllerTest {
         c.stop()
     }
 
-    // Test 10, updated by BLOCK v1.0.75 (D-2): pressing while Connected is the
-    // Try-Next action — with a single already-tried server it reports the
-    // exhausted-session terminal and never re-dials the connected server.
+    /**
+     * BLOCK v1.0.75 FIX (operator report): the GREEN hero button while Connected
+     * means **disconnect**, permanently — it never starts a new run. "Move on"
+     * lives only on the Try Next button ([pressingWhileConnectedContinuesFromTheNextServer]).
+     */
     @Test
     fun pressWhileConnectedDisconnects() = runBlocking {
-        val c = controller(servers = listOf(server("s1")))
-        // v1.0.55 (V1054_VERIFY_REPORT G-3): this test used to read
-        // `c.state.value` and `c.isRunning` synchronously after the press. Both
-        // are races, not assertions: the continuation runs on
-        // Dispatchers.Default, so between `onButtonPressed()` returning and the
-        // test thread reading the field the continuation can already have
-        // published its own terminal. The sequence is recorded through the same
-        // `onStateChange` hook production uses.
+        val c = controller(servers = listOf(server("s1"), server("s2")))
         val seen = java.util.Collections.synchronizedList(ArrayList<AutoModeState>())
         c.onStateChange = { seen += it }
 
         c.start()
         assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        adapter.connects.clear()
 
         c.onButtonPressed()
 
-        val terminal = c.awaitTerminal()
-        assertTrue("expected the exhausted-session terminal, got $terminal", terminal is AutoModeState.Error)
-        assertEquals(
-            AutoModeController.ERROR_NO_MORE_UNTRIED,
-            (terminal as AutoModeState.Error).message,
-        )
-
-        val connectedAt = seen.indexOfFirst { it is AutoModeState.Connected }
-        val errorAt = seen.indexOfFirst { it is AutoModeState.Error }
-        assertTrue("the press must end in the exhausted-session error, saw $seen", errorAt >= 0)
+        // A permanent disconnect: Disconnected is published, no new dial happens,
+        // and no continuation run is launched.
+        withTimeoutOrNull(5_000) { while (c.state.value !is AutoModeState.Disconnected) delay(5) }
         assertTrue(
-            "the error must follow the Connected it ends, saw $seen",
-            connectedAt >= 0 && errorAt > connectedAt,
+            "the hero press must publish Disconnected, got ${c.state.value}",
+            c.state.value is AutoModeState.Disconnected,
         )
+        assertEquals("a disconnect must not dial anything", emptyList<Pair<String?, AutoModeProtocol>>(), adapter.connects.toList())
+        assertFalse("the run must not be running after a disconnect", c.isRunning)
+        assertTrue("Disconnected must appear after Connected, saw $seen", seen.any { it is AutoModeState.Disconnected })
     }
 
     // §7 per-protocol capability rules
@@ -3011,7 +3003,8 @@ val sstp = AutoModeCandidate(
         adapter.connects.clear()
         adapter.failing.clear()
 
-        c.onButtonPressed() // Connected press → resume at index 2
+        // BLOCK v1.0.75 FIX: "move on" is the Try Next button, not the hero.
+        c.skipToNextServer()
         val second = c.awaitTerminal()
 
         assertEquals(
@@ -3035,6 +3028,10 @@ val sstp = AutoModeCandidate(
      * This is the documented meaning of an out-of-range continuation: the list
      * is exhausted, so the run must not wrap around to index 0.
      */
+    /**
+     * BLOCK v1.0.75 FIX: on the LAST server the hero press is still just a
+     * disconnect — no attempt, no wrap, no error state.
+     */
     @Test
     fun pressingWhileConnectedToTheLastServerEndsWithoutRestarting() = runBlocking {
         val servers = listOf(server("s1"), server("s2"))
@@ -3047,19 +3044,15 @@ val sstp = AutoModeCandidate(
         assertEquals("s2", (first as AutoModeState.Connected).hostname)
 
         adapter.connects.clear()
-        c.onButtonPressed() // last server (index 1) → resume index 2 == size
-        val second = c.awaitTerminal()
+        c.onButtonPressed() // hero press on the last server = disconnect
+        withTimeoutOrNull(5_000) { while (c.state.value !is AutoModeState.Disconnected) delay(5) }
 
         assertTrue(
-            "expected the exhausted-session terminal, got $second",
-            second is AutoModeState.Error,
-        )
-        assertEquals(
-            AutoModeController.ERROR_NO_MORE_UNTRIED,
-            (second as AutoModeState.Error).message,
+            "the hero press must end in Disconnected, got ${c.state.value}",
+            c.state.value is AutoModeState.Disconnected,
         )
         assertTrue(
-            "an exhausted list must not wrap around and dial index 0",
+            "a disconnect must not wrap around and dial index 0",
             adapter.connects.isEmpty(),
         )
     }
@@ -3131,9 +3124,12 @@ val sstp = AutoModeCandidate(
         assertTrue("expected the first run to connect, got $first", first is AutoModeState.Connected)
         assertEquals("s2", (first as AutoModeState.Connected).hostname)
 
-        c.onButtonPressed() // connected on the LAST server → exhausted
-        val exhausted = c.awaitTerminal()
-        assertTrue("expected ERROR_NO_SERVER, got $exhausted", exhausted is AutoModeState.Error)
+        c.onButtonPressed() // hero press while connected = permanent disconnect
+        withTimeoutOrNull(5_000) { while (c.state.value !is AutoModeState.Disconnected) delay(5) }
+        assertTrue(
+            "the hero press must disconnect (BLOCK v1.0.75 FIX), got ${c.state.value}",
+            c.state.value is AutoModeState.Disconnected,
+        )
 
         adapter.connects.clear()
         adapter.failing.clear() // s1 is healthy now
@@ -3230,11 +3226,12 @@ val sstp = AutoModeCandidate(
 
         adapter.connects.clear()
         adapter.failing.clear()
-        c.onButtonPressed() // Connected press → must resume at s3, not be refused
+        // BLOCK v1.0.75 FIX: "move on" is the Try Next button, never the hero.
+        c.skipToNextServer()
         val second = c.awaitTerminal()
 
         assertFalse(
-            "the OP-R6 path must never be refused by the D-4 guard: ${adapter.logs}",
+            "the Try Next path must never be refused by the D-4 guard: ${adapter.logs}",
             adapter.logs.any { it.contains("start refused") },
         )
         assertEquals(
