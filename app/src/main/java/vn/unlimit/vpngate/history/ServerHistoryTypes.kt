@@ -225,6 +225,17 @@ data class ServerHistoryView(
     val unknownConsecutiveFailures: Int = 0,
     val lastRefreshSeenAt: Long? = null,
     val firstListedAt: Long? = null,
+    // ── BLOCK v1.0.75 PART C (D-4/D-5/D-7/D-8) ─────────────────────────
+    /** Protocol of the last verified success — the remembered-protocol hint (D-6). */
+    val lastSuccessProtocol: String? = null,
+    /** Last protocol attempt of any kind — the exploration pick's age key (C7). */
+    val lastAttemptAt: Long? = null,
+    /** Consecutive accepted fresh refreshes that did not list this host (D-8). */
+    val missedRefreshCount: Int = 0,
+    /** Per-network last server-attributable failure — the cooldown clock (D-7). */
+    val wifiLastFailureAt: Long? = null,
+    val cellularLastFailureAt: Long? = null,
+    val unknownLastFailureAt: Long? = null,
 ) {
     /** Successes proven on [network]. For [NetworkType.UNKNOWN] this is its own bucket. */
     fun successesOn(network: NetworkType): Int = when (network) {
@@ -247,5 +258,12 @@ data class ServerHistoryView(
         NetworkType.WIFI -> wifiConsecutiveFailures
         NetworkType.CELLULAR -> cellularConsecutiveFailures
         NetworkType.UNKNOWN -> unknownConsecutiveFailures
+    }
+
+    /** BLOCK v1.0.75 (D-7): when this server last failed ON [network], or null. */
+    fun lastFailureAtOn(network: NetworkType): Long? = when (network) {
+        NetworkType.WIFI -> wifiLastFailureAt
+        NetworkType.CELLULAR -> cellularLastFailureAt
+        NetworkType.UNKNOWN -> unknownLastFailureAt
     }
 }

@@ -112,6 +112,27 @@ data class ServerHistorySummary(
     /** Consecutive server-attributable failures observed on an unknown network. */
     @ColumnInfo(defaultValue = "0")
     val unknownConsecutiveFailures: Int = 0,
+
+    // ── BLOCK v1.0.75 PART C (folded into Room 10 — v10 never shipped) ──
+
+    /**
+     * BLOCK v1.0.75 (D-8): how many consecutive ACCEPTED FRESH refreshes did
+     * not list this host. Reset to 0 by [ServerHistoryDao.markSeen]; one UPDATE
+     * increments it for rows a fresh refresh did not list. A server with
+     * `missedRefreshCount >= MISSED_REFRESH_DEMOTE_AFTER` and no recent success
+     * on the current network is DEMOTED, never deleted.
+     */
+    @ColumnInfo(defaultValue = "0")
+    val missedRefreshCount: Int = 0,
+
+    /**
+     * BLOCK v1.0.75 (D-7): when the last server-attributable failure happened
+     * ON THIS NETWORK — the cooldown clock. A success on the same network
+     * clears its own stamp.
+     */
+    val wifiLastFailureAt: Long? = null,
+    val cellularLastFailureAt: Long? = null,
+    val unknownLastFailureAt: Long? = null,
 ) {
     /** The narrow read model the ordering pass consumes. */
     fun toView(): ServerHistoryView = ServerHistoryView(
@@ -131,6 +152,13 @@ data class ServerHistorySummary(
         unknownConsecutiveFailures = unknownConsecutiveFailures,
         lastRefreshSeenAt = lastRefreshSeenAt,
         firstListedAt = firstListedAt,
+        // BLOCK v1.0.75 PART C additions:
+        lastSuccessProtocol = lastSuccessProtocol,
+        lastAttemptAt = lastAttemptAt,
+        missedRefreshCount = missedRefreshCount,
+        wifiLastFailureAt = wifiLastFailureAt,
+        cellularLastFailureAt = cellularLastFailureAt,
+        unknownLastFailureAt = unknownLastFailureAt,
     )
 }
 

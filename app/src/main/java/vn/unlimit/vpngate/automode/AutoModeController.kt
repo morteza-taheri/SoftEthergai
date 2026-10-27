@@ -1890,6 +1890,7 @@ enum class AttemptOutcome {
     internal fun List<AutoModeCandidate>.sortedForAutoConnect(
         history: Map<String, ServerHistoryView> = emptyMap(),
         network: NetworkType = NetworkType.UNKNOWN,
+        now: Long = System.currentTimeMillis(),
     ): List<AutoModeCandidate> {
         val ordered = sortedWith(byQuality).toMutableList()
         var runStart = 0
@@ -1906,44 +1907,207 @@ enum class AttemptOutcome {
             applyHistoryTieBreak(ordered, runStart, runEnd, history, network)
             runStart = runEnd
         }
-        // v1.0.67 feature 4: a proven-dead endpoint must not keep leading the run.
-        return demoteUnhealthy(ordered, history)
+        // BLOCK v1.0.75 (C1/D-4): known-good servers go first — at most
+        // KNOWN_GOOD_MAX of them, and only with a verified success on the
+        // CURRENT network inside the window and no later failure/rejection
+        // there. UNKNOWN networks never credit anything.
+        val promoted = promoteKnownGood(ordered, history, network, now)
+        // BLOCK v1.0.75 (C2): per-network demotion replaces the global rule.
+        return demoteUnhealthy(promoted, history, network, now)
     }
 
     /**
-     * v1.0.67 feature 4 — move a host that has NEVER succeeded and has already
-     * failed repeatedly to the back of the queue, so AutoConnect stops spending
-     * its first attempts on a known-bad endpoint. This is a **stable partition**:
-     * the quality/RTT/history order above is preserved inside each group, and with
-     * no history (a fresh install) the list is returned untouched, so pre-v1.0.67
-     * behaviour is bit-identical when there is nothing to learn from.
+     * BLOCK v1.0.75 (C1/D-4) — "known-good first".
      *
-     * It deliberately does NOT promote a historically-good server above a
-     * higher-quality one: F.29 §10 keeps quality first and history as a refinement.
-     * The demotion only removes a proven-dead endpoint from the front; it is still
-     * attempted after every healthy one, which is the "probe one bad server per
-     * run" behaviour the operator asked for.
+     * Promotes at most [KNOWN_GOOD_MAX] servers to the front of the run: a
+     * verified success on the CURRENT network type inside [KNOWN_GOOD_WINDOW_MS],
+     * no later server-attributable failure on that same network, and no quality
+     * rejection (the schema carries no per-rejection timestamp, so ANY rejection
+     * disqualifies — the conservative reading). The rest keep the quality order,
+     * and a fresh install (no history) is bit-identical to today.
+     */
+    private fun promoteKnownGood(
+        ordered: List<AutoModeCandidate>,
+        history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+        now: Long,
+    ): List<AutoModeCandidate> {
+        if (history.isEmpty() || network == NetworkType.UNKNOWN) return ordered
+        val cutoff = now - KNOWN_GOOD_WINDOW_MS
+        val knownGood = ordered.filter { isKnownGood(it, history, network, cutoff) }
+            .take(KNOWN_GOOD_MAX)
+        if (knownGood.isEmpty()) return ordered
+        val rest = ordered.filterNot { c -> knownGood.any { it === c } }
+        return knownGood + rest
+    }
+
+    private fun isKnownGood(
+        c: AutoModeCandidate,
+        history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+        cutoff: Long,
+    ): Boolean {
+        val h = history.viewOf(c) ?: return false
+        if (h.successesOn(network) <= 0) return false
+        if (h.lastSuccessAt < cutoff) return false
+        val lastFailure = h.lastFailureAtOn(network)
+        if (lastFailure != null && lastFailure > h.lastSuccessAt) return false
+        if (h.qualityRejectionCount > 0) return false
+        return true
+    }
+
+    /**
+     * BLOCK v1.0.75 (C2) — demote on evidence from the CURRENT network only:
+     * its consecutive server-attributable failures, repeated quality rejections
+     * with no success there, or absence from too many accepted fresh refreshes
+     * with no success there. Stable partition; demoted servers stay available
+     * (they are attempted after every healthy one, and remain the exploration
+     * candidate pool). Fresh install: unchanged.
      */
     private fun demoteUnhealthy(
         ordered: List<AutoModeCandidate>,
         history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+        now: Long,
     ): List<AutoModeCandidate> {
         if (history.isEmpty()) return ordered
         val healthy = ArrayList<AutoModeCandidate>(ordered.size)
         val demoted = ArrayList<AutoModeCandidate>()
         for (c in ordered) {
-            if (isRepeatedlyFailing(c, history)) demoted.add(c) else healthy.add(c)
+            if (isDemoted(c, history, network)) demoted.add(c) else healthy.add(c)
         }
         return if (demoted.isEmpty()) ordered else healthy + demoted
     }
 
-    /** True when history says this host has never succeeded and keeps failing. */
-    private fun isRepeatedlyFailing(
+    /** BLOCK v1.0.75 (C2/D-8): does the CURRENT network's evidence demote this host? */
+    private fun isDemoted(
         c: AutoModeCandidate,
         history: Map<String, ServerHistoryView>,
+        network: NetworkType,
     ): Boolean {
-        val h = history[c.hostname ?: return false] ?: return false
-        return h.successCount == 0 && h.consecutiveFailures >= demoteAfterConsecutiveFailures
+        val h = history.viewOf(c) ?: return false
+        if (h.consecutiveFailuresOn(network) >= demoteAfterConsecutiveFailures) return true
+        if (h.qualityRejectionCount >= QUALITY_REJECT_DEMOTE_AFTER && h.successesOn(network) == 0) return true
+        if (h.missedRefreshCount >= MISSED_REFRESH_DEMOTE_AFTER && h.successesOn(network) == 0) return true
+        return false
+    }
+
+    /** BLOCK v1.0.75 (D-7): is this host cooling down after a failure ON [network]? */
+    internal fun inFailureCooldown(
+        c: AutoModeCandidate,
+        history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+        now: Long,
+    ): Boolean {
+        val h = history.viewOf(c) ?: return false
+        val failedAt = h.lastFailureAtOn(network) ?: return false
+        return now - failedAt < FAILURE_COOLDOWN_MS
+    }
+
+    /**
+     * BLOCK v1.0.75 (C3/D-5) — the single place a verified tunnel is published.
+     *
+     * Extracted from the attempt loop so the last-known-good fast path and the
+     * normal walk share every consequence of a success: wedge clearance, the
+     * remaining-candidates snapshot, ownership (R8), the Connected state (with
+     * its origin), the connected watcher, and the durable CONNECTED record.
+     */
+    private suspend fun publishConnected(
+        server: AutoModeCandidate,
+        protocol: AutoModeProtocol,
+        servers: List<AutoModeCandidate>,
+        wedgeKey: String?,
+        attemptProtocol: AutoModeProtocol?,
+        attemptToken: String?,
+        attemptNetwork: NetworkType,
+        attemptStartedAt: Long?,
+    ) {
+        // FIX-3: a verified tunnel proves this server does not wedge, so its record
+        // is cleared. Without this, a server that wedged twice early in a session
+        // could never be rehabilitated and the ledger would drift from "known bad"
+        // to "once bad".
+        if (wedgeKey != null) wedgeTracker.clear(wedgeKey)
+        adapter.log("[AUTO] Tunnel established")
+        adapter.log("[AUTO] Connected successfully")
+        onSuccess(server, protocol)
+        rememberRemaining(servers, server)
+        // R8: remember the exact candidate so an unexpected disconnect can
+        // name it and re-seed it as the first reconnect candidate.
+        connectedCandidate = server
+        // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
+        connectedAt = System.currentTimeMillis()
+        setState(
+            AutoModeState.Connected(
+                hostname = server.hostname,
+                ip = server.ip,
+                protocol = protocol,
+                speed = server.speed,
+                ping = server.ping,
+                origin = runOrigin,
+            )
+        )
+        // Set BEFORE the watcher is armed: an OS-level loss can be
+        // delivered the instant onTunnelLost is installed, and the loss
+        // record needs this protocol.
+        connectedProtocolForHistory = protocol
+        startConnectedWatcher(protocol)
+        // F.29 §8.1: this is the authoritative success point — the tunnel is
+        // verified up and the protocol is non-null, so this is the only place
+        // that records CONNECTED.
+        withContext(NonCancellable) {
+            recordHistory(
+                server = server,
+                protocol = attemptProtocol,
+                eventType = HistoryEventType.CONNECTED,
+                outcome = HistoryOutcome.SUCCESS,
+                reason = null,
+                networkType = attemptNetwork,
+                token = attemptToken,
+                startedAt = attemptStartedAt,
+                maxAttempts = HISTORY_MAX_ATTEMPTS,
+            )
+        }
+    }
+
+    /**
+     * BLOCK v1.0.75 (C3/D-5) — the best known-good server and the protocol to
+     * dial it with, or null when the fast path does not apply. "Best" is the
+     * same quality comparator; the protocol is the REMEMBERED one (D-6) when it
+     * is still enabled and usable, else the first usable one.
+     */
+    private fun knownGoodFastTarget(
+        all: List<AutoModeCandidate>,
+        history: Map<String, ServerHistoryView>,
+        network: NetworkType,
+        priorities: List<AutoModeProtocol>,
+        now: Long,
+    ): Pair<AutoModeCandidate, AutoModeProtocol>? {
+        if (history.isEmpty() || network == NetworkType.UNKNOWN) return null
+        val cutoff = now - KNOWN_GOOD_WINDOW_MS
+        val best = all
+            .filter { isKnownGood(it, history, network, cutoff) }
+            .sortedWith(byQuality)
+            .firstOrNull() ?: return null
+        val usable = usableProtocols(best, priorities)
+        if (usable.isEmpty()) return null
+        val remembered = history.viewOf(best)?.lastSuccessProtocol
+            ?.let { id -> usable.firstOrNull { it.id == id } }
+        return best to (remembered ?: usable.first())
+    }
+
+    /**
+     * BLOCK v1.0.75 (C4/D-6) — a server WITH history tries its last successful
+     * protocol first. Only the order changes: a protocol the user disabled is
+     * never introduced (the input list is already the enabled+usable set), and
+     * every other protocol keeps its relative order.
+     */
+    internal fun orderWithRememberedProtocol(
+        supported: List<AutoModeProtocol>,
+        view: ServerHistoryView?,
+    ): List<AutoModeProtocol> {
+        val rememberedId = view?.lastSuccessProtocol ?: return supported
+        val remembered = supported.firstOrNull { it.id == rememberedId } ?: return supported
+        return listOf(remembered) + supported.filterNot { it === remembered }
     }
 
     /**
@@ -2063,6 +2227,10 @@ enum class AttemptOutcome {
         adapter.log("[AUTO] Connection timeout = ${attemptTimeoutMs() / 1000} seconds")
 
         val all = overrideServers ?: serverProvider()
+        // BLOCK v1.0.75 (C3): a Next/continuation run (overrideServers set) must
+        // NOT take the fast path — the user asked for a specific place in the
+        // list, not for the best-known-good server again.
+        val wasOverride = overrideServers != null
         overrideServers = null
         // R8 (OQ-7 second chance): a reconnect run must never race a manual
         // connect that began during the settle delay or the list resolution.
@@ -2101,6 +2269,83 @@ enum class AttemptOutcome {
         // runs per server.
         val runNetworkType = safeNetworkType()
         val history = loadHistory()
+
+        // BLOCK v1.0.75 (C3/D-5) — the last-known-good fast path. A USER-STARTED
+        // run (not a Next continuation, not a reconnect override) first dials the
+        // best known-good server with its remembered protocol, BEFORE the quality
+        // sort and the reachability probe. One attempt, the normal per-attempt
+        // timeout; on failure the server is marked attempted and the normal
+        // pipeline runs. The log names the path and the elapsed time.
+        var fastFailedKey: String? = null
+        if (runOrigin == ConnectionOrigin.AUTO_CONNECT && !wasOverride && !wasReconnect) {
+            val fastTarget = knownGoodFastTarget(all, history, runNetworkType, priorities, System.currentTimeMillis())
+            if (fastTarget != null) {
+                val (fastServer, fastProtocol) = fastTarget
+                val fastStart = System.currentTimeMillis()
+                adapter.log(
+                    "[AUTO] Fast path: known-good ${fastServer.hostname ?: fastServer.ip} via ${fastProtocol.id}",
+                )
+                val fastToken = historyToken(runSequence.incrementAndGet(), fastServer, fastProtocol)
+                val fastStartedAt = System.currentTimeMillis()
+                setState(
+                    AutoModeState.Connecting(
+                        hostname = fastServer.hostname,
+                        ip = fastServer.ip,
+                        protocol = fastProtocol,
+                        speed = fastServer.speed,
+                        ping = fastServer.ping,
+                        attempt = 1,
+                        total = all.size,
+                        origin = runOrigin,
+                    )
+                )
+                adapter.armTunnelWatch(fastProtocol)
+                var fastOutcome: AttemptOutcome? = null
+                try {
+                    adapter.connect(fastServer, fastProtocol)
+                    fastOutcome = adapter.awaitArmedOutcome(fastProtocol, attemptTimeoutMs())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    adapter.log("[AUTO] Fast path connect threw ${e.javaClass.simpleName}")
+                    withContext(NonCancellable) { adapter.disconnect() }
+                }
+                if (fastOutcome == AttemptOutcome.TUNNEL_UP) {
+                    adapter.log("[AUTO] Fast path succeeded in ${System.currentTimeMillis() - fastStart} ms")
+                    sessionTriedKeys.add(serverKey(fastServer))
+                    publishConnected(
+                        server = fastServer,
+                        protocol = fastProtocol,
+                        servers = all,
+                        wedgeKey = wedgeKey(fastServer),
+                        attemptProtocol = fastProtocol,
+                        attemptToken = fastToken,
+                        attemptNetwork = runNetworkType,
+                        attemptStartedAt = fastStartedAt,
+                    )
+                    return
+                }
+                adapter.log(
+                    "[AUTO] Fast path failed in ${System.currentTimeMillis() - fastStart} ms; " +
+                        "continuing with the normal pipeline",
+                )
+                withContext(NonCancellable) { adapter.disconnect() }
+                sessionTriedKeys.add(serverKey(fastServer))
+                // One failed fast attempt is not a server verdict: recorded as a
+                // NEUTRAL attempt, and the server is not re-dialled by this run.
+                recordHistory(
+                    server = fastServer,
+                    protocol = fastProtocol,
+                    eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                    outcome = HistoryOutcome.NEUTRAL,
+                    reason = HistoryFailureReason.NO_VERDICT,
+                    networkType = runNetworkType,
+                    token = fastToken,
+                    startedAt = fastStartedAt,
+                )
+                fastFailedKey = wedgeKey(fastServer)
+            }
+        }
 
         val qualitySorted = all
             .withActiveRtt(priorities)
@@ -2183,6 +2428,9 @@ enum class AttemptOutcome {
         }
 
         val attempted = mutableSetOf<String>()
+        // BLOCK v1.0.75 (C3): a server the fast path already dialled and lost is
+        // not re-dialled by this run's normal walk.
+        fastFailedKey?.let { attempted.add(it) }
         var attempt = 0
         // F.29: the run's identity for history tokens. One run visits each
         // (server, protocol) pair at most once, so this plus the pair is a
@@ -2223,14 +2471,32 @@ enum class AttemptOutcome {
         // never a proven current-network success) and never the first pick; if none
         // is eligible the ranked list is unchanged. Reachability, protocol
         // eligibility, IPv4 dedup and VPN-first routing are untouched.
-        servers = servers.withExplorationSecond(
+        // BLOCK v1.0.75 (C7) — exactly ONE exploration candidate per run: a
+        // previously attempted server with no success on this network, chosen by
+        // the OLDEST attempt. Never a never-attempted server, never the first
+        // pick; SECOND by default (EXPLORATION_FIRST_EVERY_K_RUNS = 0).
+        servers = servers.withSingleExploration(
             startAt = startAt,
             key = { serverKey(it) },
-            eligible = {
-                historyTierOf(history.viewOf(it), runNetworkType).ordinal >=
-                    HistoryTier.INCONCLUSIVE.ordinal
+            eligible = { c ->
+                val h = history.viewOf(c)
+                h != null && h.hasHistory && h.successesOn(runNetworkType) == 0 && h.lastAttemptAt != null
             },
+            ageKey = { c -> history.viewOf(c)?.lastAttemptAt },
+            firstEveryK = EXPLORATION_FIRST_EVERY_K_RUNS,
+            runIndex = runSequence.get().toInt(),
         )
+
+        // BLOCK v1.0.75 (C5/D-7) — a server that failed on THIS network cools
+        // down for FAILURE_COOLDOWN_MS. It is not dropped: it is moved behind
+        // every non-cooling candidate (stable), so it is still tried when
+        // nothing else remains — never skipped forever.
+        val coolingDown = servers.filter { inFailureCooldown(it, history, runNetworkType, now = System.currentTimeMillis()) }
+        if (coolingDown.isNotEmpty() && coolingDown.size < servers.size) {
+            adapter.log("[AUTO] Cooldown: deferring ${coolingDown.size} server(s) that failed on this network")
+            servers = servers.filterNot { inFailureCooldown(it, history, runNetworkType, System.currentTimeMillis()) } +
+                coolingDown
+        }
 
         for (i in startAt until servers.size) {
             val server = servers[i]
@@ -2288,6 +2554,10 @@ enum class AttemptOutcome {
                 adapter.log("[AUTO] Skipping ${server.hostname ?: server.ip}: no supported protocol")
                 continue
             }
+            // BLOCK v1.0.75 (C4/D-6): a server WITH history tries its last
+            // successful protocol first; enablement and the user's relative
+            // order are otherwise untouched.
+            val protocolOrder = orderWithRememberedProtocol(supported, history.viewOf(server))
             attempt++
             adapter.log("[AUTO] Trying #$attempt ${server.hostname ?: server.ip}")
             rememberRemaining(servers, server)
@@ -2324,7 +2594,7 @@ enum class AttemptOutcome {
             var lastAttemptToken: String? = null
             var lastAttemptNetwork: NetworkType = NetworkType.UNKNOWN
             var lastAttemptStartedAt: Long? = null
-            for (protocol in supported) {
+            for (protocol in protocolOrder) {
                 if (!currentCoroutineContext().isActive) return
 
                 // F.29: measured from here, so `durationMs` describes the attempt
@@ -2703,7 +2973,7 @@ enum class AttemptOutcome {
                     // The wedge ledger is unaffected: the NATIVE_BUSY accounting above has
                     // already run for this refusal.
                     //
-                    // `continue` targets the `for (protocol in supported)` loop this branch
+                    // `continue` targets the `for (protocol in protocolOrder)` loop this branch
                     // sits inside, so the shared post-attempt cleanup is skipped too. That
                     // is safe in this specific state: NATIVE_BUSY means the registry refused
                     // the start before any native attempt was admitted, so there is no
@@ -2937,58 +3207,16 @@ enum class AttemptOutcome {
             }
 
             if (connectedProtocol != null) {
-                // FIX-3: a verified tunnel proves this server does not wedge, so its record
-                // is cleared. Without this, a server that wedged twice early in a session
-                // could never be rehabilitated and the ledger would drift from "known bad"
-                // to "once bad".
-                wedgeTracker.clear(key)
-                adapter.log("[AUTO] Tunnel established")
-                adapter.log("[AUTO] Connected successfully")
-                onSuccess(server, connectedProtocol)
-                rememberRemaining(servers, server)
-                // R8: remember the exact candidate so an unexpected disconnect can
-                // name it and re-seed it as the first reconnect candidate.
-                connectedCandidate = server
-                // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
-                connectedAt = System.currentTimeMillis()
-                setState(
-                    AutoModeState.Connected(
-                        hostname = server.hostname,
-                        ip = server.ip,
-                        protocol = connectedProtocol,
-                        speed = server.speed,
-                        ping = server.ping,
-                        origin = runOrigin,
-                    )
+                publishConnected(
+                    server = server,
+                    protocol = connectedProtocol,
+                    servers = servers,
+                    wedgeKey = key,
+                    attemptProtocol = lastAttemptProtocol,
+                    attemptToken = lastAttemptToken,
+                    attemptNetwork = lastAttemptNetwork,
+                    attemptStartedAt = lastAttemptStartedAt,
                 )
-                // Set BEFORE the watcher is armed: an OS-level loss can be
-                // delivered the instant onTunnelLost is installed, and the loss
-                // record needs this protocol.
-                connectedProtocolForHistory = connectedProtocol
-                startConnectedWatcher(connectedProtocol)
-                // F.29 §8.1: this is the authoritative success point — the
-                // tunnel is verified up and the protocol is non-null, so this
-                // is the only place that records CONNECTED. An attempt start,
-                // a native "connected" callback or a granted permission is
-                // NOT a success and records nothing.
-                //
-                // The write is awaited (OD-9) and wrapped in NonCancellable so
-                // a concurrent stop() cannot cancel a record that has already
-                // been earned; it still cannot change the result — every
-                // failure path inside recordHistory is swallowed.
-                withContext(NonCancellable) {
-                    recordHistory(
-                        server = server,
-                        protocol = lastAttemptProtocol,
-                        eventType = HistoryEventType.CONNECTED,
-                        outcome = HistoryOutcome.SUCCESS,
-                        reason = null,
-                        networkType = lastAttemptNetwork,
-                        token = lastAttemptToken,
-                        startedAt = lastAttemptStartedAt,
-                        maxAttempts = HISTORY_MAX_ATTEMPTS,
-                    )
-                }
                 return
             }
 

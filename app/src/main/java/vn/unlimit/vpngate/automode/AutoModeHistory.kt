@@ -151,3 +151,64 @@ internal fun <T> List<T>.withExplorationSecond(
     reordered.add(startAt + 1, candidate)
     return reordered
 }
+
+// ── BLOCK v1.0.75 PART C — the history-driven fast-connect constants ──────
+
+/** D-4: at most this many known-good servers may be promoted to the front. */
+internal const val KNOWN_GOOD_MAX = 3
+
+/** D-4: a success older than this is not "known good" any more. */
+internal const val KNOWN_GOOD_WINDOW_DAYS = 14
+
+/** D-4/C1 window in milliseconds. */
+internal const val KNOWN_GOOD_WINDOW_MS = KNOWN_GOOD_WINDOW_DAYS * 24L * 60L * 60L * 1000L
+
+/** C2: this many quality rejections (with no success on the network) demote. */
+internal const val QUALITY_REJECT_DEMOTE_AFTER = 2
+
+/** D-8: this many consecutive accepted fresh refreshes without the host demote it. */
+internal const val MISSED_REFRESH_DEMOTE_AFTER = 2
+
+/** D-7: a server that failed on this network is skipped for this long. */
+internal const val FAILURE_COOLDOWN_MS = 30L * 60L * 1000L
+
+/**
+ * C7: 0 keeps the exploration candidate SECOND (the default). A value K > 0
+ * makes it the FIRST pick on every K-th run — the switch the block asks for,
+ * kept as a named constant rather than a boolean.
+ */
+internal const val EXPLORATION_FIRST_EVERY_K_RUNS = 0
+
+/**
+ * BLOCK v1.0.75 (C7/D-4) — exactly ONE exploration candidate per run.
+ *
+ * The candidate is a **previously attempted** server with no success on the
+ * current network, chosen by the OLDEST attempt (`lastAttemptAt` smallest) — it
+ * is the server the run has ignored longest. A never-attempted server is never
+ * chosen (that is not exploration, that is just the quality order), and the
+ * first pick is never chosen.
+ *
+ * Placement: SECOND by default (it runs only when the first pick fails). Setting
+ * [firstEveryK] > 0 makes it the FIRST pick on every K-th run ([runIndex] is the
+ * caller's monotonically increasing run counter); 0 keeps it second.
+ */
+internal fun <T> List<T>.withSingleExploration(
+    startAt: Int,
+    key: (T) -> String,
+    eligible: (T) -> Boolean,
+    ageKey: (T) -> Long?,
+    firstEveryK: Int = 0,
+    runIndex: Int = 0,
+): List<T> {
+    if (size <= startAt + 1) return this
+    val firstKey = key(this[startAt])
+    val exploreAt = (startAt + 1 until size)
+        .filter { key(this[it]) != firstKey && eligible(this[it]) }
+        .minByOrNull { ageKey(this[it]) ?: Long.MAX_VALUE }
+        ?: return this
+    val target = if (firstEveryK > 0 && runIndex % firstEveryK == 0) startAt else startAt + 1
+    val reordered = toMutableList()
+    val candidate = reordered.removeAt(exploreAt)
+    reordered.add(target, candidate)
+    return reordered
+}

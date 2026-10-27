@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 10,
-    "identityHash": "c178402d8bf34b18316b0856717648e2",
+    "identityHash": "185d3aefc251069789d44d68ac044bda",
     "entities": [
       {
         "tableName": "VPNGateItem",
@@ -326,7 +326,7 @@
       },
       {
         "tableName": "server_history_summary",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`hostName` TEXT NOT NULL, `firstObservedAt` INTEGER, `lastAttemptAt` INTEGER, `lastSuccessAt` INTEGER, `lastFailureAt` INTEGER, `lastTimeoutAt` INTEGER, `successCount` INTEGER NOT NULL, `failureCount` INTEGER NOT NULL, `timeoutCount` INTEGER NOT NULL, `consecutiveFailures` INTEGER NOT NULL, `lastSuccessProtocol` TEXT, `lastSuccessNetwork` TEXT, `lastFailureReason` TEXT, `wifiSuccessCount` INTEGER NOT NULL, `wifiFailureCount` INTEGER NOT NULL, `cellularSuccessCount` INTEGER NOT NULL, `cellularFailureCount` INTEGER NOT NULL, `unknownNetworkSuccessCount` INTEGER NOT NULL, `unknownNetworkFailureCount` INTEGER NOT NULL, `qualityRejectionCount` INTEGER NOT NULL, `lastRefreshSeenAt` INTEGER, `firstListedAt` INTEGER, `wifiConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `cellularConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`hostName`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`hostName` TEXT NOT NULL, `firstObservedAt` INTEGER, `lastAttemptAt` INTEGER, `lastSuccessAt` INTEGER, `lastFailureAt` INTEGER, `lastTimeoutAt` INTEGER, `successCount` INTEGER NOT NULL, `failureCount` INTEGER NOT NULL, `timeoutCount` INTEGER NOT NULL, `consecutiveFailures` INTEGER NOT NULL, `lastSuccessProtocol` TEXT, `lastSuccessNetwork` TEXT, `lastFailureReason` TEXT, `wifiSuccessCount` INTEGER NOT NULL, `wifiFailureCount` INTEGER NOT NULL, `cellularSuccessCount` INTEGER NOT NULL, `cellularFailureCount` INTEGER NOT NULL, `unknownNetworkSuccessCount` INTEGER NOT NULL, `unknownNetworkFailureCount` INTEGER NOT NULL, `qualityRejectionCount` INTEGER NOT NULL, `lastRefreshSeenAt` INTEGER, `firstListedAt` INTEGER, `wifiConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `cellularConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `missedRefreshCount` INTEGER NOT NULL DEFAULT 0, `wifiLastFailureAt` INTEGER, `cellularLastFailureAt` INTEGER, `unknownLastFailureAt` INTEGER, PRIMARY KEY(`hostName`))",
         "fields": [
           {
             "fieldPath": "hostName",
@@ -470,6 +470,28 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "0"
+          },
+          {
+            "fieldPath": "missedRefreshCount",
+            "columnName": "missedRefreshCount",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "wifiLastFailureAt",
+            "columnName": "wifiLastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "cellularLastFailureAt",
+            "columnName": "cellularLastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "unknownLastFailureAt",
+            "columnName": "unknownLastFailureAt",
+            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
@@ -661,7 +683,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c178402d8bf34b18316b0856717648e2')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '185d3aefc251069789d44d68ac044bda')"
     ]
   }
 }

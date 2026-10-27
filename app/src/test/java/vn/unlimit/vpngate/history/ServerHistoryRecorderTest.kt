@@ -78,6 +78,16 @@ class ServerHistoryRecorderTest {
             events += row
         }
 
+        /** BLOCK v1.0.75 (D-8): mirrors the real single-UPDATE aging. */
+        override fun incrementMissedRefresh(marker: Long) {
+            for ((host, row) in summaries.entries.toList()) {
+                val seen = row.lastRefreshSeenAt
+                if (seen == null || seen < marker) {
+                    summaries[host] = row.copy(missedRefreshCount = row.missedRefreshCount + 1)
+                }
+            }
+        }
+
         fun apply(record: HistoryRecord) {
             // Mirror the real transaction's body so the fake observes the same
             // call sequence the Room implementation would make.
@@ -351,6 +361,7 @@ class ServerHistoryRecorderTest {
             override fun countToken(token: String, eventType: String): Int = inner.countToken(token, eventType)
             override fun upsertSummary(row: ServerHistorySummary) = inner.upsertSummary(row)
             override fun upsertProtocol(row: ServerProtocolSummary) = inner.upsertProtocol(row)
+            override fun incrementMissedRefresh(marker: Long) = inner.incrementMissedRefresh(marker)
         }
         val spiedSink = RoomServerHistorySink(dao = spied, log = { })
         withContext(Dispatchers.Default) {
@@ -373,6 +384,7 @@ class ServerHistoryRecorderTest {
         override fun countToken(token: String, eventType: String): Int = throw IllegalStateException("locked")
         override fun upsertSummary(row: ServerHistorySummary) = throw IllegalStateException("locked")
         override fun upsertProtocol(row: ServerProtocolSummary) = throw IllegalStateException("locked")
+        override fun incrementMissedRefresh(marker: Long) = throw IllegalStateException("locked")
         override fun insertEvent(row: ServerHistoryEvent) = throw IllegalStateException("locked")
     }
 
@@ -388,6 +400,7 @@ class ServerHistoryRecorderTest {
         override fun countToken(token: String, eventType: String): Int = 0
         override fun upsertSummary(row: ServerHistorySummary) = Unit
         override fun upsertProtocol(row: ServerProtocolSummary) = Unit
+        override fun incrementMissedRefresh(marker: Long) = Unit
         override fun insertEvent(row: ServerHistoryEvent) = throw CancellationException("cancelled")
     }
 }

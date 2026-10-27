@@ -50,7 +50,13 @@ interface ServerHistoryDao {
             "cellularConsecutiveFailures AS cellularConsecutiveFailures, " +
             "unknownConsecutiveFailures AS unknownConsecutiveFailures, " +
             "lastRefreshSeenAt AS lastRefreshSeenAt, " +
-            "firstListedAt AS firstListedAt " +
+            "firstListedAt AS firstListedAt, " +
+            "lastSuccessProtocol AS lastSuccessProtocol, " +
+            "lastAttemptAt AS lastAttemptAt, " +
+            "missedRefreshCount AS missedRefreshCount, " +
+            "wifiLastFailureAt AS wifiLastFailureAt, " +
+            "cellularLastFailureAt AS cellularLastFailureAt, " +
+            "unknownLastFailureAt AS unknownLastFailureAt " +
             "FROM server_history_summary",
     )
     fun historyViews(): List<ServerHistoryView>
@@ -154,9 +160,24 @@ interface ServerHistoryDao {
                     current.copy(
                         lastRefreshSeenAt = marker,
                         firstListedAt = current.firstListedAt ?: marker,
+                        // BLOCK v1.0.75 (D-8): being listed by an accepted fresh
+                        // refresh resets the absence counter.
+                        missedRefreshCount = 0,
                     ),
                 )
             }
         }
     }
+
+    /**
+     * BLOCK v1.0.75 (D-8) — one UPDATE that increments the absence counter for
+     * every row an ACCEPTED FRESH refresh did not list. Never called for an
+     * emergency/cache dataset (the caller owns that distinction). Never
+     * deletes anything: an absent server is demoted, not removed.
+     */
+    @Query(
+        "UPDATE server_history_summary SET missedRefreshCount = missedRefreshCount + 1 " +
+            "WHERE lastRefreshSeenAt IS NULL OR lastRefreshSeenAt < :marker",
+    )
+    fun incrementMissedRefresh(marker: Long)
 }

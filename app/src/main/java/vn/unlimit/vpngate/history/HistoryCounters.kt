@@ -59,6 +59,12 @@ object HistoryCounters {
                 if (record.networkType == NetworkType.CELLULAR) 0 else base.cellularConsecutiveFailures,
                 unknownConsecutiveFailures =
                 if (record.networkType == NetworkType.UNKNOWN) 0 else base.unknownConsecutiveFailures,
+                // BLOCK v1.0.75 (D-7): a success clears this network's cooldown.
+                wifiLastFailureAt = if (record.networkType == NetworkType.WIFI) null else base.wifiLastFailureAt,
+                cellularLastFailureAt =
+                if (record.networkType == NetworkType.CELLULAR) null else base.cellularLastFailureAt,
+                unknownLastFailureAt =
+                if (record.networkType == NetworkType.UNKNOWN) null else base.unknownLastFailureAt,
             )
 
             HistoryEventType.PROTOCOL_ATTEMPT -> when {
@@ -99,6 +105,14 @@ object HistoryCounters {
                     base.cellularConsecutiveFailures + record.ifNetwork(NetworkType.CELLULAR),
                     unknownConsecutiveFailures =
                     base.unknownConsecutiveFailures + record.ifNetwork(NetworkType.UNKNOWN),
+                    // BLOCK v1.0.75 (D-7): stamp the cooldown clock for the
+                    // network the failure happened on.
+                    wifiLastFailureAt =
+                    if (record.networkType == NetworkType.WIFI) record.at else base.wifiLastFailureAt,
+                    cellularLastFailureAt =
+                    if (record.networkType == NetworkType.CELLULAR) record.at else base.cellularLastFailureAt,
+                    unknownLastFailureAt =
+                    if (record.networkType == NetworkType.UNKNOWN) record.at else base.unknownLastFailureAt,
                 )
                 // Abandoned without a verdict — every protocol timed out, or was
                 // skipped locally. Recorded, not counted.

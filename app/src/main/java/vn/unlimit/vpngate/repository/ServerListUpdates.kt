@@ -364,6 +364,12 @@ object ServerListUpdates {
             db.runInTransaction {
                 replaceAll(items)
                 hd.markSeen(items.map { it.hostName }, marker)
+                // BLOCK v1.0.75 (D-8): one UPDATE that ages every summary row
+                // this ACCEPTED FRESH refresh did not list. markSeen just moved
+                // the listed rows to `marker`, so only the absent ones are hit.
+                // Emergency/cache datasets never reach this method (the caller
+                // routes them to plain replaceAll), so they can never age rows.
+                hd.incrementMissedRefresh(marker)
             }
         }
 

@@ -298,6 +298,22 @@ abstract class AppDatabase: RoomDatabase() {
                     "ALTER TABLE `server_history_summary` ADD COLUMN " +
                         "`unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0"
                 )
+                // BLOCK v1.0.75 PART C (D-7/D-8), folded into version 10 because
+                // no installed build ever opened the Room-10 schema (the latest
+                // saved device DB is user_version 9 — see PART 0 evidence).
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN " +
+                        "`missedRefreshCount` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN `wifiLastFailureAt` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN `cellularLastFailureAt` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `server_history_summary` ADD COLUMN `unknownLastFailureAt` INTEGER"
+                )
             }
         }
     }

@@ -422,11 +422,13 @@ class AutoModeHistoryRecordingTest {
     fun `a never-succeeded server with a failure streak is demoted behind healthy ones`() {
         val scope = newScope()
         val adapter = RecordingAdapter()
+        // BLOCK v1.0.75 (C2): demotion reads the CURRENT network's counter, so
+        // the streak that demotes must be the Wi-Fi one.
         val history = mapOf(
             "s_dead" to ServerHistoryView(
                 hostName = "s_dead", successCount = 0, failureCount = 5, consecutiveFailures = 5,
                 lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
-                unknownNetworkSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, wifiConsecutiveFailures = 5,
             ),
         )
         val c = controller(scope, adapter, emptyList(), history = history)
@@ -441,6 +443,29 @@ class AutoModeHistoryRecordingTest {
             ).sortedForAutoConnect(history, NetworkType.WIFI)
         }
         assertEquals(listOf("s_ok1", "s_ok2", "s_dead"), sorted.map { it.hostname })
+    }
+
+    @Test
+    fun `a failure streak on ANOTHER network does not demote on this one`() {
+        val scope = newScope()
+        val adapter = RecordingAdapter()
+        // C2: the SAME server, the same global streak, but the failures happened
+        // on cellular — on Wi-Fi it keeps its (best) quality position.
+        val history = mapOf(
+            "s_dead" to ServerHistoryView(
+                hostName = "s_dead", successCount = 0, failureCount = 5, consecutiveFailures = 5,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, cellularConsecutiveFailures = 5,
+            ),
+        )
+        val c = controller(scope, adapter, emptyList(), history = history)
+        val sorted = with(c) {
+            listOf(
+                server("s_dead", speed = 99_000_000L, ping = 10),
+                server("s_ok1", speed = 10_000_000L, ping = 100),
+            ).sortedForAutoConnect(history, NetworkType.WIFI)
+        }
+        assertEquals(listOf("s_dead", "s_ok1"), sorted.map { it.hostname })
     }
 
     @Test
@@ -615,5 +640,299 @@ class AutoModeHistoryRecordingTest {
             3,
             connectedAttempts,
         )
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // BLOCK v1.0.75 PART C — history actually speeds the connection up
+    // ═════════════════════════════════════════════════════════════════════
+
+    private fun now() = System.currentTimeMillis()
+
+    private fun knownGoodView(
+        host: String,
+        successAt: Long = now() - 60_000,
+        failuresAt: Long? = null,
+        rejections: Int = 0,
+    ) = ServerHistoryView(
+        hostName = host,
+        successCount = 1,
+        failureCount = if (failuresAt != null) 1 else 0,
+        consecutiveFailures = 0,
+        lastSuccessAt = successAt,
+        wifiSuccessCount = 1,
+        cellularSuccessCount = 0,
+        unknownNetworkSuccessCount = 0,
+        qualityRejectionCount = rejections,
+        wifiLastFailureAt = failuresAt,
+    )
+
+    @Test
+    fun `known-good servers go first and the rest keep the quality order`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf("s_slow_good" to knownGoodView("s_slow_good"))
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_mid", speed = 50_000_000L),
+            server("s_slow_good", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(
+            "D-4: the known-good server leads; the rest keep the quality order",
+            listOf("s_slow_good", "s_fast", "s_mid"),
+            sorted.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `at most three known-good servers are promoted`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = (1..4).associate { "good$it" to knownGoodView("good$it") }
+        val servers = (1..4).map { server("good$it", speed = (10 - it) * 1_000_000L) } +
+            server("fresh", speed = 99_000_000L)
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(
+            "D-4: KNOWN_GOOD_MAX = 3 — the fourth known-good stays in quality order",
+            listOf("good1", "good2", "good3", "fresh", "good4"),
+            sorted.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `an unknown network never credits history`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf("s_slow_good" to knownGoodView("s_slow_good"))
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_slow_good", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.UNKNOWN) }
+        assertEquals(
+            "C1: an unidentified network never promotes anything",
+            listOf("s_fast", "s_slow_good"),
+            sorted.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `a success outside the window is not known-good`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val stale = now() - (KNOWN_GOOD_WINDOW_DAYS + 1) * 24L * 60L * 60L * 1000L
+        val history = mapOf("s_slow_good" to knownGoodView("s_slow_good", successAt = stale))
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_slow_good", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(listOf("s_fast", "s_slow_good"), sorted.map { it.hostname })
+    }
+
+    @Test
+    fun `a later failure on the same network cancels known-good`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val successAt = now() - 120_000
+        val history = mapOf(
+            "s_slow_good" to knownGoodView("s_slow_good", successAt = successAt, failuresAt = successAt + 60_000),
+        )
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_slow_good", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(
+            "D-4: a later server-attributable failure on this network cancels the promotion",
+            listOf("s_fast", "s_slow_good"),
+            sorted.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `two quality rejections with no success on this network demote`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf(
+            "s_fast" to ServerHistoryView(
+                hostName = "s_fast", successCount = 0, failureCount = 0, consecutiveFailures = 0,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, qualityRejectionCount = QUALITY_REJECT_DEMOTE_AFTER,
+            ),
+        )
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_ok", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(listOf("s_ok", "s_fast"), sorted.map { it.hostname })
+    }
+
+    @Test
+    fun `missed refreshes with no success on this network demote`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf(
+            "s_fast" to ServerHistoryView(
+                hostName = "s_fast", successCount = 0, failureCount = 0, consecutiveFailures = 0,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, missedRefreshCount = MISSED_REFRESH_DEMOTE_AFTER,
+            ),
+        )
+        val servers = listOf(
+            server("s_fast", speed = 90_000_000L),
+            server("s_ok", speed = 1_000_000L),
+        )
+        val sorted = with(c) { servers.sortedForAutoConnect(history, NetworkType.WIFI) }
+        assertEquals(
+            "D-8: absent from enough accepted fresh refreshes and never proven here -> demoted, not deleted",
+            listOf("s_ok", "s_fast"),
+            sorted.map { it.hostname },
+        )
+        assertEquals("demotion never deletes", 2, sorted.size)
+    }
+
+    @Test
+    fun `remembered protocol goes first for a server with history`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val supported = listOf(AutoModeProtocol.SOFTETHER_TCP, AutoModeProtocol.SOFTETHER_UDP)
+        val view = ServerHistoryView(
+            hostName = "s1", successCount = 1, failureCount = 0, consecutiveFailures = 0,
+            lastSuccessAt = now(), wifiSuccessCount = 1, cellularSuccessCount = 0,
+            unknownNetworkSuccessCount = 0, lastSuccessProtocol = AutoModeProtocol.SOFTETHER_UDP.id,
+        )
+        assertEquals(
+            "D-6: the remembered protocol leads, the rest keep their order",
+            listOf(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.SOFTETHER_TCP),
+            with(c) { c.orderWithRememberedProtocol(supported, view) },
+        )
+        assertEquals(
+            "no history -> the user's order untouched",
+            supported,
+            with(c) { c.orderWithRememberedProtocol(supported, null) },
+        )
+        val disabled = ServerHistoryView(
+            hostName = "s1", successCount = 1, failureCount = 0, consecutiveFailures = 0,
+            lastSuccessAt = now(), wifiSuccessCount = 1, cellularSuccessCount = 0,
+            unknownNetworkSuccessCount = 0, lastSuccessProtocol = AutoModeProtocol.MS_SSTP.id,
+        )
+        assertEquals(
+            "D-6: a protocol the user disabled is never introduced",
+            supported,
+            with(c) { c.orderWithRememberedProtocol(supported, disabled) },
+        )
+    }
+
+    @Test
+    fun `cooldown defers a server that failed recently on this network`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val recent = ServerHistoryView(
+            hostName = "s1", successCount = 0, failureCount = 1, consecutiveFailures = 1,
+            lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+            unknownNetworkSuccessCount = 0, wifiLastFailureAt = now() - 5 * 60_000L,
+        )
+        val stale = ServerHistoryView(
+            hostName = "s2", successCount = 0, failureCount = 1, consecutiveFailures = 1,
+            lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+            unknownNetworkSuccessCount = 0, wifiLastFailureAt = now() - FAILURE_COOLDOWN_MS - 60_000L,
+        )
+        val history = mapOf("s1" to recent, "s2" to stale)
+        val s1 = server("s1")
+        val s2 = server("s2")
+        assertTrue("D-7: a recent failure on this network cools down", with(c) { c.inFailureCooldown(s1, history, NetworkType.WIFI, now()) })
+        assertFalse("D-7: the cooldown expires", with(c) { c.inFailureCooldown(s2, history, NetworkType.WIFI, now()) })
+        assertFalse(
+            "D-7: a Wi-Fi failure does not cool down cellular",
+            with(c) { c.inFailureCooldown(s1, history, NetworkType.CELLULAR, now()) },
+        )
+    }
+
+    @Test
+    fun `exploration picks exactly one previously attempted server by oldest attempt`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf(
+            "old" to ServerHistoryView(
+                hostName = "old", successCount = 0, failureCount = 2, consecutiveFailures = 2,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, lastAttemptAt = now() - 900_000,
+            ),
+            "recent" to ServerHistoryView(
+                hostName = "recent", successCount = 0, failureCount = 1, consecutiveFailures = 1,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, lastAttemptAt = now() - 60_000,
+            ),
+        )
+        val servers = listOf(server("first"), server("second"), server("old"), server("recent"))
+        val reordered = with(c) {
+            servers.withSingleExploration(
+                startAt = 0,
+                key = { it.hostname ?: "" },
+                eligible = { s ->
+                    val h = history[s.hostname]
+                    h != null && h.successesOn(NetworkType.WIFI) == 0 && h.lastAttemptAt != null
+                },
+                ageKey = { s -> history[s.hostname]?.lastAttemptAt },
+            )
+        }
+        assertEquals(
+            "C7: the oldest attempted server goes second; the first pick never moves",
+            listOf("first", "old", "second", "recent"),
+            reordered.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `a never-attempted server is never the exploration candidate`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf(
+            "untried" to ServerHistoryView(
+                hostName = "untried", successCount = 0, failureCount = 0, consecutiveFailures = 0,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, lastAttemptAt = null,
+            ),
+        )
+        val servers = listOf(server("first"), server("second"), server("untried"))
+        val reordered = with(c) {
+            servers.withSingleExploration(
+                startAt = 0,
+                key = { it.hostname ?: "" },
+                eligible = { s ->
+                    val h = history[s.hostname]
+                    h != null && h.successesOn(NetworkType.WIFI) == 0 && h.lastAttemptAt != null
+                },
+                ageKey = { s -> history[s.hostname]?.lastAttemptAt },
+            )
+        }
+        assertEquals(
+            "C7: no attempts -> no exploration pick, list unchanged",
+            listOf("first", "second", "untried"),
+            reordered.map { it.hostname },
+        )
+    }
+
+    @Test
+    fun `exploration can be placed first every K-th run`() {
+        val c = controller(newScope(), RecordingAdapter(), emptyList())
+        val history = mapOf(
+            "old" to ServerHistoryView(
+                hostName = "old", successCount = 0, failureCount = 1, consecutiveFailures = 1,
+                lastSuccessAt = 0L, wifiSuccessCount = 0, cellularSuccessCount = 0,
+                unknownNetworkSuccessCount = 0, lastAttemptAt = now() - 900_000,
+            ),
+        )
+        val servers = listOf(server("first"), server("second"), server("old"))
+        val every = 2
+        val onRun0 = with(c) {
+            servers.withSingleExploration(
+                startAt = 0, key = { it.hostname ?: "" },
+                eligible = { s -> history[s.hostname]?.let { it.successesOn(NetworkType.WIFI) == 0 && it.lastAttemptAt != null } == true },
+                ageKey = { s -> history[s.hostname]?.lastAttemptAt },
+                firstEveryK = every, runIndex = 0,
+            )
+        }
+        val onRun1 = with(c) {
+            servers.withSingleExploration(
+                startAt = 0, key = { it.hostname ?: "" },
+                eligible = { s -> history[s.hostname]?.let { it.successesOn(NetworkType.WIFI) == 0 && it.lastAttemptAt != null } == true },
+                ageKey = { s -> history[s.hostname]?.lastAttemptAt },
+                firstEveryK = every, runIndex = 1,
+            )
+        }
+        assertEquals("K-th run: the exploration candidate leads", "old", onRun0.first().hostname)
+        assertEquals("other runs: it stays second", listOf("first", "old", "second"), onRun1.map { it.hostname })
     }
 }
