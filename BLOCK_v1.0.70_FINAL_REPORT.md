@@ -94,8 +94,16 @@ Device itself never written.
 
 ## H. PART F — gates
 
-- **F1**: ten consecutive full-suite runs from one clean `git archive` copy + lint — results appended
-  below by the gate run.
+- **F1 (ten consecutive full-suite runs)** — from ONE clean `git archive 9b83238` copy on C:
+  `:app:testProDebugUnitTest` + `:SoftEtherClient:testDebugUnitTest --rerun` ×10:
+  **RUN_1..RUN_10 all EXIT=0**; final tallies APP **1359 tests / 1 skipped / 0 failures / 0 errors**,
+  SEC **184 / 0 / 0 / 0**. Lint on that commit: **103 errors / 179 warnings / 9 hints**.
+  Delta vs the 104/178/9 baseline is fully explained, not a new defect: `auto_mode_connected_secure`
+  became unused (+1 UnusedResources) and lost its fa translation (−1 net MissingTranslation). Follow-up
+  commit `5ab062f` deletes that dead string entirely (grep-verified: no reference anywhere) →
+  **lint 102 errors / 178 warnings / 9 hints** — two errors FEWER than baseline, **zero new findings**;
+  the full suite was re-run green on that commit (the gate's ten runs differ from it only by that
+  unused-string deletion and docs).
 - **F2**: §12.9 written (origin labels, stages, session tried-set, ordering rule with constants and a
   worked numeric example, fast path, remembered protocol, cooldown, absent-refresh rule, exploration,
   quality-reject semantics, D-1..D-9 verbatim, OD note, six-requirements→schema mapping, deferred
