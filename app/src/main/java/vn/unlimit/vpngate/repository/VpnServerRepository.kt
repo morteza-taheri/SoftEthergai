@@ -742,6 +742,28 @@ class VpnServerRepository(
             pathMemory.recordSuccess(path)
             return result
         }
+        // BLOCK v1.0.75 FIX (device evidence 18:27: "Binding socket to network
+        // 152 failed: EPERM (Operation not permitted)" for api AND html after a
+        // burst of VPN reconnects): the Network object captured at run start can
+        // go stale within the same run, and every tunnel-bound request then dies
+        // with EPERM. One REBIND RETRY heals it: rebuild the fetcher from the
+        // tracker's CURRENT VPN network and retry the same TUNNEL rung once.
+        // This is not a downgrade — the retry never touches the physical path
+        // (REQ-ROUTE-001 is preserved).
+        if (path == CollectorPath.TUNNEL &&
+            GlobalVpnTracker.currentVpnNetwork() != null &&
+            GlobalVpnTracker.isTunnelUsableForRouting()
+        ) {
+            val rebuilt = runCatching { boundFetcherFactory() }.getOrNull()
+            if (rebuilt != null && rebuilt !== boundFetcher) {
+                fetchLog("[fetch] path=tunnel rebind retry source=$sourceTag (stale VPN network suspected)")
+                val retry = fetch(rebuilt)
+                if (retry != null && succeeded(retry)) {
+                    pathMemory.recordSuccess(path)
+                    return retry
+                }
+            }
+        }
         // The chosen transport produced nothing for this source. Record the
         // failure and stop: no cross-rung retry, by policy.
         pathMemory.recordFailure(path)
