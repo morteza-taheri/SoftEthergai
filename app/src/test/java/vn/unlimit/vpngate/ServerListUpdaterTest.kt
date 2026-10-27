@@ -115,6 +115,34 @@ class ServerListUpdaterTest {
         )
     }
 
+    /**
+     * BLOCK v1.0.69 (overnight consolidation) — an unchanged dataset is a
+     * *successful observation*, not a failed update and not an integrity
+     * rejection. The write still happens (it advances the PART 1B refresh
+     * markers and re-stamps `lastSeenAt`), and the stored identities are
+     * byte-for-byte the same.
+     */
+    @Test
+    fun `an identical dataset is a successful observation, not a rejection`() = runBlocking {
+        val same = serversN(12)
+        val store = FakeStore(same)
+        val updater = ServerListUpdater(fetch = { same }, store = store)
+
+        val outcome = updater.update()
+
+        assertEquals(ServerListUpdater.Outcome.Updated(12), outcome)
+        assertEquals(
+            "an unchanged dataset must still be written so refresh markers advance",
+            1,
+            store.replaceCount,
+        )
+        assertEquals(
+            "the stored identities must be unchanged",
+            same.map { it.hostName },
+            store.items.map { it.hostName },
+        )
+    }
+
     // ------------------------------------------- old list is never lost
 
     @Test
