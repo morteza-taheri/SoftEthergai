@@ -116,6 +116,7 @@ class App : Application() {
             .addMigrations(AppDatabase.MIGRATION_8_9)
             // BLOCK v1.0.69 PART 1: version 9 -> 10, additive history columns.
             .addMigrations(AppDatabase.MIGRATION_9_10)
+            .addMigrations(AppDatabase.MIGRATION_10_11)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()

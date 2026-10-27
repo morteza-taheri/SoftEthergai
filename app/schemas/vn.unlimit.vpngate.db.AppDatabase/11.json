@@ -1,0 +1,689 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 11,
+    "identityHash": "185d3aefc251069789d44d68ac044bda",
+    "entities": [
+      {
+        "tableName": "VPNGateItem",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`hostName` TEXT NOT NULL, `ip` TEXT, `score` INTEGER NOT NULL, `ping` INTEGER NOT NULL, `speed` INTEGER NOT NULL, `countryLong` TEXT, `countryShort` TEXT, `numVpnSession` INTEGER NOT NULL, `uptime` INTEGER NOT NULL, `totalUser` INTEGER NOT NULL, `totalTraffic` INTEGER NOT NULL, `logType` TEXT, `operator` TEXT, `message` TEXT, `openVpnConfigData` TEXT, `tcpPort` INTEGER NOT NULL, `udpPort` INTEGER NOT NULL, `isL2TPSupport` INTEGER NOT NULL, `isSSTPSupport` INTEGER NOT NULL, `sstpPort` INTEGER NOT NULL, `sstpPortSource` TEXT NOT NULL, `seTcpPort` INTEGER NOT NULL, `seUdpPort` INTEGER NOT NULL, `seUdpSupported` INTEGER NOT NULL, `firstSeenAt` INTEGER NOT NULL DEFAULT 0, `lastSeenAt` INTEGER NOT NULL DEFAULT 0, `healthScore` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`hostName`))",
+        "fields": [
+          {
+            "fieldPath": "hostName",
+            "columnName": "hostName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ip",
+            "columnName": "ip",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "score",
+            "columnName": "score",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ping",
+            "columnName": "ping",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "speed",
+            "columnName": "speed",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "countryLong",
+            "columnName": "countryLong",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "countryShort",
+            "columnName": "countryShort",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "numVpnSession",
+            "columnName": "numVpnSession",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uptime",
+            "columnName": "uptime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalUser",
+            "columnName": "totalUser",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalTraffic",
+            "columnName": "totalTraffic",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logType",
+            "columnName": "logType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "operator",
+            "columnName": "operator",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "openVpnConfigData",
+            "columnName": "openVpnConfigData",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "tcpPort",
+            "columnName": "tcpPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "udpPort",
+            "columnName": "udpPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isL2TPSupport",
+            "columnName": "isL2TPSupport",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isSSTPSupport",
+            "columnName": "isSSTPSupport",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sstpPort",
+            "columnName": "sstpPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sstpPortSource",
+            "columnName": "sstpPortSource",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seTcpPort",
+            "columnName": "seTcpPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seUdpPort",
+            "columnName": "seUdpPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seUdpSupported",
+            "columnName": "seUdpSupported",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstSeenAt",
+            "columnName": "firstSeenAt",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "lastSeenAt",
+            "columnName": "lastSeenAt",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "healthScore",
+            "columnName": "healthScore",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "hostName"
+          ]
+        }
+      },
+      {
+        "tableName": "excluded_apps",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`packageName` TEXT NOT NULL, `appName` TEXT NOT NULL, PRIMARY KEY(`packageName`))",
+        "fields": [
+          {
+            "fieldPath": "packageName",
+            "columnName": "packageName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appName",
+            "columnName": "appName",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "packageName"
+          ]
+        }
+      },
+      {
+        "tableName": "emergency_source_config",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `url` TEXT NOT NULL, `label` TEXT, `enabled` INTEGER NOT NULL DEFAULT 1, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "manual_server",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `protocol` TEXT NOT NULL, `label` TEXT, `notes` TEXT, `enabled` INTEGER NOT NULL DEFAULT 1, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "host",
+            "columnName": "host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "port",
+            "columnName": "port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocol",
+            "columnName": "protocol",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_manual_server_host_port_protocol",
+            "unique": true,
+            "columnNames": [
+              "host",
+              "port",
+              "protocol"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_manual_server_host_port_protocol` ON `${TABLE_NAME}` (`host`, `port`, `protocol`)"
+          }
+        ]
+      },
+      {
+        "tableName": "server_history_summary",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`hostName` TEXT NOT NULL, `firstObservedAt` INTEGER, `lastAttemptAt` INTEGER, `lastSuccessAt` INTEGER, `lastFailureAt` INTEGER, `lastTimeoutAt` INTEGER, `successCount` INTEGER NOT NULL, `failureCount` INTEGER NOT NULL, `timeoutCount` INTEGER NOT NULL, `consecutiveFailures` INTEGER NOT NULL, `lastSuccessProtocol` TEXT, `lastSuccessNetwork` TEXT, `lastFailureReason` TEXT, `wifiSuccessCount` INTEGER NOT NULL, `wifiFailureCount` INTEGER NOT NULL, `cellularSuccessCount` INTEGER NOT NULL, `cellularFailureCount` INTEGER NOT NULL, `unknownNetworkSuccessCount` INTEGER NOT NULL, `unknownNetworkFailureCount` INTEGER NOT NULL, `qualityRejectionCount` INTEGER NOT NULL, `lastRefreshSeenAt` INTEGER, `firstListedAt` INTEGER, `wifiConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `cellularConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0, `missedRefreshCount` INTEGER NOT NULL DEFAULT 0, `wifiLastFailureAt` INTEGER, `cellularLastFailureAt` INTEGER, `unknownLastFailureAt` INTEGER, PRIMARY KEY(`hostName`))",
+        "fields": [
+          {
+            "fieldPath": "hostName",
+            "columnName": "hostName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstObservedAt",
+            "columnName": "firstObservedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastAttemptAt",
+            "columnName": "lastAttemptAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastSuccessAt",
+            "columnName": "lastSuccessAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastFailureAt",
+            "columnName": "lastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastTimeoutAt",
+            "columnName": "lastTimeoutAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "successCount",
+            "columnName": "successCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "failureCount",
+            "columnName": "failureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeoutCount",
+            "columnName": "timeoutCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "consecutiveFailures",
+            "columnName": "consecutiveFailures",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSuccessProtocol",
+            "columnName": "lastSuccessProtocol",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastSuccessNetwork",
+            "columnName": "lastSuccessNetwork",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastFailureReason",
+            "columnName": "lastFailureReason",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "wifiSuccessCount",
+            "columnName": "wifiSuccessCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wifiFailureCount",
+            "columnName": "wifiFailureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cellularSuccessCount",
+            "columnName": "cellularSuccessCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cellularFailureCount",
+            "columnName": "cellularFailureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unknownNetworkSuccessCount",
+            "columnName": "unknownNetworkSuccessCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unknownNetworkFailureCount",
+            "columnName": "unknownNetworkFailureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "qualityRejectionCount",
+            "columnName": "qualityRejectionCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastRefreshSeenAt",
+            "columnName": "lastRefreshSeenAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "firstListedAt",
+            "columnName": "firstListedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "wifiConsecutiveFailures",
+            "columnName": "wifiConsecutiveFailures",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "cellularConsecutiveFailures",
+            "columnName": "cellularConsecutiveFailures",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "unknownConsecutiveFailures",
+            "columnName": "unknownConsecutiveFailures",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "missedRefreshCount",
+            "columnName": "missedRefreshCount",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "wifiLastFailureAt",
+            "columnName": "wifiLastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "cellularLastFailureAt",
+            "columnName": "cellularLastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "unknownLastFailureAt",
+            "columnName": "unknownLastFailureAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "hostName"
+          ]
+        }
+      },
+      {
+        "tableName": "server_history_protocol",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`hostName` TEXT NOT NULL, `protocol` TEXT NOT NULL, `successCount` INTEGER NOT NULL, `failureCount` INTEGER NOT NULL, `timeoutCount` INTEGER NOT NULL, `lastSuccessAt` INTEGER, `lastFailureAt` INTEGER, `lastOutcome` TEXT, PRIMARY KEY(`hostName`, `protocol`))",
+        "fields": [
+          {
+            "fieldPath": "hostName",
+            "columnName": "hostName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocol",
+            "columnName": "protocol",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "successCount",
+            "columnName": "successCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "failureCount",
+            "columnName": "failureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeoutCount",
+            "columnName": "timeoutCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSuccessAt",
+            "columnName": "lastSuccessAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastFailureAt",
+            "columnName": "lastFailureAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastOutcome",
+            "columnName": "lastOutcome",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "hostName",
+            "protocol"
+          ]
+        }
+      },
+      {
+        "tableName": "server_history_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `hostName` TEXT NOT NULL, `ip` TEXT, `eventType` TEXT NOT NULL, `outcome` TEXT NOT NULL, `networkType` TEXT NOT NULL, `protocol` TEXT, `attemptToken` TEXT, `durationMs` INTEGER, `failureReason` TEXT, `qualityResult` TEXT, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hostName",
+            "columnName": "hostName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ip",
+            "columnName": "ip",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "networkType",
+            "columnName": "networkType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocol",
+            "columnName": "protocol",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "attemptToken",
+            "columnName": "attemptToken",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "failureReason",
+            "columnName": "failureReason",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "qualityResult",
+            "columnName": "qualityResult",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_server_history_event_hostName_createdAt",
+            "unique": false,
+            "columnNames": [
+              "hostName",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_server_history_event_hostName_createdAt` ON `${TABLE_NAME}` (`hostName`, `createdAt`)"
+          },
+          {
+            "name": "index_server_history_event_hostName_protocol_createdAt",
+            "unique": false,
+            "columnNames": [
+              "hostName",
+              "protocol",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_server_history_event_hostName_protocol_createdAt` ON `${TABLE_NAME}` (`hostName`, `protocol`, `createdAt`)"
+          },
+          {
+            "name": "index_server_history_event_eventType_createdAt",
+            "unique": false,
+            "columnNames": [
+              "eventType",
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_server_history_event_eventType_createdAt` ON `${TABLE_NAME}` (`eventType`, `createdAt`)"
+          },
+          {
+            "name": "index_server_history_event_attemptToken_eventType",
+            "unique": false,
+            "columnNames": [
+              "attemptToken",
+              "eventType"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_server_history_event_attemptToken_eventType` ON `${TABLE_NAME}` (`attemptToken`, `eventType`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '185d3aefc251069789d44d68ac044bda')"
+    ]
+  }
+}

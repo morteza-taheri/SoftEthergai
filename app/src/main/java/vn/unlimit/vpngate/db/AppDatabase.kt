@@ -27,7 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ServerProtocolSummary::class,
         ServerHistoryEvent::class,
     ],
-    version = 10,
+    version = 11,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -298,9 +298,21 @@ abstract class AppDatabase: RoomDatabase() {
                     "ALTER TABLE `server_history_summary` ADD COLUMN " +
                         "`unknownConsecutiveFailures` INTEGER NOT NULL DEFAULT 0"
                 )
-                // BLOCK v1.0.75 PART C (D-7/D-8), folded into version 10 because
-                // no installed build ever opened the Room-10 schema (the latest
-                // saved device DB is user_version 9 — see PART 0 evidence).
+            }
+        }
+
+        /**
+         * BLOCK v1.0.75 PART C (D-7/D-8) — Room 10 → 11.
+         *
+         * v10 DID ship: the live device database on 2026-10-27 reports
+         * `user_version = 10` (pulled read-only before installing anything),
+         * even though the older saved copy `dv61/final.db` is still at 9. The
+         * additive columns therefore get their own migration instead of being
+         * folded into 10 — folding would make Room's identity check fail on
+         * every already-upgraded device.
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL(
                     "ALTER TABLE `server_history_summary` ADD COLUMN " +
                         "`missedRefreshCount` INTEGER NOT NULL DEFAULT 0"

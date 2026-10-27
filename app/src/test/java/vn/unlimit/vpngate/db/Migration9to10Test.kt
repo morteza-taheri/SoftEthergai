@@ -74,17 +74,8 @@ class Migration9to10Test {
         "wifiConsecutiveFailures",
         "cellularConsecutiveFailures",
         "unknownConsecutiveFailures",
-        // BLOCK v1.0.75 PART C (D-8), folded into version 10.
-        "missedRefreshCount",
     )
-    private val timestamps = listOf(
-        "lastRefreshSeenAt",
-        "firstListedAt",
-        // BLOCK v1.0.75 PART C (D-7), folded into version 10.
-        "wifiLastFailureAt",
-        "cellularLastFailureAt",
-        "unknownLastFailureAt",
-    )
+    private val timestamps = listOf("lastRefreshSeenAt", "firstListedAt")
 
     // ---------------------------------------------------------------------
     // Bounded migration identity
@@ -104,7 +95,7 @@ class Migration9to10Test {
     fun `the migration adds exactly the five approved columns and nothing else`() {
         val statements = migratedStatements()
         val alters = statements.filter { it.startsWith("ALTER TABLE") }
-        assertEquals("alters: $alters", 9, alters.size)
+        assertEquals("alters: $alters", 5, alters.size)
         assertEquals(0, statements.count { it.uppercase().contains("DROP") })
         assertEquals(0, statements.count { it.uppercase().contains("DELETE") })
         assertEquals(0, statements.count { it.uppercase().contains("TRUNCATE") })
@@ -121,7 +112,7 @@ class Migration9to10Test {
     }
 
     @Test
-    fun `the counters are NOT NULL DEFAULT 0 and the timestamps are nullable without a default`() {
+    fun `the three counters are NOT NULL DEFAULT 0 and the timestamps are nullable without a default`() {
         val byColumn = migratedStatements().associateBy { sql ->
             Regex("ADD COLUMN `([A-Za-z]+)`").find(sql)?.groupValues?.get(1) ?: ""
         }
@@ -154,7 +145,7 @@ class Migration9to10Test {
     // ---------------------------------------------------------------------
 
     @Test
-    fun `the new columns exist in 10 json and are absent from 9 json`() {
+    fun `the five new columns exist in 10 json and are absent from 9 json`() {
         // declaresField() matches whitespace-free JSON, so normalise both sides.
         val nine = schemaText(9).filterNot { it.isWhitespace() }
         val ten = schemaText(10).filterNot { it.isWhitespace() }
