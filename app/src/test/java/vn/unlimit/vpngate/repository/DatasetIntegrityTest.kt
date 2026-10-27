@@ -120,7 +120,7 @@ class DatasetIntegrityTest {
     @Test
     fun aCandidateAboveTheFloorButFarBelowTheStoredCountCollapses() {
         // 12 rows are a plausible dataset on their own, but they are 12% of
-        // a stored list of 100 — that is truncation, not churn.
+        // a stored list of 100 ï¿½ that is truncation, not churn.
         val stored = uniform(100)
         val candidate = uniform(12, "tiny")
         val verdict = DatasetIntegrity.evaluate(candidate, stored, full)
@@ -330,5 +330,53 @@ class DatasetIntegrityTest {
         assertTrue(DatasetIntegrity.MIN_ACCEPTABLE_DATASET_SIZE <= 14)
         assertTrue(DatasetIntegrity.MIN_RELATIVE_DATASET_RATIO <= 0.5)
         assertTrue(DatasetIntegrity.MIN_PROTOCOL_COVERAGE_RATIO <= 0.5)
+    }
+
+    // ------------------------------------------------- BLOCK v1.0.75 FIX
+    // The baseline is the LAST FRESH OBSERVATION (the stored rows carrying the
+    // newest lastSeenAt), not the retention union. Device evidence 2026-10-27:
+    // a 400-row union vs a ~100-row live feed rejected EVERY refresh.
+
+    @Test
+    fun `a retention union far larger than the last observation accepts a live feed`() {
+        val previousObservation = healthy(100, "prev").onEach { it.lastSeenAt = 2_000L }
+        val older = healthy(300, "old").onEach { it.lastSeenAt = 1_000L }
+        val stored = previousObservation + older
+        val live = healthy(99, "live")
+
+        val verdict = DatasetIntegrity.evaluate(live, stored, full)
+
+        assertTrue(
+            "a live feed of 99 against a previous observation of 100 must be accepted " +
+                "even though the retention union is ${stored.size}: ${verdict.detail}",
+            verdict.accepted,
+        )
+    }
+
+    @Test
+    fun `a genuinely truncated feed is still rejected against the last observation`() {
+        val stored = healthy(100, "prev").onEach { it.lastSeenAt = 2_000L }
+        val truncated = healthy(10, "live")
+
+        val verdict = DatasetIntegrity.evaluate(truncated, stored, full)
+
+        assertFalse("10 of 100 is a collapse and must stay rejected", verdict.accepted)
+        assertEquals(DatasetDefect.SIZE_COLLAPSE, verdict.defect)
+    }
+
+    @Test
+    fun `protocol coverage is judged against the last observation not the union`() {
+        // The union has 400 SSTP rows; the previous observation had 100 and the
+        // live feed 99 â€” a healthy feed that a union-based check would reject.
+        val previous = uniform(100, "prev").onEach { it.lastSeenAt = 2_000L }
+        val older = uniform(300, "old").onEach { it.lastSeenAt = 1_000L }
+        val live = uniform(99, "live")
+
+        val verdict = DatasetIntegrity.evaluate(live, previous + older, full)
+
+        assertTrue(
+            "99 of the previous 100 must not look like a protocol collapse: ${verdict.detail}",
+            verdict.accepted,
+        )
     }
 }

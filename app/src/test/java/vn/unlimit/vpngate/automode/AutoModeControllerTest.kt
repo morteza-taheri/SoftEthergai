@@ -27,7 +27,10 @@ import java.io.File
 class AutoModeControllerTest {
 
     private class FakeAdapter : AutoModeController.ConnectionAdapter {
-        val logs = mutableListOf<String>()
+        // BLOCK v1.0.75 FIX: the controller logs and dials from its own coroutines
+        // while the test thread reads these lists; a plain ArrayList throws
+        // ConcurrentModificationException under that load (flaky 2 of 4 full runs).
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val failing = mutableSetOf<String>()
         val connectThrowing = mutableSetOf<String>()
         val slow = mutableSetOf<String>()
@@ -44,7 +47,7 @@ class AutoModeControllerTest {
          */
         val nonAutomatable = mutableSetOf<AutoModeProtocol>()
         /** Every connect() the controller actually invoked, with its protocol. */
-        val connects = mutableListOf<Pair<String?, AutoModeProtocol>>()
+        val connects = java.util.concurrent.CopyOnWriteArrayList<Pair<String?, AutoModeProtocol>>()
         /**
          * A-5: optional shared ordered trace. When attached, every log line is
          * mirrored here; a test that also funnels `onStateChange` into the same

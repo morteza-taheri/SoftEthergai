@@ -263,25 +263,47 @@ object DatasetIntegrity {
             )
         }
 
-        // No stored dataset means no baseline to compare against: the
+        // BLOCK v1.0.75 FIX (device evidence 2026-10-27: the server list never
+        // updated). `stored` is the RETENTION union: mergeAll keeps every server
+        // it has ever seen (up to the 500 cap) and refreshes `lastSeenAt` only
+        // for the rows the new feed mentioned. A live feed is ~100 servers while
+        // the union had grown to 400, so `candidate < stored * 0.5` tripped on
+        // EVERY refresh and the list froze at whatever it had accumulated.
+        //
+        // The comparable baseline is the LAST FRESH OBSERVATION — the stored rows
+        // carrying the newest `lastSeenAt`, i.e. exactly the set the previous
+        // accepted refresh stamped (`mergeAll` sets `lastSeenAt = now` for every
+        // incoming row and leaves absent rows untouched). A genuinely truncated
+        // response is still caught (10 of 100 is < 50 %); a legitimately smaller
+        // live feed is not. When no row carries a timestamp, the union is used,
+        // which is the previous behaviour.
+        val previousSeenAt = stored.maxOfOrNull { it.lastSeenAt } ?: 0L
+        val baseline = if (previousSeenAt > 0L) {
+            stored.filter { it.lastSeenAt == previousSeenAt }
+        } else {
+            stored
+        }
+
+        // No comparable dataset means no baseline to compare against: the
         // absolute floor and the structural checks are all that apply.
-        if (!hasComparableBaseline(stored)) {
+        if (!hasComparableBaseline(baseline)) {
             return DatasetVerdict(
                 accepted = true,
-                detail = "no comparable stored dataset (${stored.size} server(s))",
+                detail = "no comparable stored dataset (${stored.size} server(s), " +
+                    "previous observation ${baseline.size})",
             )
         }
 
         val candidateCoverage = coverage(candidate)
-        val storedCoverage = coverage(stored)
+        val baselineCoverage = coverage(baseline)
 
-        val sizeFloor = stored.size * MIN_RELATIVE_DATASET_RATIO
+        val sizeFloor = baseline.size * MIN_RELATIVE_DATASET_RATIO
         if (candidate.size < sizeFloor) {
             return DatasetVerdict(
                 accepted = false,
                 defect = DatasetDefect.SIZE_COLLAPSE,
-                detail = "candidate ${candidate.size} server(s) vs stored ${stored.size} " +
-                    "(ratio floor $MIN_RELATIVE_DATASET_RATIO)",
+                detail = "candidate ${candidate.size} server(s) vs previous observation " +
+                    "${baseline.size} of ${stored.size} stored (ratio floor $MIN_RELATIVE_DATASET_RATIO)",
             )
         }
 
@@ -289,7 +311,7 @@ object DatasetIntegrity {
         // having lost it.
         if (capability.providesProtocolColumns) {
             for ((label, count) in PROTOCOLS) {
-                val storedCount = count(storedCoverage)
+                val storedCount = count(baselineCoverage)
                 if (storedCount < MIN_PROTOCOL_COVERAGE_BASELINE) continue
                 val candidateCount = count(candidateCoverage)
                 if (candidateCount < storedCount * MIN_PROTOCOL_COVERAGE_RATIO) {
@@ -303,7 +325,7 @@ object DatasetIntegrity {
         }
 
         if (capability.providesOpenVpnProfiles) {
-            val storedProfiles = storedCoverage.openVpnProfiles
+            val storedProfiles = baselineCoverage.openVpnProfiles
             if (storedProfiles >= MIN_PROFILE_COVERAGE_BASELINE) {
                 val candidateProfiles = candidateCoverage.openVpnProfiles
                 // A candidate with no profile at all is caught by the
