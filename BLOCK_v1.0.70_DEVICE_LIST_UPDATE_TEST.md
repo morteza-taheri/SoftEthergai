@@ -132,3 +132,27 @@ disconnect permanently — the tunnel came straight back up.
 `VpnServerRepositoryVpnFirstGuardsTest > D …`) failed once in a full-suite run and pass in isolation and
 in two consecutive full runs afterwards — pre-existing flakiness of the same family documented in those
 files, not caused by this fix.
+
+## 8b. Follow-up (operator report): the list was NEVER actually updating
+
+The two "preserved" outcomes in §2/§3 hid a deeper bug: **every** refresh was rejected, so the list
+had frozen at 400 rows. Three stacked causes, all fixed on the device:
+
+| # | Cause | Fix |
+|---|---|---|
+| 1 | `SIZE_COLLAPSE` compared the live feed (~98) against the **retention union** (400 rows = 2 weeks of kept servers): `98 < 400 × 50 %` → rejected forever | Baseline = the last ACCEPTED fresh dataset, persisted in DataUtil (`SETTING_LAST_ACCEPTED_DATASET_SIZE`); when unknown, the first response is accepted and recorded (absolute floor still applies) |
+| 2 | Even with a baseline, protocol/profile coverage compared **absolute counts** against the inflated union | Coverage compared as a **share** of each dataset (a transport vanishing still trips it; scale differences do not) |
+| 3 | A feed fetched without a tunnel carries no OpenVPN profiles → the whole update was dropped by the profile rule, so updates NEVER applied outside a tunnel | `mergeAll` now **preserves the stored profile bytes** when the feed has none (and retains unlisted servers), so accepting cannot lose a profile; the rule stays as a log line |
+
+**Device verification (final build, `git archive 6c854ff+` → APK → `install -r`):**
+```
+D/VpnGateCollector: Collected 98 servers (capability=... providesOpenVpnProfiles=false)
+D/VpnGateCollector: Feed carries no OpenVPN profile; accepted anyway — mergeAll preserves
+                    stored profile bytes and retains unlisted servers
+I/VPNGateViewModel: Server list updated atomically: 98 incoming, 485 stored (snapshot saved)
+```
+- `VPNGateItem`: 400 → **485 rows** (new servers added, retention union capped at 500)
+- `MAX(lastSeenAt)` within one minute of "now" — rows freshly stamped
+- History: all 20 tracked hosts were listed by the feed → `markSeen` reset their
+  `missedRefreshCount` (0 aged rows) — the D-8 path exercised live
+- `PRAGMA integrity_check: ok`; screenshot `screen_list_updated.png`
