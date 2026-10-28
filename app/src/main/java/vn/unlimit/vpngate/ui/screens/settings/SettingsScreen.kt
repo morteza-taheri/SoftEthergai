@@ -1076,12 +1076,16 @@ fun SettingsScreen(
             confirmButton = {
                 if (decision is vn.unlimit.vpngate.update.AppUpdateDecision.UpdateAvailable) {
                     TextButton(onClick = {
-                        context.startActivity(
-                            android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse(decision.manifest.releasePageUrl),
+                        // BLOCK v1.0.76 audit fix: a device without any browser
+                        // handler must not crash — the dialog just closes.
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(decision.manifest.releasePageUrl),
+                                )
                             )
-                        )
+                        }
                         updateCheckDecision = null
                     }) { Text(stringResource(R.string.update_check_open_page)) }
                 } else {

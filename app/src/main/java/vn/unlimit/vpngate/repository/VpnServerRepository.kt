@@ -355,6 +355,15 @@ class VpnServerRepository(
         val fromCache: Boolean,
         val savedAt: Long,
         val capability: SourceCapability = SourceCapability.UNKNOWN,
+        /**
+         * BLOCK v1.0.76 audit fix: true when the EMERGENCY rung supplied (part
+         * of) this dataset. The updater then treats the result as a supplement:
+         * it merges into storage but never marks history freshness, never
+         * promotes the last-known-good snapshot and never uses the fresh size
+         * baseline (device evidence: an emergency-merged run recorded a 245-row
+         * "fresh" baseline and blocked later updates).
+         */
+        val suppliedByEmergency: Boolean = false,
     )
 
     /** §33 debug panel payload for one server. */
@@ -467,7 +476,21 @@ class VpnServerRepository(
         fetchLog("[ladder] order=${ladder.joinToString(",") { it.name }}")
         val primary = ladder.first()
         val physicalFetcher: HttpFetcher =
-            runCatching { productionBoundFetcher() }.getOrNull() ?: fetcher
+            runCatching { productionBoundFetcher() }.getOrNull() ?: run {
+                // BLOCK v1.0.76 audit fix: make the unbound fallback visible.
+                // With NO VPN network present the default network IS the
+                // physical one and the fallback is correct. With a VPN network
+                // present (a tunnel that is not usable for routing), the
+                // default network is the VPN — the fetch would ride the tunnel
+                // while being logged as PHYSICAL, so say so in the log.
+                if (GlobalVpnTracker.currentVpnNetwork() != null) {
+                    fetchLog(
+                        "[ladder] PHYSICAL has no bound network while a VPN " +
+                            "network exists; the default network may ride the VPN",
+                    )
+                }
+                fetcher
+            }
         val boundFetcher: HttpFetcher? = bindHttpFetcher()
 
         val records = coroutineScope {
@@ -545,6 +568,8 @@ class VpnServerRepository(
             collected
         }
 
+        // BLOCK v1.0.76 audit fix: set when the EMERGENCY rung contributes rows.
+        var emergencySupplied = false
         if (records.isEmpty()) {
             // v1.0.49 (§1.6.42): attempt the EMERGENCY rung before falling
             // back to the last-known-good snapshot. The operator's requirement
@@ -570,6 +595,10 @@ class VpnServerRepository(
                 if (!emergency.isNullOrEmpty()) {
                     fetchLog("[ladder] path=emergency source=${emergency.size}")
                     records.addAll(emergency)
+                    // BLOCK v1.0.76 audit fix: remember that this dataset is (at
+                    // least partly) an emergency supplement, so the updater can
+                    // exempt it from fresh-observation bookkeeping.
+                    emergencySupplied = true
                 } else {
                     fetchLog("[ladder] skip=EMERGENCY (fetch produced no usable records)")
                 }
@@ -624,6 +653,7 @@ class VpnServerRepository(
             fromCache = false,
             savedAt = now,
             capability = collectedCapability,
+            suppliedByEmergency = emergencySupplied,
         )
     }
 

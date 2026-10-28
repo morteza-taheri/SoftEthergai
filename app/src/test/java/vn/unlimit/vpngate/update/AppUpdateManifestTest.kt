@@ -42,11 +42,25 @@ class AppUpdateManifestTest {
     @Test
     fun `parsing tolerates whitespace and field order`() {
         val m = AppUpdateCheck.parseManifest(
-            """{"notes":"n",   "versionCode" : 7 ,  "versionName":"x", "releasePageUrl":"https://a.b/c"}""",
+            """{"notes":"n",   "versionCode" : 7 ,  "versionName":"x", "releasePageUrl":"https://github.com/morteza-taheri/SoftEthergai/releases"}""",
         )
         assertEquals(7, m?.versionCode)
         assertEquals("x", m?.versionName)
-        assertEquals("https://a.b/c", m?.releasePageUrl)
+        assertEquals("https://github.com/morteza-taheri/SoftEthergai/releases", m?.releasePageUrl)
+    }
+
+    @Test
+    fun `a release page on a foreign host is refused (audit fix)`() {
+        assertNull(
+            AppUpdateCheck.parseManifest(
+                """{"versionCode":5,"versionName":"x","releasePageUrl":"https://evil.example.com/a.b/c"}""",
+            ),
+        )
+        assertNull(
+            AppUpdateCheck.parseManifest(
+                """{"versionCode":5,"versionName":"x","releasePageUrl":"https://github.com/other-project/releases"}""",
+            ),
+        )
     }
 
     // ---------------- parsing: fail-closed ----------------

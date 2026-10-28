@@ -124,7 +124,11 @@ object ServerListUpdates {
                     result.fromCache && !acceptCacheFallback -> null
                     else -> {
                         capability.value = result.capability
-                        origin.value = result.fromCache
+                        // BLOCK v1.0.76 audit fix: an emergency-supplemented
+                        // dataset is a supplement, not a fresh observation —
+                        // propagate it so the updater exempts it from history
+                        // markers, snapshot promotion and the fresh baseline.
+                        origin.value = result.fromCache || result.suppliedByEmergency
                         result.connectionList.toVPNGateItems()
                     }
                 }

@@ -149,6 +149,11 @@ private suspend fun raceFetch(
 
     try {
         withTimeoutOrNull(timeoutMs) { result.await() }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // BLOCK v1.0.76 audit fix: a user/lifecycle cancellation must never be
+        // swallowed into a "no result" — it would let fallbacks run after the
+        // caller gave up. Rethrow; only the timeout itself yields null.
+        throw e
     } catch (e: Throwable) {
         null
     } finally {

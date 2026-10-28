@@ -19,15 +19,15 @@ Implemented and shipping today:
 - 🔐 Multiple authentication methods
 - 🆘 **Emergency server sources** — user-configured fallback CSV URLs (Settings → Emergency Server Sources), fetched only when the live sources fail
 - ✍️ **Manual server entry** — add your own server records (Settings → Manual Servers); they survive list refreshes
-- 🔀 OPEN-first / VPN-fallback server-list retrieval — updates try the direct network first and can fall back to an active VPN tunnel (an internal "always prefer VPN" preference can invert the order; there is no settings toggle for it yet)
+- 🔀 VPN-first server-list retrieval — while a usable VPN tunnel is up, updates are fetched THROUGH the tunnel (no silent fallback to the physical network, per REQ-ROUTE-001); with no usable tunnel the updates use the physical network and, as a last rung, the emergency sources
 
 ### Planned (not implemented)
 
 The items below are approved design directions, **not** available features. They are listed here so the roadmap is visible; do not rely on them.
 
 - A server-list entry point for adding a manual server (row or floating action button); manual entry currently lives in Settings (roadmap item E)
-- Paste / file / share-sheet import of server configurations (roadmap item F)
-- Cumulative server retention — the local database growing across updates instead of being replaced (design: [SERVER_SOURCE_ARCHITECTURE.md](SERVER_SOURCE_ARCHITECTURE.md) §9, approved as a requirement, not implemented)
+- ~~Paste / file / share-sheet import~~ **implemented** (v1.0.54, Settings → Manual Servers → CSV import)
+- ~~Cumulative server retention~~ **implemented** (v1.0.71): the local database retains up to 500 servers across updates, ranked by health/quality, with manual servers protected from pruning — see [SERVER_SOURCE_ARCHITECTURE.md](SERVER_SOURCE_ARCHITECTURE.md) §9 and `PROJECT_SPECIFICATION.md` §12.8.1
 
 ## Protocol Support
 

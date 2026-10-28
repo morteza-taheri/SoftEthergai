@@ -7046,3 +7046,42 @@ installing a newer build; this block folds its columns into version 10 only beca
 | 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
 | v2.4.12 (145) | 2026-10-27 | **Release.** BLOCK v1.0.75 shipped: connection-origin labels, two-stage Try Next with the session tried-set, history-driven fast connect (known-good first, per-network demotion, fast path, remembered protocol, cooldown, missed-refresh demotion, single exploration), Room 10→11, the hero-disconnect fix and the server-list update fixes — all device-verified 2026-10-27 (see `BLOCK_v1.0.70_FINAL_REPORT.md`, `BLOCK_v1.0.70_DEVICE_LIST_UPDATE_TEST.md`). Deferred to the next block: configurable Auto-Reconnect attempt limit (§12.9.12). |
 | v2.4.13 (146) | 2026-10-28 | **BLOCK v1.0.76 — APP UPDATE CHECKER** (§12.10): weekly automatic check of `app-update/version.json` (self-published in `main`), manual "Check for update" row in Settings with a result dialog and a release-page link, one notification per new version, fail-closed parsing, no auto-download/auto-install. Device-verified both paths (build 145 → "146 available"; build 146 → "up to date"). |
+
+### 12.10.7 — BLOCK v1.0.76 ADDENDUM: deep-audit remediation (2026-10-28)
+
+The operator's external deep audit (`softethergai-deep-audit-2026-10-28-fa.md`, archived at HEAD
+`08c6abe`) was verified line-by-line against the current tree. Classification:
+
+**Already resolved / stale:** the update manifest now exists and is live on GitHub (HTTP 200); the
+hero button uses `disconnectNow()`; the release-signing fail-closed guard was acknowledged by the
+audit itself; the Room 10→11 migration and the server-list update fixes postdate the audited
+snapshot. The "route policy P0" finding is the operator-approved REQ-ROUTE-001 decision (VPN-only
+while a usable tunnel is up), not a defect — only the stale README text was real.
+
+**Fixed in this addendum (commit `audit-fixes`):**
+1. `CancellationException` is rethrown in all four generic catch sites (raceFetch, updater fetch,
+   updater emergencyFetch, EmergencySourceFetcher) — user cancellation can no longer be converted
+   into an ordinary network failure that runs fallbacks.
+2. `releasePageUrl` is parsed as a URI and HOST-allowlisted (`github.com`,
+   `raw.githubusercontent.com`) with a repo path prefix — a replaced manifest cannot navigate the
+   user to a foreign domain.
+3. External `startActivity` / `nm.notify` are handler-safe (no crash on browser-less devices).
+4. The PHYSICAL unbound fallback is logged loudly when a VPN network exists (the default network may
+   ride the tunnel while being logged as PHYSICAL).
+5. **Emergency-origin propagation** (the audit's best catch): the collector now flags emergency-run
+   datasets (`CollectResult.suppliedByEmergency`), `ServerListUpdates` maps it into the fetch origin,
+   and the updater treats emergency datasets as merge-only supplements — they never mark history
+   freshness (`markSeen`/aging), never promote the last-known-good snapshot and never feed the fresh
+   size baseline. This is the definitive fix for the poisoned-245 baseline observed on the device.
+
+**Accepted-as-is (documented, not defects):** `markSeen` on cap-pruned rows (D-8 ages rows absent
+from the feed; cap-pruned rows are already out of the active list and a returning server deserves a
+clean slate); manual delete leaving the canonical row until the next refresh (spec-approved);
+quick-test 443 fallback port (probe-level, labelled as such).
+
+**Deferred to the next block (native/tracker/security, larger engineering):** absolute handshake
+deadline + detached-worker reclamation in the native client; `GlobalVpnTracker` reconcile
+serialization + tokenized callbacks + generation-scoped RX/EIO counters; TOFU fail-closed on unknown
+fingerprints; OpenVPN export via SAF; `QUERY_ALL_PACKAGES` merge from the SSTP library; private-IP
+rejection for mirror URLs; log redaction.
+| v2.4.14 (147) | 2026-10-28 | **Deep-audit remediation** (§12.10.7): cancellation rethrown end-to-end, update release-page host allowlist, handler-safe intents, PHYSICAL fallback logging, emergency-origin propagation (merge-only supplements — the definitive fix for the poisoned baseline). Native/tracker items deferred to the next block. |

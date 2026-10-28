@@ -113,6 +113,8 @@ object AppUpdateWeeklyCheck {
             .setContentIntent(contentPendingIntent)
             .setAutoCancel(true)
             .build()
-        nm.notify(NOTIFICATION_ID, notification)
+        // BLOCK v1.0.76 audit fix: notify (and its eventual tap) must never
+        // crash a device without a browser handler.
+        runCatching { nm.notify(NOTIFICATION_ID, notification) }
     }
 }

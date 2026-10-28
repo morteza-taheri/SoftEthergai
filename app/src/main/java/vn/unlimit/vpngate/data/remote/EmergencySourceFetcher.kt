@@ -77,6 +77,10 @@ class EmergencySourceFetcher(
     private suspend fun attempt(identity: SourceIdentity): FetchResult {
         val response = try {
             fetcher.get(identity.url, identity.redirectPolicy())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // BLOCK v1.0.76 audit fix: rethrow cancellation before the generic
+            // catch turns it into an ordinary network error.
+            throw e
         } catch (e: Exception) {
             // A fetcher that throws instead of returning null must not be
             // able to abort the whole update; §2.7 preserves the stored list.

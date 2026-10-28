@@ -280,6 +280,9 @@ class ServerListUpdater(
         try {
             var downloaded = try {
                 fetch()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // BLOCK v1.0.76 audit fix: rethrow user/lifecycle cancellation.
+                throw e
             } catch (e: Exception) {
                 return Outcome.Preserved(classify(e), store.currentCount())
             }
@@ -313,6 +316,9 @@ class ServerListUpdater(
                 // outcome is exactly what it was before this rung existed.
                 val emergency = try {
                     emergencyFetch()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // BLOCK v1.0.76 audit fix: rethrow cancellation.
+                    throw e
                 } catch (e: Exception) {
                     CollectorLog.d("Emergency fetch threw: ${e.message}")
                     null
@@ -372,22 +378,27 @@ class ServerListUpdater(
             } catch (e: Exception) {
                 SourceCapability.UNKNOWN
             }
-            // BLOCK v1.0.75 FIX: a FRESH network response is never size-rejected
-            // (its size varies with which supplementary sources are enabled; the
-            // retention merge cannot shrink the store). A cache/emergency
-            // candidate is NOT a fresh observation and keeps the strict rule:
-            // judged against what is stored right now.
-            val baselineForThisRun = if (fromCache || suppliedByEmergency) {
-                store.currentCount()
-            } else {
-                store.lastAcceptedFreshSize()
+            // BLOCK v1.0.75 + v1.0.76 FIX: three write semantics, three gates.
+            //  - FRESH network feed: never size-rejected (the size varies with
+            //    which supplementary sources are enabled; the retention merge
+            //    cannot shrink the store) — the recorded baseline is advisory.
+            //  - CACHE candidate: strict, judged against what is stored now.
+            //  - EMERGENCY supplement (BLOCK v1.0.76 audit fix): merge-only —
+            //    it adds missing servers and cannot shrink the store, so no
+            //    size gate; it also never marks history or promotes the
+            //    snapshot (the origin flag handles that).
+            val strictGate = fromCache
+            val baselineForThisRun = when {
+                fromCache -> store.currentCount()
+                suppliedByEmergency -> 0
+                else -> store.lastAcceptedFreshSize()
             }
             val verdict = DatasetIntegrity.evaluate(
                 usableRows,
                 store.currentDataset(),
                 capability,
                 lastAcceptedSize = baselineForThisRun,
-                strictSizeBaseline = fromCache || suppliedByEmergency,
+                strictSizeBaseline = strictGate,
             )
             if (!verdict.accepted) {
                 CollectorLog.d(

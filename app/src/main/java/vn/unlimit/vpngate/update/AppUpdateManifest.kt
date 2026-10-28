@@ -42,6 +42,12 @@ data class AppUpdateManifest(
         const val FALLBACK_RELEASE_PAGE_URL: String =
             "https://github.com/morteza-taheri/SoftEthergai/releases/latest"
 
+        /**
+         * BLOCK v1.0.76 audit fix: the only hosts a manifest's release page may
+         * point at. A replaced manifest cannot redirect the user elsewhere.
+         */
+        val ALLOWED_RELEASE_HOSTS: Set<String> = setOf("github.com", "raw.githubusercontent.com")
+
         /** A manifest larger than this is a hostile body, not a version file. */
         const val MAX_MANIFEST_BYTES: Int = 64 * 1024
     }
@@ -81,9 +87,19 @@ object AppUpdateCheck {
         if (versionCode <= 0) return null
         val versionName = Regex("\"versionName\"\\s*:\\s*\"([^\"]+)\"")
             .find(body)?.groupValues?.get(1)?.takeIf { it.isNotBlank() } ?: return null
+        // BLOCK v1.0.76 audit fix: the release page is parsed as a URI and the
+        // HOST is allowlisted to this project's GitHub, not merely prefix-checked.
+        // A compromised manifest must not be able to navigate the user to a
+        // foreign domain.
         val releasePageUrl = Regex("\"releasePageUrl\"\\s*:\\s*\"([^\"]+)\"")
-            .find(body)?.groupValues?.get(1)?.takeIf { it.startsWith("https://") }
-            ?: return null
+            .find(body)?.groupValues?.get(1)?.takeIf { raw ->
+                runCatching {
+                    val uri = java.net.URI(raw)
+                    uri.scheme == "https" &&
+                        uri.host?.lowercase() in AppUpdateManifest.ALLOWED_RELEASE_HOSTS &&
+                        (uri.path?.startsWith("/morteza-taheri/SoftEthergai") == true)
+                }.getOrDefault(false)
+            } ?: return null
         val notes = Regex("\"notes\"\\s*:\\s*\"([^\"]*)\"")
             .find(body)?.groupValues?.get(1)
 
