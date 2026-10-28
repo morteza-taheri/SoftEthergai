@@ -163,6 +163,22 @@ class App : Application() {
             }.onFailure { logW("Default excluded apps seed failed", it) }
         }
 
+        // BLOCK v1.0.76 — APP UPDATE CHECKER (D-10): the automatic weekly
+        // check. Same fire-and-forget shape as the seeds above; the interval
+        // decision, the fail-closed parsing and the once-per-version
+        // notification rule live in [AppUpdateWeeklyCheck.runIfNeeded]. A
+        // failed check is invisible to the user — the manual button in
+        // Settings always works.
+        appScope.launch {
+            runCatching {
+                vn.unlimit.vpngate.update.AppUpdateWeeklyCheck.runIfNeeded(
+                    context = this@App,
+                    dataUtil = dataUtil!!,
+                    log = { logD(it) },
+                )
+            }.onFailure { logW("App update check failed", it) }
+        }
+
         // Apply the user-selected appearance (System / Light / Dark) before any
         // activity is created so the whole app follows Theme.Material3.DayNight.
         // Default theme is Dark (2).

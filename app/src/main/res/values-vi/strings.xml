@@ -320,4 +320,20 @@
     <string name="manual_server_import_error">Nhập thất bại</string>
     <string name="manual_server_quota_reached">Đã đạt giới hạn máy chủ thủ công. Máy chủ thêm thủ công: %1$d trên %2$d. Tổng dung lượng danh sách máy chủ: %3$d.</string>
 
+    <!-- BLOCK v1.0.76 — trình kiểm tra cập nhật ứng dụng -->
+    <string name="update_check_title">Cập nhật ứng dụng</string>
+    <string name="update_check_button">Kiểm tra cập nhật</string>
+    <string name="update_check_button_subtitle">Phiên bản đã cài: %1$s (%2$d)</string>
+    <string name="update_check_running">Đang kiểm tra…</string>
+    <string name="update_check_up_to_date_title">Đã cập nhật</string>
+    <string name="update_check_up_to_date_body">Bạn đang dùng phiên bản mới nhất đã phát hành (%1$s, bản dựng %2$d).</string>
+    <string name="update_check_available_title">Có phiên bản mới</string>
+    <string name="update_check_available_body">Phiên bản %1$s (bản dựng %2$d) đã được phát hành. Mở trang phát hành để tải bản cài đặt mới.</string>
+    <string name="update_check_open_page">Mở trang phát hành</string>
+    <string name="update_check_later">Để sau</string>
+    <string name="update_check_failed_title">Kiểm tra thất bại</string>
+    <string name="update_check_failed_body">Không thể tải thông tin cập nhật. Kiểm tra kết nối Internet và thử lại.</string>
+    <string name="update_check_notification_channel">Thông báo cập nhật ứng dụng</string>
+    <string name="update_check_notification_title">Đã có phiên bản mới của SoftEthergai</string>
+    <string name="update_check_notification_body">Phiên bản %1$s đã được phát hành. Chạm để mở trang tải xuống.</string>
 </resources>

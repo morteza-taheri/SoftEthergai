@@ -423,4 +423,20 @@
          full. 10% of the total capacity is always reserved for servers
          obtained from the normal update, so the manual limit is 450 of 500. -->
     <string name="manual_server_quota_reached">Manual server limit reached. Manually added servers: %1$d of %2$d. Total server-list capacity: %3$d.</string>
+    <!-- BLOCK v1.0.76 — APP UPDATE CHECKER -->
+    <string name="update_check_title">App update</string>
+    <string name="update_check_button">Check for update</string>
+    <string name="update_check_button_subtitle">Installed version: %1$s (%2$d)</string>
+    <string name="update_check_running">Checking…</string>
+    <string name="update_check_up_to_date_title">Up to date</string>
+    <string name="update_check_up_to_date_body">You are running the latest published version (%1$s, build %2$d).</string>
+    <string name="update_check_available_title">A new version is available</string>
+    <string name="update_check_available_body">Version %1$s (build %2$d) has been published. Open the release page to download the new installer.</string>
+    <string name="update_check_open_page">Open release page</string>
+    <string name="update_check_later">Later</string>
+    <string name="update_check_failed_title">Check failed</string>
+    <string name="update_check_failed_body">The update information could not be fetched. Check the internet connection and try again.</string>
+    <string name="update_check_notification_channel">App update notifications</string>
+    <string name="update_check_notification_title">A new version of SoftEthergai is available</string>
+    <string name="update_check_notification_body">Version %1$s has been published. Tap to open the download page.</string>
 </resources>

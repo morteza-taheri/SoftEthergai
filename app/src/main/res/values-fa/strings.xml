@@ -356,4 +356,20 @@
     <string name="manual_server_import_failed">چیزی وارد نشد</string>
     <string name="manual_server_import_error">وارد کردن ناموفق بود</string>
     <string name="manual_server_quota_reached">محدودیت سرورهای دستی پر شده است. سرورهای دستی: %1$d از %2$d. ظرفیت کل فهرست سرورها: %3$d.</string>
+    <!-- BLOCK v1.0.76 — بررسی به‌روزرسانی برنامه -->
+    <string name="update_check_title">به‌روزرسانی برنامه</string>
+    <string name="update_check_button">بررسی وجود به‌روزرسانی</string>
+    <string name="update_check_button_subtitle">نسخهٔ نصب‌شده: %1$s (%2$d)</string>
+    <string name="update_check_running">در حال بررسی…</string>
+    <string name="update_check_up_to_date_title">به‌روز است</string>
+    <string name="update_check_up_to_date_body">شما آخرین نسخهٔ منتشرشده را دارید (%1$s، بیلد %2$d).</string>
+    <string name="update_check_available_title">نسخهٔ جدید موجود است</string>
+    <string name="update_check_available_body">نسخهٔ %1$s (بیلد %2$d) منتشر شده است. برای دریافت نصب‌کنندهٔ جدید، صفحهٔ انتشار را باز کنید.</string>
+    <string name="update_check_open_page">باز کردن صفحهٔ انتشار</string>
+    <string name="update_check_later">بعداً</string>
+    <string name="update_check_failed_title">بررسی ناموفق بود</string>
+    <string name="update_check_failed_body">دریافت اطلاعات به‌روزرسانی ممکن نشد. اتصال اینترنت را بررسی و دوباره تلاش کنید.</string>
+    <string name="update_check_notification_channel">اعلان‌های به‌روزرسانی برنامه</string>
+    <string name="update_check_notification_title">نسخهٔ جدید SoftEthergai منتشر شده است</string>
+    <string name="update_check_notification_body">نسخهٔ %1$s منتشر شده است. برای باز کردن صفحهٔ دریافت لمس کنید.</string>
 </resources>

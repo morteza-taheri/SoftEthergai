@@ -496,6 +496,22 @@ class DataUtil(context: Context?) {
         setIntSetting(SETTING_LAST_ACCEPTED_DATASET_SIZE, size.coerceAtLeast(0))
     }
 
+    // ── BLOCK v1.0.76 — APP UPDATE CHECKER ───────────────────────────────
+
+    /** Last automatic update check (epoch ms; 0 = never checked). */
+    fun getAppUpdateLastCheckAt(): Long =
+        sharedPreferencesSetting?.getLong(SETTING_APP_UPDATE_LAST_CHECK_AT, 0L) ?: 0L
+
+    fun setAppUpdateLastCheckAt(at: Long) {
+        sharedPreferencesSetting?.edit()?.putLong(SETTING_APP_UPDATE_LAST_CHECK_AT, at)?.apply()
+    }
+
+    /** The newest version code the user has already been notified about (0 = none). */
+    fun getAppUpdateDismissedCode(): Int = getIntSetting(SETTING_APP_UPDATE_DISMISSED_CODE, 0)
+
+    fun setAppUpdateDismissedCode(code: Int) =
+        setIntSetting(SETTING_APP_UPDATE_DISMISSED_CODE, code)
+
     /** The selectable values, in hours. Index 0 is the default. */
     val serverListUpdateIntervalOptions: IntArray
         get() = intArrayOf(1, 3, 6, 12, 18, 24, 168)
@@ -634,6 +650,14 @@ class DataUtil(context: Context?) {
         /** BLOCK v1.0.75 FIX: size of the last accepted fresh dataset (0 = unknown). */
         const val SETTING_LAST_ACCEPTED_DATASET_SIZE: String =
             "SETTING_LAST_ACCEPTED_DATASET_SIZE"
+
+        /** BLOCK v1.0.76: last automatic update check (epoch ms). */
+        const val SETTING_APP_UPDATE_LAST_CHECK_AT: String =
+            "SETTING_APP_UPDATE_LAST_CHECK_AT"
+
+        /** BLOCK v1.0.76: newest version code the user was notified about. */
+        const val SETTING_APP_UPDATE_DISMISSED_CODE: String =
+            "SETTING_APP_UPDATE_DISMISSED_CODE"
 
         /** Server List Update Interval: default 12 hours, hard bounds 1..24. */
         const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168

@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "versionCode": 146,
+  "versionName": "2.4.13",
+  "releasePageUrl": "https://github.com/morteza-taheri/SoftEthergai/releases/latest",
+  "notes": "Auto update checker; hero disconnect fix; server-list update fixes"
+}

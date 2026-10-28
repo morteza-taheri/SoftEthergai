@@ -147,6 +147,12 @@ fun SettingsScreen(
     var importSummary by remember { mutableStateOf<String?>(null) }
     var importBusy by remember { mutableStateOf(false) }
 
+    // BLOCK v1.0.76 — APP UPDATE CHECKER: manual check from Settings.
+    var updateCheckBusy by remember { mutableStateOf(false) }
+    var updateCheckDecision by remember {
+        mutableStateOf<vn.unlimit.vpngate.update.AppUpdateDecision?>(null)
+    }
+
     // ---- Setting states
     var notifySpeed by remember {
         mutableStateOf(dataUtil.getBooleanSetting(DataUtil.SETTING_NOTIFY_SPEED, DataUtil.DEFAULT_NOTIFY_SPEED))
@@ -995,11 +1001,106 @@ fun SettingsScreen(
                         },
                     )
                 }
+
+                // BLOCK v1.0.76 — APP UPDATE CHECKER: the manual check row.
+                SettingsSection(title = stringResource(R.string.update_check_title)) {
+                    SettingValueRow(
+                        title = stringResource(R.string.update_check_button),
+                        value = "",
+                        subtitle = if (updateCheckBusy) {
+                            stringResource(R.string.update_check_running)
+                        } else {
+                            stringResource(
+                                R.string.update_check_button_subtitle,
+                                vn.unlimit.vpngate.BuildConfig.VERSION_NAME,
+                                vn.unlimit.vpngate.BuildConfig.VERSION_CODE,
+                            )
+                        },
+                        icon = Icons.Outlined.Launch,
+                        onClick = {
+                            if (!updateCheckBusy) {
+                                updateCheckBusy = true
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    val decision = runCatching {
+                                        vn.unlimit.vpngate.update.AppUpdateChecker().check()
+                                    }.getOrElse {
+                                        vn.unlimit.vpngate.update.AppUpdateDecision.Unknown(
+                                            it.message ?: "error",
+                                        )
+                                    }
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        updateCheckDecision = decision
+                                        updateCheckBusy = false
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
             }
         }
     }
 
     // ---- Dialog Pickers
+
+    // BLOCK v1.0.76 — the update-check result dialog.
+    updateCheckDecision?.let { decision ->
+        val titleRes: Int
+        val bodyText: String
+        when (decision) {
+            is vn.unlimit.vpngate.update.AppUpdateDecision.UpToDate -> {
+                titleRes = R.string.update_check_up_to_date_title
+                bodyText = stringResource(
+                    R.string.update_check_up_to_date_body,
+                    vn.unlimit.vpngate.BuildConfig.VERSION_NAME,
+                    vn.unlimit.vpngate.BuildConfig.VERSION_CODE,
+                )
+            }
+            is vn.unlimit.vpngate.update.AppUpdateDecision.UpdateAvailable -> {
+                titleRes = R.string.update_check_available_title
+                bodyText = stringResource(
+                    R.string.update_check_available_body,
+                    decision.manifest.versionName,
+                    decision.manifest.versionCode,
+                )
+            }
+            is vn.unlimit.vpngate.update.AppUpdateDecision.Unknown -> {
+                titleRes = R.string.update_check_failed_title
+                bodyText = stringResource(R.string.update_check_failed_body)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { updateCheckDecision = null },
+            title = { Text(stringResource(titleRes)) },
+            text = { Text(bodyText) },
+            confirmButton = {
+                if (decision is vn.unlimit.vpngate.update.AppUpdateDecision.UpdateAvailable) {
+                    TextButton(onClick = {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(decision.manifest.releasePageUrl),
+                            )
+                        )
+                        updateCheckDecision = null
+                    }) { Text(stringResource(R.string.update_check_open_page)) }
+                } else {
+                    TextButton(onClick = { updateCheckDecision = null }) {
+                        Text(stringResource(R.string.update_check_later))
+                    }
+                }
+            },
+            dismissButton = if (decision is vn.unlimit.vpngate.update.AppUpdateDecision.UpdateAvailable) {
+                {
+                    TextButton(onClick = { updateCheckDecision = null }) {
+                        Text(stringResource(R.string.update_check_later))
+                    }
+                }
+            } else {
+                null
+            },
+        )
+    }
     if (showStartupPicker) {
         SingleChoiceDialog(
             title = stringResource(R.string.setting_startup_screen),

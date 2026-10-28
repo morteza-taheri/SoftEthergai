@@ -6966,6 +6966,61 @@ in Settings — `RECONNECT_MAX_ATTEMPTS` (currently a compile-time constant `5` 
 it through the existing injection pattern. The window stays fixed unless the operator asks otherwise.
 Not implemented in this block to keep the release scope contained.
 
+---
+
+## §12.10 — BLOCK v1.0.76: APP UPDATE CHECKER
+
+Normative. Added on the operator's request (2026-10-28): the app must know when a newer build is
+published in this repository, tell the user, and lead them to the new installer — automatically once a
+week and on demand.
+
+### 12.10.1 Decision (D-10): self-published manifest, no store, no auto-install
+
+- The release state lives in **`app-update/version.json`**, committed to `main` and fetched from
+  `https://raw.githubusercontent.com/morteza-taheri/SoftEthergai/main/app-update/version.json` — the
+  same self-publish pattern as the emergency CSV (`emergency-sources/servers.csv`). Fields:
+  `schema_version`, `versionCode` (int, the authority), `versionName`, `releasePageUrl`
+  (HTTPS-only), `notes`.
+- The check **compares `versionCode` with the installed `BuildConfig.VERSION_CODE`**; the version name
+  is display-only. A remote code not strictly greater than the installed one is "up to date" (a dev
+  build may legitimately be ahead of the manifest).
+- **The app never downloads or installs an update by itself.** The only user action offered is
+  opening the release page in a browser (`Intent.ACTION_VIEW` on the manifest's `releasePageUrl`).
+
+### 12.10.2 Automatic weekly check (D-10)
+
+`App.onCreate` fires a background check when `now - lastCheckAt ≥ 7 days` (`AppUpdateCheck.shouldAutoCheck`;
+`SETTING_APP_UPDATE_LAST_CHECK_AT`, 0 = check now). On `UpdateAvailable` exactly ONE notification per
+new version is posted (`SETTING_APP_UPDATE_DISMISSED_CODE` suppresses repeats); tapping it opens the
+release page. Without the Android notification permission the notification silently does not appear —
+the manual button always works. A failed check is invisible to the user.
+
+### 12.10.3 Manual check (D-10)
+
+A Settings row ("Check for update", subtitle shows the installed version) runs the same check on demand
+and answers in a dialog: **Up to date**, **Update available** (with an "Open release page" button) or
+**Check failed** (network/parse failure). The check never blocks the UI thread and never crashes.
+
+### 12.10.4 Fail-closed parsing
+
+`AppUpdateCheck.parseManifest` extracts the three required fields with bounded patterns; any missing
+or malformed field, a non-HTTPS `releasePageUrl`, a non-positive `versionCode`, a blank body or a body
+over 64 KiB yields `null` → `Unknown`. A hostile manifest can therefore never navigate the user or
+announce a bogus version.
+
+### 12.10.5 Release procedure (manual step)
+
+When publishing a new build: bump `versionCode`/`versionName` in `app/build.gradle`, update
+`app-update/version.json` to the same `versionCode`, commit and push both. The next app-side check
+(weekly or manual) reports the new build. (Automating this into `emergency_csv_publisher.py` is
+deferred — the publisher already owns the CSV; the manifest edit is one file.)
+
+### 12.10.6 Deferred (D-9-style)
+
+Automatic upload of the APK to GitHub Releases from the publisher script; a configurable check
+interval; delta/incremental update metadata; forcing the check through the VPN tunnel (it deliberately
+uses the default network — an update check must not depend on the tunnel being healthy).
+
 ### 12.9.13 Downgrade warning
 
 An older build opening a newer database fails Room's identity check. Back up the DB copy before
@@ -6990,3 +7045,4 @@ installing a newer build; this block folds its columns into version 10 only beca
 | 1.0.74 | 2026-10-27 | Final quota audit: evidence re-established live (device 5585fecc, 5 JSON records ×1, fresh 19/19 rerun). Verdicts: implementation PASS, physical PARTIAL. Evidence: `V1.0.74_FINAL_QUOTA_AUDIT_REPORT.md`. |
 | 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
 | v2.4.12 (145) | 2026-10-27 | **Release.** BLOCK v1.0.75 shipped: connection-origin labels, two-stage Try Next with the session tried-set, history-driven fast connect (known-good first, per-network demotion, fast path, remembered protocol, cooldown, missed-refresh demotion, single exploration), Room 10→11, the hero-disconnect fix and the server-list update fixes — all device-verified 2026-10-27 (see `BLOCK_v1.0.70_FINAL_REPORT.md`, `BLOCK_v1.0.70_DEVICE_LIST_UPDATE_TEST.md`). Deferred to the next block: configurable Auto-Reconnect attempt limit (§12.9.12). |
+| v2.4.13 (146) | 2026-10-28 | **BLOCK v1.0.76 — APP UPDATE CHECKER** (§12.10): weekly automatic check of `app-update/version.json` (self-published in `main`), manual "Check for update" row in Settings with a result dialog and a release-page link, one notification per new version, fail-closed parsing, no auto-download/auto-install. Device-verified both paths (build 145 → "146 available"; build 146 → "up to date"). |
