@@ -201,6 +201,16 @@ class AutoModeControllerTest {
             return hostname !in failing
         }
 
+        /**
+         * BLOCK v1.0.77: true while an awaitTunnel call is parked.
+         *
+         * `connects` is appended inside connect(), BEFORE awaitArmedOutcome parks
+         * on activeWait — so a test that waits for the connect() entry can press
+         * in the window where skipCurrent() has nothing to complete yet. This
+         * getter lets the fast-path press test wait for the real window instead.
+         */
+        val hasActiveWait: Boolean get() = activeWait != null
+
         /** Mirrors AndroidConnectionAdapter.skipCurrent(): fail the in-flight wait. */
         fun skipCurrent() {
             activeWait?.complete(false)
@@ -4429,12 +4439,15 @@ val sstp = AutoModeCandidate(
         c.setSkipSignal { adapter.skipCurrent() }
 
         c.start()
-        // Wait until the fast attempt is actually in flight.
-        val dialled = withTimeoutOrNull(5_000) {
-            while (adapter.connects.none { it.first == "known" }) delay(10)
+        // Wait until the fast attempt is genuinely PARKED inside awaitTunnel: the
+        // connect() entry alone is not enough, because the press could then land
+        // before activeWait exists and be swallowed by the fake instead of the
+        // controller (that made this test flaky).
+        val parked = withTimeoutOrNull(5_000) {
+            while (!adapter.hasActiveWait) delay(10)
             true
         }
-        assertTrue("the fast attempt never started: ${adapter.logs}", dialled == true)
+        assertTrue("the fast attempt never parked: ${adapter.logs}", parked == true)
 
         c.skipToNextServer()
         val terminal = c.awaitTerminal()
