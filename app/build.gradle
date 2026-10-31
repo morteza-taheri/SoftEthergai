@@ -73,8 +73,8 @@ android {
             // v2.4.12 (145) — BLOCK v1.0.75: origin labels, two-stage Try Next,
             // history-driven fast connect, Room 10->11, the hero-disconnect fix
             // and the server-list update fixes (device-verified 2026-10-27).
-            versionCode 147
-            versionName "2.4.14"
+            versionCode 148
+            versionName "2.4.15"
         }
     }
 
