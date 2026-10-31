@@ -24,6 +24,26 @@ android {
             useLegacyPackaging = true
         }
     }
+    // ── BLOCK v1.0.77: per-ABI release packaging, opt-in only ────────────
+    // `./gradlew :app:assembleProDebug -PabiSplits` produces one APK per
+    // architecture plus a universal one, which is what the GitHub release
+    // publishes (a 64 MB universal APK is a bad download for a phone that needs
+    // one ~30 MB slice). WITHOUT the property nothing changes: the module keeps
+    // emitting the single universal `app-pro-debug.apk` every existing build
+    // script, test and release step already relies on.
+    if (project.hasProperty("abiSplits")) {
+        splits {
+            abi {
+                enable true
+                reset()
+                include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                // Keep the universal APK as well: a device whose ABI is not in
+                // the list (or a user who does not know their ABI) must still
+                // have something installable.
+                universalApk true
+            }
+        }
+    }
     // ── Release signing resolution ──────────────────────────────────────
     // Resolve credentials once at the android-block scope so both the
     // signingConfigs block and the fail-closed guard below can read them.
