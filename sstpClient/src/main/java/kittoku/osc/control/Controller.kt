@@ -38,7 +38,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 
 
-internal class Controller(internal val bridge: SharedBridge) {
+internal class Controller(
+    internal val bridge: SharedBridge,
+    /**
+     * BLOCK v1.0.78: the session this controller was created for. Teardown is
+     * asynchronous, so a cleanup that outlives its session must not be allowed to
+     * stop the service a NEWER session is using.
+     */
+    private val generation: Int = 0,
+) {
     private var observer: NetworkObserver? = null
 
     private var sstpClient: SstpClient? = null
@@ -353,7 +361,8 @@ internal class Controller(internal val bridge: SharedBridge) {
                 bridge.service.launchJobReconnect()
             } else {
                 Log.d("SSTPController", "kill(): Closing service bridge")
-                bridge.service.close()
+                // BLOCK v1.0.78: only the CURRENT session may stop the service.
+                bridge.service.closeIfCurrent(generation)
             }
             } finally {
                 runCatching { mutex.unlock() }

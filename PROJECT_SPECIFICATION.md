@@ -7177,3 +7177,94 @@ Recorded here so the next block starts from an agreed list rather than from a re
 - Not verifiable in this block, stated rather than implied: process-death origin persistence (needs a
   real kill with a live tunnel), the Android 10+ export path on hardware, backup exclusion on a real
   restore, and every native item above.
+
+---
+
+## §12.12 — BLOCK v1.0.78: native lifetime, SSTP bounds and publisher admission (2026-10-31)
+
+This block works through the items §12.11.3 deferred, in the order the external review ranked them.
+Each change is stated with what was actually wrong, so the reasoning survives the diff.
+
+### 12.12.1 — Native RUDP lifetime (the review's "release blocker")
+
+The refcount protocol (N-15) already existed: `rudp_create` publishes `refcount = 1`,
+`rudp_destroy` sets `destroying`, drops the owner's reference, and `rudp_destroy_final` frees — and
+closes the socket — only at refcount zero. What was missing was the discipline at four entry points.
+
+| Site | Defect | Fix |
+|---|---|---|
+| `rudp_get_udp_fd` | read `ctx->udp_fd` with **no reference at all**; the JNI layer calls it on a context a concurrent `softether_disconnect()` may be destroying, so the returned number could belong to an already-closed — or reused — socket | take a reference, copy the `int`, release |
+| `rudp_is_active` | read five fields with no reference; a teardown starting between the reads could report a half-destroyed context as active | one reference held across the whole decision |
+| `rudp_poll` | checked `ctx->inited` **before** acquiring, i.e. inspected a context already inside `rudp_destroy()` | acquire first; the `inited` check releases and returns |
+| `rudp_send` | same pre-check order (`inited`, `peer_addr_set`) | acquire first; every early exit releases |
+| `nativeGetRudpSocketFd` (JNI) | read `conn->rudp` and called into it with **no claim**, while teardown CASes that pointer to NULL and destroys it — the sequence `read -> [free] -> deref` was reachable on the poller thread | snapshot the fd under `connect_mutex`, exactly as the NAT-T sibling (`N-02`/`N-12`) already does. The mutex is `PTHREAD_MUTEX_RECURSIVE` (`softether_protocol.c:1039`), so a same-thread call cannot deadlock, and both Java callers run once per connect, never in a poll loop |
+
+`rudp_recv` already acquired first and needed no change.
+
+### 12.12.2 — SSTP transport bounds
+
+`SSLTerminal` created its socket with `Socket(host, port)` — the OS default connect timeout — and set
+`soTimeout` only **after** the SSTP HTTP setup, so a peer that accepted the TCP connection and then
+went silent blocked the connecting thread indefinitely. The two header loops appended one byte at a
+time with no ceiling and no EOF check: `read()` returning `-1` became the character `U+FFFF` and the
+loop never terminated. `readSize` from the TLS read was added to a buffer limit without treating `-1`
+as EOF, producing a negative limit.
+
+Fixed with named bounds (`CONNECT_TIMEOUT_MS = 10 s`, `HANDSHAKE_TIMEOUT_MS = 10 s`,
+`MAX_HTTP_HEADER_BYTES = 16 KiB`), EOF handling on both header loops and on the TLS read, and a size
+ceiling that reports `ERR_UNEXPECTED_MESSAGE` instead of growing a `String` until the process dies.
+
+SSTP packet framing: a DATA frame that declares fewer than `MIN_DATA_PACKET_SIZE = 8` bytes
+(4 SSTP + 2 PPP HDLC + 2 PPP protocol) passed the `4..bufferSize` check, reached `processIPPacket`,
+and computed `packetSize - 8` as a **negative** payload length for `writePacket`. Both the frame
+dispatcher and the payload extractor now refuse it (`ERR_INVALID_PACKET_SIZE`).
+
+SSTP teardown: `Controller.kill()` runs its cleanup asynchronously, and a reconnect called
+`controller?.kill(false, null)` then immediately built a new controller — so the old cleanup could
+reach `service.close()` (`stopForeground` + `stopSelf`) after the new session started and tear it
+down. Every session now carries a monotonic **generation**, and only the current generation may stop
+the service (`closeIfCurrent`). The lock leak itself was fixed in v1.0.77.
+
+### 12.12.3 — Publisher admission (the emergency feed ships inside the app)
+
+- `normalize_ip` validated IPv4 *syntax* only, so loopback, RFC1918, link-local, CGNAT, multicast,
+  reserved and unspecified addresses passed — and were then handed to `probe_tcp`, which opens a real
+  connection. `is_public_ipv4` (built on `ipaddress`, with every non-unicast scope spelled out because
+  Python reports multicast as "global") now filters the dataset **before** the health check and before
+  the CSV is written.
+- `--published-raw-url` was written verbatim into `emergency_defaults.xml`, i.e. into the APK.
+  `validate_published_url` requires `https`, an allowlisted host (`github.com`,
+  `raw.githubusercontent.com`) and the `/morteza-taheri/SoftEthergai` path segment — the same rule the
+  in-app update checker applies to its own release URL.
+- `requests.get()` followed redirects by default. `http_get` now walks the chain itself (max 5 hops)
+  and refuses a cross-host hop or an `https -> http` downgrade.
+
+### 12.12.4 — Deliberately NOT changed, with the reason
+
+- **`NativeLifetimeRegistry` clearing ownership on a timeout.** The review is right that a timer is not
+  proof that native work stopped, but their own fix — "retain the lease until native exit" — turns a
+  recoverable timeout into a permanent wedge, because the native side has no cancel-and-join today.
+  The honest fix is a native cancellation protocol or process isolation; that is a block of its own,
+  not a Kotlin edit.
+- **OpenVPN `clearDefaults()` setting `mCheckRemoteCN = false`.** A vendored-library behaviour change
+  that affects which profiles import at all; needs its own compatibility testing.
+- **Profile-encryption plaintext fallback.** Profiles live in app-private storage, which the OS
+  sandbox already protects; failing closed would silently lose the user's profile with no security
+  boundary crossed. Recorded as accepted-with-rationale rather than changed.
+- **TLS 1.0/1.1 and `SSL_VERIFY_NONE` in the native TLS layer.** Changing the minimum version can
+  refuse servers that still only offer TLS 1.0; needs a device survey first.
+- **Unauthenticated HTTP bootstrap sources / unsigned emergency CSV.** Provenance (signature plus a
+  pinned key) is a release-control design decision, not a code tweak.
+
+### 12.12.5 — Verification
+
+- `:SoftEtherClient:assembleDebug` — the native library compiles for all four ABIs (the only warning is
+  the pre-existing `AttachCurrentThread` pointer cast at `softether_jni.c:60`).
+- `:sstpClient:compileDebugKotlin` — clean.
+- `tests/test_emergency_publisher_validation.py` — **29 tests** covering the public-IPv4 predicate
+  (public, loopback, RFC1918, link-local, CGNAT, multicast, reserved, unspecified, broadcast,
+  malformed), the published-URL validator (https, host, lookalike path, other owner, bare path) and
+  the redirect rule (same host, cross host, downgrade, plain-http same host).
+- Full JVM suites: recorded in the block report.
+- **Not verifiable here:** the native race itself (needs a stress harness or a device under load), the
+  SSTP handshake bounds against a hostile peer, and the publisher against a live redirecting source.

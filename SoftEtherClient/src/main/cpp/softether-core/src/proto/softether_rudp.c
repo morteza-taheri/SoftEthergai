@@ -510,17 +510,32 @@ void rudp_set_fast_detect(rudp_context_t* ctx, int fast) {
 
 int rudp_get_udp_fd(rudp_context_t* ctx) {
     if (ctx == NULL) return -1;
-    return ctx->udp_fd;
+    // N-15 / BLOCK v1.0.78: this is a public entry point and the JNI layer calls
+    // it on a context that a concurrent softether_disconnect() may be tearing
+    // down. Reading ctx->udp_fd without a reference let the destroyer close the
+    // socket (rudp_destroy_final closes it at refcount zero) while the value was
+    // in flight, so the caller could receive an fd number that had already been
+    // reused for an unrelated socket. Take the reference, copy the int, release.
+    if (!rudp_ref_acquire(ctx)) return -1;
+    int fd = ctx->udp_fd;
+    rudp_ref_release(ctx);
+    return fd;
 }
 
 int rudp_is_active(rudp_context_t* ctx) {
     if (ctx == NULL) return 0;
-    if (!ctx->inited) return 0;
-    if (!ctx->peer_addr_set) return 0;
-    if (ctx->fatal_error) return 0;
+    // N-15 / BLOCK v1.0.78: five fields are read here, so a reference has to be
+    // held for the whole decision. Without it a teardown that starts between the
+    // reads could report a half-destroyed context as active.
+    if (!rudp_ref_acquire(ctx)) return 0;
+    int active = 1;
+    if (!ctx->inited) active = 0;
+    else if (!ctx->peer_addr_set) active = 0;
+    else if (ctx->fatal_error) active = 0;
     // Must have received at least one valid packet
-    if (ctx->first_stable_receive_tick == 0) return 0;
-    return 1;
+    else if (ctx->first_stable_receive_tick == 0) active = 0;
+    rudp_ref_release(ctx);
+    return active;
 }
 
 uint32_t rudp_calc_mss(rudp_context_t* ctx) {
@@ -804,12 +819,22 @@ static int rudp_process_inner(rudp_context_t* ctx, uint8_t* buf, uint32_t size,
 }
 
 void rudp_poll(rudp_context_t* ctx) {
-    if (ctx == NULL || !ctx->inited) return;
+    if (ctx == NULL) return;
 
     // N-15 ordering: reference BEFORE ctx->lock; release AFTER it is dropped.
     // This is the call the receive thread sits in when softether_disconnect()
     // destroys the context - the reference is what makes the tear-down wait.
+    //
+    // BLOCK v1.0.78: the reference is now taken BEFORE `ctx->inited` is read.
+    // The old order inspected a field of a context that could already be inside
+    // rudp_destroy() (destroying=1, owner reference dropped, memory still alive
+    // only because another thread held a reference). Acquiring first means every
+    // field read below happens under a reference the destroyer must wait for.
     if (!rudp_ref_acquire(ctx)) return;
+    if (!ctx->inited) {
+        rudp_ref_release(ctx);
+        return;
+    }
     pthread_mutex_lock(&ctx->lock);
     rudp_poll_nolock(ctx);
     pthread_mutex_unlock(&ctx->lock);
@@ -923,15 +948,26 @@ static void rudp_poll_nolock(rudp_context_t* ctx) {
 }
 
 int rudp_send(rudp_context_t* ctx, const uint8_t* data, uint32_t data_size, uint8_t flag) {
-    if (ctx == NULL || !ctx->inited || !ctx->peer_addr_set) return -1;
-    if (data_size > 0 && data == NULL) return -1;
+    if (ctx == NULL) return -1;
 
     // N-15 ordering: reference BEFORE ctx->lock; release AFTER it is dropped.
     // NOTE: rudp_send() is also reached re-entrantly from rudp_send_keepalive()
     // inside rudp_poll_nolock() (same thread, recursive ctx->lock). That nested
     // call takes a SECOND reference and releases it on its own return, so the
     // count is balanced per call, not per thread.
+    //
+    // BLOCK v1.0.78: the reference is taken BEFORE `inited`/`peer_addr_set` are
+    // read (they used to be inspected on an unclaimed pointer). Every early exit
+    // below now releases it.
     if (!rudp_ref_acquire(ctx)) return -1;
+    if (!ctx->inited || !ctx->peer_addr_set) {
+        rudp_ref_release(ctx);
+        return -1;
+    }
+    if (data_size > 0 && data == NULL) {
+        rudp_ref_release(ctx);
+        return -1;
+    }
     pthread_mutex_lock(&ctx->lock);
     int ret = rudp_send_nolock(ctx, data, data_size, flag);
     pthread_mutex_unlock(&ctx->lock);

@@ -62,6 +62,8 @@ try:  # Python 3.11+
 except ImportError:  # pragma: no cover
     tomllib = None  # type: ignore
 
+import urllib.parse
+
 import requests
 
 # --------------------------------------------------------------------------
@@ -134,6 +136,31 @@ def normalize_ip(value: Any) -> str:
         return str(ipaddress.IPv4Address(".".join(str(int(p)) for p in parts)))
     except ValueError:
         return ""
+
+
+def is_public_ipv4(value: str) -> bool:
+    """True only for a globally routable IPv4 address.
+
+    BLOCK v1.0.78 (deep-review fix): `normalize_ip` checks syntax and octet
+    ranges but not scope, so loopback (127.0.0.0/8), private (10/8, 172.16/12,
+    192.168/16), link-local (169.254/16), CGNAT (100.64/10), multicast,
+    unspecified and reserved addresses all passed. Two consequences: the
+    publisher would health-check those destinations (`probe_tcp` opens a real
+    connection to them), and they could be admitted into the emergency feed that
+    ships inside the app. `ipaddress.is_global` is the maintained answer and is
+    exactly the contract `emergency-sources/README.md` already states.
+    """
+    try:
+        addr = ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    # `is_global` alone is not enough: Python reports multicast space
+    # (224.0.0.0/4) as global, because it is not "private". Every non-unicast
+    # scope is spelled out here so the rule does not depend on that nuance.
+    if (addr.is_multicast or addr.is_reserved or addr.is_unspecified
+            or addr.is_link_local or addr.is_loopback or addr.is_private):
+        return False
+    return addr.is_global
 
 
 def normalize_host(value: Any) -> str:
@@ -454,12 +481,54 @@ HEADERS = {
 }
 
 
+MAX_REDIRECTS = 5
+
+
+def _host_of(url: str) -> str:
+    return (urllib.parse.urlparse(url).hostname or "").lower()
+
+
+def _same_origin_https_safe(current: str, target: str) -> bool:
+    """Whether a redirect may be followed.
+
+    BLOCK v1.0.78 (deep-review fix): `requests.get()` follows redirects by
+    default, so a source could redirect the publisher to any host — including a
+    plaintext downgrade — and the body would be accepted as feed data. A hop is
+    allowed only when it stays on the same host and does not downgrade
+    https -> http.
+    """
+    if _host_of(current) != _host_of(target):
+        log.warning("Refusing cross-host redirect: %s -> %s", current, target)
+        return False
+    cur_scheme = urllib.parse.urlparse(current).scheme
+    tgt_scheme = urllib.parse.urlparse(target).scheme
+    if cur_scheme == "https" and tgt_scheme != "https":
+        log.warning("Refusing https->%s downgrade redirect: %s -> %s", tgt_scheme, current, target)
+        return False
+    return True
+
+
 def http_get(url: str, *, retries: int = 0, backoff: float = 5.0,
              connect_timeout: float = 10.0, read_timeout: float = 30.0) -> Optional[bytes]:
     """Bounded GET. Returns the body or None; never raises on network errors."""
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=(connect_timeout, read_timeout))
+            # BLOCK v1.0.78: follow the chain manually so every hop is validated.
+            current = url
+            resp = requests.get(current, headers=HEADERS, allow_redirects=False,
+                                timeout=(connect_timeout, read_timeout))
+            hops = 0
+            while resp.is_redirect and hops < MAX_REDIRECTS:
+                target = urllib.parse.urljoin(current, resp.headers.get("Location", ""))
+                if not target or not _same_origin_https_safe(current, target):
+                    return None
+                current = target
+                hops += 1
+                resp = requests.get(current, headers=HEADERS, allow_redirects=False,
+                                    timeout=(connect_timeout, read_timeout))
+            if resp.is_redirect:
+                log.warning("GET %s exceeded %d redirects", url, MAX_REDIRECTS)
+                return None
             if resp.status_code == 404:
                 log.warning("GET %s -> 404", url)
                 return None
@@ -930,6 +999,7 @@ class Summary:
     previous_healthy: int = 0
     fresh_rows: int = 0
     dropped_defective: int = 0
+    dropped_non_public: int = 0
     pruned: int = 0
     written: int = 0
     configs_kept: int = 0
@@ -974,6 +1044,15 @@ def run(args: argparse.Namespace) -> Summary:
     normalize_sstp_rows(merged)   # v1.0.53 (B.4): host:port -> host + port
     enforce_config_ports(merged)  # v1.0.53 (B.3): embedded config owns the endpoint
     merged = dedupe_hostnames(merged)
+    # BLOCK v1.0.78: drop non-public addresses BEFORE health_check(), so the
+    # publisher never opens a TCP connection to loopback/private/link-local/
+    # reserved destinations, and they can never reach the published CSV.
+    before_public_filter = len(merged)
+    merged = [r for r in merged if is_public_ipv4(r.get("IP") or "")]
+    summary.dropped_non_public = before_public_filter - len(merged)
+    if summary.dropped_non_public:
+        log.warning("Dropped %d row(s) whose IP is not globally routable",
+                    summary.dropped_non_public)
     health_check(merged, args)  # only new / changed endpoints are probed
     for r in merged:
         if r.get("_healthy"):
@@ -1011,6 +1090,7 @@ def run(args: argparse.Namespace) -> Summary:
     # Stage 7
     url_out = Path(args.url_output)
     if args.published_raw_url:
+        validate_published_url(args.published_raw_url)
         res = render_url_resource(args.published_raw_url)
         if not url_out.is_file() or url_out.read_text(encoding="utf-8") != res:
             write_atomic(url_out, res.encode("utf-8"))
@@ -1051,6 +1131,35 @@ def find_repo(candidate: Optional[str]) -> Optional[Path]:
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
+
+PUBLISHED_URL_ALLOWED_HOSTS = ("github.com", "raw.githubusercontent.com")
+
+
+def validate_published_url(url: str) -> str:
+    """Refuse to embed anything but an HTTPS URL on this project's GitHub.
+
+    BLOCK v1.0.78 (deep-review fix): `--published-raw-url` accepted any string and
+    `render_url_resource()` wrote it straight into
+    `app/src/main/res/values/emergency_defaults.xml`, i.e. into the APK that ships
+    to users. A typo, a stale branch name, or a downgraded `http://` URL therefore
+    became the app's default emergency source. This is the same rule the in-app
+    update checker applies to its own release URL (v1.0.77).
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise PublisherError(
+            f"--published-raw-url must be https:// (got {parsed.scheme or 'no scheme'!r}): {url}")
+    host = (parsed.hostname or "").lower()
+    if host not in PUBLISHED_URL_ALLOWED_HOSTS:
+        raise PublisherError(
+            f"--published-raw-url host must be one of {PUBLISHED_URL_ALLOWED_HOSTS}: {host!r}")
+    path = parsed.path or ""
+    if not (path == "/morteza-taheri/SoftEthergai"
+            or path.startswith("/morteza-taheri/SoftEthergai/")):
+        raise PublisherError(
+            f"--published-raw-url path must live under /morteza-taheri/SoftEthergai: {path!r}")
+    return url
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1171,7 +1280,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     log.info("=" * 60)
     log.info("previous: %s | %d rows, %d healthy", s.previous_origin, s.previous_rows, s.previous_healthy)
-    log.info("fresh rows: %d | defective dropped: %d | pruned: %d", s.fresh_rows, s.dropped_defective, s.pruned)
+    log.info("fresh rows: %d | defective dropped: %d | non-public dropped: %d | pruned: %d",
+             s.fresh_rows, s.dropped_defective, s.dropped_non_public, s.pruned)
     log.info("written: %d rows -> %s (sha256 %s)", s.written, args.output, s.sha256[:16])
     log.info("OpenVPN configs: %d kept, %d stripped to fit %d bytes", s.configs_kept, s.configs_stripped, args.max_bytes)
     if args.dry_run:

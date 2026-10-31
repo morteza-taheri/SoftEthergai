@@ -45,6 +45,20 @@ import javax.net.ssl.TrustManagerFactory
 private const val HTTP_DELIMITER = "\r\n"
 private const val HTTP_SUFFIX = "\r\n\r\n"
 
+/**
+ * BLOCK v1.0.78 (deep-review fix) — the three bounds this handshake lacked.
+ *
+ * The socket used to be created with `Socket(host, port)`, i.e. the OS default
+ * connect timeout (minutes), and with NO read timeout until after the SSTP HTTP
+ * setup. An unresponsive or malicious proxy/server could therefore block the
+ * connecting thread for minutes, and the header loops below appended one byte at
+ * a time with no ceiling and no EOF check — `read()` returning -1 became the
+ * character U+FFFF and the loop never ended.
+ */
+private const val CONNECT_TIMEOUT_MS = 10_000
+private const val HANDSHAKE_TIMEOUT_MS = 10_000
+private const val MAX_HTTP_HEADER_BYTES = 16 * 1024
+
 internal const val SSL_REQUEST_INTERVAL = 10_000L
 
 internal class SSLTerminal(private val bridge: SharedBridge) {
@@ -148,7 +162,13 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
 
         val socketHostname = if (doUseProxy) getStringPrefValue(OscPrefKey.PROXY_HOSTNAME, bridge.prefs) else sslHostname
         val socketPort = if (doUseProxy) getIntPrefValue(OscPrefKey.PROXY_PORT, bridge.prefs) else sslPort
-        socket = Socket(socketHostname, socketPort).also {
+        socket = Socket().also {
+            // BLOCK v1.0.78: bounded connect, and a read timeout BEFORE the
+            // handshake (the old code only set soTimeout after the SSTP HTTP
+            // setup, so a peer that accepted the TCP connection and then went
+            // silent blocked this thread indefinitely).
+            it.connect(java.net.InetSocketAddress(socketHostname, socketPort), CONNECT_TIMEOUT_MS)
+            it.soTimeout = HANDSHAKE_TIMEOUT_MS
             socketInputStream = it.getInputStream()
             socketOutputStream = it.getOutputStream()
         }
@@ -240,7 +260,20 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
 
         var response = ""
         while (true) {
-            response += socketInputStream.read().toChar()
+            val byte = socketInputStream.read()
+            // BLOCK v1.0.78: -1 is EOF, not a character. The old line turned it
+            // into U+FFFF and looped forever, growing `response` until the
+            // process ran out of memory.
+            if (byte < 0) {
+                bridge.controlMailbox.send(ControlMessage(Where.PROXY, Result.ERR_UNEXPECTED_MESSAGE))
+                return false
+            }
+            response += byte.toChar()
+            if (response.length > MAX_HTTP_HEADER_BYTES) {
+                // A header that never terminates is a hostile peer, not a slow one.
+                bridge.controlMailbox.send(ControlMessage(Where.PROXY, Result.ERR_UNEXPECTED_MESSAGE))
+                return false
+            }
 
             if (response.endsWith(HTTP_SUFFIX)) {
                 break
@@ -286,6 +319,12 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
 
             for (i in 0 until buffer.remaining()) {
                 response += buffer.get().toIntAsUByte().toChar()
+
+                if (response.length > MAX_HTTP_HEADER_BYTES) {
+                    // BLOCK v1.0.78: same ceiling as the proxy path.
+                    bridge.controlMailbox.send(ControlMessage(Where.SSL, Result.ERR_UNEXPECTED_MESSAGE))
+                    return false
+                }
 
                 if (response.endsWith(HTTP_SUFFIX)) {
                     break@outer
@@ -383,6 +422,15 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
                             inboundBuffer.capacityAfterLimit
                         )
 
+                        // BLOCK v1.0.78: read() == -1 is EOF. The old line did
+                        // `limit(limit + (-1))`, which throws
+                        // IllegalArgumentException from a data-plane coroutine
+                        // instead of a controlled shutdown.
+                        if (readSize < 0) {
+                            throw java.io.EOFException(
+                                "peer closed the connection during the TLS read",
+                            )
+                        }
                         inboundBuffer.limit(inboundBuffer.limit() + readSize)
                     } catch (_: SocketTimeoutException) { }
                 }

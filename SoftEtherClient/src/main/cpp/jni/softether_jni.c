@@ -683,10 +683,27 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeGe
     JNIEnv *env, jobject thiz, jlong handle) {
     if (handle == 0) return -1;
     softether_connection_t* conn = (softether_connection_t*)handle;
-    if (conn->rudp) {
-        return rudp_get_udp_fd(conn->rudp);
+
+    // N-02 / N-12 discipline, applied to RUDP (BLOCK v1.0.78).
+    //
+    // This used to read `conn->rudp` and call rudp_get_udp_fd() with no claim at
+    // all. softether_disconnect() takes the RUDP context out with take_rudp_ctx()
+    // (a CAS to NULL) and then rudp_destroy()s it, so the sequence
+    //   read conn->rudp -> [teardown: CAS to NULL, destroy, refcount 0, free]
+    //   -> rudp_get_udp_fd(freed pointer)
+    // was reachable and would dereference freed memory on the poller thread. The
+    // NAT-T sibling below already snapshots its fd under connect_mutex for
+    // exactly this reason; RUDP now does the same. connect_mutex is RECURSIVE
+    // (softether_protocol.c:1039), so a same-thread call cannot deadlock, and
+    // both Java callers (ConnectionController.kt:749 and :1471) run once per
+    // connect, never in a poll loop.
+    int fd = -1;
+    pthread_mutex_lock(&conn->connect_mutex);
+    if (conn->rudp != NULL) {
+        fd = rudp_get_udp_fd(conn->rudp);
     }
-    return -1;
+    pthread_mutex_unlock(&conn->connect_mutex);
+    return fd;
 }
 
 JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeGetNatTUdpSocketFd(

@@ -43,6 +43,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 
+/**
+ * BLOCK v1.0.78 (deep-review fix) — the smallest legal SSTP DATA frame.
+ *
+ * 4 bytes of SSTP header + 2 bytes of PPP HDLC framing + 2 bytes of PPP protocol
+ * = 8. A peer that declares less than this used to pass the `4..bufferSize`
+ * check, reach `processIPPacket`, and produce a NEGATIVE payload length that was
+ * handed to `writePacket` — an invalid write into the TUN instead of a controlled
+ * protocol shutdown.
+ */
+internal const val MIN_DATA_PACKET_SIZE = 8
+
 
 private const val SSTP_ECHO_INTERVAL = 20_000L
 private const val PPP_ECHO_INTERVAL = 20_000L
@@ -154,6 +165,16 @@ internal class IncomingManager(internal val bridge: SharedBridge) {
 
                 when (buffer.probeShort(0)) {
                     SSTP_PACKET_TYPE_DATA -> {
+                        // BLOCK v1.0.78: a DATA frame shorter than its own header
+                        // chain is malformed, not merely odd — refuse it before
+                        // probeShort(4)/probeShort(6) read past the frame.
+                        if (size < MIN_DATA_PACKET_SIZE) {
+                            bridge.controlMailbox.send(
+                                ControlMessage(Where.INCOMING, Result.ERR_INVALID_PACKET_SIZE)
+                            )
+                            return@launch
+                        }
+
                         if (buffer.probeShort(4) != PPP_HDLC_HEADER) {
                             bridge.controlMailbox.send(
                                 ControlMessage(Where.SSTP_DATA, Result.ERR_UNKNOWN_TYPE)

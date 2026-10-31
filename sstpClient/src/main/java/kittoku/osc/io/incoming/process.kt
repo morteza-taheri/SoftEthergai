@@ -297,6 +297,16 @@ internal suspend fun IncomingManager.processUnknownProtocol(protocol: Short, pac
 }
 
 internal fun IncomingManager.processIPPacket(isEnabledProtocol: Boolean, packetSize: Int, buffer: ByteBuffer) {
+    // BLOCK v1.0.78: `packetSize - 8` was computed with no floor. A frame that
+    // declared fewer than 8 bytes produced a negative length for writePacket().
+    // The caller now refuses such a frame too; this guard keeps the extractor
+    // safe on its own.
+    if (packetSize < MIN_DATA_PACKET_SIZE) {
+        // The caller already reported ERR_INVALID_PACKET_SIZE (and this function
+        // is not suspend, so it cannot post to the mailbox itself). Nothing is
+        // written and the frame is dropped.
+        return
+    }
     if (isEnabledProtocol) {
         val start = buffer.position() + 8
         val ipPacketSize = packetSize - 8

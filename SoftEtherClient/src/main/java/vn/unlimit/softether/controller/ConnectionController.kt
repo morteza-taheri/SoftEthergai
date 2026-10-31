@@ -276,6 +276,15 @@ class ConnectionController(
                     performConnect()
                     // If performConnect returns, it means success (currentState == CONNECTED)
                     return
+                } catch (e: CancellationException) {
+                    // BLOCK v1.0.78 (deep-review fix): a coroutine cancellation
+                    // is NOT a connection failure. The generic catch below would
+                    // treat it as one — `isCancelled` is the controller's own
+                    // flag, not the coroutine's state — and burn the whole retry
+                    // budget on a job the caller has already abandoned (each
+                    // `delay` throws immediately once the scope is cancelled).
+                    // Rethrow so the caller's cancellation wins.
+                    throw e
                 } catch (e: Exception) {
                     if (isCancelled.get()) {
                         Log.d(TAG, "Connection cancelled, not retrying")

@@ -268,6 +268,10 @@ class SstpVpnService : VpnService() {
         beForegrounded()
         return when (intent?.action) {
             ACTION_VPN_CONNECT -> {
+                // BLOCK v1.0.78: bump FIRST, so the teardown started on the next
+                // line is already stale and can never stop the service we are
+                // about to use for this connect.
+                val generation = beginSessionGeneration()
                 controller?.kill(false, null)
                 mWasConnected = false
                 currentConnectedIp = ""
@@ -281,7 +285,7 @@ class SstpVpnService : VpnService() {
 
                 logWriter?.write("Establish VPN connection")
 
-                initializeClient()
+                initializeClient(generation)
 
                 setRootState(true)
 
@@ -306,8 +310,35 @@ class SstpVpnService : VpnService() {
         }
     }
 
-    private fun initializeClient() {
-        controller = Controller(SharedBridge(this)).also {
+    /**
+     * BLOCK v1.0.78 (deep-review fix) — which session owns the service.
+     *
+     * `Controller.kill()` runs its cleanup asynchronously. A reconnect used to
+     * call `controller?.kill(false, null)` and immediately build a new
+     * controller, so the OLD cleanup could reach `bridge.service.close()`
+     * (`stopForeground` + `stopSelf`) AFTER the new session had started and tear
+     * it down. Every session now carries the generation it was created in, and
+     * only the current generation may stop the service.
+     */
+    private val sessionGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Starts a new session generation; every older one becomes stale. */
+    internal fun beginSessionGeneration(): Int = sessionGeneration.incrementAndGet()
+
+    /** Stops the service only if [generation] is still the live session. */
+    internal fun closeIfCurrent(generation: Int) {
+        if (sessionGeneration.get() != generation) {
+            Log.d(
+                "SstpVpnService",
+                "closeIfCurrent: session $generation is stale, service kept alive",
+            )
+            return
+        }
+        close()
+    }
+
+    private fun initializeClient(generation: Int = beginSessionGeneration()) {
+        controller = Controller(SharedBridge(this), generation).also {
             it.launchJobMain()
         }
     }
