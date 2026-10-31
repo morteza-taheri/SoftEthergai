@@ -711,7 +711,13 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         return cleaned.ifEmpty { "vpn_profile" }
     }
 
-    /** Android 10+: write through MediaStore, which needs no storage permission. */
+    /**
+     * Android 10+: write through MediaStore, which needs no storage permission.
+     *
+     * [RequiresApi] is what tells lint the caller's `SDK_INT >= Q` branch is the
+     * only entry point; the class itself still loads on API 24.
+     */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
     private fun writeProfileToDownloads(fileName: String, data: String) {
         try {
             val values = android.content.ContentValues().apply {
