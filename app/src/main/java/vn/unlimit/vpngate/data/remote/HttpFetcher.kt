@@ -194,6 +194,15 @@ class OkHttpFetcher(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/145.0 Safari/537.36"
+
+        /**
+         * BLOCK v1.0.77: the largest response body this client will buffer.
+         *
+         * The real feeds are well under 1 MB (the emergency CSV is ~0.9 MB, the
+         * HTML page ~0.5 MB), so 8 MB leaves ample head-room while keeping a
+         * hostile or misconfigured source from exhausting the heap.
+         */
+        const val MAX_RESPONSE_BYTES: Long = 8L * 1024L * 1024L
     }
 
     override suspend fun get(
@@ -288,7 +297,39 @@ class OkHttpFetcher(
                             }
                         }
                     } else {
-                        val bodyText = if (raw.isSuccessful) raw.body?.string() else null
+                        // BLOCK v1.0.77 (deep-review fix): the body was read with
+                        // `raw.body?.string()`, i.e. fully buffered with no cap. A
+                        // hostile or broken source could then allocate unbounded
+                        // memory inside the app before any parser saw a byte. The
+                        // declared length is checked first, and an undeclared body
+                        // is peeked at MAX_RESPONSE_BYTES + 1 so an oversize body
+                        // is REFUSED rather than silently truncated.
+                        val bodyText = if (raw.isSuccessful) {
+                            val declared = raw.body?.contentLength() ?: -1L
+                            when {
+                                declared > MAX_RESPONSE_BYTES -> {
+                                    CollectorLog.d(
+                                        "Refusing an oversized response: $declared bytes " +
+                                            "(cap $MAX_RESPONSE_BYTES) for $current",
+                                    )
+                                    null
+                                }
+                                else -> {
+                                    val peeked = raw.peekBody(MAX_RESPONSE_BYTES + 1)
+                                    if (peeked.contentLength() > MAX_RESPONSE_BYTES) {
+                                        CollectorLog.d(
+                                            "Refusing an oversized response " +
+                                                "(cap $MAX_RESPONSE_BYTES) for $current",
+                                        )
+                                        null
+                                    } else {
+                                        peeked.string()
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        }
                         if (!raw.isSuccessful) {
                             CollectorLog.d("HTTP ${raw.code} for $current")
                         }

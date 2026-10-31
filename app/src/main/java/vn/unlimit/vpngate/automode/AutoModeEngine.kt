@@ -79,6 +79,14 @@ object AutoModeEngine {
                     du.setStringSetting(DataUtil.AUTO_LAST_SUCCESS_PROTOCOL, protocol.id)
                     AutoModeRun.lastSuccess = candidate
                 },
+                // BLOCK v1.0.77 (REQ-ORIGIN-001): D-3's label outlives the process.
+                // The controller supplies the key it already uses for the session
+                // tried-set (`ip|hostname`), so the reader can verify the record
+                // against the live tunnel before trusting it.
+                persistOrigin = { origin, key ->
+                    if (origin == null) du.clearLastConnectionOrigin()
+                    else du.setLastConnectionOrigin(origin, key ?: "")
+                },
                 // §3 §4 §5 §14 Read timeout from Settings per attempt (per-server, not total)
                 // v1.0.42 (§1.6.35 / F1): a PROVIDER, not a value. `ensure()` is a
                 // singleton, so a frozen Long diverged from the adapter (which

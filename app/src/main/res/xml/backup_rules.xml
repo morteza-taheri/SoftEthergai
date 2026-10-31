@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BLOCK v1.0.77 (deep-review fix) — what an Android 6..11 backup may carry.
+
+  The app keeps VPN credentials, imported OpenVPN profiles, the server database
+  and connection history in app-private storage. A cloud backup copies that
+  state off the device and a restore can put it on another one; neither is a
+  place for credentials. Every data domain is therefore excluded, so a backup
+  carries no app state at all. The app rebuilds what it needs from the network
+  (server list) and from the user (settings) on first run.
+-->
+<full-backup-content>
+    <!-- Server list, connection history, manual imports. -->
+    <exclude domain="database" path="." />
+    <!-- Imported profiles and their keys. -->
+    <exclude domain="file" path="." />
+    <!-- Settings, which may hold SSTP/SoftEther passwords. -->
+    <exclude domain="sharedpref" path="." />
+    <!-- Nothing is written here today; excluded so it cannot become a hole. -->
+    <exclude domain="external" path="." />
+    <exclude domain="root" path="." />
+</full-backup-content>

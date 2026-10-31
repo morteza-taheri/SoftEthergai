@@ -102,6 +102,12 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
     private var pendingSoftEtherUseTcp: Boolean = true
     private var notificationPermissionRequested = false
 
+    /**
+     * BLOCK v1.0.77: the export waiting on the one-time storage permission
+     * request (legacy API 24..28 only). `null` means no export is waiting.
+     */
+    private var pendingExportUseUdp: Boolean? = null
+
     /** UI state consumed by the Compose screen. */
     val uiState = MutableLiveData(DetailUiState())
     val connection: VPNGateConnection? get() = mVpnGateConnection
@@ -637,45 +643,129 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         }
     }
 
+    /**
+     * BLOCK v1.0.77 (deep-review fix) — OpenVPN profile export.
+     *
+     * Three defects were fixed here, all confirmed by reading the code:
+     *
+     *  1. The permission gate was `while (not granted) { request(...) }`. The
+     *     loop never ends when the user denies: `checkSelfPermission` cannot
+     *     change inside the same call, so the UI thread spins forever and the
+     *     activity freezes. It now asks ONCE and returns; the export resumes
+     *     from [onRequestPermissionsResult].
+     *  2. On Android 10+ a direct write into the public Downloads directory is
+     *     blocked by scoped storage, so the export silently failed on every
+     *     modern device. It now goes through `MediaStore.Downloads`, which
+     *     needs no permission at all.
+     *  3. The file name came straight from server-feed data (`getName()`), so a
+     *     feed value containing a path separator or `..` could steer the write
+     *     outside the intended directory. It is now reduced to a strict
+     *     allowlist of characters before use.
+     */
     private fun handleImport(useUdp: Boolean) {
+        val connection = mVpnGateConnection ?: return
         val data = if (useUdp) {
-            mVpnGateConnection!!.openVpnConfigDataUdp
+            connection.openVpnConfigDataUdp
         } else {
-            mVpnGateConnection!!.getOpenVpnConfigDataString()
+            connection.getOpenVpnConfigDataString()
         }
+        if (data.isNullOrEmpty()) {
+            Toast.makeText(this, R.string.error_unknown, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fileName = sanitizeExportFileName(connection.getName(useUdp)) + ".ovpn"
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Scoped storage: MediaStore owns the Downloads entry, no permission.
+            writeProfileToDownloads(fileName, data)
+            return
+        }
+
+        // Legacy storage (API 24..28): ask ONCE, then resume from the callback.
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingExportUseUdp = useUdp
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                REQUEST_WRITE_STORAGE,
+            )
+            return
+        }
+        writeProfileToLegacyDownloads(fileName, data)
+    }
+
+    /**
+     * BLOCK v1.0.77: a strict allowlist for the exported file name.
+     *
+     * Server-feed text is untrusted. Anything that is not `[A-Za-z0-9._-]` is
+     * replaced, leading dots are stripped (no hidden/relative names), and the
+     * length is capped so a hostile feed cannot produce an unwritable name.
+     */
+    private fun sanitizeExportFileName(raw: String?): String {
+        val cleaned = (raw ?: "")
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .trimStart('.')
+            .take(80)
+        return cleaned.ifEmpty { "vpn_profile" }
+    }
+
+    /** Android 10+: write through MediaStore, which needs no storage permission. */
+    private fun writeProfileToDownloads(fileName: String, data: String) {
         try {
-            while (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                ActivityCompat.requestPermissions(
-                    this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 100,
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+                put(
+                    android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS,
                 )
             }
-            val fileName = mVpnGateConnection!!.getName(useUdp) + ".ovpn"
+            val uri = contentResolver.insert(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                values,
+            ) ?: throw java.io.IOException("MediaStore refused the insert")
+            contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(data.toByteArray())
+            } ?: throw java.io.IOException("MediaStore returned no stream")
+            afterProfileSaved(fileName)
+        } catch (e: Exception) {
+            Log.e(TAG, "handleImport (MediaStore) error", e)
+            Toast.makeText(this, R.string.error_unknown, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** API 24..28: the legacy public Downloads directory, permission granted. */
+    private fun writeProfileToLegacyDownloads(fileName: String, data: String) {
+        try {
             val writeFile = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 fileName,
             )
-            val fileOutputStream = FileOutputStream(writeFile)
-            fileOutputStream.write(data!!.toByteArray())
-            Toast.makeText(
-                applicationContext,
-                getString(R.string.saved_ovpn_file_in, "Download/$fileName"),
-                Toast.LENGTH_LONG,
-            ).show()
-            val handler = Handler(Looper.getMainLooper())
-            handler.postDelayed({
-                val packageManager = packageManager
-                val intent = packageManager.getLaunchIntentForPackage("net.openvpn.openvpn")
-                if (intent != null) {
-                    intent.action = Intent.ACTION_VIEW
-                    startActivity(intent)
-                }
-            }, 500)
+            FileOutputStream(writeFile).use { it.write(data.toByteArray()) }
+            afterProfileSaved(fileName)
         } catch (e: Exception) {
-            Log.e(TAG, "handleImport error", e)
+            Log.e(TAG, "handleImport (legacy) error", e)
+            Toast.makeText(this, R.string.error_unknown, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun afterProfileSaved(fileName: String) {
+        Toast.makeText(
+            applicationContext,
+            getString(R.string.saved_ovpn_file_in, "Download/$fileName"),
+            Toast.LENGTH_LONG,
+        ).show()
+        val handler = Handler(Looper.getMainLooper())
+        handler.postDelayed({
+            val packageManager = packageManager
+            val intent = packageManager.getLaunchIntentForPackage("net.openvpn.openvpn")
+            if (intent != null) {
+                intent.action = Intent.ACTION_VIEW
+                startActivity(intent)
+            }
+        }, 500)
     }
 
     private fun handleConnection(useUdp: Boolean) {
@@ -1381,6 +1471,20 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                 continueSoftEtherConnection(pendingSoftEtherUseTcp)
                 return
             }
+            // BLOCK v1.0.77: the export asks once and resumes here. A denial ends
+            // the attempt with a message — it never re-asks, and never spins.
+            REQUEST_WRITE_STORAGE -> {
+                val useUdp = pendingExportUseUdp
+                pendingExportUseUdp = null
+                if (grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+                ) {
+                    if (useUdp != null) handleImport(useUdp)
+                } else {
+                    Toast.makeText(this, R.string.error_unknown, Toast.LENGTH_SHORT).show()
+                }
+                return
+            }
         }
     }
 
@@ -1394,6 +1498,9 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         const val START_VPN_PROFILE: Int = 70
         const val START_VPN_SSTP: Int = 80
         const val REQUEST_NOTIFICATION_PERMISSION: Int = 90
+
+        /** BLOCK v1.0.77: the one-time legacy-storage request for profile export. */
+        const val REQUEST_WRITE_STORAGE: Int = 100
         const val ACTION_VPN_CONNECT: String = "kittoku.osc.connect"
         const val ACTION_VPN_DISCONNECT: String = "kittoku.osc.disconnect"
         private const val TAG = "DetailActivity"

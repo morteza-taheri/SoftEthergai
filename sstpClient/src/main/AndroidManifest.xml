@@ -9,7 +9,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!--
+      BLOCK v1.0.77 (deep-review fix): QUERY_ALL_PACKAGES removed. This module
+      only builds an app picker (`kittoku.osc.preference.app.kt`), which needs
+      launcher activities — covered by the `<queries>` block below. The broad
+      permission made the merged release manifest request visibility of every
+      installed package, which Play treats as a restricted permission and which
+      this app has no use for.
+    -->
 
     <queries>
         <intent>

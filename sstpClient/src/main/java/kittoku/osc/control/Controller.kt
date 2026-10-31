@@ -328,6 +328,14 @@ internal class Controller(internal val bridge: SharedBridge) {
         }
 
         destructionJob = bridge.service.scope.launch {
+            // BLOCK v1.0.77 (deep-review fix): the lock taken by tryLock() above
+            // was NEVER released. The first teardown therefore held it forever,
+            // so every later kill() fell into the `!tryLock()` branch and
+            // returned a stale (possibly completed) destructionJob instead of
+            // cleaning up — a reconnect could leave the previous session's
+            // resources behind. The lock is now released when this cleanup ends,
+            // success or failure, so a later teardown always gets a real chance.
+            try {
             Log.d("SSTPController", "kill(): Launching cleanup job")
             observer?.close()
 
@@ -346,6 +354,10 @@ internal class Controller(internal val bridge: SharedBridge) {
             } else {
                 Log.d("SSTPController", "kill(): Closing service bridge")
                 bridge.service.close()
+            }
+            } finally {
+                runCatching { mutex.unlock() }
+                destructionJob = null
             }
         }
         

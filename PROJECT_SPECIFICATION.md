@@ -4,9 +4,9 @@
 **Repository:** `D:\PMC\Documents\Android\SoftEthergai`
 > **Canonical repository name:** `SoftEthergai` (see §2.6 for local mirrors)
 **Branch:** `main`
-**HEAD:** `08c6abe` (`feat(automode): add history-aware exploration and refresh tracking`), audited 2026-10-27. The v1.0.64–v1.0.69 work is recorded in §12.8; §1.6.x entries keep their original HEAD fields as history.
-**Document version:** 1.0.71
-**Last updated:** 2026-10-27
+**HEAD:** `744767c` (`release: v2.4.14 (versionCode 147) - deep-audit remediation`), recorded 2026-10-31. The v1.0.64–v1.0.77 work is recorded in §12.8–§12.11; §1.6.x entries keep their original HEAD fields as history.
+**Document version:** 1.0.77
+**Last updated:** 2026-10-31
 
 > **Document status:** This is a living specification created from the read-only audit completed at lifecycle stage F.28AD-B. It captures the verified repository state, the architecture that was audited, the F.28-family defect history, the current native-lifetime and teardown-completion design, and the open requirements (including F.28AA, which is completed). All source files were inspected at HEAD; no code or configuration was modified in producing this document.
 
@@ -6159,7 +6159,7 @@ override this table.
 | **REQ-DNS-001** | Custom DNS **OFF** by default; a saved configuration is not applied while disabled | Accurate | **Implemented** (verify `USE_CUSTOM_DNS` default false and the DNS application gate) | Default test; disabled-path test |
 | **REQ-ROUTE-001** | Server-list update: **VPN inactive → default network; VPN active → VPN network only, no silent physical fallback**; re-evaluate state per operation; clear failure if the VPN route cannot be used | Accurate (this table) | **Implemented (v1.0.70)** — `routeLadder` = `TUNNEL → EMERGENCY` while active, `PHYSICAL → EMERGENCY` otherwise; `fetchOnChosenPath` attempts exactly one rung and never crosses; the v1.0.65 downgrade and cross-rung fallback are removed | Unit tests for both policies; device evidence for the packet path (**not yet re-verified on hardware**) |
 | **REQ-STATE-001** | Android VPN/service state is authoritative over UI state; no confirmed "Connected" from a stale flag; mismatch shows checking/disconnected/error | Accurate | **Partial** — `GlobalVpnTracker` + `AutoModeViewModel.combineAutoModeState` reconcile; no single declared owner | State-matrix tests; device mismatch test |
-| **REQ-ORIGIN-001** | Persisted connection origin distinguishes **Manual / Auto Connect / Auto Reconnect** | Accurate | **Missing** — manual state is synthesised (`Connected (manual)`); no persisted origin | Origin persistence tests; process-death test |
+| **REQ-ORIGIN-001** | Persisted connection origin distinguishes **Manual / Auto Connect / Auto Reconnect** | Accurate | **Implemented (v1.0.77)** — `AutoModeController.persistOrigin` records `(origin, ip\|hostname)` at the verified-connect funnel, `stop()`/`disconnectNow()` clear it, and `combineAutoModeState` trusts a record only when its key matches the live tunnel (otherwise MANUAL). A record can no longer outlive or mislabel a tunnel | 8 tests (`AutoModeDisplayStateTest` × 6, `AutoModeControllerTest` × 2). The **process-death** case is SOURCE CODE + TEST only — killing the app while a tunnel is up was **NOT TESTABLE** in this run |
 | **REQ-EXCL-001** | First-run seed only installed packages from the approved list, once, never overwriting user edits | Accurate (§11.14.4, §1.6.50) | **Implemented** (`ExcludedAppsSeeder`) | Seeder tests (13 + 16) |
 | **REQ-EVID-001** | Source evidence, device evidence and inference are reported separately; result classes PASS/PARTIAL/FAIL/NOT REPRODUCED/NOT TESTABLE/NOT OBSERVABLE/UNKNOWN/DEVICE_UNAVAILABLE | Accurate (§11.15 labels) | **Practised** | Audit of reports |
 
@@ -7038,12 +7038,14 @@ installing a newer build; this block folds its columns into version 10 only beca
 | 1.0.67 | 2026-10-26 | Exclusion seed / history ledger / smart AutoConnect; Try Next enabled for external tunnels. |
 | 1.0.68 | — | (no separate revision) |
 | 1.0.69 | 2026-10-26 | Room 9→10 additive history columns; refresh markers; quality-rejection window; OD-9 durable Connected retries; exactly-one exploration candidate. |
-| 1.0.70 | 2026-10-27 | **This revision.** Approved baseline recorded in §12.8: protocol order UDP→TCP→SSTP, timeout 12/8/30, 500-server retention, max connections 4/8, Developer Mode/logging OFF, Custom DNS OFF, VPN-only routing while active, tunnel-state authority, connection-origin requirement. Documentation audit completed; implementation gaps classified in §12.8. |
+| 1.0.70 | 2026-10-27 | Approved baseline recorded in §12.8: protocol order UDP→TCP→SSTP, timeout 12/8/30, 500-server retention, max connections 4/8, Developer Mode/logging OFF, Custom DNS OFF, VPN-only routing while active, tunnel-state authority, connection-origin requirement. Documentation audit completed; implementation gaps classified in §12.8. |
 | 1.0.71 | 2026-10-27 | **Targeted retention phase.** §12.8.1 records the derived manual-server quota: reserved = `ceil(total × 10%)`, manual = `total − reserved`, i.e. **500 / 50 / 450**. Enforcement moved to the persistence boundary (`ManualServerAdmission`) covering both the `manual_server` table and the CSV import; duplicates take no slot; imports admit what fits and report the rest; over-cap data is preserved and only refused further growth; the total cap is also applied to the two write-through paths. §12.8.2 records the provenance audit (explicit persisted surfaces, no migration). No Room schema, version-code or routing change. |
 | 1.0.72 | 2026-10-27 | Physical-device verification of the retention quota (CSV import, duplicate handling, persistence, localized feedback). Evidence: `V1.0.72_PHYSICAL_DEVICE_QUOTA_VERIFICATION_REPORT.md`. |
 | 1.0.73 | 2026-10-27 | Quota/persistence reconciliation: 19/19 boundary tests, full regression 1335/1/0/0 + 184/0/0/0, lint 104/178/9. Room count and quota-at-limit display remain NOT OBSERVABLE / NOT TESTABLE. Evidence: `V1.0.73_FINAL_QUOTA_RECONCILIATION_REPORT.md`. |
 | 1.0.74 | 2026-10-27 | Final quota audit: evidence re-established live (device 5585fecc, 5 JSON records ×1, fresh 19/19 rerun). Verdicts: implementation PASS, physical PARTIAL. Evidence: `V1.0.74_FINAL_QUOTA_AUDIT_REPORT.md`. |
-| 1.0.75 | 2026-10-27 | **This revision — Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
+| 1.0.75 | 2026-10-27 | **Auto Mode intelligence.** §12.9 records: connection origin labels (D-3), two-stage Try Next with the session tried-set (D-1/D-2), known-good-first ordering + per-network demotion + fast path + remembered protocol + per-network cooldown + absent-refresh demotion + single exploration (D-4..D-8). Room `version 11` gains `missedRefreshCount` and the three `*LastFailureAt` columns via `MIGRATION_10_11` (the LIVE device DB was already at user_version 10 — v10 did ship, contrary to the older saved copy). Migration verified on the real device: uv 10/25 columns -> uv 11/29 columns, row counts unchanged, integrity ok; also verified on a copy of the older user_version-9 DB (9->10). Defaults baseline (REQ-TIMEOUT-001: 12 s, 8..30; REQ-PROTO-001: UDP→TCP→SSTP) and B-1 cancellation recorded in the same window. Deferred: D-9 items. |
+| 1.0.76 | 2026-10-28 | **App update checker** (§12.10): a self-published `app-update/version.json` manifest, a weekly automatic check, a manual "Check for update" row in Settings with a result dialog and a release-page link, and one notification per new version. Fail-closed parsing (64 KB cap, https-only, host allowlist), no auto-download and no auto-install. Released as **v2.4.13 (146)**. |
+| 1.0.77 | 2026-10-31 | **External-review remediation + fast-path hardening** (§12.11). Two independent external reviews (one code-and-docs read, one 501-file static review) were triaged against the CURRENT tree; every accepted finding is fixed and every rejected one is recorded with its reason. Highlights: the known-good fast path finally has tests and honours a user skip; connection origin is **persisted** (REQ-ORIGIN-001 moves Missing → Implemented); the update release URL is path-boundary checked; the OpenVPN export no longer loops on a denied permission, no longer writes outside Downloads on Android 10+, and sanitizes its file name; the HTTP body is size-capped; backups exclude credentials; `QUERY_ALL_PACKAGES` is removed from the SSTP library; the SSTP teardown mutex is released. The native/JNI and provenance items are recorded as the next block. |
 | v2.4.12 (145) | 2026-10-27 | **Release.** BLOCK v1.0.75 shipped: connection-origin labels, two-stage Try Next with the session tried-set, history-driven fast connect (known-good first, per-network demotion, fast path, remembered protocol, cooldown, missed-refresh demotion, single exploration), Room 10→11, the hero-disconnect fix and the server-list update fixes — all device-verified 2026-10-27 (see `BLOCK_v1.0.70_FINAL_REPORT.md`, `BLOCK_v1.0.70_DEVICE_LIST_UPDATE_TEST.md`). Deferred to the next block: configurable Auto-Reconnect attempt limit (§12.9.12). |
 | v2.4.13 (146) | 2026-10-28 | **BLOCK v1.0.76 — APP UPDATE CHECKER** (§12.10): weekly automatic check of `app-update/version.json` (self-published in `main`), manual "Check for update" row in Settings with a result dialog and a release-page link, one notification per new version, fail-closed parsing, no auto-download/auto-install. Device-verified both paths (build 145 → "146 available"; build 146 → "up to date"). |
 
@@ -7085,3 +7087,93 @@ serialization + tokenized callbacks + generation-scoped RX/EIO counters; TOFU fa
 fingerprints; OpenVPN export via SAF; `QUERY_ALL_PACKAGES` merge from the SSTP library; private-IP
 rejection for mirror URLs; log redaction.
 | v2.4.14 (147) | 2026-10-28 | **Deep-audit remediation** (§12.10.7): cancellation rethrown end-to-end, update release-page host allowlist, handler-safe intents, PHYSICAL fallback logging, emergency-origin propagation (merge-only supplements — the definitive fix for the poisoned baseline). Native/tracker items deferred to the next block. |
+
+---
+
+## §12.11 — BLOCK v1.0.77: external-review remediation and fast-path hardening (2026-10-31)
+
+Two independent external reviews were supplied by the operator. Both were written against **stale
+snapshots**, so every claim was re-checked against the current tree before any change. This section
+records the verdict for each class of finding. Evidence labels follow REQ-EVID-001.
+
+### 12.11.1 — Claims that were already false at HEAD (no change made)
+
+| Claim | Verdict at HEAD `744767c` |
+|---|---|
+| "`app-update/version.json` is not in the repository; the raw URL 404s, so the checker is inert" | **FALSE.** The file is tracked (`git ls-files app-update/`) and the raw URL answers **HTTP 200**; the device has fetched it. The reviewer read a tree from before v1.0.76. |
+| "`gradle/wrapper/gradle-wrapper.jar` is absent, so a clean checkout cannot build" | **FALSE for this repository.** Both `gradle-wrapper.jar` and `gradle-wrapper.properties` are tracked. The reviewer's own archive stripped binaries — that is a packaging defect of the upload, not of the repo. Every build in this project has run from `git archive` copies. |
+| "The manifest `allowBackup=true` has no exclusion rules" (partly) | **TRUE then, fixed now** — see 12.11.2 item 6. |
+| "Route policy P0: VPN-only while a tunnel is active is unsafe" | **NOT A DEFECT.** This is the operator-approved `REQ-ROUTE-001` decision (v1.0.70). Only the stale README wording was wrong and was corrected in v1.0.76. |
+
+### 12.11.2 — Accepted findings, fixed in this block
+
+1. **The known-good fast path had no tests, and swallowed a user press** (the review's top finding).
+   `knownGoodFastTarget` and the fast-path block in `runAutoMode` are now covered by **12 new tests**
+   (no history / UNKNOWN network / stale success / failure after success / quality rejection /
+   network-bucket isolation / remembered protocol / disabled protocol never revived / success origin /
+   failure hand-off exactly once / not used for a Try Next continuation / press honoured).
+   The press bug was real: `skipRequested` was only consumed at the top of the per-server loop, so a
+   press that landed inside the fast attempt was cleared by that loop's `set(false)` and did nothing.
+   The fast path now reads the flag after its attempt, cancels the attempt, records
+   `ATTEMPT_CANCELLED`/`USER_CANCELLED` as **NEUTRAL**, and continues with the normal pipeline without
+   re-dialling that server.
+2. **Connection origin was memory-only** (`REQ-ORIGIN-001`, recorded as *Missing* since v1.0.70).
+   Implemented: the controller persists `(origin, ip|hostname)` at the verified-connect funnel through
+   the new `persistOrigin` injection, `stop()`/`disconnectNow()` clear it, and `combineAutoModeState`
+   accepts a record only when its key matches the tunnel the tracker is reporting (IP first, hostname
+   as the fallback). A stale record therefore degrades to MANUAL instead of mislabelling.
+3. **Release-URL path boundary.** `startsWith("/morteza-taheri/SoftEthergai")` also accepted
+   `/morteza-taheri/SoftEthergaiXYZ`, a different repository owned by the same account. The check now
+   requires the whole segment (exact, or followed by `/`), with a test for the lookalike.
+4. **OpenVPN profile export** (`DetailActivity.handleImport`). Three defects, all real:
+   (a) `while (not granted) request(...)` froze the UI thread forever on a denial — it now asks once
+   and resumes from `onRequestPermissionsResult(REQUEST_WRITE_STORAGE)`, ending with a message on
+   refusal; (b) a direct write into public Downloads is blocked by scoped storage on Android 10+, so the
+   export silently failed on every modern device — it now goes through `MediaStore.Downloads` with no
+   permission at all (legacy path retained for API 24..28); (c) the file name came straight from feed
+   data — it is now reduced to `[A-Za-z0-9._-]`, stripped of leading dots, capped at 80 characters.
+5. **Unbounded response body.** `raw.body?.string()` buffered the whole body with no cap. The declared
+   length is checked first and an undeclared body is peeked at `MAX_RESPONSE_BYTES + 1` (8 MB), so an
+   oversize response is **refused**, never silently truncated.
+6. **Backup carried credentials.** `allowBackup=true` had no rules. `backup_rules.xml` (API 23..30) and
+   `data_extraction_rules.xml` (API 31+) now exclude every domain — database, files, shared
+   preferences, external — so neither cloud backup nor device transfer can carry the server list,
+   connection history, imported profiles or the settings that may hold passwords.
+7. **`QUERY_ALL_PACKAGES` in the SSTP library.** Removed. The module only builds an app picker, which
+   the existing `<queries>` (MAIN/LAUNCHER) already covers; the merged release manifest no longer asks
+   for visibility of every installed package.
+8. **SSTP teardown mutex was never released.** `Controller.kill()` took `mutex.tryLock()` and never
+   unlocked it, so the first teardown held it forever and every later `kill()` returned a stale
+   `destructionJob` instead of cleaning up. The lock is now released in a `finally`, and
+   `destructionJob` is cleared so the next teardown runs for real.
+
+### 12.11.3 — Accepted but deferred to a dedicated block (with the reason)
+
+These are genuine and serious, and none of them can be validated without native/device work:
+
+- **Native RUDP lifetime races** (`conn->rudp` read without a reference while teardown frees it;
+  `rudp_get_udp_fd`/`rudp_poll`/`rudp_send` reading `ctx->inited` before taking a reference) — needs a
+  publication/removal protocol plus race tests through the real JNI callers.
+- **Timed-out native operation losing its ownership lease** (`NativeLifetimeRegistry` clearing
+  ownership after a timeout while native work may still run) — the review is right that a timer is not
+  proof of exit; the fix is a native cancel-and-join or process isolation, not a Kotlin tweak.
+- **Unauthenticated HTTP bootstrap/mirror sources** and **unsigned emergency CSV** — provenance
+  (signature + pinned key, or immutable content hashes) is a release-control design decision.
+- **OpenVPN imported profiles without server-identity checks** (`clearDefaults()` sets
+  `mCheckRemoteCN = false`) — a vendored-library behaviour change with compatibility risk.
+- **SSTP handshake blocking / packet-bounds / reconnect serialization**; **SSTP password storage**;
+  **profile-encryption plaintext fallback**; **`ConnectionController` catching broad `Exception`**;
+  **publisher private-IP validation**; **merged-manifest and merged-resource verification**;
+  **TLS 1.0/1.1 and `SSL_VERIFY_NONE`**.
+
+Recorded here so the next block starts from an agreed list rather than from a re-read of the reports.
+
+### 12.11.4 — Verification for this block
+
+- `:app:testProDebugUnitTest` + `:SoftEtherClient:testDebugUnitTest` — full suites, results in the
+  block report.
+- New tests: 12 (`AutoModeControllerTest`, fast path) + 6 (`AutoModeDisplayStateTest`, persisted
+  origin) + 1 (`AppUpdateManifestTest`, path boundary) = **19**.
+- Not verifiable in this block, stated rather than implied: process-death origin persistence (needs a
+  real kill with a live tunnel), the Android 10+ export path on hardware, backup exclusion on a real
+  restore, and every native item above.

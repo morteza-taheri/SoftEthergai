@@ -300,4 +300,108 @@ class AutoModeDisplayStateTest {
         assertNull(AutoModeProtocol.fromTrackerId("something-else"))
         assertNull(AutoModeProtocol.fromTrackerId(null))
     }
+
+    // ── BLOCK v1.0.77 (REQ-ORIGIN-001): the persisted origin ────────────────
+
+    @Test
+    fun `a persisted auto connect origin survives a process restart for the same tunnel`() {
+        val out = combineAutoModeState(
+            AutoModeState.Disconnected,
+            VpnConnectionStatus.CONNECTED,
+            externalHost = "vpn595476537.opengw.net",
+            externalIp = "1.2.3.4",
+            externalProtocolId = "SOFTETHER_TCP",
+            persistedOrigin = ConnectionOrigin.AUTO_CONNECT,
+            persistedServerKey = "1.2.3.4|vpn595476537.opengw.net",
+        )
+
+        assertEquals(
+            "the app did start this tunnel, so MANUAL would be a lie",
+            ConnectionOrigin.AUTO_CONNECT,
+            (out.display as AutoModeState.Connected).origin,
+        )
+        assertTrue("the tunnel is still external to the run", out.isExternal)
+    }
+
+    @Test
+    fun `a persisted auto reconnect origin is preserved too`() {
+        val out = combineAutoModeState(
+            AutoModeState.Disconnected,
+            VpnConnectionStatus.CONNECTED,
+            externalHost = "vpn1.opengw.net",
+            externalIp = "5.6.7.8",
+            persistedOrigin = ConnectionOrigin.AUTO_RECONNECT,
+            persistedServerKey = "5.6.7.8|vpn1.opengw.net",
+        )
+
+        assertEquals(
+            ConnectionOrigin.AUTO_RECONNECT,
+            (out.display as AutoModeState.Connected).origin,
+        )
+    }
+
+    @Test
+    fun `a stale record never labels a different tunnel`() {
+        val out = combineAutoModeState(
+            AutoModeState.Disconnected,
+            VpnConnectionStatus.CONNECTED,
+            externalHost = "someone-elses-vpn",
+            externalIp = "9.9.9.9",
+            persistedOrigin = ConnectionOrigin.AUTO_CONNECT,
+            persistedServerKey = "1.2.3.4|vpn595476537.opengw.net",
+        )
+
+        assertEquals(
+            "a record for another server must degrade to MANUAL",
+            ConnectionOrigin.MANUAL,
+            (out.display as AutoModeState.Connected).origin,
+        )
+    }
+
+    @Test
+    fun `no record and a manual record both read as manual`() {
+        assertEquals(
+            ConnectionOrigin.MANUAL,
+            persistedOriginFor(null, null, "1.2.3.4", "h"),
+        )
+        assertEquals(
+            ConnectionOrigin.MANUAL,
+            persistedOriginFor(ConnectionOrigin.MANUAL, "1.2.3.4|h", "1.2.3.4", "h"),
+        )
+    }
+
+    @Test
+    fun `an empty recorded key is never trusted`() {
+        assertEquals(
+            ConnectionOrigin.MANUAL,
+            persistedOriginFor(ConnectionOrigin.AUTO_CONNECT, "  ", "1.2.3.4", "h"),
+        )
+        assertEquals(
+            ConnectionOrigin.MANUAL,
+            persistedOriginFor(ConnectionOrigin.AUTO_CONNECT, null, "1.2.3.4", "h"),
+        )
+    }
+
+    @Test
+    fun `the hostname is the fallback identity when no ip is known`() {
+        // The tracker sometimes names the host but not the address.
+        assertEquals(
+            ConnectionOrigin.AUTO_CONNECT,
+            persistedOriginFor(
+                ConnectionOrigin.AUTO_CONNECT,
+                "1.2.3.4|vpn595476537.opengw.net",
+                ip = null,
+                hostname = "VPN595476537.opengw.net",
+            ),
+        )
+        assertEquals(
+            ConnectionOrigin.MANUAL,
+            persistedOriginFor(
+                ConnectionOrigin.AUTO_CONNECT,
+                "1.2.3.4|vpn595476537.opengw.net",
+                ip = null,
+                hostname = "other.opengw.net",
+            ),
+        )
+    }
 }

@@ -496,6 +496,56 @@ class DataUtil(context: Context?) {
         setIntSetting(SETTING_LAST_ACCEPTED_DATASET_SIZE, size.coerceAtLeast(0))
     }
 
+    // ── BLOCK v1.0.77 — REQ-ORIGIN-001: PERSISTED CONNECTION ORIGIN ───────
+    //
+    // D-3 already labels a live tunnel with why it is up, but the label lived
+    // only in the controller's memory (`runOrigin`). If the process is killed
+    // while the tunnel stays up — the OS does this routinely under memory
+    // pressure, and the VPN service survives — the label degraded to MANUAL,
+    // which is exactly the "app did not start this" reading D-3 forbids for a
+    // tunnel the app did start. These three keys persist (origin, server key)
+    // at the moment a tunnel is verified and are cleared on an explicit
+    // disconnect. A reader MUST validate the stored key against the live
+    // tunnel before trusting the origin (see AutoModeViewModel).
+
+    /** Origin of the tunnel that was up at the last verified connect; null when unknown. */
+    fun getLastConnectionOrigin(): vn.unlimit.vpngate.automode.ConnectionOrigin? =
+        when (getStringSetting(SETTING_LAST_CONNECTION_ORIGIN, null)) {
+            vn.unlimit.vpngate.automode.ConnectionOrigin.AUTO_CONNECT.name ->
+                vn.unlimit.vpngate.automode.ConnectionOrigin.AUTO_CONNECT
+            vn.unlimit.vpngate.automode.ConnectionOrigin.AUTO_RECONNECT.name ->
+                vn.unlimit.vpngate.automode.ConnectionOrigin.AUTO_RECONNECT
+            vn.unlimit.vpngate.automode.ConnectionOrigin.MANUAL.name ->
+                vn.unlimit.vpngate.automode.ConnectionOrigin.MANUAL
+            else -> null
+        }
+
+    /**
+     * Stable `ip|hostname` key of the server behind [getLastConnectionOrigin].
+     * Empty when nothing is recorded. A reader compares it with the live
+     * tunnel's identity so a stale record can never mislabel a different tunnel.
+     */
+    fun getLastConnectionServerKey(): String =
+        getStringSetting(SETTING_LAST_CONNECTION_SERVER_KEY, "") ?: ""
+
+    fun setLastConnectionOrigin(
+        origin: vn.unlimit.vpngate.automode.ConnectionOrigin,
+        serverKey: String,
+    ) {
+        sharedPreferencesSetting?.edit()
+            ?.putString(SETTING_LAST_CONNECTION_ORIGIN, origin.name)
+            ?.putString(SETTING_LAST_CONNECTION_SERVER_KEY, serverKey)
+            ?.apply()
+    }
+
+    /** An explicit disconnect ends the record: no origin outlives its tunnel. */
+    fun clearLastConnectionOrigin() {
+        sharedPreferencesSetting?.edit()
+            ?.remove(SETTING_LAST_CONNECTION_ORIGIN)
+            ?.remove(SETTING_LAST_CONNECTION_SERVER_KEY)
+            ?.apply()
+    }
+
     // ── BLOCK v1.0.76 — APP UPDATE CHECKER ───────────────────────────────
 
     /** Last automatic update check (epoch ms; 0 = never checked). */
@@ -650,6 +700,14 @@ class DataUtil(context: Context?) {
         /** BLOCK v1.0.75 FIX: size of the last accepted fresh dataset (0 = unknown). */
         const val SETTING_LAST_ACCEPTED_DATASET_SIZE: String =
             "SETTING_LAST_ACCEPTED_DATASET_SIZE"
+
+        /** BLOCK v1.0.77 (REQ-ORIGIN-001): persisted origin of the live tunnel. */
+        const val SETTING_LAST_CONNECTION_ORIGIN: String =
+            "SETTING_LAST_CONNECTION_ORIGIN"
+
+        /** BLOCK v1.0.77 (REQ-ORIGIN-001): `ip|hostname` the origin belongs to. */
+        const val SETTING_LAST_CONNECTION_SERVER_KEY: String =
+            "SETTING_LAST_CONNECTION_SERVER_KEY"
 
         /** BLOCK v1.0.76: last automatic update check (epoch ms). */
         const val SETTING_APP_UPDATE_LAST_CHECK_AT: String =

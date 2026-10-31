@@ -50,6 +50,13 @@ data class AppUpdateManifest(
 
         /** A manifest larger than this is a hostile body, not a version file. */
         const val MAX_MANIFEST_BYTES: Int = 64 * 1024
+
+        /**
+         * BLOCK v1.0.77: the repository path a release URL must live under.
+         * Matched as a whole segment (exact, or followed by `/`) so a
+         * same-owner lookalike repository cannot be substituted.
+         */
+        const val RELEASE_REPO_PATH: String = "/morteza-taheri/SoftEthergai"
     }
 }
 
@@ -91,13 +98,22 @@ object AppUpdateCheck {
         // HOST is allowlisted to this project's GitHub, not merely prefix-checked.
         // A compromised manifest must not be able to navigate the user to a
         // foreign domain.
+        //
+        // BLOCK v1.0.77: the path check requires a PATH BOUNDARY. A bare
+        // `startsWith("/morteza-taheri/SoftEthergai")` also accepts
+        // `/morteza-taheri/SoftEthergaiXYZ` — a different repository owned by
+        // the same account — so the segment must be followed by `/` or end.
         val releasePageUrl = Regex("\"releasePageUrl\"\\s*:\\s*\"([^\"]+)\"")
             .find(body)?.groupValues?.get(1)?.takeIf { raw ->
                 runCatching {
                     val uri = java.net.URI(raw)
+                    val path = uri.path.orEmpty()
                     uri.scheme == "https" &&
                         uri.host?.lowercase() in AppUpdateManifest.ALLOWED_RELEASE_HOSTS &&
-                        (uri.path?.startsWith("/morteza-taheri/SoftEthergai") == true)
+                        (
+                            path == AppUpdateManifest.RELEASE_REPO_PATH ||
+                                path.startsWith(AppUpdateManifest.RELEASE_REPO_PATH + "/")
+                            )
                 }.getOrDefault(false)
             } ?: return null
         val notes = Regex("\"notes\"\\s*:\\s*\"([^\"]*)\"")

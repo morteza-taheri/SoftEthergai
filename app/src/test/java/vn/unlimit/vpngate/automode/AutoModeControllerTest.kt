@@ -18,6 +18,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.history.NetworkType
+import vn.unlimit.vpngate.history.ServerHistoryView
 import java.io.File
 
 /**
@@ -316,6 +318,16 @@ class AutoModeControllerTest {
          * two consecutive controllers.
          */
         wedgeTracker: WedgeTracker = WedgeTracker(),
+        /**
+         * BLOCK v1.0.77: the history the controller reads (D-4/D-5/D-6). Empty
+         * by default, which keeps the fast path inert for every pre-existing
+         * test — exactly the pre-v1.0.75 behaviour.
+         */
+        history: Map<String, ServerHistoryView> = emptyMap(),
+        /** BLOCK v1.0.77: the physical network type the run is judged on. */
+        networkType: NetworkType = NetworkType.UNKNOWN,
+        /** BLOCK v1.0.77 (REQ-ORIGIN-001): receives (origin, key) or (null, null). */
+        persistOrigin: (ConnectionOrigin?, String?) -> Unit = { _, _ -> },
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -328,6 +340,9 @@ class AutoModeControllerTest {
         autoReconnectEnabled = autoReconnectEnabled,
         isTunnelBusy = isTunnelBusy,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        historyProvider = { history },
+        networkTypeProvider = { networkType },
+        persistOrigin = persistOrigin,
         // AUTOCONNECT-AUDIT D-5: a fresh ledger per controller so the process-wide
         // WedgeTracker.process never leaks wedges across tests in the same JVM.
         // AUTOCONNECT-FIX-4: overridable, so the terminal-wedge test can share one ledger.
@@ -4104,6 +4119,361 @@ val sstp = AutoModeCandidate(
             "the burst must be coalesced, not replayed: ${adapter.logs}",
             4,
             adapter.logs.count { it.contains("duplicate request ignored") },
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // BLOCK v1.0.77 — THE KNOWN-GOOD FAST PATH (C3/D-5/D-6) UNDER TEST
+    //
+    // An external review found this path had NO test at all: it changes Auto
+    // Connect's control flow (it dials before the sort and before the
+    // reachability probe) and it is the one place where history decides WHICH
+    // server is tried first. These tests pin the eligibility rules, the
+    // remembered protocol, the failure hand-off to the normal pipeline, the
+    // exclusions (Next continuation / reconnect), and the user-skip contract.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** A history row that satisfies `isKnownGood` for exactly one network. */
+    private fun knownGood(
+        host: String,
+        network: NetworkType = NetworkType.WIFI,
+        lastSuccessAt: Long = System.currentTimeMillis() - 60_000L,
+        lastFailureAt: Long? = null,
+        protocol: String? = null,
+        qualityRejections: Int = 0,
+    ) = ServerHistoryView(
+        hostName = host,
+        successCount = 1,
+        failureCount = if (lastFailureAt != null) 1 else 0,
+        consecutiveFailures = 0,
+        lastSuccessAt = lastSuccessAt,
+        wifiSuccessCount = if (network == NetworkType.WIFI) 1 else 0,
+        cellularSuccessCount = if (network == NetworkType.CELLULAR) 1 else 0,
+        unknownNetworkSuccessCount = if (network == NetworkType.UNKNOWN) 1 else 0,
+        qualityRejectionCount = qualityRejections,
+        lastSuccessProtocol = protocol,
+        wifiLastFailureAt = if (network == NetworkType.WIFI) lastFailureAt else null,
+        cellularLastFailureAt = if (network == NetworkType.CELLULAR) lastFailureAt else null,
+        unknownLastFailureAt = if (network == NetworkType.UNKNOWN) lastFailureAt else null,
+    )
+
+    private fun fastPathRan(): Boolean = adapter.logs.any { it.contains("Fast path") }
+
+    @Test
+    fun `fastPathIsNotTakenWithoutAnyHistory`() = runBlocking {
+        val c = controller(
+            servers = listOf(server("s1"), server("s2")),
+            networkType = NetworkType.WIFI,
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertFalse("no history must mean no fast path: ${adapter.logs}", fastPathRan())
+    }
+
+    @Test
+    fun `fastPathIsNotTakenOnAnUnknownNetwork`() = runBlocking {
+        // D-4/C1: an UNKNOWN network earns no known-good credit at all.
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.UNKNOWN,
+            history = mapOf("known" to knownGood("known", NetworkType.UNKNOWN)),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertFalse("UNKNOWN network must not take the fast path: ${adapter.logs}", fastPathRan())
+    }
+
+    @Test
+    fun `fastPathIsNotTakenForASuccessOlderThanTheWindow`() = runBlocking {
+        val stale = System.currentTimeMillis() - KNOWN_GOOD_WINDOW_MS - 60_000L
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf("known" to knownGood("known", NetworkType.WIFI, lastSuccessAt = stale)),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertFalse("a 14-day-old success is not known-good: ${adapter.logs}", fastPathRan())
+    }
+
+    @Test
+    fun `fastPathIsNotTakenAfterAFailureOnThisNetwork`() = runBlocking {
+        // The success happened, then the server failed on the SAME network:
+        // C1 says a later server-attributable failure disqualifies it.
+        val now = System.currentTimeMillis()
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf(
+                "known" to knownGood(
+                    "known",
+                    NetworkType.WIFI,
+                    lastSuccessAt = now - 600_000L,
+                    lastFailureAt = now - 60_000L,
+                ),
+            ),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertFalse(
+            "a failure AFTER the success disqualifies the server: ${adapter.logs}",
+            fastPathRan(),
+        )
+    }
+
+    @Test
+    fun `fastPathIsNotTakenAfterAQualityRejection`() = runBlocking {
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf(
+                "known" to knownGood("known", NetworkType.WIFI, qualityRejections = 1),
+            ),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertFalse("a quality rejection disqualifies it: ${adapter.logs}", fastPathRan())
+    }
+
+    @Test
+    fun `fastPathHonoursTheNetworkBucket`() = runBlocking {
+        // Proven on CELLULAR only: no credit on Wi-Fi, full credit on cellular.
+        val onWifi = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf("known" to knownGood("known", NetworkType.CELLULAR)),
+        )
+        onWifi.start()
+        assertTrue(onWifi.awaitTerminal() is AutoModeState.Connected)
+        assertFalse(
+            "a cellular success must not grant Wi-Fi credit: ${adapter.logs}",
+            fastPathRan(),
+        )
+
+        // A fresh harness for the second half (the fake accumulates state).
+        scope.cancel()
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        adapter = FakeAdapter()
+        val onCellular = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.CELLULAR,
+            history = mapOf("known" to knownGood("known", NetworkType.CELLULAR)),
+        )
+        onCellular.start()
+        assertTrue(onCellular.awaitTerminal() is AutoModeState.Connected)
+        assertTrue(
+            "the same success must grant credit on cellular: ${adapter.logs}",
+            fastPathRan(),
+        )
+    }
+
+    @Test
+    fun `fastPathUsesTheRememberedProtocol`() = runBlocking {
+        val c = controller(
+            servers = listOf(server("known")),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_UDP, AutoModeProtocol.SOFTETHER_TCP),
+            networkType = NetworkType.WIFI,
+            history = mapOf(
+                "known" to knownGood("known", NetworkType.WIFI, protocol = AutoModeProtocol.SOFTETHER_TCP.id),
+            ),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertEquals(
+            "D-6: the remembered protocol must be dialled first: ${adapter.connects}",
+            AutoModeProtocol.SOFTETHER_TCP,
+            adapter.connects.first().second,
+        )
+    }
+
+    @Test
+    fun `fastPathNeverRevivesADisabledProtocol`() = runBlocking {
+        // The remembered protocol is NOT in the user's enabled list.
+        val c = controller(
+            servers = listOf(server("known")),
+            priorities = listOf(AutoModeProtocol.SOFTETHER_UDP),
+            networkType = NetworkType.WIFI,
+            history = mapOf(
+                "known" to knownGood("known", NetworkType.WIFI, protocol = AutoModeProtocol.SOFTETHER_TCP.id),
+            ),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        assertEquals(
+            "a disabled protocol must never be dialled: ${adapter.connects}",
+            listOf(AutoModeProtocol.SOFTETHER_UDP),
+            adapter.connects.map { it.second },
+        )
+    }
+
+    @Test
+    fun `fastPathSuccessPublishesAutoConnectOrigin`() = runBlocking {
+        val origins = java.util.concurrent.CopyOnWriteArrayList<ConnectionOrigin?>()
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf("known" to knownGood("known", NetworkType.WIFI)),
+            persistOrigin = { origin, _ -> origins += origin },
+        )
+
+        c.start()
+        val terminal = c.awaitTerminal()
+
+        assertTrue("expected Connected, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals("known", (terminal as AutoModeState.Connected).hostname)
+        assertEquals(
+            "D-3: a fast-path success is an Auto Connect run",
+            ConnectionOrigin.AUTO_CONNECT,
+            terminal.origin,
+        )
+        assertTrue("the fast path must have run: ${adapter.logs}", fastPathRan())
+        assertEquals(
+            "exactly one dial: ${adapter.connects}",
+            1,
+            adapter.connects.size,
+        )
+        // REQ-ORIGIN-001: the origin is persisted with the server it belongs to.
+        assertEquals(
+            "the origin must be persisted as AUTO_CONNECT: $origins",
+            ConnectionOrigin.AUTO_CONNECT,
+            origins.firstOrNull(),
+        )
+    }
+
+    @Test
+    fun `fastPathFailureHandsOverToTheNormalPipelineExactlyOnce`() = runBlocking {
+        adapter.failing += "known"
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            history = mapOf("known" to knownGood("known", NetworkType.WIFI)),
+        )
+
+        c.start()
+        val terminal = c.awaitTerminal()
+
+        assertTrue("expected the second server to connect, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals("other", (terminal as AutoModeState.Connected).hostname)
+
+        assertTrue("the fast path must have run: ${adapter.logs}", fastPathRan())
+        assertTrue(
+            "the fast failure must be logged with its elapsed time: ${adapter.logs}",
+            adapter.logs.any { it.contains("Fast path failed in") },
+        )
+        // The fast-path server is dialled ONCE — the pipeline must not retry it.
+        assertEquals(
+            "the fast-path server must not be re-dialled: ${adapter.connects}",
+            1,
+            adapter.connects.count { it.first == "known" },
+        )
+        assertEquals(
+            "the pipeline must continue to exactly one more server: ${adapter.connects}",
+            2,
+            adapter.connects.size,
+        )
+    }
+
+    @Test
+    fun `fastPathIsNotUsedForATryNextContinuation`() = runBlocking {
+        val c = controller(
+            servers = listOf(server("known"), server("other"), server("third")),
+            networkType = NetworkType.WIFI,
+            history = mapOf(
+                "known" to knownGood("known", NetworkType.WIFI),
+                "third" to knownGood("third", NetworkType.WIFI),
+            ),
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        val fastLinesAfterStart = adapter.logs.count { it.contains("Fast path") }
+
+        c.skipToNextServer()
+        val second = c.awaitTerminal()
+        assertTrue("expected a continuation, got $second", second is AutoModeState.Connected)
+
+        assertEquals(
+            "C3: a Try Next continuation must not take the fast path: ${adapter.logs}",
+            fastLinesAfterStart,
+            adapter.logs.count { it.contains("Fast path") },
+        )
+    }
+
+    @Test
+    fun `pressDuringTheFastPathIsHonouredAndNotSwallowed`() = runBlocking {
+        // The fast attempt hangs; the operator presses Try Next. Before the fix
+        // the press was consumed by the per-server loop's reset and the run
+        // carried on as if nothing happened.
+        adapter.slow += "known"
+        val c = controller(
+            servers = listOf(server("known"), server("other")),
+            networkType = NetworkType.WIFI,
+            timeout = 5_000,
+            history = mapOf("known" to knownGood("known", NetworkType.WIFI)),
+        )
+        // Mirrors production: the controller's skip signal fails the in-flight wait.
+        c.setSkipSignal { adapter.skipCurrent() }
+
+        c.start()
+        // Wait until the fast attempt is actually in flight.
+        val dialled = withTimeoutOrNull(5_000) {
+            while (adapter.connects.none { it.first == "known" }) delay(10)
+            true
+        }
+        assertTrue("the fast attempt never started: ${adapter.logs}", dialled == true)
+
+        c.skipToNextServer()
+        val terminal = c.awaitTerminal()
+
+        assertTrue(
+            "the press must be honoured, not swallowed: ${adapter.logs}",
+            adapter.logs.any { it.contains("Fast path skipped by user") },
+        )
+        assertTrue("the run must still reach a terminal state, got $terminal", terminal is AutoModeState.Connected)
+        assertEquals(
+            "the skipped fast server must not be re-dialled: ${adapter.connects}",
+            1,
+            adapter.connects.count { it.first == "known" },
+        )
+        assertEquals("other", (terminal as AutoModeState.Connected).hostname)
+    }
+
+    @Test
+    fun `originIsClearedOnAnExplicitDisconnect`() = runBlocking {
+        val origins = java.util.concurrent.CopyOnWriteArrayList<ConnectionOrigin?>()
+        val c = controller(
+            servers = listOf(server("s1")),
+            persistOrigin = { origin, _ -> origins += origin },
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+        assertEquals(
+            "the connect must persist an origin first: $origins",
+            ConnectionOrigin.AUTO_CONNECT,
+            origins.firstOrNull(),
+        )
+
+        c.disconnectNow()
+
+        assertEquals(
+            "REQ-ORIGIN-001: an explicit disconnect must clear the record: $origins",
+            null,
+            origins.last(),
         )
     }
 

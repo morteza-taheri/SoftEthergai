@@ -52,9 +52,10 @@ data class AutoModeDisplayState(
  *  - otherwise a live external tunnel is surfaced as Connected/Connecting with
  *    [AutoModeDisplayState.isExternal] set.
  *
- * The synthesized external states carry `protocol = SOFTETHER_TCP` as a
- * display-only placeholder; [AutoModeDisplayState.isExternal] is the truthful
- * marker and the screen renders "Connected (manual)" for it.
+ * The synthesized external states carry the protocol the tracker actually
+ * names (never a fabricated placeholder); [AutoModeDisplayState.isExternal] is
+ * the truthful marker and the screen renders the manual/auto label from
+ * [AutoModeState.Connected.origin].
  */
 internal fun combineAutoModeState(
     modeState: AutoModeState,
@@ -62,6 +63,14 @@ internal fun combineAutoModeState(
     externalHost: String? = null,
     externalIp: String? = null,
     externalProtocolId: String? = null,
+    /**
+     * BLOCK v1.0.77 (REQ-ORIGIN-001): the origin persisted at the last verified
+     * connect, and the `ip|hostname` key it belongs to. Both are ignored unless
+     * the key matches the tunnel the tracker is actually reporting — a record
+     * left behind by a previous session can never mislabel a different tunnel.
+     */
+    persistedOrigin: ConnectionOrigin? = null,
+    persistedServerKey: String? = null,
 ): AutoModeDisplayState {
     if (modeState is AutoModeState.Connected) {
         return AutoModeDisplayState(modeState, tunnelStatus, modeState, true, false)
@@ -73,8 +82,18 @@ internal fun combineAutoModeState(
     // BLOCK v1.0.75 (D-3): an external tunnel is displayed with its REAL
     // identity from GlobalVpnTracker — host, IP, and the protocol ONLY when the
     // tracker names one concrete transport (never a fabricated placeholder).
-    // The origin is MANUAL: the status answers "why is the tunnel up" with
-    // "connected manually".
+    //
+    // BLOCK v1.0.77 (REQ-ORIGIN-001): the origin is normally MANUAL (the app did
+    // not start this tunnel), but if the process was restarted while a tunnel
+    // the APP established stayed up, the persisted record proves the app did
+    // start it — and then the honest label is Auto Connect / Auto Reconnect, not
+    // Manual. The record is trusted only for the tunnel it names.
+    val resolvedOrigin = persistedOriginFor(
+        origin = persistedOrigin,
+        serverKey = persistedServerKey,
+        ip = externalIp,
+        hostname = externalHost,
+    )
     val external = when (tunnelStatus) {
         VpnConnectionStatus.CONNECTED -> AutoModeState.Connected(
             hostname = externalHost,
@@ -82,7 +101,7 @@ internal fun combineAutoModeState(
             protocol = AutoModeProtocol.fromTrackerId(externalProtocolId),
             speed = 0L,
             ping = 0,
-            origin = ConnectionOrigin.MANUAL,
+            origin = resolvedOrigin,
         )
         VpnConnectionStatus.CONNECTING -> AutoModeState.Connecting(
             hostname = externalHost,
@@ -92,7 +111,7 @@ internal fun combineAutoModeState(
             ping = 0,
             attempt = 0,
             total = 0,
-            origin = ConnectionOrigin.MANUAL,
+            origin = resolvedOrigin,
         )
         else -> null
     }
@@ -101,6 +120,40 @@ internal fun combineAutoModeState(
     }
 
     return AutoModeDisplayState(modeState, tunnelStatus, modeState, false, false)
+}
+
+/**
+ * BLOCK v1.0.77 (REQ-ORIGIN-001) — may a persisted origin label the LIVE tunnel?
+ *
+ * The record is `(origin, "ip|hostname")`, written at the moment a tunnel was
+ * verified and cleared on an explicit disconnect. It is trusted only when its
+ * key matches the tunnel the tracker is reporting right now: the IP is the
+ * stable identity (the tracker's hostname may be absent or differ), with the
+ * hostname as the fallback when no IP is available. Anything else — no record,
+ * a MANUAL record, an empty key, or a key that names another server — degrades
+ * to [ConnectionOrigin.MANUAL], which is exactly today's behaviour and cannot
+ * mislabel a tunnel the app did not start.
+ */
+internal fun persistedOriginFor(
+    origin: ConnectionOrigin?,
+    serverKey: String?,
+    ip: String?,
+    hostname: String?,
+): ConnectionOrigin {
+    if (origin == null || origin == ConnectionOrigin.MANUAL) return ConnectionOrigin.MANUAL
+    val recorded = serverKey?.trim().orEmpty()
+    if (recorded.isEmpty()) return ConnectionOrigin.MANUAL
+    val recordedIp = recorded.substringBefore('|').trim()
+    val recordedHost = recorded.substringAfter('|', "").trim()
+    val liveIp = ip?.trim().orEmpty()
+    val liveHost = hostname?.trim().orEmpty()
+    val matches = when {
+        recordedIp.isNotEmpty() && liveIp.isNotEmpty() -> recordedIp == liveIp
+        recordedHost.isNotEmpty() && liveHost.isNotEmpty() ->
+            recordedHost.equals(liveHost, ignoreCase = true)
+        else -> false
+    }
+    return if (matches) origin else ConnectionOrigin.MANUAL
 }
 
 /**
@@ -154,6 +207,11 @@ class AutoModeViewModel(application: Application) : AndroidViewModel(application
                     externalHost = global.serverHost,
                     externalIp = global.serverIp,
                     externalProtocolId = global.protocol,
+                    // BLOCK v1.0.77 (REQ-ORIGIN-001): read at combine time, so a
+                    // process restart with a live tunnel still answers "why is
+                    // the tunnel up" with the truth.
+                    persistedOrigin = dataUtil.getLastConnectionOrigin(),
+                    persistedServerKey = dataUtil.getLastConnectionServerKey(),
                 )
             }
                 .collectLatest { _displayState.value = it }

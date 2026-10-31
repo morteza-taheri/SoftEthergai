@@ -224,6 +224,17 @@ class AutoModeController(
      * ordering conservative (tier 0 becomes unreachable) rather than optimistic.
      */
     private val networkTypeProvider: () -> NetworkType = { NetworkType.UNKNOWN },
+    /**
+     * BLOCK v1.0.77 (REQ-ORIGIN-001): where the origin of the live tunnel is
+     * persisted, so D-3's label survives a process death while the tunnel stays
+     * up (the OS kills the activity routinely; the VPN service survives).
+     *
+     * `origin == null` means "clear the record" — an explicit disconnect ends
+     * the ownership, so no origin may outlive its tunnel. The default is a
+     * no-op, which keeps every existing test and every caller that does not
+     * model persistence exactly as it was.
+     */
+    private val persistOrigin: (ConnectionOrigin?, String?) -> Unit = { _, _ -> },
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -1552,6 +1563,9 @@ enum class AttemptOutcome {
             // R8: a user stop ends the ownership record; no reconnect may name it.
             connectedCandidate = null
             pendingReconnectServer = null
+            // BLOCK v1.0.77 (REQ-ORIGIN-001): an ended run owns no tunnel, so the
+            // persisted origin is cleared here rather than left to age into a lie.
+            persistOrigin(null, null)
             // BLOCK v1.0.75 (D-2): a user stop ends the session as well.
             sessionTriedKeys.clear()
             if (!isRunning) {
@@ -1721,6 +1735,8 @@ enum class AttemptOutcome {
         // reconnect a tunnel the user deliberately closed.
         connectedCandidate = null
         pendingReconnectServer = null
+        // BLOCK v1.0.77 (REQ-ORIGIN-001): the record ends with the tunnel.
+        persistOrigin(null, null)
         // BLOCK v1.0.75 (D-2): a user disconnect ends the session — the next
         // Auto Connect run starts with a fresh tried-set.
         sessionTriedKeys.clear()
@@ -2032,6 +2048,12 @@ enum class AttemptOutcome {
         connectedCandidate = server
         // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
         connectedAt = System.currentTimeMillis()
+        // BLOCK v1.0.77 (REQ-ORIGIN-001): persist the origin WITH the server it
+        // belongs to, before the state is published. A reader that finds the app
+        // restarted with this tunnel still up can then still say "started by
+        // Auto Connect" instead of degrading to MANUAL — but only after matching
+        // the stored key against the live tunnel, so a stale record is inert.
+        persistOrigin(runOrigin, serverKey(server))
         setState(
             AutoModeState.Connected(
                 hostname = server.hostname,
@@ -2306,7 +2328,17 @@ enum class AttemptOutcome {
                     adapter.log("[AUTO] Fast path connect threw ${e.javaClass.simpleName}")
                     withContext(NonCancellable) { adapter.disconnect() }
                 }
-                if (fastOutcome == AttemptOutcome.TUNNEL_UP) {
+                // BLOCK v1.0.77 (fast-path hardening): a press during the fast
+                // attempt is a USER SKIP, exactly like a press during the normal
+                // walk. Before this, `skipRequested` was only consumed at the top
+                // of the per-server loop (`skipRequested.set(false)`), so a press
+                // that landed inside the fast attempt was silently swallowed by
+                // that reset — the operator's tap did nothing at all. The press
+                // now cancels the fast attempt (neutral history), and the server
+                // is not re-dialled by the pipeline below (fastFailedKey).
+                val fastSkipped = skipRequested.get()
+                if (fastSkipped) skipRequested.set(false)
+                if (!fastSkipped && fastOutcome == AttemptOutcome.TUNNEL_UP) {
                     adapter.log("[AUTO] Fast path succeeded in ${System.currentTimeMillis() - fastStart} ms")
                     sessionTriedKeys.add(serverKey(fastServer))
                     publishConnected(
@@ -2321,24 +2353,45 @@ enum class AttemptOutcome {
                     )
                     return
                 }
-                adapter.log(
-                    "[AUTO] Fast path failed in ${System.currentTimeMillis() - fastStart} ms; " +
-                        "continuing with the normal pipeline",
-                )
+                if (fastSkipped) {
+                    adapter.log(
+                        "[AUTO] Fast path skipped by user; continuing with the normal pipeline",
+                    )
+                } else {
+                    adapter.log(
+                        "[AUTO] Fast path failed in ${System.currentTimeMillis() - fastStart} ms; " +
+                            "continuing with the normal pipeline",
+                    )
+                }
                 withContext(NonCancellable) { adapter.disconnect() }
                 sessionTriedKeys.add(serverKey(fastServer))
                 // One failed fast attempt is not a server verdict: recorded as a
                 // NEUTRAL attempt, and the server is not re-dialled by this run.
-                recordHistory(
-                    server = fastServer,
-                    protocol = fastProtocol,
-                    eventType = HistoryEventType.PROTOCOL_ATTEMPT,
-                    outcome = HistoryOutcome.NEUTRAL,
-                    reason = HistoryFailureReason.NO_VERDICT,
-                    networkType = runNetworkType,
-                    token = fastToken,
-                    startedAt = fastStartedAt,
-                )
+                // A user skip is NEUTRAL by the same rule (F.29 §8.4) — a cancel
+                // teaches us nothing about the server, so it is never a failure.
+                if (fastSkipped) {
+                    recordHistory(
+                        server = fastServer,
+                        protocol = fastProtocol,
+                        eventType = HistoryEventType.ATTEMPT_CANCELLED,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.USER_CANCELLED,
+                        networkType = runNetworkType,
+                        token = fastToken,
+                        startedAt = fastStartedAt,
+                    )
+                } else {
+                    recordHistory(
+                        server = fastServer,
+                        protocol = fastProtocol,
+                        eventType = HistoryEventType.PROTOCOL_ATTEMPT,
+                        outcome = HistoryOutcome.NEUTRAL,
+                        reason = HistoryFailureReason.NO_VERDICT,
+                        networkType = runNetworkType,
+                        token = fastToken,
+                        startedAt = fastStartedAt,
+                    )
+                }
                 fastFailedKey = wedgeKey(fastServer)
             }
         }
