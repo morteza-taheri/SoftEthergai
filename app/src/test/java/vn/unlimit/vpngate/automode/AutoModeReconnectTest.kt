@@ -108,6 +108,8 @@ class AutoModeReconnectTest {
         servers: List<AutoModeCandidate>,
         autoReconnectEnabled: () -> Boolean = { true },
         isTunnelBusy: () -> Boolean = { false },
+        /** BLOCK v1.0.80: OQ-7 — is a DIFFERENT server being connected right now? */
+        isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
         /** R8: a 0 ms settle delay keeps the JVM test fast. */
         reconnectInitialDelayMs: Long = 0L,
     ) = AutoModeController(
@@ -118,6 +120,7 @@ class AutoModeReconnectTest {
         attemptTimeoutMsProvider = { 500 },
         autoReconnectEnabled = autoReconnectEnabled,
         isTunnelBusy = isTunnelBusy,
+        isConnectingToAnotherServer = isConnectingToAnotherServer,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
     )
 
@@ -288,15 +291,21 @@ class AutoModeReconnectTest {
     @Test
     fun t5_manualPrecedenceSuppressesReconnect() = runBlocking {
         val servers = listOf(candidate("alpha"))
-        var busy = false
-        val controller = controller(servers = servers, isTunnelBusy = { busy })
+        // BLOCK v1.0.80: OQ-7 is identity-based — a DIFFERENT server connecting.
+        // A CONNECTED tracker alone no longer suppresses the reconnect, because the
+        // tracker still shows OUR OWN tunnel after a watchdog-declared loss.
+        var otherServerConnecting = false
+        val controller = controller(
+            servers = servers,
+            isConnectingToAnotherServer = { otherServerConnecting },
+        )
 
         controller.start()
         controller.awaitConnected()
         val before = adapter.connects.size
 
-        // A manual connect is now in flight (production: GlobalVpnTracker.isBusy).
-        busy = true
+        // A manual connect to a DIFFERENT server is now in flight.
+        otherServerConnecting = true
         invokeArmedTunnelLost(controller)
         delay(300)
 
@@ -311,7 +320,7 @@ class AutoModeReconnectTest {
         )
         assertTrue(
             "expected the manual-precedence log line; logs=${adapter.logs}",
-            adapter.logs.any { it.contains("Manual connect in progress") },
+            adapter.logs.any { it.contains("Another server is connecting") },
         )
     }
 
