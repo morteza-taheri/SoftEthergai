@@ -1190,9 +1190,10 @@ fun SettingsScreen(
     }
 
     if (showSoftetherConnectionsPicker) {
-        // BLOCK v1.0.80: the ladder reaches the protocol ceiling now that the
-        // ramp-up is tamed (watchdog grace + connect backoff).
-        val values = listOf(1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
+        // BLOCK v1.0.80: the ladder stops at 8 — the measured data-plane limit
+        // (16 and 32 open every socket but then carry 100 % packet loss; see
+        // MAX_SOFTETHER_CONNECTIONS).
+        val values = listOf(1, 2, 3, 4, 5, 6, 8)
         SingleChoiceDialog(
             title = stringResource(R.string.setting_softether_max_connections_label),
             options = values.map { context.getString(R.string.setting_softether_max_connections_value, it) },
