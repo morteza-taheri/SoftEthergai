@@ -689,6 +689,14 @@ class DataUtil(context: Context?) {
          * not override it. Hard upper bound is the native `MAX_SE_CONNECTIONS`.
          */
         const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 4
+        /**
+         * BLOCK v1.0.79: the protocol allows 32 and the server accepts them, but
+         * this client's multi-connection ramp-up starves the data plane above ~8:
+         * measured on 5585fecc (2026-11-01), 32 connections produced 100 % packet
+         * loss and a liveness-watchdog teardown 31 s after connect, while 8 settled
+         * to 0 % loss. The ceiling stays at the validated value until the ramp-up
+         * is fixed; it must equal the native MAX_SE_CONNECTIONS.
+         */
         const val MAX_SOFTETHER_CONNECTIONS: Int = 8
 
         /** Developer Mode (verbose logging) ships disabled on a fresh install. */

@@ -1190,6 +1190,9 @@ fun SettingsScreen(
     }
 
     if (showSoftetherConnectionsPicker) {
+        // BLOCK v1.0.79: the ladder stops at the value this client can actually
+        // sustain (8). Offering 16/32 here would hand the user a setting that
+        // breaks the tunnel — see MAX_SOFTETHER_CONNECTIONS for the measurement.
         val values = listOf(1, 2, 3, 4, 5, 6, 8)
         SingleChoiceDialog(
             title = stringResource(R.string.setting_softether_max_connections_label),

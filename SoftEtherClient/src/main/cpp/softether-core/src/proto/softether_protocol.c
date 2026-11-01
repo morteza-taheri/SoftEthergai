@@ -727,7 +727,12 @@ static uint8_t* build_login_pack(const char* hub_name, const char* username,
     pack_add_int(&p, "client_build", client_build);
     pack_add_int(&p, "client_id", 0);
     pack_add_int(&p, "protocol", rudp ? 1 : 0);   // 0 = TCP, 1 = UDP
-    pack_add_int(&p, "max_connection", 4);  // Request 4 connections for multi-connection throughput
+    // BLOCK v1.0.79: this used to be a literal 4, so the "SoftEther Max
+    // Connections" setting never reached the server — the value the user picked
+    // only ever affected the local bookkeeping. Send what the caller configured;
+    // the server answers with its own limit in server_max_connection and
+    // softether_protocol.c clamps to it after the handshake.
+    pack_add_int(&p, "max_connection", (uint32_t)conn->max_connection);
     pack_add_int(&p, "use_encrypt", 1);
     // Phase 13B: advertise no session compression. VPN Gate traffic is
     // TLS-encrypted and incompressible; zlib per block only burns CPU.

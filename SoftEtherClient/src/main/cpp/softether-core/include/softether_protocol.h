@@ -22,6 +22,16 @@ extern "C" {
 #define SOFTETHER_MAX_BLOCK     (1600 * 1600)
 
 // Multi-connection constants (matching Cedar.h)
+// BLOCK v1.0.79: the SoftEther protocol allows up to 32 concurrent TCP
+// connections per session and the server accepts them (a device run answered
+// server_max=32). This client cannot sustain that yet: opening the additional
+// sockets starves the data plane, the liveness probe then fails for longer than
+// its 15 s silence window, and the watchdog tears the tunnel down — measured on
+// 5585fecc, 2026-11-01: max_connection=32 → 100 % packet loss and a loss event
+// 31 s after connect; max_connection=8 → 0 % loss once the ramp-up settled.
+// The ceiling therefore stays at 8 (the value this array and every loop sized
+// from it were validated with) until the ramp-up is fixed. Raise it together
+// with that fix, not before.
 #define MAX_SE_CONNECTIONS                  8
 #define MAX_SEND_SOCKET_QUEUE_SIZE          (1600 * 1600)
 #define MIN_SEND_SOCKET_QUEUE_SIZE          (1600 * 200)

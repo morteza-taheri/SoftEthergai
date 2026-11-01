@@ -28,7 +28,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 RES = ROOT / "app" / "src" / "main" / "res" / "mipmap-xxxhdpi"
@@ -62,6 +62,36 @@ def composite(size: int, bg: Image.Image, fg: Image.Image) -> Image.Image:
     base = bg.resize((size, size), Image.LANCZOS)
     base.alpha_composite(fg.resize((size, size), Image.LANCZOS))
     return base
+
+
+def _rounded_mask(size: int, radius_pct: float = 0.22, circle: bool = False) -> Image.Image:
+    """An anti-aliased rounded-square (or circular) alpha mask."""
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    if circle:
+        draw.ellipse([0, 0, size - 1, size - 1], fill=255)
+    else:
+        draw.rounded_rectangle(
+            [0, 0, size - 1, size - 1], radius=int(size * radius_pct), fill=255
+        )
+    return mask
+
+
+def masked_icon(size: int, bg: Image.Image, fg: Image.Image,
+                radius_pct: float = 0.22, circle: bool = False) -> Image.Image:
+    """The adaptive icon as a rounded-square (or round) bitmap on TRANSPARENCY.
+
+    BLOCK v1.0.79. The legacy `mipmap-*/ic_launcher.png` shipped as a fully
+    opaque square — every corner pixel was solid navy (27, 36, 64, 255) — so on
+    Android 7 (which has no adaptive-icon mask) the launcher showed a hard dark
+    square instead of the rounded card every Android 8+ device shows. The
+    artwork is identical; only the corners are cut now.
+    """
+    hi = size * 4  # supersample, then downsample: clean edges at every density
+    base = composite(hi, bg, fg)
+    mask = _rounded_mask(hi, radius_pct, circle)
+    base.putalpha(ImageChops.multiply(base.getchannel("A"), mask))
+    return base.resize((size, size), Image.LANCZOS)
 
 
 def store_icon(bg: Image.Image, fg: Image.Image, size: int = 512) -> Image.Image:
@@ -164,6 +194,24 @@ def main() -> None:
         out = MISC / name
         img.save(out, "PNG", optimize=True)
         print(f"wrote {out.relative_to(ROOT)}  {img.size[0]}x{img.size[1]} {img.mode}")
+
+    # Legacy launcher icons (Android 7 / API 24-25 has no adaptive mask).
+    densities = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+    for density, px in densities.items():
+        square = masked_icon(px, bg, fg)
+        out = RES.parent / f"mipmap-{density}" / "ic_launcher.png"
+        square.save(out, "PNG", optimize=True)
+        print(f"wrote {out.relative_to(ROOT)}  {px}x{px} rounded")
+        round_icon = masked_icon(px, bg, fg, circle=True)
+        out = RES.parent / f"mipmap-{density}" / "ic_launcher_round.png"
+        round_icon.save(out, "PNG", optimize=True)
+        print(f"wrote {out.relative_to(ROOT)}  {px}x{px} circle")
+
+    # In-app logos had the same opaque square; same fix, one size.
+    for name in ("ic_app_logo.png", "splash_logo.png"):
+        out = RES.parent / "drawable" / name
+        masked_icon(432, bg, fg).save(out, "PNG", optimize=True)
+        print(f"wrote {out.relative_to(ROOT)}  432x432 rounded")
 
     for name, text in FEATURE_TEXT.items():
         img = feature_graphic(bg, fg, text)

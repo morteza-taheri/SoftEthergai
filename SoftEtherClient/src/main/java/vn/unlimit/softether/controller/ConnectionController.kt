@@ -652,6 +652,16 @@ class ConnectionController(
         val fullDuplex = DuplexModeSelector.resolve(service, config)
         client.setHalfConnection(nativeHandle, !fullDuplex)
         Log.d(TAG, "Duplex mode: ${if (fullDuplex) "FULL" else "HALF"} (4x BOTH / directional split)")
+        // BLOCK v1.0.79: the "SoftEther Max Connections" setting was DEAD.
+        // `nativeSetMaxConnection` was declared on SoftEtherClient and never
+        // called from anywhere, so `conn->max_connection` kept the native default
+        // of 4 — and the login PACK sent a literal 4 on top of that. The user
+        // could pick 1..8 in Settings and the server was still asked for 4. Push
+        // the configured value here, before the handshake; the JNI clamps it to
+        // MAX_SE_CONNECTIONS and the server's own answer (server_max_connection)
+        // still wins after the handshake.
+        client.nativeSetMaxConnection(nativeHandle, config.maxConnections)
+        Log.d(TAG, "Max connections: requesting ${config.maxConnections}")
         // Build client info (rudpPort will be filled in by native code during RUDP init)
         val clientInfo = buildClientInfo(0)
         // [DIAG] T5-SLOT diagnosis — LOG-ONLY (no behavior change). Entry/exit timestamps
@@ -1397,6 +1407,13 @@ class ConnectionController(
             val reconnectFullDuplex = DuplexModeSelector.resolve(service, config)
             client.setHalfConnection(nativeHandle, !reconnectFullDuplex)
             Log.d(TAG, "Reconnect duplex mode: ${if (reconnectFullDuplex) "FULL" else "HALF"}")
+            // BLOCK v1.0.79: the reconnect builds a FRESH native handle, and
+            // nativeCreate() resets max_connection to its default of 4 — so the
+            // value pushed in performConnect is lost here. Without this line every
+            // reconnect silently fell back to 4 connections while the Settings row
+            // still showed the user's choice.
+            client.nativeSetMaxConnection(nativeHandle, config.maxConnections)
+            Log.d(TAG, "Reconnect max connections: requesting ${config.maxConnections}")
 
             // Connect to server (TLS + protocol + auth + session)
             startNativeStateMonitor()
