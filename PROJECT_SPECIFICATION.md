@@ -7329,3 +7329,74 @@ than the ramp-up. Raising the ceiling therefore requires fixing that interaction
 socket) — recorded here so the next block starts from the measurement instead of the
 protocol limit. Until then `MAX_SE_CONNECTIONS` and `MAX_SOFTETHER_CONNECTIONS` both stay
 at **8**, which is now the value the server actually receives.
+
+---
+
+## §12.14 — BLOCK v1.0.80: Auto-Reconnect fired only sometimes, and never after a network loss (2026-11-01)
+
+**Operator report.** In Auto Mode with Auto-Reconnect ON, the app sometimes makes no
+attempt at all — it should retry whenever the *user* did not disconnect.
+
+Two independent causes, both confirmed on `5585fecc`.
+
+### 12.14.1 — The OQ-7 gate asked the wrong question
+
+`onUnexpectedDisconnect` opens with OQ-7: "a manual connect is still coming up, do not
+race it". It was implemented as `isTunnelBusy()`, which is
+`GlobalVpnTracker.isActiveOrBusy` — **CONNECTED included**.
+
+That is wrong for every path that reports a loss, because the tracker still describes
+**our own** tunnel at that moment:
+
+| Path | Tracker at the decision | Old result |
+|---|---|---|
+| C — liveness watchdog ("no proof of life for 15 s") | still `CONNECTED` (the OS interface is up) | `Manual connect in progress; skipping Auto-Reconnect` → silence |
+| A/B — OS callback / 1 s poll | `DISCONNECTING` as the tunnel goes down, then `CONNECTING` as the service retries | same skip |
+
+Two narrower predicates were tried on the device and both failed for the same reason —
+the state belongs to *our* tunnel, not to somebody else's connect:
+
+* `CONNECTING || DISCONNECTING` → blocked on the `DISCONNECTING` published by the loss itself;
+* `CONNECTING` alone → blocked on the `CONNECTING` the service publishes while it retries.
+
+The honest question is not "is the tracker busy" but **"is it busy with a DIFFERENT
+server than the one we just lost"**. `isConnectingToAnotherServer(dropped)` compares the
+tracker's `serverIp` / `serverHost` with the dropped candidate; an unnamed identity counts
+as ours (refusing to retry because the tracker could not name its server would be the same
+silence in another disguise). Device proof:
+
+```
+18:39:13  GlobalVpnTracker confirmed disconnected
+18:39:13  Unexpected disconnect: vpn177768996; reconnecting (attempt 1/5)   ← was "skipping"
+```
+
+### 12.14.2 — `ERROR_NO_NETWORK` was terminal
+
+Both no-network exits (`before any attempt` and `network lost mid-run`) published
+`Error(ERROR_NO_NETWORK)` and returned. **Nothing ever restarted the run** — not on
+connectivity returning, not on a timer. A mobile handover, a Wi-Fi drop or an
+airplane-mode blip therefore parked the app on "disconnected" with Auto-Reconnect ON.
+
+`scheduleNetworkRetry()` now arms a bounded watch (poll 2 s, window 10 min):
+`isNetworkAvailable()` true → log `Network is back; reconnecting` → seed
+`overrideServers` from `remainingCandidates` → `runOrigin = AUTO_RECONNECT` → `start()`.
+
+It is cancelled by `stop()`, `disconnectNow()` and any `start()`, so the operator's rule
+holds exactly: **only an explicit user disconnect ends the retrying.**
+
+### 12.14.3 — Device verification (`5585fecc`, Wi-Fi cut and restored)
+
+```
+18:39:10  Connected successfully                     (Wi-Fi up)
+18:39:13  GlobalVpnTracker confirmed disconnected     (Wi-Fi disabled)
+18:39:13  Unexpected disconnect: vpn177768996; reconnecting (attempt 1/5)
+18:39:15  Started
+18:39:15  No network available; stopping before any attempt
+18:39:15  No network; waiting up to 10 min for connectivity before retrying
+18:40:13  Network is back; reconnecting               (Wi-Fi re-enabled)
+18:40:17  Trying #1 vpn961954281                      (a real new run)
+```
+
+Five new tests cover it: retry fires when connectivity returns, a user stop cancels the
+retry, Auto-Reconnect OFF arms nothing, a CONNECTED tracker does not block the reconnect,
+and a genuinely different server connecting still does.
