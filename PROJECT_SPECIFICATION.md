@@ -7400,3 +7400,35 @@ holds exactly: **only an explicit user disconnect ends the retrying.**
 Five new tests cover it: retry fires when connectivity returns, a user stop cancels the
 retry, Auto-Reconnect OFF arms nothing, a CONNECTED tracker does not block the reconnect,
 and a genuinely different server connecting still does.
+
+### 12.13.4 — Upstream module comparison (2026-11-01)
+
+The three vendored libraries were compared file-by-file against their upstream
+repositories (`hoang-rio/SoftEther-Android-Module`, `hoang-rio/Open-SSTP-Client`,
+`hoang-rio/vpnLib`), normalising CRLF, and walking each file's upstream history:
+
+| Module | Identical | **Behind** | Locally modified |
+|---|---|---|---|
+| SoftEther-Android-Module | 15 | **2** | 20 |
+| Open-SSTP-Client | 65 | **1** | 6 |
+| vpnLib | 32 | **0** | 23 |
+
+"Behind" = the local file is byte-identical (mod line endings) to an OLDER upstream
+version and has no local edits — safe to take upstream wholesale. "Locally modified" =
+no upstream version matches, so a three-way review is required.
+
+**Applied:** `NetworkObserver.kt` (upstream `af677f1`: the network-callback work moves
+to a worker thread, and the `Handler` overload of `registerNetworkCallback` is guarded
+behind API 26 — calling it on API 24-25 throws `NoSuchMethodError`),
+`dhcp_client.c` + `softether_socket.h` + `tcp_socket.c` + `softether_protocol.c`
+(upstream `bfe20f3`: a user cancel now unwinds a hanging connect in ~200 ms instead of
+waiting out the whole multi-stage timeout budget — DHCP retries abort, the TCP connect
+polls an abort flag in 200 ms slices, and the connect path checks the flag between
+transport stages, before login and before session setup).
+
+**Deferred (the Kotlin part of `bfe20f3`, +391 lines in files this project has
+rewritten):** the per-connect generation guard in `SoftEtherVpnService`, and the
+cancellation restructure in `ConnectionController`. This project already implements
+overlapping protections differently (the SSTP session generation, the
+`CancellationException` rethrow, the native lifetime registry), so merging upstream's
+version needs its own block with device testing — it is not a drop-in.
