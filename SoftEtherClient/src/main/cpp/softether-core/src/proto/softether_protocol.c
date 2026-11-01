@@ -3462,7 +3462,13 @@ static void softether_maintain_links(softether_connection_t* conn) {
                     conn->additional_connect_slot = -1;
                 }
             }
-            conn->next_connect_time = now + ADDITIONAL_CONNECT_INTERVAL_MS;
+            // BLOCK v1.0.80: exponential-ish backoff. Opening up to 32 sockets at
+            // a fixed 1 s cadence starves the data plane (device: 100 % packet
+            // loss and a watchdog teardown 31 s after connect). The retry spacing
+            // now grows with the number of failures, 1 s..8 s.
+            long additional_interval = ADDITIONAL_CONNECT_INTERVAL_MS *
+                (conn->additional_failed_count < 8 ? conn->additional_failed_count + 1 : 8);
+            conn->next_connect_time = now + additional_interval;
         }
     }
 

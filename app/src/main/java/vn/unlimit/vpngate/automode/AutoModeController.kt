@@ -174,6 +174,18 @@ class AutoModeController(
      */
     private val isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
     /**
+     * BLOCK v1.0.80: how long after a tunnel comes up the liveness watchdog must
+     * NOT judge it, because the multi-connection ramp-up (opening up to 32
+     * additional sockets) starves the data plane and the probe would otherwise
+     * fail for longer than its 15 s silence window — measured on 5585fecc:
+     * max_connection=32 tore a working tunnel down 31 s after connect.
+     *
+     * Scaled by the configured connection count (see the engine wiring). The
+     * passive detectors (OS callback, 1 s poll) stay live through the grace, so
+     * a genuine OS-level loss is still reported immediately.
+     */
+    private val rampupGraceMsProvider: () -> Long = { 0L },
+    /**
      * R8 (§11.13.2, OQ-6): whether the "Auto-Reconnect in Auto Mode" setting is
      * ENABLED.
      *
@@ -1276,6 +1288,11 @@ enum class AttemptOutcome {
         // The tunnel was just verified, so proof is fresh by definition.
         watchdog?.onProvenAlive(System.currentTimeMillis())
         connectedWatcher = scope.launch {
+            val graceMs = rampupGraceMsProvider()
+            val graceUntil = connectedAt + graceMs
+            if (graceMs > 0) {
+                adapter.log("[AUTO] Liveness grace ${graceMs / 1000}s while the multi-connection ramp-up settles")
+            }
             while (currentCoroutineContext().isActive) {
                 kotlinx.coroutines.delay(1000)
                 if (_state.value !is AutoModeState.Connected) break
@@ -1298,6 +1315,10 @@ enum class AttemptOutcome {
                     val now = System.currentTimeMillis()
                     if (activeProbe.consumeProof()) {
                         wd.onProvenAlive(now)
+                    } else if (now < graceUntil) {
+                        // Ramp-up grace: the additional connections are still being
+                        // opened, so a silent probe here is expected, not a verdict.
+                        // (See BLOCK v1.0.80 for the device measurement.)
                     } else if (wd.onSample(now)) {
                         reportArmedTunnelLoss(
                             "[AUTO] No proof of life for " +

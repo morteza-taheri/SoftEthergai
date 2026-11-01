@@ -161,6 +161,14 @@ object AutoModeEngine {
                 // CONNECTED tracker must not block an Auto-Reconnect: after a
                 // watchdog-declared loss it still reports our own dead tunnel, and
                 // blocking there is exactly the "never retries" report.
+                // BLOCK v1.0.80: the liveness watchdog gets a grace window that
+                // scales with the connection count, because opening up to 32
+                // additional sockets starves the data plane (device: 32 conns ->
+                // 100 % packet loss and a watchdog teardown 31 s after connect).
+                // Formula: 10 s base + 5 s per connection.
+                rampupGraceMsProvider = {
+                    10_000L + du.getSoftEtherMaxConnections().toLong() * 5_000L
+                },
                 isConnectingToAnotherServer = { dropped ->
                     // BLOCK v1.0.80: a reconnect is only refused when a DIFFERENT
                     // server is being connected right now. The tracker reports

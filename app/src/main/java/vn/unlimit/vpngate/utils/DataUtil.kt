@@ -690,14 +690,16 @@ class DataUtil(context: Context?) {
          */
         const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 4
         /**
-         * BLOCK v1.0.79: the protocol allows 32 and the server accepts them, but
-         * this client's multi-connection ramp-up starves the data plane above ~8:
-         * measured on 5585fecc (2026-11-01), 32 connections produced 100 % packet
-         * loss and a liveness-watchdog teardown 31 s after connect, while 8 settled
-         * to 0 % loss. The ceiling stays at the validated value until the ramp-up
-         * is fixed; it must equal the native MAX_SE_CONNECTIONS.
+         * BLOCK v1.0.80: raised to 32 — the SoftEther protocol's documented
+         * ceiling, and the value the native layer accepts (MAX_SE_CONNECTIONS).
+         *
+         * Two fixes made this survivable: the liveness watchdog now has a ramp-up
+         * grace scaled to the connection count, and the additional-connect
+         * retries back off instead of hammering at a fixed 1 s. Without those,
+         * 32 connections produced 100 % packet loss and a watchdog teardown 31 s
+         * after connect (5585fecc, 2026-11-01). Default stays 4.
          */
-        const val MAX_SOFTETHER_CONNECTIONS: Int = 8
+        const val MAX_SOFTETHER_CONNECTIONS: Int = 32
 
         /** Developer Mode (verbose logging) ships disabled on a fresh install. */
         const val DEFAULT_DEVELOPER_MODE: Boolean = false

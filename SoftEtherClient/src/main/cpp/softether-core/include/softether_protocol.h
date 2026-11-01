@@ -29,10 +29,11 @@ extern "C" {
 // its 15 s silence window, and the watchdog tears the tunnel down — measured on
 // 5585fecc, 2026-11-01: max_connection=32 → 100 % packet loss and a loss event
 // 31 s after connect; max_connection=8 → 0 % loss once the ramp-up settled.
-// The ceiling therefore stays at 8 (the value this array and every loop sized
-// from it were validated with) until the ramp-up is fixed. Raise it together
-// with that fix, not before.
-#define MAX_SE_CONNECTIONS                  8
+// BLOCK v1.0.80 raised it back to 32 together with the two fixes that make the
+// ramp-up survivable: the liveness watchdog now has a ramp-up grace scaled to
+// the connection count, and the additional-connect retries back off instead of
+// hammering at a fixed 1 s.
+#define MAX_SE_CONNECTIONS                  32
 #define MAX_SEND_SOCKET_QUEUE_SIZE          (1600 * 1600)
 #define MIN_SEND_SOCKET_QUEUE_SIZE          (1600 * 200)
 #define ADDITIONAL_CONNECT_INTERVAL_MS      1000

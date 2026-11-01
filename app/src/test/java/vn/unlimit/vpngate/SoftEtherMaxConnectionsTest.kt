@@ -35,7 +35,7 @@ class SoftEtherMaxConnectionsTest {
     }
 
     /** The values the Settings picker offers, in ladder order. */
-    private val selectable = intArrayOf(1, 2, 3, 4, 5, 6, 8)
+    private val selectable = intArrayOf(1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
 
     @Test
     fun default_isFour_preservingCurrentRuntimeBehavior() {
@@ -77,7 +77,7 @@ class SoftEtherMaxConnectionsTest {
     @Test
     fun appSettingBounds_matchTheNativeLimit() {
         assertEquals(4, vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SOFTETHER_MAX_CONNECTIONS)
-        assertEquals(8, vn.unlimit.vpngate.utils.DataUtil.MAX_SOFTETHER_CONNECTIONS)
+        assertEquals(32, vn.unlimit.vpngate.utils.DataUtil.MAX_SOFTETHER_CONNECTIONS)
         assertEquals(4, baseConfig().maxConnections)
     }
 
