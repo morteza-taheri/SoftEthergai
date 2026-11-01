@@ -93,7 +93,7 @@ android {
             // v2.4.12 (145) — BLOCK v1.0.75: origin labels, two-stage Try Next,
             // history-driven fast connect, Room 10->11, the hero-disconnect fix
             // and the server-list update fixes (device-verified 2026-10-27).
-            versionCode 149
+            versionCode 150
             versionName "2.4.16"
         }
     }
@@ -106,7 +106,9 @@ android {
         }
 
         debug {
-            versionNameSuffix "-dev"
+            // BLOCK v1.0.80: an official release build passes -PofficialBuild, so
+            // the distributed APK carries a clean "2.4.16" instead of "2.4.16-dev".
+            versionNameSuffix project.hasProperty("officialBuild") ? "" : "-dev"
         }
     }
 

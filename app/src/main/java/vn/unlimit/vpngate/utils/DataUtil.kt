@@ -688,7 +688,13 @@ class DataUtil(context: Context?) {
          * defaults to 4 — so 4 is what the native layer uses when the app does
          * not override it. Hard upper bound is the native `MAX_SE_CONNECTIONS`.
          */
-        const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 4
+        /**
+         * BLOCK v1.0.80: the default moves 4 -> 8 (operator decision) now that the
+         * setting is fully wired — 8 is the highest value the multi-connection
+         * transport has actually carried at 0 % packet loss, and a fresh install
+         * asks for the same value the native layer would fall back to.
+         */
+        const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 8
         /**
          * BLOCK v1.0.80: 32 — the SoftEther protocol's documented maximum, and the
          * value the native layer accepts (MAX_SE_CONNECTIONS).

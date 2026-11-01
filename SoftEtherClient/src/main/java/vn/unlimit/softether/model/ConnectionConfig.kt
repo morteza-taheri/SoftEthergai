@@ -50,7 +50,7 @@ data class ConnectionConfig(
     val clientBuild: Int = 1,
     // Target number of concurrent TCP connections requested in the login PACK
     // (native MAX_SE_CONNECTIONS = 8; default 4 preserves the original runtime behavior)
-    val maxConnections: Int = 4,
+    val maxConnections: Int = 8,
     // Phase 17: manual override for half/full-duplex auto-selection.
     // null = auto-select by device tier; true = force full-duplex (all BOTH);
     // false = force half-duplex (directional C2S/S2C split).

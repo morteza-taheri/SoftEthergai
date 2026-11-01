@@ -1052,7 +1052,9 @@ softether_connection_t* softether_create(void) {
 
     // Initialize multi-connection fields
     conn->num_additional = 0;
-    conn->max_connection = 4;  // Target: request 4 connections in login PACK
+    // BLOCK v1.0.80: 4 -> 8, matching the app-side default (the app always
+    // pushes its own value before connecting; this is the fallback).
+    conn->max_connection = 8;
     conn->half_connection = 0;
     conn->primary_direction = TCP_DIRECTION_BOTH;
     conn->next_connect_time = 0;

@@ -38,8 +38,8 @@ class SoftEtherMaxConnectionsTest {
     private val selectable = intArrayOf(1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
 
     @Test
-    fun default_isFour_preservingCurrentRuntimeBehavior() {
-        assertEquals(4, baseConfig().maxConnections)
+    fun default_isEight_operatorDecision_v1_0_80() {
+        assertEquals(8, baseConfig().maxConnections)
     }
 
     @Test
@@ -63,22 +63,22 @@ class SoftEtherMaxConnectionsTest {
     }
 
     @Test
-    fun corruptValue_isNeutralizedAtUseSite_fallsBackToFour() {
+    fun corruptValue_isNeutralizedAtUseSite_fallsBackToDefault() {
         // DataUtil.getSoftEtherMaxConnections() clamps to 1..MAX before use.
         val corrupt = baseConfig(0)
-        val applied = if (corrupt.maxConnections in 1..32) corrupt.maxConnections else 4
-        assertEquals(4, applied)
+        val applied = if (corrupt.maxConnections in 1..32) corrupt.maxConnections else 8
+        assertEquals(8, applied)
         val negative = baseConfig(-3)
         val appliedNegative =
-            if (negative.maxConnections in 1..32) negative.maxConnections else 4
-        assertEquals(4, appliedNegative)
+            if (negative.maxConnections in 1..32) negative.maxConnections else 8
+        assertEquals(8, appliedNegative)
     }
 
     @Test
     fun appSettingBounds_matchTheNativeLimit() {
-        assertEquals(4, vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SOFTETHER_MAX_CONNECTIONS)
+        assertEquals(8, vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SOFTETHER_MAX_CONNECTIONS)
         assertEquals(32, vn.unlimit.vpngate.utils.DataUtil.MAX_SOFTETHER_CONNECTIONS)
-        assertEquals(4, baseConfig().maxConnections)
+        assertEquals(8, baseConfig().maxConnections)
     }
 
     /**
