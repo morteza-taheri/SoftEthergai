@@ -48,3 +48,16 @@ __pycache__/
 # Local release APKs (built without the CI signing key)
 release-apks/
 
+
+# ── Cleanup (2026-11-01) ────────────────────────────────────────────────────
+# These were being produced into the working tree and cluttering the repo root.
+# `releases/` and `test-evidence/` now live OUTSIDE the project (see the note in
+# docs/reports/README-cleanup-2026-11-01.md) and must never be committed.
+releases/
+test-evidence/
+*.apk
+lint_*.log
+build_test_baseline.log
+
+# Ad-hoc device-analysis scratch dirs (.dv6, .dv7, ...).
+.dv*/
