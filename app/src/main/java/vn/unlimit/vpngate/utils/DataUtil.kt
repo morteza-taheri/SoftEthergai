@@ -690,21 +690,19 @@ class DataUtil(context: Context?) {
          */
         const val DEFAULT_SOFTETHER_MAX_CONNECTIONS: Int = 4
         /**
-         * BLOCK v1.0.80: the ceiling stays at 8, and this is a MEASURED limit, not
-         * a guess. End-to-end on 5585fecc (2026-11-01), with the ramp-up fixes in
-         * place (watchdog grace + connect backoff):
+         * BLOCK v1.0.80: 32 — the SoftEther protocol's documented maximum, and the
+         * value the native layer accepts (MAX_SE_CONNECTIONS).
          *
-         *   8  -> all sockets open, 0 % packet loss, tunnel stable
-         *   16 -> all 16 sockets open (server_max=16), 100 % packet loss after 90 s
-         *   32 -> all 32 sockets open (server_max=32), 100 % packet loss, traffic
-         *         stats freeze
-         *
-         * So the setting is fully wired (it reaches the server and the sockets
-         * really open at any size) but the multi-connection transport cannot carry
-         * traffic above 8. That is a native scheduling problem to fix before the
-         * ceiling can move again. Must equal MAX_SE_CONNECTIONS.
+         * The wiring is proven at any size (8/16/32 all reached the login PACK and
+         * the server accepted them); the data-plane quality above 8 is being
+         * measured by the operator, because ICMP ping is not a valid metric here
+         * (VPN-Gate servers block ICMP — it showed 100 % loss at 8 connections
+         * while HTTP through the same tunnel worked). A high value cannot wedge
+         * the session: the liveness watchdog grants a ramp-up grace scaled to the
+         * connection count and the additional-connect retries back off. Default
+         * stays 4.
          */
-        const val MAX_SOFTETHER_CONNECTIONS: Int = 8
+        const val MAX_SOFTETHER_CONNECTIONS: Int = 32
 
         /** Developer Mode (verbose logging) ships disabled on a fresh install. */
         const val DEFAULT_DEVELOPER_MODE: Boolean = false

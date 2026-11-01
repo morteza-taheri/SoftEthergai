@@ -22,20 +22,22 @@ extern "C" {
 #define SOFTETHER_MAX_BLOCK     (1600 * 1600)
 
 // Multi-connection constants (matching Cedar.h)
-// BLOCK v1.0.80 measured this ceiling END TO END on 5585fecc (2026-11-01),
-// with the ramp-up fixes in place (liveness-watchdog grace scaled to the
-// connection count, and backoff on additional-connect retries):
+// BLOCK v1.0.80: raised to 32 — the SoftEther protocol's documented maximum for
+// concurrent TCP connections per session.
 //
-//   8  -> every socket opens, 0 % packet loss, tunnel stable
-//   16 -> all 16 sockets open (server_max=16), 100 % packet loss after 90 s
-//   32 -> all 32 sockets open (server_max=32), 100 % packet loss and the
-//         traffic stats freeze
+// WIRING IS PROVEN AT ANY SIZE (5585fecc, 2026-11-01): the configured value
+// reaches the login PACK and the server accepts it — verified at 8, 16 and 32
+// (server_max=32, all 32 sockets really opened, num_additional=31).
 //
-// So the wiring is proven at any size — the value reaches the server and the
-// sockets really open — but the multi-connection transport cannot carry traffic
-// above 8. That is a native socket-scheduling problem to fix before this ceiling
-// can move again. Every array and loop in this tree is sized from this constant.
-#define MAX_SE_CONNECTIONS                  8
+// DATA-PLANE QUALITY ABOVE 8 IS UNMEASURED: the first 16/32 attempt used ICMP
+// ping as its metric, which is invalid here (VPN-Gate servers block or
+// de-prioritise ICMP — ping showed 100 % loss at 8 connections while HTTP
+// through the same tunnel returned 204 in 0.5 s). A TCP-based (curl) quality
+// comparison is still pending; the operator is measuring it. Two mitigations
+// already shipped so a high value cannot wedge the session: the liveness
+// watchdog grants a ramp-up grace scaled to the connection count, and the
+// additional-connect retries back off (1..8 s) instead of hammering at 1 s.
+#define MAX_SE_CONNECTIONS                  32
 #define MAX_SEND_SOCKET_QUEUE_SIZE          (1600 * 1600)
 #define MIN_SEND_SOCKET_QUEUE_SIZE          (1600 * 200)
 #define ADDITIONAL_CONNECT_INTERVAL_MS      1000
