@@ -338,6 +338,10 @@ class AutoModeControllerTest {
         networkType: NetworkType = NetworkType.UNKNOWN,
         /** BLOCK v1.0.77 (REQ-ORIGIN-001): receives (origin, key) or (null, null). */
         persistOrigin: (ConnectionOrigin?, String?) -> Unit = { _, _ -> },
+        /** BLOCK v1.0.80: whether the device has any network at all. */
+        isNetworkAvailable: () -> Boolean = { true },
+        /** BLOCK v1.0.80: OQ-7 — is a DIFFERENT server being connected right now? */
+        isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -353,6 +357,8 @@ class AutoModeControllerTest {
         historyProvider = { history },
         networkTypeProvider = { networkType },
         persistOrigin = persistOrigin,
+        isNetworkAvailable = isNetworkAvailable,
+        isConnectingToAnotherServer = isConnectingToAnotherServer,
         // AUTOCONNECT-AUDIT D-5: a fresh ledger per controller so the process-wide
         // WedgeTracker.process never leaks wedges across tests in the same JVM.
         // AUTOCONNECT-FIX-4: overridable, so the terminal-wedge test can share one ledger.
@@ -2731,7 +2737,11 @@ val sstp = AutoModeCandidate(
         adapter.trace = trace
         val controller = controller(
             servers = listOf(server("alpha")),
+            // BLOCK v1.0.80: OQ-7 now asks the NARROW question — a connect/teardown
+            // in flight — because a merely CONNECTED tracker is our own tunnel.
+            // A manual connect that is still coming up is exactly this state.
             isTunnelBusy = { true },
+            isConnectingToAnotherServer = { true },
         )
         controller.onStateChange = { state -> trace += "state:${state::class.simpleName}" }
 
@@ -2743,7 +2753,7 @@ val sstp = AutoModeCandidate(
         delay(300)
 
         val after = trace.drop(mark)
-        val decisionIdx = after.indexOfFirst { it.contains("Manual connect in progress") }
+        val decisionIdx = after.indexOfFirst { it.contains("Another server is connecting") }
         val disconnectedIdx = after.indexOfFirst { it.startsWith("state:") && it.contains("Disconnected") }
 
         assertTrue("the OQ-7 decision log must be present; trace=$after", decisionIdx >= 0)
@@ -4487,6 +4497,147 @@ val sstp = AutoModeCandidate(
             "REQ-ORIGIN-001: an explicit disconnect must clear the record: $origins",
             null,
             origins.last(),
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // BLOCK v1.0.80 — AUTO-RECONNECT WHEN THE APP, NOT THE USER, LOST THE TUNNEL
+    //
+    // Operator report: with Auto-Reconnect ON, the app sometimes makes no attempt
+    // at all. Two independent causes, one test each:
+    //   * a network loss ended the run with ERROR_NO_NETWORK and NOTHING retried;
+    //   * OQ-7 asked "is a tunnel busy?" (which includes CONNECTED), so a
+    //     watchdog-declared loss — where the tracker still shows our own dead
+    //     tunnel — was logged as "Manual connect in progress; skipping".
+    // ═══════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun networkLossSchedulesARetryThatFiresWhenConnectivityReturns() = runBlocking {
+        var network = false
+        val c = controller(
+            servers = listOf(server("s1")),
+            isNetworkAvailable = { network },
+            autoReconnectEnabled = { true },
+        )
+
+        c.start()
+        val first = c.awaitTerminal()
+        assertTrue("expected ERROR_NO_NETWORK, got $first", first is AutoModeState.Error)
+        assertEquals(
+            AutoModeController.ERROR_NO_NETWORK,
+            (first as AutoModeState.Error).message,
+        )
+        assertTrue(
+            "a retry must be armed after a network loss: ${adapter.logs}",
+            adapter.logs.any { it.contains("waiting up to") },
+        )
+        assertTrue(
+            "nothing may be dialled while offline: ${adapter.connects}",
+            adapter.connects.isEmpty(),
+        )
+
+        network = true
+        val fired = withTimeoutOrNull(15_000) {
+            while (adapter.logs.none { it.contains("Network is back") }) delay(100)
+            true
+        }
+        assertTrue("the app must retry once the network returns: ${adapter.logs}", fired == true)
+
+        val dialled = withTimeoutOrNull(10_000) {
+            while (adapter.connects.isEmpty()) delay(100)
+            true
+        }
+        assertTrue("the retry must actually dial a server: ${adapter.logs}", dialled == true)
+    }
+
+    @Test
+    fun aUserStopCancelsThePendingNetworkRetry() = runBlocking {
+        var network = false
+        val c = controller(servers = listOf(server("s1")), isNetworkAvailable = { network })
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Error)
+
+        c.stop()
+        network = true
+        delay(3_500)
+
+        assertFalse(
+            "a user stop must never be undone by the retry: ${adapter.logs}",
+            adapter.logs.any { it.contains("Network is back") },
+        )
+        assertTrue("a stopped app must not dial: ${adapter.connects}", adapter.connects.isEmpty())
+    }
+
+    @Test
+    fun autoReconnectOffDoesNotWaitForTheNetwork() = runBlocking {
+        val c = controller(
+            servers = listOf(server("s1")),
+            isNetworkAvailable = { false },
+            autoReconnectEnabled = { false },
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Error)
+
+        assertTrue(
+            "with Auto-Reconnect off no retry may be armed: ${adapter.logs}",
+            adapter.logs.any { it.contains("Auto-Reconnect is off") },
+        )
+    }
+
+    @Test
+    fun aConnectedTrackerDoesNotBlockTheReconnect() = runBlocking {
+        // The watchdog case: the OS still reports our own tunnel as CONNECTED, so
+        // isTunnelBusy() is true — but no transition is in flight.
+        val c = controller(
+            servers = listOf(server("s1")),
+            isTunnelBusy = { true },
+            isConnectingToAnotherServer = { false },
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        adapter.logs.clear()
+        c.onUnexpectedDisconnectForTests()
+        val decided = withTimeoutOrNull(5_000) {
+            while (adapter.logs.none {
+                    it.contains("reconnecting") || it.contains("skipping Auto-Reconnect")
+                }
+            ) {
+                delay(50)
+            }
+            true
+        }
+        assertTrue("the decision must be logged: ${adapter.logs}", decided == true)
+        assertFalse(
+            "a CONNECTED tracker is not a manual connect: ${adapter.logs}",
+            adapter.logs.any { it.contains("skipping Auto-Reconnect") },
+        )
+    }
+
+    @Test
+    fun aTransitioningTrackerStillBlocksTheReconnect() = runBlocking {
+        // OQ-7 still protects the case it was written for: a manual connect that is
+        // still coming up.
+        val c = controller(
+            servers = listOf(server("s1")),
+            isConnectingToAnotherServer = { true },
+        )
+
+        c.start()
+        assertTrue(c.awaitTerminal() is AutoModeState.Connected)
+
+        adapter.logs.clear()
+        c.onUnexpectedDisconnectForTests()
+        val skipped = withTimeoutOrNull(5_000) {
+            while (adapter.logs.none { it.contains("skipping Auto-Reconnect") }) delay(50)
+            true
+        }
+        assertTrue(
+            "a connect in flight must still be respected: ${adapter.logs}",
+            skipped == true,
         )
     }
 

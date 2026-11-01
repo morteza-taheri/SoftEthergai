@@ -156,6 +156,29 @@ object AutoModeEngine {
                 // (device evidence: DEVICE_VERIFY_AUTOCONNECT_FIX_REPORT.md §5).
                 // `isActiveOrBusy` adds CONNECTED.
                 isTunnelBusy = { vn.unlimit.vpngate.state.GlobalVpnTracker.isActiveOrBusy },
+                // BLOCK v1.0.80: OQ-7 asks a narrower question than isTunnelBusy —
+                // "is a connect/teardown IN FLIGHT", not "is a tunnel up". A
+                // CONNECTED tracker must not block an Auto-Reconnect: after a
+                // watchdog-declared loss it still reports our own dead tunnel, and
+                // blocking there is exactly the "never retries" report.
+                isConnectingToAnotherServer = { dropped ->
+                    // BLOCK v1.0.80: a reconnect is only refused when a DIFFERENT
+                    // server is being connected right now. The tracker reports
+                    // CONNECTING/DISCONNECTING for our own tunnel as it goes down,
+                    // and blocking on that is what produced "no attempt at all".
+                    val state = vn.unlimit.vpngate.state.GlobalVpnTracker.vpnState.value
+                    if (state.status != vn.unlimit.vpngate.state.VpnConnectionStatus.CONNECTING) {
+                        false
+                    } else {
+                        val sameIp = dropped?.ip != null && state.serverIp == dropped.ip
+                        val sameHost = dropped?.hostname != null &&
+                            state.serverHost == dropped.hostname
+                        // An unknown identity counts as "ours": refusing to retry
+                        // because the tracker could not name its server would be
+                        // the same silence in another disguise.
+                        !(sameIp || sameHost || state.serverIp == null)
+                    }
+                },
                 // R8 (§11.13.2): the Auto-Reconnect setting, read live so a
                 // toggle takes effect at the next unexpected disconnect.
                 autoReconnectEnabled = { du.getAutoReconnectInAutoMode() },

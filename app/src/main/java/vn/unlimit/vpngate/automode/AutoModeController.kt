@@ -146,6 +146,34 @@ class AutoModeController(
      */
     private val isTunnelBusy: () -> Boolean = { false },
     /**
+     * BLOCK v1.0.80: "SOMEONE ELSE is connecting right now", decided by identity.
+     *
+     * Two earlier attempts at this gate were wrong on the device, in opposite
+     * directions, and both ended in the same operator-visible symptom — a lost
+     * tunnel and no retry:
+     *   * `isTunnelBusy()` (CONNECTED included) blocked whenever the tracker still
+     *     showed our own dead tunnel;
+     *   * "CONNECTING or DISCONNECTING" blocked on the loss itself, because the
+     *     tracker publishes exactly those while our tunnel goes down.
+     *
+     * The honest question is not "is the tracker busy" but "is it busy with a
+     * DIFFERENT server than the one we just lost". That is what this predicate
+     * answers, and it needs the dropped candidate to do it.
+     *
+     * OQ-7 is about not RACING a manual connect that is still coming up. It was
+     * wired to [isTunnelBusy], so an already-CONNECTED tracker blocked the
+     * reconnect — including the tracker still showing OUR OWN tunnel as connected
+     * after the liveness watchdog declared it dead (device log 2026-11-01:
+     * "No proof of life for 15000ms; tunnel considered lost" immediately followed
+     * by "Manual connect in progress; skipping Auto-Reconnect").
+     *
+     * Widening it to "CONNECTING or DISCONNECTING" is not enough either: when the
+     * network drops, the tracker publishes DISCONNECTING as OUR tunnel goes down,
+     * and that blocked the reconnect too (measured on device). Only CONNECTING —
+     * someone dialling something new — may block.
+     */
+    private val isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
+    /**
      * R8 (§11.13.2, OQ-6): whether the "Auto-Reconnect in Auto Mode" setting is
      * ENABLED.
      *
@@ -695,6 +723,19 @@ enum class AttemptOutcome {
          * such runs excluded every healthy server for the rest of the process.
          */
         const val ERROR_NO_NETWORK = "no_network"
+
+        /**
+         * BLOCK v1.0.80: how long a run that stopped for lack of network keeps
+         * waiting for connectivity to come back, and how often it looks.
+         *
+         * Before this, `ERROR_NO_NETWORK` was terminal: a mobile handover, a
+         * tunnel drop or an airplane-mode blip ended the run and NOTHING ever
+         * restarted it, even with Auto-Reconnect on — the app sat on
+         * "disconnected" until the user pressed the button. The window is bounded
+         * so a device that stays offline does not poll forever.
+         */
+        const val NETWORK_RETRY_WINDOW_MS: Long = 10 * 60 * 1000L
+        const val NETWORK_RETRY_POLL_MS: Long = 2_000L
     }
 
     /**
@@ -743,6 +784,13 @@ enum class AttemptOutcome {
 
     /** Â§13 single-job guard. */
     var job: Job? = null
+
+    /**
+     * BLOCK v1.0.80: the coroutine that watches for connectivity to return after
+     * a run stopped with [ERROR_NO_NETWORK]. Kept apart from [job] so a user
+     * [stop] cancels it explicitly and the run's own `job = null` does not.
+     */
+    private var networkRetryJob: Job? = null
         private set
 
     /**
@@ -778,6 +826,11 @@ enum class AttemptOutcome {
             adapter.log("[AUTO] start ignored: already running")
             return
         }
+        // BLOCK v1.0.80: a run is starting now, so any pending connectivity retry
+        // is redundant. Without this the retry would fire a second run right after
+        // the first one began.
+        networkRetryJob?.cancel()
+        networkRetryJob = null
         job = scope.launch { runAutoMode() }
     }
 
@@ -1261,6 +1314,57 @@ enum class AttemptOutcome {
     }
 
     /**
+     * BLOCK v1.0.80: after a run stopped because the device had no network, wait
+     * for connectivity and start again — without the user having to press
+     * anything.
+     *
+     * The rule the operator asked for: if the USER did not disconnect, a lost
+     * tunnel (or a lost network) must be retried. [stop] and [disconnectNow] are
+     * the only things that express "the user disconnected", and both cancel this
+     * job, so an explicit disconnect still ends the retrying.
+     *
+     * Cancellable and bounded: it re-checks [isNetworkAvailable] every
+     * [NETWORK_RETRY_POLL_MS] for at most [NETWORK_RETRY_WINDOW_MS], then gives
+     * up quietly (the state stays [ERROR_NO_NETWORK]).
+     */
+    private fun scheduleNetworkRetry() {
+        if (!autoReconnectEnabled()) {
+            adapter.log("[AUTO] No network; Auto-Reconnect is off, not waiting for it")
+            return
+        }
+        networkRetryJob?.cancel()
+        networkRetryJob = scope.launch {
+            adapter.log(
+                "[AUTO] No network; waiting up to ${NETWORK_RETRY_WINDOW_MS / 60_000} min " +
+                    "for connectivity before retrying",
+            )
+            val deadline = System.currentTimeMillis() + NETWORK_RETRY_WINDOW_MS
+            while (System.currentTimeMillis() < deadline) {
+                kotlinx.coroutines.delay(NETWORK_RETRY_POLL_MS)
+                if (!currentCoroutineContext().isActive) return@launch
+                if (isRunning) {
+                    adapter.log("[AUTO] A run is already active; dropping the network retry")
+                    return@launch
+                }
+                if (!isNetworkAvailable()) continue
+                adapter.log("[AUTO] Network is back; reconnecting")
+                // Same seeding as an unexpected disconnect: whatever the previous
+                // run had left to try, then the normal order. Origin is
+                // AUTO_RECONNECT because the app, not the user, is dialling.
+                pendingReconnectServer = null
+                overrideServers = remainingCandidates.ifEmpty { null }
+                runOrigin = ConnectionOrigin.AUTO_RECONNECT
+                start()
+                return@launch
+            }
+            adapter.log(
+                "[AUTO] Network did not return within ${NETWORK_RETRY_WINDOW_MS / 60_000} min; " +
+                    "stopping",
+            )
+        }
+    }
+
+    /**
      * A-4 (§3.4): the one place an armed-tunnel loss becomes an
      * Auto-Reconnect.
      *
@@ -1328,10 +1432,13 @@ enum class AttemptOutcome {
      *   runs over [remainingCandidates]).
      */
     private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {
-        // OQ-7: a manual connect that is still coming up owns the tunnel. Do not
-        // race it with a reconnect.
-        if (isTunnelBusy()) {
-            adapter.log("[AUTO] Manual connect in progress; skipping Auto-Reconnect")
+        // OQ-7: a connect/teardown that is still IN FLIGHT owns the tunnel; do not
+        // race it. A merely CONNECTED tracker does not block us — that is either
+        // our own tunnel (which we are here because we just lost) or one the OS is
+        // about to tear down. Using isTunnelBusy() here is what made a
+        // watchdog-declared loss end in "skipping Auto-Reconnect" and silence.
+        if (isConnectingToAnotherServer(droppedServer)) {
+            adapter.log("[AUTO] Another server is connecting; skipping Auto-Reconnect")
             // A-5 (§3.5): Disconnected is published on the way OUT of the
             // decision, never ahead of it — so the OQ-7/OQ-6/OQ-1 follow-up is
             // already visible to any consumer that sees this state.
@@ -1385,9 +1492,10 @@ enum class AttemptOutcome {
         // user stop during the wait ends the coroutine cleanly.
         kotlinx.coroutines.delay(reconnectInitialDelayMs)
 
-        // Someone may have started connecting / stopping during the delay.
-        if (isTunnelBusy()) {
-            adapter.log("[AUTO] Tunnel owned elsewhere after delay; aborting Auto-Reconnect")
+        // Someone may have started connecting / stopping during the delay. Only a
+        // transition blocks here, for the same reason as the entry check.
+        if (isConnectingToAnotherServer(droppedServer)) {
+            adapter.log("[AUTO] Another server started connecting; aborting Auto-Reconnect")
             return
         }
 
@@ -1563,6 +1671,10 @@ enum class AttemptOutcome {
             // R8: a user stop ends the ownership record; no reconnect may name it.
             connectedCandidate = null
             pendingReconnectServer = null
+            // BLOCK v1.0.80: a user stop is the operator's "I disconnected" — the
+            // pending connectivity retry must not resurrect the tunnel later.
+            networkRetryJob?.cancel()
+            networkRetryJob = null
             // BLOCK v1.0.77 (REQ-ORIGIN-001): an ended run owns no tunnel, so the
             // persisted origin is cleared here rather than left to age into a lie.
             persistOrigin(null, null)
@@ -1735,6 +1847,9 @@ enum class AttemptOutcome {
         // reconnect a tunnel the user deliberately closed.
         connectedCandidate = null
         pendingReconnectServer = null
+        // BLOCK v1.0.80: an explicit disconnect cancels a pending network retry.
+        networkRetryJob?.cancel()
+        networkRetryJob = null
         // BLOCK v1.0.77 (REQ-ORIGIN-001): the record ends with the tunnel.
         persistOrigin(null, null)
         // BLOCK v1.0.75 (D-2): a user disconnect ends the session — the next
@@ -2229,6 +2344,7 @@ enum class AttemptOutcome {
             adapter.log("[AUTO] No network available; stopping before any attempt")
             setState(AutoModeState.Error(ERROR_NO_NETWORK))
             job = null
+            scheduleNetworkRetry()
             return
         }
         adapter.log("[AUTO] Protocols (priority) = ${priorities.joinToString(" > ") { it.id }}")
@@ -2559,6 +2675,7 @@ enum class AttemptOutcome {
                 adapter.log("[AUTO] Network lost; stopping before the next attempt")
                 setState(AutoModeState.Error(ERROR_NO_NETWORK))
                 job = null
+                scheduleNetworkRetry()
                 return
             }
 
@@ -3827,4 +3944,4 @@ class WedgeTracker {
         val process: WedgeTracker = WedgeTracker()
     }
 }
-
+
