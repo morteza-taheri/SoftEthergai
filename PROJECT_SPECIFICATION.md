@@ -7432,3 +7432,25 @@ cancellation restructure in `ConnectionController`. This project already impleme
 overlapping protections differently (the SSTP session generation, the
 `CancellationException` rethrow, the native lifetime registry), so merging upstream's
 version needs its own block with device testing — it is not a drop-in.
+
+### 12.13.5 — Final state of the Max Connections ceiling (supersedes §12.13.3, 2026-11-01 evening)
+
+The operator set a speed record at 32 connections, confirming the wiring was the problem.
+§12.13.3's "ceiling stays at 8" is superseded:
+
+* **The ceiling is 32 again** (`MAX_SE_CONNECTIONS`, `MAX_SOFTETHER_CONNECTIONS`, the
+  Settings ladder 1..32). The wiring is proven at every size — 8/16/32 all reached the
+  login PACK, the server accepted them, and all sockets really opened.
+* **The ICMP-based "16/32 broken" verdict in §12.13.3 is RETRACTED.** VPN-Gate servers
+  block or de-prioritise ICMP (ping read 100 % loss at 8 connections while HTTP through
+  the same tunnel returned 204 in 0.5 s). Any future ceiling work must measure with TCP
+  (curl) on multiple servers, never ping.
+* **The default is 8** (operator decision): `DataUtil.DEFAULT_SOFTETHER_MAX_CONNECTIONS`,
+  `ConnectionConfig.maxConnections` and the native fallback all agree.
+* **The mitigations stay**: the liveness watchdog's ramp-up grace scales with the
+  connection count, and additional-connect retries back off — a high value cannot wedge
+  or kill the session.
+
+**Release v2.4.16 (150)** published with per-ABI APKs (`-PabiSplits`) and a clean
+versionName (`-PofficialBuild` suppresses the `-dev` debug suffix); the update-checker
+manifest (`app-update/version.json`) points at 150/2.4.16.
