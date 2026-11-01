@@ -911,7 +911,26 @@ class AndroidConnectionAdapter(
                 action == OpenVPNService.DISCONNECT_VPN ||
                 action == ACTION_VPN_DISCONNECT
         if (isTeardown || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            context.startService(intent)
+            // BLOCK v1.0.80: on Android 12+ this throws
+            // BackgroundServiceStartNotAllowedException when the app is in the
+            // background — recorded in the device dropbox (2026-11-01 07:26, the
+            // app backgrounded overnight while Auto Mode tried to dispatch a
+            // teardown). A stop is background-safe, and both VPN services run
+            // their full teardown in onDestroy(), so stopService() is the
+            // correct fallback: the disconnect still happens.
+            try {
+                context.startService(intent)
+            } catch (e: IllegalStateException) {
+                Log.w(
+                    TAG,
+                    "background startService refused; falling back to stopService (${e.message})",
+                )
+                try {
+                    context.stopService(intent)
+                } catch (inner: Exception) {
+                    Log.e(TAG, "stopService fallback also failed", inner)
+                }
+            }
         } else {
             startForegroundCompatible(intent, service)
         }
