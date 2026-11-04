@@ -603,6 +603,18 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                                 refreshNotice.postValue(
                                     App.instance?.getString(R.string.server_list_update_preserved),
                                 )
+                            } else if (isUserInitiated) {
+                                // BLOCK v1.0.85: a fetch that failed through the
+                                // VPN tunnel used to be completely silent (device:
+                                // "Sources: html=null api=null" -> Preserved
+                                // NETWORK_FAILURE -> the Update button looked dead).
+                                // Every user press now gets a verdict.
+                                refreshNotice.postValue(
+                                    App.instance?.getString(
+                                        R.string.server_list_update_failed,
+                                        outcome.reason.toString(),
+                                    ),
+                                )
                             }
                         } else {
                             Log.e(TAG, "Update failed (${outcome.reason}) and no list is stored")

@@ -358,4 +358,5 @@
     <string name="status_state_disconnected">Đã ngắt</string>
     <string name="server_list_update_in_progress">Đang có một lần cập nhật chạy</string>
     <string name="server_list_filtered">Đang lọc: hiển thị %1$d trên %2$d</string>
+    <string name="server_list_update_failed">Cập nhật thất bại (%1$s) — giữ danh sách cũ</string>
 </resources>
