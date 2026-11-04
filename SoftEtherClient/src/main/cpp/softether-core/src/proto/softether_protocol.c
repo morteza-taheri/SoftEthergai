@@ -1236,6 +1236,21 @@ static int perform_tls_handshake(softether_connection_t* conn, const char* hostn
     LOGD("Starting TLS handshake with %s", hostname);
     conn->state = STATE_TLS_HANDSHAKE;
 
+    // BLOCK v1.0.83: bound the handshake. Until now SO_RCVTIMEO was only set
+    // AFTER the handshake (just before the VPNCONNECT watermark), so a server
+    // that accepted the TCP connection and then stalled inside TLS could hold
+    // the connect for as long as it liked — device evidence 2026-11-04: a
+    // handshake to 221.44.173.56 took 26 s and then timed out on the watermark,
+    // far past the 8 s attempt budget the user had configured.
+    {
+        int hs_timeout_ms = conn->timeout_ms > 0 ? conn->timeout_ms : 30000;
+        struct timeval hs_tv;
+        hs_tv.tv_sec = hs_timeout_ms / 1000;
+        hs_tv.tv_usec = (hs_timeout_ms % 1000) * 1000;
+        setsockopt(conn->socket_fd, SOL_SOCKET, SO_RCVTIMEO, &hs_tv, sizeof(hs_tv));
+        setsockopt(conn->socket_fd, SOL_SOCKET, SO_SNDTIMEO, &hs_tv, sizeof(hs_tv));
+    }
+
     // Create SSL context
     ssl_context_t* ssl_ctx = ssl_create_client();
     if (ssl_ctx == NULL) {
@@ -1247,10 +1262,17 @@ static int perform_tls_handshake(softether_connection_t* conn, const char* hostn
 
     // Perform SSL connect — pass hostname for SNI (server may require extension presence)
     if (ssl_connect(ssl_ctx, conn->socket_fd, hostname) != 0) {
-        LOGE("SSL handshake failed");
+        // BLOCK v1.0.83: separate "the server stalled" from "the server refused
+        // the handshake". A socket timeout (EAGAIN/EWOULDBLOCK) means the server
+        // never answered, which is a dead endpoint — the Auto Mode report should
+        // say so instead of blaming TLS.
+        int hs_errno = errno;
+        int stalled = (hs_errno == EAGAIN || hs_errno == EWOULDBLOCK) ? 1 : 0;
+        LOGE("SSL handshake failed (errno=%d%s)", hs_errno,
+             stalled ? " - socket timeout, server did not answer" : "");
         ssl_destroy(ssl_ctx);
         conn->ssl_ctx = NULL;
-        return ERR_TLS_HANDSHAKE;
+        return stalled ? ERR_TIMEOUT : ERR_TLS_HANDSHAKE;
     }
 
     conn->ssl = ssl_ctx;
@@ -1621,8 +1643,13 @@ static int softether_protocol_login(softether_connection_t* conn, const char* ho
     int watermark_result = send_vpnconnect_watermark(conn, host);
 
     if (watermark_result < 0) {
-        LOGE("VPNCONNECT watermark failed — server may not be SoftEther");
-        return ERR_TLS_HANDSHAKE;
+        // BLOCK v1.0.83: this used to return ERR_TLS_HANDSHAKE even though the
+        // handshake had just succeeded — the failure is the server never
+        // answering the watermark (device: "SSL read: SO_RCVTIMEO expired
+        // (errno=11)" then "failed reading headers at byte 0"). Reporting it as
+        // a TLS failure sent every diagnosis down the wrong path.
+        LOGE("VPNCONNECT watermark failed — no response from %s (server may not be SoftEther)", host);
+        return ERR_TIMEOUT;
     }
 
     if (watermark_result != 1) {
