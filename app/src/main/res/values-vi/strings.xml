@@ -356,4 +356,5 @@
     <string name="status_state_connected">Đã kết nối</string>
     <string name="status_state_connecting">Đang kết nối</string>
     <string name="status_state_disconnected">Đã ngắt</string>
+    <string name="server_list_update_in_progress">Đang có một lần cập nhật chạy</string>
 </resources>

@@ -36,6 +36,13 @@ import vn.unlimit.vpngate.utils.DataUtil
 
 class ConnectionListViewModel(application: Application) : BaseViewModel(application) {
     companion object {
+
+        /** BLOCK v1.0.84: a flag older than this is treated as stuck, not busy. */
+        private const val LOADING_STALE_MS = 90_000L
+
+        /** How long a skipped press waits for the update that is already running. */
+        private const val AWAIT_RUNNING_UPDATE_MS = 25_000L
+
         const val TAG = "VPNGateViewModel"
     }
 
@@ -62,6 +69,12 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      * finished minutes ago.
      */
     var refreshNotice: MutableLiveData<CharSequence?> = MutableLiveData(null)
+
+    /**
+     * BLOCK v1.0.84: when the current update started, so a flag that never
+     * cleared cannot disable the Update button permanently.
+     */
+    private var loadingSinceMs = 0L
 
     /** Clears [refreshNotice] once it has been shown. */
     fun clearRefreshNotice() {
@@ -448,13 +461,37 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      * never empty the list and two presses can never race.
      */
     fun getAPIData(isUserInitiated: Boolean = false) {
-        if (isLoading.value == true) {
+        // BLOCK v1.0.84: this guard used to return SILENTLY whenever isLoading was
+        // true, and isLoading is only cleared in the coroutine's `finally`. One
+        // update that never settled (a skipped-concurrent wait, a cancelled scope)
+        // therefore turned the Update button into a dead control for the rest of
+        // the process — the operator's "I press it and nothing happens".
+        //
+        // Two changes: the flag now carries a timestamp and self-heals after
+        // [LOADING_STALE_MS], and a press that really is refused says so.
+        val loadingFor = if (loadingSinceMs > 0L) {
+            System.currentTimeMillis() - loadingSinceMs
+        } else {
+            0L
+        }
+        val stale = loadingFor > LOADING_STALE_MS
+        if (isLoading.value == true && !stale) {
+            Log.i(TAG, "Update press ignored: an update has been running for ${loadingFor}ms")
+            if (isUserInitiated) {
+                refreshNotice.postValue(
+                    App.instance?.getString(R.string.server_list_update_in_progress),
+                )
+            }
             return
+        }
+        if (stale) {
+            Log.w(TAG, "Update flag was stale after ${loadingFor}ms; starting a fresh update")
         }
         if (isUserInitiated) {
             isRetried = false
         }
         Log.d(TAG, "Start vpnItem from multi-source collector (userInitiated=$isUserInitiated)")
+        loadingSinceMs = System.currentTimeMillis()
         isLoading.postValue(true)
         isError.postValue(false)
         viewModelScope.launch {
@@ -466,7 +503,11 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                         // Wait for it and publish its result; returning here
                         // without it would leave the screen on a spinner.
                         Log.i(TAG, "Server list update skipped: one is already running")
-                        updater.awaitRunningUpdate()
+                        // BLOCK v1.0.84: bounded. An unbounded wait here is the
+                        // other way the button dies — the spinner never clears.
+                        kotlinx.coroutines.withTimeoutOrNull(AWAIT_RUNNING_UPDATE_MS) {
+                            updater.awaitRunningUpdate()
+                        }
                         val items = withContext(Dispatchers.IO) {
                             App.instance?.vpnGateItemDao?.getAll().orEmpty()
                         }
@@ -581,6 +622,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                     isError.postValue(true)
                 }
             } finally {
+                loadingSinceMs = 0L
                 isLoading.postValue(false)
             }
         }
