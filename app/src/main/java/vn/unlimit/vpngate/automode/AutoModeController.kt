@@ -1087,9 +1087,30 @@ enum class AttemptOutcome {
                     val all = (overrideServers ?: serverProvider())
                         .withActiveRtt(priorities)
                         .sortedForAutoConnect(loadHistory(), safeNetworkType())
-                    val untried = all.filter {
+                    var untried = all.filter {
                         serverKey(it) !in sessionTriedKeys &&
                             usableProtocols(it, priorities).isNotEmpty()
+                    }
+                    // BLOCK v1.0.85: the previous behaviour ended in
+                    // ERROR_NO_MORE_UNTRIED once every server had been dialled in
+                    // this session — the operator saw "Try next server" throw an
+                    // error after normal use. A session boundary is not a dead
+                    // end: start a new cycle, keeping only the server we are
+                    // leaving so Next really moves somewhere else.
+                    if (untried.isEmpty()) {
+                        val leaving = connectedCandidate?.let { serverKey(it) }
+                        sessionTriedKeys = if (leaving == null) {
+                            HashSet()
+                        } else {
+                            HashSet(listOf(leaving))
+                        }
+                        sessionAttempts = 0
+                        sessionTotal = all.size
+                        untried = all.filter {
+                            serverKey(it) !in sessionTriedKeys &&
+                                usableProtocols(it, priorities).isNotEmpty()
+                        }
+                        adapter.log("[AUTO] All servers tried this session; starting a new cycle")
                     }
                     // The walk starts at the first untried candidate and runs
                     // over the untried tail of the ordering; reachability and
@@ -1229,9 +1250,25 @@ enum class AttemptOutcome {
                 val all = (overrideServers ?: serverProvider())
                     .withActiveRtt(priorities)
                     .sortedForAutoConnect(loadHistory(), safeNetworkType())
-                val untried = all.filter {
+                var untried = all.filter {
                     serverKey(it) !in sessionTriedKeys &&
                         usableProtocols(it, priorities).isNotEmpty()
+                }
+                // BLOCK v1.0.85: same new-cycle rule for the external-tunnel
+                // branch so Next is never a dead end there either.
+                if (untried.isEmpty()) {
+                    sessionTriedKeys = if (currentKey != serverKey(null, null)) {
+                        HashSet(listOf(currentKey))
+                    } else {
+                        HashSet()
+                    }
+                    sessionAttempts = 0
+                    sessionTotal = all.size
+                    untried = all.filter {
+                        serverKey(it) !in sessionTriedKeys &&
+                            usableProtocols(it, priorities).isNotEmpty()
+                    }
+                    adapter.log("[AUTO] All servers tried this session; starting a new cycle")
                 }
                 val remaining = all
                     .dropWhile { it !== untried.firstOrNull() }
