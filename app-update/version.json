@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "versionCode": 150,
-  "versionName": "2.4.16",
+  "versionCode": 151,
+  "versionName": "2.4.17",
   "releasePageUrl": "https://github.com/morteza-taheri/SoftEthergai/releases/latest",
-  "notes": "Auto-Reconnect fixed after network loss; Max Connections wired end to end (up to 32) with default 8; cancellable hanging connect; legacy icon and background-start crash fixes"
+  "notes": "Star any server to keep it forever (and filter to favourites only); the Status screen is a full report (server, protocol, live rates, session, today, all-time) instead of a dead power button; faster failure on dead servers (bounded TLS handshake); new connecting spinner and semantic icons; quicker list update feedback"
 }
