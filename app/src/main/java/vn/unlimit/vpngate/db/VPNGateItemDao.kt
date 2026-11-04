@@ -21,16 +21,6 @@ interface VPNGateItemDao {
     @Query("DELETE FROM vpngateitem")
     fun deleteAll()
 
-    /**
-     * BLOCK v1.0.81 — the Settings "purge servers" action.
-     *
-     * Removes every stored server except [keepHost], which is the one the app is
-     * connected to (or, when nothing is connected, the only host the caller wants
-     * to survive). Favourites are dropped by the caller, not here: this is the raw
-     * data operation.
-     */
-    @Query("DELETE FROM vpngateitem WHERE hostName != :keepHost")
-    fun deleteAllExcept(keepHost: String)
 
     @Query("SELECT COUNT(hostName) FROM vpngateitem")
     fun count(): Int

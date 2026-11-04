@@ -40,20 +40,27 @@ object ServerPurge {
 
         val dao = app.vpnGateItemDao
         val before = dao.count()
-        val history = app.serverHistoryDao
+        val keep = keepHost ?: ""
+
+        // Raw SQL, deliberately. The four deletes do not belong on the Dao
+        // interfaces: adding abstract methods there would force every test fake
+        // to implement them, and the purge is one atomic maintenance operation
+        // rather than part of the repository's normal query surface.
+        val db = app.appDatabase.openHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM vpngateitem WHERE hostName != ?", arrayOf<Any>(keep))
+            db.execSQL("DELETE FROM server_history_summary WHERE hostName != ?", arrayOf<Any>(keep))
+            db.execSQL("DELETE FROM server_history_protocol WHERE hostName != ?", arrayOf<Any>(keep))
+            db.execSQL("DELETE FROM server_history_event WHERE hostName != ?", arrayOf<Any>(keep))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
 
         if (keepHost == null) {
-            dao.deleteAll()
-            // "every host except the empty one" is every host.
-            history.deleteSummaryExcept("")
-            history.deleteProtocolExcept("")
-            history.deleteEventsExcept("")
             FavouriteServers.clear()
         } else {
-            dao.deleteAllExcept(keepHost)
-            history.deleteSummaryExcept(keepHost)
-            history.deleteProtocolExcept(keepHost)
-            history.deleteEventsExcept(keepHost)
             // Drop the stars of the servers that no longer exist, keep the survivor's.
             FavouriteServers.removeAll(
                 FavouriteServers.snapshot().filterNot { it.equals(keepHost, ignoreCase = true) },

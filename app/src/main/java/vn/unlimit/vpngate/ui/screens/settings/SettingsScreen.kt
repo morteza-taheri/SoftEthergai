@@ -210,6 +210,9 @@ fun SettingsScreen(
     var showProtocolPriorityDialog by remember { mutableStateOf(false) }
     var showAutoTimeoutPicker by remember { mutableStateOf(false) }
     var showSoftetherConnectionsPicker by remember { mutableStateOf(false) }
+    // BLOCK v1.0.86: operator-configurable server-list ceiling.
+    var serverListCap by remember { mutableStateOf(dataUtil!!.getServerListCap()) }
+    var showServerListCapPicker by remember { mutableStateOf(false) }
     var showPurgeServersConfirm by remember { mutableStateOf(false) }
     var showServerUpdateIntervalPicker by remember { mutableStateOf(false) }
 
@@ -600,6 +603,20 @@ fun SettingsScreen(
                         ),
                         icon = Icons.Outlined.Hub,
                         onClick = { showSoftetherConnectionsPicker = true },
+                    )
+                    SettingDivider()
+                    // BLOCK v1.0.86: how many servers the retained list may hold.
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_server_list_cap_label),
+                        subtitle = stringResource(
+                            R.string.setting_server_list_cap_subtitle,
+                            serverListCap / 2,
+                        ),
+                        value = context.getString(
+                            R.string.setting_server_list_cap_value,
+                            serverListCap,
+                        ),
+                        onClick = { showServerListCapPicker = true },
                     )
                     SettingDivider()
                     // BLOCK v1.0.81: purge the catalogue, keeping the tunnel.
@@ -1242,6 +1259,26 @@ fun SettingsScreen(
                 dataUtil.setSoftEtherMaxConnections(values[index])
             },
             onDismiss = { showSoftetherConnectionsPicker = false },
+        )
+    }
+
+    if (showServerListCapPicker) {
+        // BLOCK v1.0.86: default 300, range 10..2000. Half of whatever is
+        // chosen becomes the manual/CSV import quota (ServerListCap.manualQuota).
+        val values = listOf(10, 25, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000)
+        SingleChoiceDialog(
+            title = stringResource(R.string.setting_server_list_cap_label),
+            options = values.map {
+                context.getString(R.string.setting_server_list_cap_value, it)
+            },
+            selectedIndex = values.indexOf(serverListCap).let {
+                if (it < 0) values.indexOf(300) else it
+            },
+            onSelect = { index ->
+                serverListCap = values[index]
+                dataUtil!!.setServerListCap(values[index])
+            },
+            onDismiss = { showServerListCapPicker = false },
         )
     }
 

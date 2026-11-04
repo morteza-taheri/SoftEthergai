@@ -6,6 +6,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -25,11 +27,11 @@ import vn.unlimit.vpngate.models.VPNGateItem
  * The rule under test is arithmetic, not a magic number:
  *
  * ```
- * reserved = ceil(total × 10%)
+ * reserved = ceil(total × 50%)
  * manual   = total − reserved
  * ```
  *
- * so 500 → 50 reserved → 450 manual, and nothing anywhere hard-codes 450.
+ * so 500 → 250 reserved → 250 manual (operator BLOCK v1.0.86).
  *
  * Pure JVM: an in-memory [ManualServerDao] fake and a temporary file, no
  * Android, no Room, no network.
@@ -38,6 +40,9 @@ class ManualServerQuotaTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()
+
+    @Before fun pinCapacity() { ServerListCap.resolver = { 500 } }
+    @After fun releaseCapacity() { ServerListCap.resolver = null }
 
     // ------------------------------------------------------------- fakes
 
@@ -106,16 +111,16 @@ class ManualServerQuotaTest {
     // ============================================================ A. defaults
 
     @Test
-    fun `A the default capacity reserves ten percent and leaves 450 manual slots`() {
+    fun `A the default capacity reserves half and leaves 250 manual slots`() {
         assertEquals("the approved total capacity", 500, MAX_RETAINED_SERVERS)
-        assertEquals("10% of 500, rounded up", 50, reservedCapacity())
-        assertEquals("500 - 50", 450, manualServerQuota())
+        assertEquals("50% of 500", 250, reservedCapacity())
+        assertEquals("500 - 250", 250, manualServerQuota())
     }
 
     @Test
     fun `A the quota is derived, never stored as an independent constant`() {
         // The only literal is the percentage; every count follows from it.
-        assertEquals(RESERVED_CAPACITY_PERCENT, 10)
+        assertEquals(RESERVED_CAPACITY_PERCENT, 50)
         for (total in listOf(100, 250, 500, 501, 1000)) {
             assertEquals(
                 "manual quota for $total must equal total - reserved",
@@ -128,15 +133,15 @@ class ManualServerQuotaTest {
     // ========================================================== B. below limit
 
     @Test
-    fun `B adding the 450th manual server succeeds`() = runBlocking {
-        val dao = FakeDao((0 until 449).map { entity(it) })
+    fun `B adding the 250th manual server succeeds`() = runBlocking {
+        val dao = FakeDao((0 until 249).map { entity(it) })
         val store = store(dao)
 
-        val outcome = store.addDetailed(host(449), "443", VpnProtocolNames.SSTP, null, null)
+        val outcome = store.addDetailed(host(249), "443", VpnProtocolNames.SSTP, null, null)
 
         assertTrue("expected Stored, got $outcome", outcome is AddOutcome.Stored)
         assertFalse("a new record is not an update", (outcome as AddOutcome.Stored).updated)
-        assertEquals("the quota is now exactly full", 450, dao.count())
+        assertEquals("the quota is now exactly full", 250, dao.count())
         assertTrue("the quota is not exceeded", dao.count() <= manualServerQuota())
     }
 
@@ -144,45 +149,45 @@ class ManualServerQuotaTest {
 
     @Test
     fun `C adding a new manual server at the limit is rejected and writes nothing`() = runBlocking {
-        val dao = FakeDao((0 until 450).map { entity(it) })
+        val dao = FakeDao((0 until 250).map { entity(it) })
         val store = store(dao)
 
-        val outcome = store.addDetailed(host(450), "443", VpnProtocolNames.SSTP, null, null)
+        val outcome = store.addDetailed(host(250), "443", VpnProtocolNames.SSTP, null, null)
 
         assertTrue("expected QuotaReached, got $outcome", outcome is AddOutcome.QuotaReached)
         val rejected = outcome as AddOutcome.QuotaReached
-        assertEquals("the count the user is shown", 450, rejected.manualCount)
-        assertEquals("the quota the user is shown", 450, rejected.quota)
+        assertEquals("the count the user is shown", 250, rejected.manualCount)
+        assertEquals("the quota the user is shown", 250, rejected.quota)
         assertEquals("the capacity the user is shown", 500, rejected.totalCapacity)
 
-        assertEquals("no record may be added past the quota", 450, dao.count())
+        assertEquals("no record may be added past the quota", 250, dao.count())
         assertTrue(
             "existing records must be untouched",
-            (0 until 450).all { i -> dao.listAll().any { it.host == host(i) } },
+            (0 until 250).all { i -> dao.listAll().any { it.host == host(i) } },
         )
         assertTrue(
             "the rejected host must not be stored",
-            dao.listAll().none { it.host == host(450) },
+            dao.listAll().none { it.host == host(250) },
         )
     }
 
     @Test
     fun `C the Boolean form reports the rejection too`() = runBlocking {
-        val dao = FakeDao((0 until 450).map { entity(it) })
+        val dao = FakeDao((0 until 250).map { entity(it) })
         val store = store(dao)
 
         assertFalse(
             "a full quota must not look like success",
-            store.add(host(450), "443", VpnProtocolNames.SSTP, null, null),
+            store.add(host(250), "443", VpnProtocolNames.SSTP, null, null),
         )
-        assertEquals(450, dao.count())
+        assertEquals(250, dao.count())
     }
 
     // ======================================================== D. duplicate
 
     @Test
     fun `D a duplicate submission at the limit consumes no extra slot`() = runBlocking {
-        val dao = FakeDao((0 until 450).map { entity(it) })
+        val dao = FakeDao((0 until 250).map { entity(it) })
         val store = store(dao)
 
         // Same (host, port, protocol) as row 0 — an edit, not a new server.
@@ -190,7 +195,7 @@ class ManualServerQuotaTest {
 
         assertTrue("a duplicate edit must still be stored, got $outcome", outcome is AddOutcome.Stored)
         assertTrue("and it must be reported as an update", (outcome as AddOutcome.Stored).updated)
-        assertEquals("no extra record", 450, dao.count())
+        assertEquals("no extra record", 250, dao.count())
         assertEquals(
             "the edit landed on the existing row",
             "Home",
@@ -203,11 +208,11 @@ class ManualServerQuotaTest {
     @Test
     fun `E the reserved share follows the configured capacity`() {
         val expected = mapOf(
-            100 to (10 to 90),
-            250 to (25 to 225),
-            500 to (50 to 450),
-            501 to (51 to 450),
-            1000 to (100 to 900),
+            100 to (50 to 50),
+            250 to (125 to 125),
+            500 to (250 to 250),
+            501 to (251 to 250),
+            1000 to (500 to 500),
         )
         for ((total, pair) in expected) {
             val (reserved, manual) = pair
@@ -218,17 +223,17 @@ class ManualServerQuotaTest {
 
     @Test
     fun `E a capacity not divisible by ten rounds the reservation upward`() {
-        // 123 × 10% = 12.3 → 13 reserved (never 12: at least 10% stays free).
-        assertEquals(13, reservedCapacity(123))
-        assertEquals(110, manualServerQuota(123))
+        // 123 × 50% = 61.5 → 62 reserved (rounds up, never down).
+        assertEquals(62, reservedCapacity(123))
+        assertEquals(61, manualServerQuota(123))
 
-        // 501 × 10% = 50.1 → 51, so the manual quota stays at 450.
-        assertEquals(51, reservedCapacity(501))
-        assertEquals(450, manualServerQuota(501))
+        // 501 × 50% = 250.5 → 251, so the manual quota stays at 250.
+        assertEquals(251, reservedCapacity(501))
+        assertEquals(250, manualServerQuota(501))
 
         // Small capacities still reserve something rather than nothing.
         assertEquals(1, reservedCapacity(1))
-        assertEquals(1, reservedCapacity(9))
+        assertEquals(5, reservedCapacity(9))
         assertEquals(0, reservedCapacity(0))
         assertEquals(0, manualServerQuota(0))
     }
@@ -250,7 +255,7 @@ class ManualServerQuotaTest {
 
         val large = store(dao, quota = manualServerQuota(1000))
         assertTrue(
-            "a 1000-slot capacity leaves 900, so the same add fits",
+            "a 1000-slot capacity leaves 500, so the same add fits",
             large.addDetailed(host(95), "443", VpnProtocolNames.SSTP, null, null)
                 is AddOutcome.Stored,
         )
@@ -271,7 +276,7 @@ class ManualServerQuotaTest {
 
     @Test
     fun `F the retained list never exceeds the total capacity`() {
-        val manual = (0 until 450).map { row(host(it)) }
+        val manual = (0 until 250).map { row(host(it)) }
         val network = (0 until 500).map { row("net-$it.example", score = it) }
         val capped = capRetainedServers(
             rows = network + manual,
@@ -324,24 +329,24 @@ class ManualServerQuotaTest {
 
     @Test
     fun `G data already over the quota is preserved and cannot get worse`() = runBlocking {
-        // 460 persisted manual records against a 450 quota — the state a user
+        // 260 persisted manual records against a 250 quota — the state a user
         // can be in after a capacity change, or from a build without the cap.
-        val dao = FakeDao((0 until 460).map { entity(it) })
+        val dao = FakeDao((0 until 260).map { entity(it) })
         val store = store(dao)
 
         val outcome = store.addDetailed(host(999), "443", VpnProtocolNames.SSTP, null, null)
 
         assertTrue("the add must be refused, got $outcome", outcome is AddOutcome.QuotaReached)
-        assertEquals("nothing may be deleted", 460, dao.count())
+        assertEquals("nothing may be deleted", 260, dao.count())
         assertTrue(
             "the over-cap state must be reported honestly, not rounded down",
-            (outcome as AddOutcome.QuotaReached).manualCount == 460,
+            (outcome as AddOutcome.QuotaReached).manualCount == 260,
         )
     }
 
     @Test
     fun `G an over-cap user can still edit and delete`() = runBlocking {
-        val dao = FakeDao((0 until 460).map { entity(it) })
+        val dao = FakeDao((0 until 260).map { entity(it) })
         val store = store(dao)
 
         // Editing an existing record takes no slot, so it must still work —
@@ -351,11 +356,11 @@ class ManualServerQuotaTest {
             store.addDetailed(host(0), "443", VpnProtocolNames.SSTP, "Edited", null)
                 is AddOutcome.Stored,
         )
-        assertEquals(460, dao.count())
+        assertEquals(260, dao.count())
 
         val firstId = dao.listAll().first { it.host == host(0) }.id
         store.remove(firstId)
-        assertEquals("deleting is how the user recovers", 459, dao.count())
+        assertEquals("deleting is how the user recovers", 259, dao.count())
     }
 
     // ========================================================= H. concurrency
@@ -381,11 +386,11 @@ class ManualServerQuotaTest {
 
     @Test
     fun `H a rejected addition leaves no partial record`() = runBlocking {
-        val dao = FakeDao((0 until 450).map { entity(it) })
+        val dao = FakeDao((0 until 250).map { entity(it) })
         val before = dao.listAll().map { it.host to it.updatedAt }.toSet()
         val store = store(dao)
 
-        store.addDetailed(host(450), "443", VpnProtocolNames.SSTP, "Nope", "note")
+        store.addDetailed(host(250), "443", VpnProtocolNames.SSTP, "Nope", "note")
 
         assertEquals("the table is byte-identical", before, dao.listAll().map { it.host to it.updatedAt }.toSet())
     }

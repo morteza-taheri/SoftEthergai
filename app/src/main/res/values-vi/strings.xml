@@ -359,4 +359,7 @@
     <string name="server_list_update_in_progress">Đang có một lần cập nhật chạy</string>
     <string name="server_list_filtered">Đang lọc: hiển thị %1$d trên %2$d</string>
     <string name="server_list_update_failed">Cập nhật thất bại (%1$s) — giữ danh sách cũ</string>
+    <string name="setting_server_list_cap_label">Giới hạn danh sách máy chủ</string>
+    <string name="setting_server_list_cap_value">%1$d máy chủ</string>
+    <string name="setting_server_list_cap_subtitle">Số máy chủ tối đa. Có thể thêm tối đa %1$d bằng tay / nhập tệp; phần vượt quá bị từ chối kèm cảnh báo</string>
 </resources>

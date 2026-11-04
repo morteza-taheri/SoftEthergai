@@ -23,20 +23,6 @@ import androidx.room.Transaction
 @Dao
 interface ServerHistoryDao {
 
-    // ---------------------------------------------------------------------
-    // BLOCK v1.0.81 — the Settings "purge servers" action. All three tables key
-    // on hostName, so one predicate per table is enough to erase the history of
-    // every server that is about to disappear from the list.
-    // ---------------------------------------------------------------------
-
-    @Query("DELETE FROM server_history_summary WHERE hostName != :keepHost")
-    fun deleteSummaryExcept(keepHost: String)
-
-    @Query("DELETE FROM server_history_protocol WHERE hostName != :keepHost")
-    fun deleteProtocolExcept(keepHost: String)
-
-    @Query("DELETE FROM server_history_event WHERE hostName != :keepHost")
-    fun deleteEventsExcept(keepHost: String)
 
     // ---------------------------------------------------------------------
     // Reads used by Auto Mode's ranking — one query, narrow projection.

@@ -4,6 +4,8 @@ import androidx.sqlite.db.SupportSQLiteQuery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import vn.unlimit.vpngate.data.model.VpnPortSource
 import vn.unlimit.vpngate.db.VPNGateItemDao
@@ -20,6 +22,9 @@ import vn.unlimit.vpngate.models.VPNGateItem
  * tie-break. Manual rows are never pruned.
  */
 class ServerRetentionCapTest {
+
+    @Before fun pinCapacity() { ServerListCap.resolver = { 500 } }
+    @After fun releaseCapacity() { ServerListCap.resolver = null }
 
     private class FakeDao(initial: List<VPNGateItem> = emptyList()) : VPNGateItemDao {
         var rows: List<VPNGateItem> = initial

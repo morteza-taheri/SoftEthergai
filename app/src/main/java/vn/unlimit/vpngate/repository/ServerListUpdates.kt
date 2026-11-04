@@ -556,7 +556,7 @@ internal const val MAX_RETAINED_SERVERS: Int = 500
  * `ceil(MAX_RETAINED_SERVERS × 10%)`, so it scales with the capacity above and
  * can never drift out of step with it.
  */
-internal const val RESERVED_CAPACITY_PERCENT: Int = 10
+internal const val RESERVED_CAPACITY_PERCENT: Int = 50
 
 /**
  * REQ-RETENTION-002 — the number of slots reserved from manual-server
@@ -566,7 +566,7 @@ internal const val RESERVED_CAPACITY_PERCENT: Int = 10
  * `ceil(total * 10 / 100)` for every non-negative total, with no floating-point
  * rounding to drift on values such as 501 (→ 51, not 50).
  */
-internal fun reservedCapacity(total: Int = MAX_RETAINED_SERVERS): Int {
+internal fun reservedCapacity(total: Int = ServerListCap.current()): Int {
     if (total <= 0) return 0
     val scaled = total.toLong() * RESERVED_CAPACITY_PERCENT
     return ((scaled + 99) / 100).toInt()
@@ -578,7 +578,7 @@ internal fun reservedCapacity(total: Int = MAX_RETAINED_SERVERS): Int {
  *
  * Derived on every call, never stored: 500 → 450, 501 → 450, 1000 → 900.
  */
-internal fun manualServerQuota(total: Int = MAX_RETAINED_SERVERS): Int =
+internal fun manualServerQuota(total: Int = ServerListCap.current()): Int =
     (total - reservedCapacity(total)).coerceAtLeast(0)
 
 /**
@@ -600,7 +600,7 @@ internal fun capRetainedServers(
     rows: List<VPNGateItem>,
     manualHostNames: Set<String>,
     successCounts: Map<String, Int> = emptyMap(),
-    cap: Int = MAX_RETAINED_SERVERS,
+    cap: Int = ServerListCap.current(),
     /**
      * BLOCK v1.0.81: host names the user starred. A favourite is protected from
      * the cap exactly like a manual row — the operator's rule is that a starred

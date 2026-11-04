@@ -462,4 +462,7 @@
     <string name="server_list_update_in_progress">An update is already running</string>
     <string name="server_list_filtered">Filtered: showing %1$d of %2$d</string>
     <string name="server_list_update_failed">Update failed (%1$s) — the previous list is kept</string>
+    <string name="setting_server_list_cap_label">Server list limit</string>
+    <string name="setting_server_list_cap_value">%1$d servers</string>
+    <string name="setting_server_list_cap_subtitle">Max servers kept. Up to %1$d can be added manually / by import; the rest is rejected with a warning</string>
 </resources>

@@ -395,4 +395,7 @@
     <string name="server_list_update_in_progress">یک به‌روزرسانی در حال اجراست</string>
     <string name="server_list_filtered">فیلتر فعال: نمایش %1$d از %2$d</string>
     <string name="server_list_update_failed">به‌روزرسانی ناموفق (%1$s) — لیست قبلی حفظ شد</string>
+    <string name="setting_server_list_cap_label">سقف لیست سرورها</string>
+    <string name="setting_server_list_cap_value">%1$d سرور</string>
+    <string name="setting_server_list_cap_subtitle">حداکثر سرورهای نگه داشته شده. تا %1$d سرور را میتوان دستی/با ایمپورت افزود؛ بیشتر با هشدار رد میشود</string>
 </resources>

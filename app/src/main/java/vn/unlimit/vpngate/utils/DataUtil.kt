@@ -393,6 +393,22 @@ class DataUtil(context: Context?) {
         setIntSetting(SETTING_SOFTETHER_MAX_CONNECTIONS, value.coerceIn(1, MAX_SOFTETHER_CONNECTIONS))
     }
 
+    /**
+     * BLOCK v1.0.86: the user-configurable server-list ceiling. Clamped at the
+     * boundary so a corrupt preference can never make the retention cap 0 or
+     * 2 000 000. Default 300, range 10..2000.
+     */
+    fun getServerListCap(): Int =
+        getIntSetting(SETTING_SERVER_LIST_CAP, DEFAULT_SERVER_LIST_CAP)
+            .coerceIn(MIN_SERVER_LIST_CAP, MAX_SERVER_LIST_CAP)
+
+    fun setServerListCap(value: Int) {
+        setIntSetting(
+            SETTING_SERVER_LIST_CAP,
+            value.coerceIn(MIN_SERVER_LIST_CAP, MAX_SERVER_LIST_CAP),
+        )
+    }
+
     fun hasAds(): Boolean {
         // Ads have been fully removed. This always returns false.
         return false
@@ -622,6 +638,12 @@ class DataUtil(context: Context?) {
      * optimisation prompt has been shown, so it does not fire on every press.
      */
     const val SETTING_BATTERY_OPT_ASKED: String = "SETTING_BATTERY_OPT_ASKED"
+
+    /** BLOCK v1.0.86: how many servers the retained list may hold. */
+    const val SETTING_SERVER_LIST_CAP: String = "SETTING_SERVER_LIST_CAP"
+    const val DEFAULT_SERVER_LIST_CAP: Int = 300
+    const val MIN_SERVER_LIST_CAP: Int = 10
+    const val MAX_SERVER_LIST_CAP: Int = 2000
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"

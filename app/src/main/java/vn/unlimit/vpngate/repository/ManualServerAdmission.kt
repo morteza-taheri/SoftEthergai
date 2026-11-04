@@ -37,9 +37,9 @@ import kotlinx.coroutines.sync.withLock
  */
 class ManualServerAdmission(
     /** Maximum number of user-supplied records, derived from the total capacity. */
-    val quota: Int = manualServerQuota(),
+    val quota: Int = ServerListCap.manualQuota(),
     /** The total server-list capacity this quota was derived from. */
-    val totalCapacity: Int = MAX_RETAINED_SERVERS,
+    val totalCapacity: Int = ServerListCap.current(),
     /** Authoritative persisted count of user-supplied records (both surfaces). */
     private val count: suspend () -> Int,
 ) {
