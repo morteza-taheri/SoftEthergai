@@ -10,13 +10,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.AutoMode
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Autorenew
-import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.AutoMode
+import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -69,8 +69,8 @@ private val destinations = listOf(
     NavDestination(
         NavRoutes.AUTO,
         R.string.auto_mode,
-        Icons.Filled.Autorenew,
-        Icons.Outlined.Autorenew,
+        Icons.Filled.AutoMode,
+        Icons.Outlined.AutoMode,
     ),
     NavDestination(
         NavRoutes.HOME,
@@ -81,8 +81,8 @@ private val destinations = listOf(
     NavDestination(
         NavRoutes.STATUS,
         R.string.status,
-        Icons.Filled.VpnKey,
-        Icons.Outlined.VpnKey,
+        Icons.Filled.Insights,
+        Icons.Outlined.Insights,
     ),
     NavDestination(
         NavRoutes.SETTINGS,
