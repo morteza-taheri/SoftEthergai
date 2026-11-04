@@ -858,6 +858,22 @@ enum class AttemptOutcome {
      */
     @Volatile
     var currentServerIndex: Int = -1
+
+    /**
+     * BLOCK v1.0.81 — the SESSION-wide attempt position.
+     *
+     * Pressing "Try next server" while connected tears the tunnel down and
+     * starts a continuation run over the tail of the list. That run used to
+     * report its own `attempt = 1, total = tail.size`, so the progress bar
+     * jumped back to "Attempting server 1 of N" even though the user was
+     * hundreds of servers into the list. These two counters survive a
+     * continuation run: the bar reads "6 of 500" and keeps moving forward.
+     *
+     * Reset only by a FRESH start (the user pressing connect, or the reconnect
+     * budget resetting); a skip-continuation and an Auto-Reconnect keep them.
+     */
+    private var sessionAttempts: Int = 0
+    private var sessionTotal: Int = 0
         private set
 
     @Volatile
@@ -2618,6 +2634,15 @@ enum class AttemptOutcome {
         // not re-dialled by this run's normal walk.
         fastFailedKey?.let { attempted.add(it) }
         var attempt = 0
+        // BLOCK v1.0.81: a continuation run (Try Next / Auto-Reconnect) keeps the
+        // session position; only a fresh start begins a new one.
+        val continuesSession = skipInFlight ||
+            runOrigin == ConnectionOrigin.AUTO_RECONNECT
+        if (!continuesSession) {
+            sessionAttempts = 0
+            sessionTotal = 0
+        }
+        if (servers.size > sessionTotal) sessionTotal = servers.size
         // F.29: the run's identity for history tokens. One run visits each
         // (server, protocol) pair at most once, so this plus the pair is a
         // collision-free token.
@@ -2746,6 +2771,7 @@ enum class AttemptOutcome {
             // order are otherwise untouched.
             val protocolOrder = orderWithRememberedProtocol(supported, history.viewOf(server))
             attempt++
+            sessionAttempts++
             adapter.log("[AUTO] Trying #$attempt ${server.hostname ?: server.ip}")
             rememberRemaining(servers, server)
             skipRequested.set(false)
@@ -2805,8 +2831,9 @@ enum class AttemptOutcome {
                         protocol = protocol,
                         speed = server.speed,
                         ping = server.ping,
-                        attempt = attempt,
-                        total = servers.size,
+                        // BLOCK v1.0.81: the session position, not this run's.
+                        attempt = sessionAttempts.coerceAtLeast(1),
+                        total = maxOf(sessionTotal, servers.size),
                         origin = runOrigin,
                     )
                 )

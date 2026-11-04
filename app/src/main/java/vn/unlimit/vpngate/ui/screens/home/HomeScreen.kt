@@ -379,6 +379,19 @@ fun HomeScreen(
                         pinnedKey,
                     ) {
                         var items = baseItems
+                        // BLOCK v1.0.81: favourites float to the top. This runs
+                        // AFTER the user's filter+sort and BEFORE the pin, and it
+                        // is a STABLE sort on one boolean, so the chosen sort order
+                        // is preserved inside each group (starred first, everything
+                        // else exactly as it was). Reading the snapshot here also
+                        // makes the list repaint the moment a star is tapped.
+                        val favouriteSnapshot = vn.unlimit.vpngate.favourites
+                            .FavouriteServers.snapshot()
+                        if (favouriteSnapshot.isNotEmpty()) {
+                            items = items.sortedByDescending {
+                                it.hostName?.trim() in favouriteSnapshot
+                            }
+                        }
                         // v1.0.54 (§1.6.48) PART 3: pinning runs LAST, after the
                         // user's filter and sort, so the frozen row survives both
                         // — and so it can never influence Auto Connect's own
