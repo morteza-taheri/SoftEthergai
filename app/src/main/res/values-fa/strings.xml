@@ -173,7 +173,7 @@
     <string name="get_pro_version">دریافت نسخهٔ Pro</string>
     <string name="status">وضعیت</string>
     <string name="tap_to_disconnect">برای قطع اتصال از %1$s دکمه را بزنید</string>
-    <string name="tap_to_connect_last">برای اتصال به %1$s دکمه را بزنید</string>
+    <string name="tap_to_connect_last">وصل نیستید — تونل را از «اتو مود» شروع کنید (%1$s)</string>
     <string name="connected_to">متصل به %1$s</string>
     <string name="no_last_vpn_server">لطفاً ابتدا از صفحهٔ اصلی یک سرور VPN را برای اتصال انتخاب کنید</string>
     <string name="connect_one_warning">برای دسترسی به این قابلیت باید حداقل به یک سرور VPN متصل شده باشید</string>
