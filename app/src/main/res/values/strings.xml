@@ -460,4 +460,5 @@
     <string name="status_state_connecting">Connecting</string>
     <string name="status_state_disconnected">Disconnected</string>
     <string name="server_list_update_in_progress">An update is already running</string>
+    <string name="server_list_filtered">Filtered: showing %1$d of %2$d</string>
 </resources>

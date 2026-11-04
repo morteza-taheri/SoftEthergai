@@ -499,6 +499,23 @@ fun HomeScreen(
                                                 style = MaterialTheme.typography.labelMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
+                                            // BLOCK v1.0.84: say when a filter is hiding
+                                            // rows. Without this an update that refilled the
+                                            // store looked like it did nothing, because the
+                                            // filtered view still showed one row.
+                                            if (activeFilter != null && baseItems.isNotEmpty() &&
+                                                serverItems.size != baseItems.size
+                                            ) {
+                                                Text(
+                                                    text = stringResource(
+                                                        R.string.server_list_filtered,
+                                                        serverItems.size,
+                                                        baseItems.size,
+                                                    ),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
                                         }
                                     }
                                 }
