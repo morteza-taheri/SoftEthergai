@@ -54,6 +54,7 @@ fun FilterSheet(
     }
     var showSstp by remember { mutableStateOf(mFilter.isShowSSTP) }
     var showSoftether by remember { mutableStateOf(mFilter.isShowSoftEther) }
+    var favouriteOnly by remember { mutableStateOf(mFilter.isFavouriteOnly) }
     var pingText by remember { mutableStateOf(mFilter.ping?.toString() ?: "") }
     var pingOperator by remember { mutableStateOf(mFilter.pingFilterOperator) }
     var speedText by remember { mutableStateOf(mFilter.speed?.toString() ?: "") }
@@ -109,6 +110,20 @@ fun FilterSheet(
             FilterChip(selected = showSoftether, onClick = { showSoftether = !showSoftether }, label = {
                 Text(stringResource(R.string.show_softether_server))
             })
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Switch(
+                    checked = favouriteOnly,
+                    onCheckedChange = { favouriteOnly = it },
+                )
+                Text(
+                    stringResource(R.string.server_filter_favourites),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
             NumericFilterRow(
                 label = stringResource(R.string.ping),
                 text = pingText,
@@ -160,6 +175,7 @@ fun FilterSheet(
                     // BLOCK v1.0.81: the quick test is gone, so the
                     // reachable-only filter no longer exists.
                     mFilter.isReachableOnly = false
+                    mFilter.isFavouriteOnly = favouriteOnly
                     mFilter.ping = pingText.toIntOrNull()
                     mFilter.pingFilterOperator = pingOperator
                     mFilter.speed = speedText.toIntOrNull()

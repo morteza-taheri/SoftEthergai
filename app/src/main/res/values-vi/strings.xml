@@ -346,4 +346,14 @@
     <string name="setting_purge_servers_confirm">Xóa mọi máy chủ trong danh sách trừ máy chủ bạn đang kết nối, cùng toàn bộ lịch sử của chúng. Không thể hoàn tác.</string>
     <string name="setting_purge_servers_action">Xóa</string>
     <string name="setting_purge_servers_done">Đã xóa %1$d máy chủ</string>
+    <string name="status_now">Hiện tại</string>
+    <string name="status_session">Phiên này</string>
+    <string name="status_today">Hôm nay</string>
+    <string name="status_all_time">Tổng cộng</string>
+    <string name="status_download">Tải xuống</string>
+    <string name="status_upload">Tải lên</string>
+    <string name="status_assigned_ip">IP được cấp</string>
+    <string name="status_state_connected">Đã kết nối</string>
+    <string name="status_state_connecting">Đang kết nối</string>
+    <string name="status_state_disconnected">Đã ngắt</string>
 </resources>

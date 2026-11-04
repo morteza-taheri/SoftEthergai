@@ -282,6 +282,12 @@ class VPNGateConnectionList : Parcelable {
          * ServerReachabilityTester results, so [getWhereQuery] ignores it.
          */
         var isReachableOnly: Boolean = false
+        /**
+         * BLOCK v1.0.82: "only the servers I starred". Not a database column —
+         * the favourites live in SharedPreferences, so the list applies this in
+         * memory exactly where it already applies the pin.
+         */
+        var isFavouriteOnly: Boolean = false
         var ping: Int? = null
         var pingFilterOperator: NumberFilterOperator = NumberFilterOperator.LESS_OR_EQUAL
         var speed: Int? = null

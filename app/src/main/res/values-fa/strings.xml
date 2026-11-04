@@ -382,4 +382,14 @@
     <string name="setting_purge_servers_confirm">همهٔ سرورهای لیست به‌جز سروری که به آن متصل هستید، همراه با تمام تاریخچه‌شان حذف می‌شوند. این کار بازگشت‌پذیر نیست.</string>
     <string name="setting_purge_servers_action">حذف</string>
     <string name="setting_purge_servers_done">%1$d سرور حذف شد</string>
+    <string name="status_now">همین حالا</string>
+    <string name="status_session">این نشست</string>
+    <string name="status_today">امروز</string>
+    <string name="status_all_time">کل</string>
+    <string name="status_download">دانلود</string>
+    <string name="status_upload">آپلود</string>
+    <string name="status_assigned_ip">آی‌پی اختصاص‌یافته</string>
+    <string name="status_state_connected">متصل</string>
+    <string name="status_state_connecting">در حال اتصال</string>
+    <string name="status_state_disconnected">قطع</string>
 </resources>

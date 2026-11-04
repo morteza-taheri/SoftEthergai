@@ -449,4 +449,14 @@
     <string name="setting_purge_servers_confirm">Delete every server in the list except the one you are connected to, together with all of their history. This cannot be undone.</string>
     <string name="setting_purge_servers_action">Delete</string>
     <string name="setting_purge_servers_done">Removed %1$d server(s)</string>
+    <string name="status_now">Right now</string>
+    <string name="status_session">This session</string>
+    <string name="status_today">Today</string>
+    <string name="status_all_time">All time</string>
+    <string name="status_download">Download</string>
+    <string name="status_upload">Upload</string>
+    <string name="status_assigned_ip">Assigned IP</string>
+    <string name="status_state_connected">Connected</string>
+    <string name="status_state_connecting">Connecting</string>
+    <string name="status_state_disconnected">Disconnected</string>
 </resources>

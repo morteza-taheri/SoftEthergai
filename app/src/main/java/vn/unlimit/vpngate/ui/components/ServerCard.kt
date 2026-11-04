@@ -344,61 +344,6 @@ fun FlagImage(
     }
 }
 
-/**
- * Big animated circular connect button used by the Status screen. Pulses
- * while connecting, shows a solid ring when connected.
- */
-@Composable
-fun PowerButton(
-    activated: Boolean,
-    enabled: Boolean,
-    connecting: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    size: Dp = 96.dp,
-    activeColor: Color = MaterialTheme.colorScheme.primary,
-    idleColor: Color = MaterialTheme.colorScheme.outline,
-) {
-    val transition = rememberInfiniteTransition(label = "pulse")
-    val pulse by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(650, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulseScale",
-    )
-    val scale = if (connecting) pulse else 1f
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier
-            .size(size)
-            .scale(scale),
-        shape = androidx.compose.foundation.shape.CircleShape,
-        color = if (activated) activeColor else MaterialTheme.colorScheme.surfaceVariant,
-        shadowElevation = if (activated || connecting) 6.dp else 2.dp,
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (connecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(size / 2),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 4.dp,
-                )
-            } else {
-                Icon(
-                    Icons.Filled.PowerSettingsNew,
-                    contentDescription = null,
-                    modifier = Modifier.size(size / 2),
-                    tint = if (activated) MaterialTheme.colorScheme.onPrimary else idleColor,
-                )
-            }
-        }
-    }
-}
-
 /** Gradient hero surface used at the top of connection screens. */
 @Composable
 fun HeroGradient(

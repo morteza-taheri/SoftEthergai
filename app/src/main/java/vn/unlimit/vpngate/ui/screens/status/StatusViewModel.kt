@@ -50,9 +50,17 @@ import java.io.InputStreamReader
 
 /** Immutable snapshot of every UI-observable field the old StatusFragment wrote to views. */
 data class StatusUiState(
-    val powerActivated: Boolean = false,
-    val powerEnabled: Boolean = false,
     val connecting: Boolean = false,
+    /** BLOCK v1.0.82: the report replaced the power button — see StatusScreen. */
+    val connected: Boolean = false,
+    val serverCountry: String = "",
+    val serverHost: String = "",
+    val serverIp: String = "",
+    val protocolLabel: String = "",
+    val assignedIp: String = "",
+    val connectedSinceLabel: String = "",
+    val todayDownload: String = TrafficStats.zeroVolume(),
+    val todayUpload: String = TrafficStats.zeroVolume(),
     val statusText: String = "",
     val showCheckIp: Boolean = false,
     val excludedAppsCount: Int = 0,
@@ -206,8 +214,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = false
                         update {
                             it.copy(
-                                powerActivated = false,
-                                powerEnabled = true,
                                 connecting = false,
                                 statusText = appContext.getString(
                                     R.string.tap_to_connect_last,
@@ -290,24 +296,18 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             if (isFreeConnected) {
                 update {
                     it.copy(
-                        powerActivated = true,
-                        powerEnabled = true,
                         statusText = base,
                     )
                 }
             } else if (mVpnGateConnection != null) {
                 update {
                     it.copy(
-                        powerActivated = false,
-                        powerEnabled = true,
                         statusText = base,
                     )
                 }
             } else {
                 update {
                     it.copy(
-                        powerActivated = false,
-                        powerEnabled = false,
                         statusText = appContext.getString(R.string.no_last_vpn_server),
                     )
                 }
@@ -342,7 +342,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                             isAuthFailed = false
                             update {
                                 it.copy(
-                                    powerActivated = true,
                                     connecting = false,
                                     showCheckIp = true,
                                     statusText = appContext.getString(
@@ -365,7 +364,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                             if (!isConnecting && !isAuthFailed && !isSSTPConnected && !isSoftEtherConnected) {
                                 update {
                                     it.copy(
-                                        powerActivated = false,
                                         connecting = false,
                                         showCheckIp = false,
                                         statusText = appContext.getString(
@@ -380,7 +378,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                             isConnecting = false
                             update {
                                 it.copy(
-                                    powerActivated = false,
                                     connecting = false,
                                     showCheckIp = false,
                                     statusText = appContext.getString(R.string.vpn_auth_failure),
@@ -423,8 +420,11 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
         val inRate = TrafficStats.bytesPerSecond(lastOpenVpnDiffInBytes, interval)
         val outRate = TrafficStats.bytesPerSecond(lastOpenVpnDiffOutBytes, interval)
         val totals = lifetimeTotals()
+        val (todayDown, todayUp) = todayLabels(lastOpenVpnInBytes, lastOpenVpnOutBytes)
         update {
             it.copy(
+                todayDownload = todayDown,
+                todayUpload = todayUp,
                 downloadSession = OpenVPNService.humanReadableByteCount(lastOpenVpnInBytes, false, appContext.resources),
                 downloadSpeed = OpenVPNService.humanReadableByteCount(inRate, true, appContext.resources),
                 uploadSession = OpenVPNService.humanReadableByteCount(lastOpenVpnOutBytes, false, appContext.resources),
@@ -446,7 +446,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = false
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = false,
                                 showCheckIp = true,
                                 statusText = appContext.getString(
@@ -465,7 +464,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         if (!isAnyConnected) {
                             update {
                                 it.copy(
-                                    powerActivated = false,
                                     connecting = false,
                                     showCheckIp = false,
                                     statusText = appContext.getString(
@@ -479,7 +477,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = true
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = true,
                                 statusText = appContext.getString(R.string.softether_connecting),
                             )
@@ -489,7 +486,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = true
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = true,
                                 statusText = appContext.getString(R.string.softether_tls_handshake),
                             )
@@ -499,7 +495,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = true
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = true,
                                 statusText = appContext.getString(R.string.softether_protocol_handshake),
                             )
@@ -509,7 +504,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = true
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = true,
                                 statusText = appContext.getString(R.string.softether_authenticating),
                             )
@@ -519,7 +513,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = true
                         update {
                             it.copy(
-                                powerActivated = true,
                                 connecting = true,
                                 statusText = appContext.getString(R.string.softether_session_setup),
                             )
@@ -529,7 +522,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         isConnecting = false
                         update {
                             it.copy(
-                                powerActivated = false,
                                 connecting = false,
                                 statusText = appContext.getString(R.string.softether_disconnecting),
                             )
@@ -557,6 +549,8 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                 uploadSpeed = OpenVPNService.humanReadableByteCount(snapshot.outBytesPerSecond(), true, appContext.resources),
                 totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
                 totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
+                todayDownload = todayLabels(snapshot.inBytes, snapshot.outBytes).first,
+                todayUpload = todayLabels(snapshot.inBytes, snapshot.outBytes).second,
             )
         }
     }
@@ -580,8 +574,32 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                 uploadSpeed = OpenVPNService.humanReadableByteCount(snapshot.outBytesPerSecond(), true, appContext.resources),
                 totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
                 totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
+                todayDownload = todayLabels(snapshot.inBytes, snapshot.outBytes).first,
+                todayUpload = todayLabels(snapshot.inBytes, snapshot.outBytes).second,
             )
         }
+    }
+
+    /**
+     * BLOCK v1.0.82: today's (download, upload) labels for the report.
+     * [DailyTraffic] keeps the max session value per calendar day, so a repeated
+     * snapshot cannot double count and a reconnect cannot produce a negative one.
+     */
+    /**
+     * BLOCK v1.0.82: the protocol of the live tunnel, for the report card. Falls
+     * back to OpenVPN because that is the only stack that connects without an
+     * explicit flag here (its state listener has no dedicated boolean).
+     */
+    fun currentProtocolLabel(): String = when {
+        isSoftEtherConnected -> "SoftEther"
+        isSSTPConnected -> "SSTP"
+        else -> "OpenVPN"
+    }
+
+    private fun todayLabels(sessionIn: Long, sessionOut: Long): Pair<String, String> {
+        val (inToday, outToday) = DailyTraffic.record(sessionIn, sessionOut)
+        return OpenVPNService.humanReadableByteCount(inToday, false, appContext.resources) to
+            OpenVPNService.humanReadableByteCount(outToday, false, appContext.resources)
     }
 
     /**
@@ -638,6 +656,13 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                 uploadSpeed = TrafficStats.zeroSpeed(),
                 totalDownload = totals.getOrNull(0) ?: TrafficStats.zeroVolume(),
                 totalUpload = totals.getOrNull(1) ?: TrafficStats.zeroVolume(),
+                // Today's counters survive a disconnect; only the session ones reset.
+                todayDownload = DailyTraffic.peek().let {
+                    OpenVPNService.humanReadableByteCount(it.first, false, appContext.resources)
+                },
+                todayUpload = DailyTraffic.peek().let {
+                    OpenVPNService.humanReadableByteCount(it.second, false, appContext.resources)
+                },
             )
         }
     }
@@ -670,7 +695,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                         update {
                             it.copy(
                                 statusText = appContext.getString(R.string.sstp_connected, connectedIp),
-                                powerActivated = true,
                                 connecting = false,
                                 showCheckIp = true,
                             )
@@ -690,7 +714,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
                 update {
                     it.copy(
                         statusText = appContext.getString(R.string.sstp_connected, connectedIp),
-                        powerActivated = true,
                         connecting = false,
                         showCheckIp = true,
                     )
@@ -702,84 +725,10 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
 
     // -------------------------------------------------------------- actions
 
-    fun onPowerButtonClicked() {
-        if (mVpnGateConnection == null) {
-            return
-        }
-        if (isAnyConnected) {
-            if (isFreeConnected) {
-                if (checkStatus() || isSoftEtherConnected) {
-                    stopVpn()
-                    isConnecting = false
-                    update {
-                        it.copy(
-                            powerActivated = false,
-                            connecting = false,
-                            statusText = appContext.getString(R.string.disconnecting),
-                        )
-                    }
-                } else {
-                    startVpnSSTPService(ACTION_VPN_DISCONNECT)
-                    update {
-                        it.copy(
-                            powerActivated = false,
-                            connecting = false,
-                            statusText = appContext.getString(R.string.sstp_disconnecting),
-                        )
-                    }
-                }
-            }
-        } else {
-            if (isConnecting) {
-                val method = dataUtil.getStringSetting(DataUtil.LAST_CONNECT_METHOD, "openvpn")
-                when (method) {
-                    "softether" -> {
-                        val intent = Intent(appContext, SoftEtherVpnService::class.java)
-                        intent.action = SoftEtherVpnService.ACTION_DISCONNECT
-                        appContext.startService(intent)
-                    }
-                    "sstp" -> startVpnSSTPService(ACTION_VPN_DISCONNECT)
-                    else -> stopVpn()
-                }
-                isConnecting = false
-                update {
-                    it.copy(
-                        powerActivated = false,
-                        connecting = false,
-                        statusText = appContext.getString(R.string.disconnecting),
-                    )
-                }
-            } else {
-                val method = dataUtil.getStringSetting(DataUtil.LAST_CONNECT_METHOD, "openvpn")
-                when (method) {
-                    "sstp" -> handleSSTPBtn()
-                    "softether" -> {
-                        val useTcp = !dataUtil.getBooleanSetting(DataUtil.LAST_CONNECT_USE_UDP, false)
-                        startSoftEtherConnection(useTcp)
-                        update {
-                            it.copy(
-                                statusText = appContext.getString(R.string.connecting) + " " + connectionName,
-                                powerActivated = true,
-                                connecting = true,
-                            )
-                        }
-                        isConnecting = true
-                    }
-                    else -> {
-                        prepareVpn()
-                        update {
-                            it.copy(
-                                statusText = appContext.getString(R.string.connecting) + " " + connectionName,
-                                powerActivated = true,
-                                connecting = true,
-                            )
-                        }
-                        isConnecting = true
-                    }
-                }
-            }
-        }
-    }
+    // BLOCK v1.0.82: the Status power button was removed on operator request.
+    // Connecting is Auto Mode's job (the hero button on its own tab); the Status
+    // screen is a REPORT now, so its click handler went with the button.
+
 
     fun clearStatistics() {
         // Three independent persisted counters back the "total" row, and two of
@@ -1030,7 +979,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
         }
         update {
             it.copy(
-                powerActivated = true,
                 connecting = true,
                 statusText = appContext.getString(R.string.sstp_connecting),
             )
@@ -1051,7 +999,6 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             startVpnSSTPService(ACTION_VPN_DISCONNECT)
             update {
                 it.copy(
-                    powerActivated = false,
                     connecting = false,
                     statusText = appContext.getString(R.string.sstp_disconnecting),
                 )

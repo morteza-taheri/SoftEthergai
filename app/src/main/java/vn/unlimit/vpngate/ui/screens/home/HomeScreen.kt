@@ -387,6 +387,12 @@ fun HomeScreen(
                         // makes the list repaint the moment a star is tapped.
                         val favouriteSnapshot = vn.unlimit.vpngate.favourites
                             .FavouriteServers.snapshot()
+                        // BLOCK v1.0.82: the favourites-only filter. Applied before
+                        // the ordering so a starred row is both the only thing shown
+                        // and the first thing shown.
+                        if (activeFilter?.isFavouriteOnly == true) {
+                            items = items.filter { it.hostName?.trim() in favouriteSnapshot }
+                        }
                         if (favouriteSnapshot.isNotEmpty()) {
                             items = items.sortedByDescending {
                                 it.hostName?.trim() in favouriteSnapshot
