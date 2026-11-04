@@ -13,9 +13,21 @@ import vn.unlimit.vpngate.R
 
 /**
  * Reflects the Auto Mode state in an ongoing notification while a run is
- * active: "Connecting – server n of m" while trying servers, and
- * "Connected via <protocol> – <server>" once a tunnel is up. Cleared when
- * the run stops (user stop / terminal error).
+ * active. The *only* notification Auto Mode owns is the transient
+ * "Connecting – server n of m" scan-progress one shown while it is cycling
+ * through servers.
+ *
+ * Once a tunnel is actually up we deliberately do **not** post a second
+ * ongoing notification: the VPN foreground service (SoftEtherVpnService,
+ * id 1001) already surfaces the connected state — title carries the server
+ * name and there is a disconnect action. Posting a second ongoing
+ * notification from a different channel/id is exactly what produced the
+ * "two separate notifications" complaint, so on [notifyConnected] we clear
+ * the Auto Mode notification and let the service notification be the single
+ * source of truth.
+ *
+ * The Auto Mode notification is cleared in every non-Connecting outcome
+ * (Connected / Idle / Stopped / Error) and when the run stops.
  */
 object AutoModeNotifier {
 
@@ -32,14 +44,18 @@ object AutoModeNotifier {
         post(context, context.getString(R.string.auto_mode_notification_title), text, ongoing = true)
     }
 
+    /**
+     * Called when a tunnel comes up. The VPN foreground service notification
+     * (id 1001) already shows the connected server with a disconnect action,
+     * so posting a second ongoing notification here is what created the
+     * duplicate. Instead we clear the Auto Mode notification and defer to the
+     * service notification as the single persistent indicator.
+     *
+     * [hostname] / [protocolId] are accepted for API compatibility with the
+     * engine's call site but are no longer rendered.
+     */
     fun notifyConnected(context: Context, hostname: String?, protocolId: String) {
-        val protocolLabel = protocolId.lowercase().replace('_', ' ')
-        val text = context.getString(
-            R.string.auto_mode_notification_connected,
-            hostname ?: "",
-            protocolLabel,
-        )
-        post(context, context.getString(R.string.auto_mode_notification_title), text, ongoing = true)
+        clear(context)
     }
 
     fun clear(context: Context) {
