@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -39,39 +40,96 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import vn.unlimit.vpngate.R
 
 /**
- * Group container with a clean category header and a rounded, subtle-bordered surface card.
+ * Modern settings visual language v2: tinted rounded cards, expressive pill
+ * section headers, rounded-square icon chips on every row, and a refined
+ * single-choice dialog. The component API is unchanged except for the
+ * optional [SettingsSection.icon]; every existing call site still compiles.
+ */
+
+private val CardShape = RoundedCornerShape(22.dp)
+private val IconChipShape = RoundedCornerShape(14.dp)
+private val IconChipSize = 42.dp
+
+/**
+ * Group container: an expressive pill-style header followed by a tinted,
+ * rounded card holding the rows.
  */
 @Composable
 fun SettingsSection(
     title: String,
     modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 6.dp, end = 12.dp),
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 6.dp, top = 22.dp, bottom = 10.dp, end = 6.dp),
+        ) {
+            if (icon != null) {
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
         Surface(
-            shape = RoundedCornerShape(16.dp),
+            shape = CardShape,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp,
-            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
+            tonalElevation = 2.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 content()
             }
         }
+    }
+}
+
+/**
+ * Shared leading icon chip used by every row.
+ */
+@Composable
+private fun RowIcon(icon: ImageVector) {
+    Box(
+        modifier = Modifier
+            .size(IconChipSize)
+            .clip(IconChipShape)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+        )
     }
 }
 
@@ -91,25 +149,12 @@ fun SettingSwitchRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
+            .heightIn(min = 64.dp)
             .clickable { onChecked(!checked) }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         if (icon != null) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            RowIcon(icon)
             Spacer(modifier = Modifier.width(14.dp))
         }
         Column(
@@ -118,11 +163,11 @@ fun SettingSwitchRow(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             if (!subtitle.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -141,18 +186,8 @@ fun SettingSwitchRow(
 /**
  * Setting row displaying a value with a trailing chevron, opening a dialog on click.
  *
- * Layout notes (the value used to squeeze the title into one-character-per-line
- * wrapping, e.g. "Conne / ct" and "Priori / ty"):
- *
- *  - The value is wrapped in a Box that carries `weight(1f, fill = false)` and a
- *    `widthIn(max = ...)`, so it can no longer claim the full intrinsic width of
- *    the row. Compose measures the unweighted value first; without a cap it took
- *    everything and left the title column with almost nothing.
- *  - The title keeps `weight(1f)` and wraps at word boundaries, which is what
- *    gives "Auto Connect Protocol / Priority" on a narrow screen instead of a
- *    mid-word break.
- *  - The value stays on one line and ellipsizes, so a long protocol chain such as
- *    "softether udp -> ... -> sstp" degrades gracefully instead of wrapping.
+ * The value is wrapped so it can never starve the title column (see prior note);
+ * it stays on one line and ellipsizes.
  */
 @Composable
 fun SettingValueRow(
@@ -167,25 +202,12 @@ fun SettingValueRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
+            .heightIn(min = 64.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         if (icon != null) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            RowIcon(icon)
             Spacer(modifier = Modifier.width(14.dp))
         }
         Column(
@@ -194,11 +216,11 @@ fun SettingValueRow(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             if (!subtitle.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -208,8 +230,6 @@ fun SettingValueRow(
         }
         Spacer(modifier = Modifier.width(12.dp))
         Row(
-            // Cap the value so it cannot starve the title column, and let it
-            // shrink further on very narrow screens instead of overflowing.
             modifier = Modifier
                 .weight(1f, fill = false)
                 .widthIn(max = 160.dp),
@@ -218,7 +238,7 @@ fun SettingValueRow(
         ) {
             Text(
                 text = value,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -250,25 +270,12 @@ fun SettingActionRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
+            .heightIn(min = 64.dp)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         if (icon != null) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            RowIcon(icon)
             Spacer(modifier = Modifier.width(14.dp))
         }
         Column(
@@ -277,11 +284,11 @@ fun SettingActionRow(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             if (!subtitle.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -293,8 +300,12 @@ fun SettingActionRow(
             Spacer(modifier = Modifier.width(12.dp))
             Button(
                 onClick = onClick,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ),
             ) {
                 Text(actionLabel, style = MaterialTheme.typography.labelMedium)
             }
@@ -316,14 +327,14 @@ fun SettingActionRow(
 @Composable
 fun SettingDivider(hasIcon: Boolean = true) {
     HorizontalDivider(
-        modifier = Modifier.padding(start = if (hasIcon) 64.dp else 16.dp, end = 16.dp),
+        modifier = Modifier.padding(start = if (hasIcon) 74.dp else 18.dp, end = 18.dp),
         thickness = 0.5.dp,
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
     )
 }
 
 /**
- * Material 3 single-choice picker dialog with smooth radio selection.
+ * Modern single-choice picker dialog with a highlighted selected row.
  */
 @Composable
 fun SingleChoiceDialog(
@@ -338,7 +349,7 @@ fun SingleChoiceDialog(
         title = {
             Text(
                 title,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
         },
@@ -354,7 +365,14 @@ fun SingleChoiceDialog(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
                             .selectable(
                                 selected = isSelected,
                                 onClick = {
@@ -362,7 +380,7 @@ fun SingleChoiceDialog(
                                     onDismiss()
                                 },
                             )
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     ) {
                         RadioButton(
                             selected = isSelected,
@@ -375,8 +393,21 @@ fun SingleChoiceDialog(
                         Text(
                             text = option,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
                         )
+                        if (isSelected) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Outlined.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -387,5 +418,6 @@ fun SingleChoiceDialog(
                 Text(stringResource(R.string.cancel))
             }
         },
+        shape = RoundedCornerShape(24.dp),
     )
 }

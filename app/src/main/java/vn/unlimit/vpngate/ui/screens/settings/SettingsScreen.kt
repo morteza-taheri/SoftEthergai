@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Reorder
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.AlertDialog
@@ -356,10 +359,21 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        stringResource(R.string.setting),
-                        style = MaterialTheme.typography.titleLarge,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(26.dp),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            stringResource(R.string.setting),
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            ),
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
@@ -377,7 +391,9 @@ fun SettingsScreen(
         ) {
             // ---------------- Connection section
             item {
-                SettingsSection(title = stringResource(R.string.status)) {
+                SettingsSection(title = stringResource(R.string.status),
+                    icon = Icons.Outlined.Speed,
+                ) {
                     SettingSwitchRow(
                         title = stringResource(R.string.enable_notification_speed),
                         subtitle = stringResource(R.string.enable_notification_speed_hint),
@@ -413,7 +429,9 @@ fun SettingsScreen(
             // ---------------- DNS section
             if (!showImportOptions) {
                 item {
-                    SettingsSection(title = stringResource(R.string.dns_setting_label)) {
+                    SettingsSection(title = stringResource(R.string.dns_setting_label),
+                    icon = Icons.Outlined.Dns,
+                ) {
                         SettingSwitchRow(
                             title = stringResource(R.string.dns_setting_label),
                             subtitle = stringResource(R.string.dns_setting_hint),
@@ -570,7 +588,9 @@ fun SettingsScreen(
 
             // ---------------- Auto Mode section
             item {
-                SettingsSection(title = stringResource(R.string.auto_mode)) {
+                SettingsSection(title = stringResource(R.string.auto_mode),
+                    icon = Icons.Outlined.Reorder,
+                ) {
                     // No "Default VPN Protocol" row: Auto Connect Protocol
                     // Priority below is the only source of protocol order.
                     SettingValueRow(
@@ -638,7 +658,9 @@ fun SettingsScreen(
 
             // ---------------- Cache section
             item {
-                SettingsSection(title = stringResource(R.string.setting_cache_label)) {
+                SettingsSection(title = stringResource(R.string.setting_cache_label),
+                    icon = Icons.Outlined.DeleteOutline,
+                ) {
                     // v1.0.54 (§1.6.47) PART 2.3: "Cache save time" and
                     // "Cache will auto clear at" are gone. Exactly one manual
                     // control remains, and it clears transient files only —
@@ -667,7 +689,9 @@ fun SettingsScreen(
 
             // ---------------- Emergency Server Sources (Z1-IMPL-B, §12.5.2 item B)
             item {
-                SettingsSection(title = stringResource(R.string.emergency_source_title)) {
+                SettingsSection(title = stringResource(R.string.emergency_source_title),
+                    icon = Icons.Outlined.Language,
+                ) {
                     Text(
                         text = stringResource(R.string.emergency_source_summary),
                         style = MaterialTheme.typography.bodySmall,
@@ -818,7 +842,9 @@ fun SettingsScreen(
 
             // ---------------- Import servers from CSV (v1.0.54 §1.6.49 PART 4)
             item {
-                SettingsSection(title = stringResource(R.string.manual_server_title)) {
+                SettingsSection(title = stringResource(R.string.manual_server_title),
+                    icon = Icons.Outlined.FileUpload,
+                ) {
                     Text(
                         text = stringResource(R.string.manual_server_summary),
                         style = MaterialTheme.typography.bodySmall,
@@ -991,7 +1017,9 @@ fun SettingsScreen(
 
             // ---------------- Startup + Appearance
             item {
-                SettingsSection(title = stringResource(R.string.setting_theme_label)) {
+                SettingsSection(title = stringResource(R.string.setting_theme_label),
+                    icon = Icons.Outlined.Palette,
+                ) {
                     SettingValueRow(
                         title = stringResource(R.string.setting_startup_screen),
                         value = startupScreens[startupScreenIndex],
@@ -1029,7 +1057,9 @@ fun SettingsScreen(
                 }
 
                 // BLOCK v1.0.76 — APP UPDATE CHECKER: the manual check row.
-                SettingsSection(title = stringResource(R.string.update_check_title)) {
+                SettingsSection(title = stringResource(R.string.update_check_title),
+                    icon = Icons.Outlined.Launch,
+                ) {
                     SettingValueRow(
                         title = stringResource(R.string.update_check_button),
                         value = "",
