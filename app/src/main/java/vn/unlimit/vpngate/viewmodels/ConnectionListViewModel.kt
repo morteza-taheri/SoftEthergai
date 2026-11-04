@@ -61,7 +61,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      * configuration change cannot replay a message about a refresh that
      * finished minutes ago.
      */
-    var refreshNotice: MutableLiveData<Int?> = MutableLiveData(null)
+    var refreshNotice: MutableLiveData<CharSequence?> = MutableLiveData(null)
 
     /** Clears [refreshNotice] once it has been shown. */
     fun clearRefreshNotice() {
@@ -522,6 +522,16 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                                 "Server list updated atomically: ${outcome.serverCount} incoming, " +
                                     "${list.size()} stored (snapshot $snapshotNote)",
                             )
+                            // BLOCK v1.0.81: at the retention cap the stored count
+                            // stays 500 whatever the feed returns, so a successful
+                            // update used to look like a dead button. Say it worked.
+                            refreshNotice.postValue(
+                                App.instance?.getString(
+                                    R.string.server_list_update_applied,
+                                    outcome.serverCount,
+                                    list.size(),
+                                ),
+                            )
                         }
                     }
 
@@ -549,7 +559,9 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                             // user cannot infer from the screen. Rejection
                             // semantics are untouched; this only reports them.
                             if (outcome.reason == ServerListUpdater.Reason.DEGRADED_DATASET) {
-                                refreshNotice.postValue(R.string.server_list_update_preserved)
+                                refreshNotice.postValue(
+                                    App.instance?.getString(R.string.server_list_update_preserved),
+                                )
                             }
                         } else {
                             Log.e(TAG, "Update failed (${outcome.reason}) and no list is stored")

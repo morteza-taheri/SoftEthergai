@@ -213,6 +213,8 @@ class App : Application() {
                 ) == 0
             ) DetailActivity::class.java else MainActivity::class.java
         )
+        // BLOCK v1.0.81: load the starred servers before any list is drawn.
+        vn.unlimit.vpngate.favourites.FavouriteServers.initialise(this)
     }
 
     private fun initializeDefaultExcludedApps() {

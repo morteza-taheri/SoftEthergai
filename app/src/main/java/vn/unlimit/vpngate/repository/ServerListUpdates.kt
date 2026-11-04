@@ -585,9 +585,10 @@ internal fun manualServerQuota(total: Int = MAX_RETAINED_SERVERS): Int =
  * REQ-RET-001 — cap [rows] at [cap] using the approved priority order:
  * **quality → protocol breadth → successful-connection history → recency**.
  *
- * Manual/imported rows are never pruned: they are excluded from the ranking and
- * kept in full. If they alone exceed [cap], all of them are kept (the
- * alternative would delete user-supplied data, which no requirement permits).
+ * Manual/imported rows and the user's favourites are never pruned: they are
+ * excluded from the ranking and kept in full. If they alone exceed [cap], all of
+ * them are kept (the alternative would delete user-supplied data, which no
+ * requirement permits).
  *
  * The tie-break is deterministic (trimmed `hostName` ascending) so two runs over
  * the same input produce the same set. It is **not** a quality weight.
@@ -600,10 +601,19 @@ internal fun capRetainedServers(
     manualHostNames: Set<String>,
     successCounts: Map<String, Int> = emptyMap(),
     cap: Int = MAX_RETAINED_SERVERS,
+    /**
+     * BLOCK v1.0.81: host names the user starred. A favourite is protected from
+     * the cap exactly like a manual row — the operator's rule is that a starred
+     * server is never removed by an update, manual or automatic. Defaults to the
+     * live set so every existing call site is protected without plumbing a
+     * Context through the repository layer; tests pass an explicit set.
+     */
+    favouriteHostNames: Set<String> = vn.unlimit.vpngate.favourites.FavouriteServers.snapshot(),
 ): List<VPNGateItem> {
     if (rows.size <= cap) return rows
-    val manual = rows.filter { it.hostName.trim() in manualHostNames }
-    val network = rows.filter { it.hostName.trim() !in manualHostNames }
+    val protectedHosts = manualHostNames + favouriteHostNames
+    val manual = rows.filter { it.hostName.trim() in protectedHosts }
+    val network = rows.filter { it.hostName.trim() !in protectedHosts }
     val room = (cap - manual.size).coerceAtLeast(0)
     if (network.size <= room) return rows
     val kept = network.sortedWith(

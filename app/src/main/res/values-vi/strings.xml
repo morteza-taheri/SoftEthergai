@@ -336,4 +336,14 @@
     <string name="update_check_notification_channel">Thông báo cập nhật ứng dụng</string>
     <string name="update_check_notification_title">Đã có phiên bản mới của SoftEthergai</string>
     <string name="update_check_notification_body">Phiên bản %1$s đã được phát hành. Chạm để mở trang tải xuống.</string>
+    <string name="server_favourite_add">Thêm vào yêu thích</string>
+    <string name="server_favourite_remove">Bỏ khỏi yêu thích</string>
+    <string name="server_favourite_badge">YÊU THÍCH</string>
+    <string name="server_filter_favourites">Yêu thích</string>
+    <string name="server_list_update_applied">Đã cập nhật danh sách — %1$d tải về, %2$d giữ lại</string>
+    <string name="setting_purge_servers_label">Xóa danh sách máy chủ</string>
+    <string name="setting_purge_servers_subtitle">Xóa mọi máy chủ trừ máy chủ đang kết nối, cùng lịch sử</string>
+    <string name="setting_purge_servers_confirm">Xóa mọi máy chủ trong danh sách trừ máy chủ bạn đang kết nối, cùng toàn bộ lịch sử của chúng. Không thể hoàn tác.</string>
+    <string name="setting_purge_servers_action">Xóa</string>
+    <string name="setting_purge_servers_done">Đã xóa %1$d máy chủ</string>
 </resources>

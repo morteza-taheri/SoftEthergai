@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -81,6 +84,9 @@ fun ServerCard(
     reachability: ReachabilityResult? = null,
     highlight: ServerCardHighlight? = null,
     pinned: Boolean = false,
+    /** BLOCK v1.0.81: starred by the user; a starred row is never pruned. */
+    favourite: Boolean = false,
+    onToggleFavourite: (() -> Unit)? = null,
 ) {
     val baseUrl = dataUtil?.baseUrl ?: "https://www.vpngate.net"
     val reachabilityColor = if (reachability?.isReachable == true) {
@@ -190,6 +196,35 @@ fun ServerCard(
                                 color = reachabilityColor,
                             )
                         }
+                    }
+                }
+                // BLOCK v1.0.81: the favourite star. Tapping it flips the flag;
+                // the row itself stays clickable (the button consumes the tap).
+                if (onToggleFavourite != null) {
+                    IconToggleButton(
+                        checked = favourite,
+                        onCheckedChange = { onToggleFavourite() },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (favourite) {
+                                Icons.Filled.Star
+                            } else {
+                                Icons.Outlined.StarBorder
+                            },
+                            contentDescription = stringResource(
+                                if (favourite) {
+                                    R.string.server_favourite_remove
+                                } else {
+                                    R.string.server_favourite_add
+                                },
+                            ),
+                            tint = if (favourite) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
                     }
                 }
             }

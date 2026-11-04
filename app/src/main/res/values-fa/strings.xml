@@ -372,4 +372,14 @@
     <string name="update_check_notification_channel">اعلان‌های به‌روزرسانی برنامه</string>
     <string name="update_check_notification_title">نسخهٔ جدید SoftEthergai منتشر شده است</string>
     <string name="update_check_notification_body">نسخهٔ %1$s منتشر شده است. برای باز کردن صفحهٔ دریافت لمس کنید.</string>
+    <string name="server_favourite_add">افزودن به موردعلاقه‌ها</string>
+    <string name="server_favourite_remove">حذف از موردعلاقه‌ها</string>
+    <string name="server_favourite_badge">موردعلاقه</string>
+    <string name="server_filter_favourites">موردعلاقه‌ها</string>
+    <string name="server_list_update_applied">لیست سرورها به‌روز شد — %1$d دریافت، %2$d نگه‌داشته شد</string>
+    <string name="setting_purge_servers_label">پاک‌سازی لیست سرورها</string>
+    <string name="setting_purge_servers_subtitle">همهٔ سرورها به‌جز سرور متصل، همراه تاریخچه حذف می‌شوند</string>
+    <string name="setting_purge_servers_confirm">همهٔ سرورهای لیست به‌جز سروری که به آن متصل هستید، همراه با تمام تاریخچه‌شان حذف می‌شوند. این کار بازگشت‌پذیر نیست.</string>
+    <string name="setting_purge_servers_action">حذف</string>
+    <string name="setting_purge_servers_done">%1$d سرور حذف شد</string>
 </resources>

@@ -21,6 +21,11 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -656,6 +661,66 @@ fun AutoModeScreen(
  * - Connected: Vivid Emerald Green with Shield icon and ambient aura
  * - Error: Crimson Coral with Refresh icon
  */
+/**
+ * BLOCK v1.0.81 — the connecting spinner.
+ *
+ * The old hero rotated the Material `Sync` glyph. Its two arrows are drawn
+ * counter-clockwise, so rotating the whole glyph clockwise made the arrows run
+ * against their own direction — the operator's "the arrows spin backwards".
+ * A drawn arc cannot be backwards: it is a stroke that sweeps clockwise inside a
+ * faint track ring, which is also the shape every modern progress indicator uses.
+ */
+@Composable
+private fun ConnectingSpinner(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White,
+) {
+    val transition = rememberInfiniteTransition(label = "connectingSpinner")
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 950, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "spinnerAngle",
+    )
+    Canvas(modifier = modifier) {
+        val stroke = size.minDimension * 0.10f
+        val inset = stroke / 2f
+        val arcSize = androidx.compose.ui.geometry.Size(
+            size.width - stroke,
+            size.height - stroke,
+        )
+        // Track: a quiet full ring so the moving arc reads as progress.
+        drawArc(
+            color = color.copy(alpha = 0.20f),
+            startAngle = 0f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(inset, inset),
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+        // The head: a 260-degree arc fading in behind the leading edge.
+        rotate(angle) {
+            drawArc(
+                brush = Brush.sweepGradient(
+                    0.0f to color.copy(alpha = 0.05f),
+                    0.7f to color,
+                    1.0f to color,
+                ),
+                startAngle = 0f,
+                sweepAngle = 260f,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+        }
+    }
+}
+
 @Composable
 private fun AutoConnectHeroButton(
     state: AutoModeState,
@@ -778,17 +843,18 @@ private fun AutoConnectHeroButton(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = stringResource(stateTitleRes),
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(62.dp)
-                            .then(
-                                if (state is AutoModeState.Connecting) Modifier.rotate(rotateAngle)
-                                else Modifier,
-                            ),
-                    )
+                    if (state is AutoModeState.Connecting) {
+                        // BLOCK v1.0.81: the arc spinner replaced the rotating
+                        // Sync glyph (whose arrows ran against the rotation).
+                        ConnectingSpinner(modifier = Modifier.size(62.dp))
+                    } else {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = stringResource(stateTitleRes),
+                            tint = Color.White,
+                            modifier = Modifier.size(62.dp),
+                        )
+                    }
                 }
             }
         }

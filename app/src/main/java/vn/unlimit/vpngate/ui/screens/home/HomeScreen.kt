@@ -115,12 +115,6 @@ fun HomeScreen(
     var noNetwork by remember { mutableStateOf(false) }
     var contentVisible by remember { mutableStateOf(false) }
 
-    // ----- Quick reachability test of the listed servers (toolbar action)
-    val testing by ServerReachabilityTester.isTesting.collectAsState()
-    val testedCount by ServerReachabilityTester.testedCount.collectAsState()
-    val testTotal by ServerReachabilityTester.totalCount.collectAsState()
-    val resultsVersion by ServerReachabilityTester.resultsVersion.collectAsState()
-
     // ----- Server the app is dialing / already bound to (list highlight)
     val autoState by AutoModeEngine.stateFlow.collectAsState()
     val globalVpnState by GlobalVpnTracker.vpnState.collectAsState()
@@ -162,18 +156,11 @@ fun HomeScreen(
                 result = result?.filter(query)
             }
             if (result != null && currentSort.isNotEmpty()) {
-                if (currentSort == VPNGateConnectionList.SortProperty.REACHABILITY) {
-                    // Not a database column: clear the SQL ordering and let
-                    // the in-memory quick-test ordering (serverItems) do it.
-                    result.sort(null, currentSortType, skipProcessSort = true)
-                } else {
-                    result.sort(currentSort, currentSortType)
-                }
+                result.sort(currentSort, currentSortType)
             }
             val size = result?.size() ?: 0
             val emptyRes = when {
                 size == 0 && searching && query.isNotEmpty() -> R.string.empty_search_result
-                size == 0 && currentFilter?.isReachableOnly == true -> R.string.empty_reachable_filter_result
                 size == 0 && currentFilter != null -> R.string.empty_filter_result
                 size == 0 -> R.string.no_server_available
                 else -> null
@@ -316,30 +303,6 @@ fun HomeScreen(
                                 },
                                 actions = {
                                     IconButton(
-                                        onClick = {
-                                            val targets = searchState.rows ?: emptyList()
-                                            if (targets.isNotEmpty()) {
-                                                scope.launch {
-                                                    ServerReachabilityTester.testConnections(targets)
-                                                }
-                                            }
-                                        },
-                                        enabled = !testing && searchState.rowCount > 0,
-                                    ) {
-                                        if (testing) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
-                                                strokeWidth = 2.dp,
-                                                color = MaterialTheme.colorScheme.primary,
-                                            )
-                                        } else {
-                                            Icon(
-                                                Icons.Filled.NetworkCheck,
-                                                contentDescription = stringResource(R.string.server_test_action),
-                                            )
-                                        }
-                                    }
-                                    IconButton(
                                         onClick = { connectionListViewModel.getAPIData(isUserInitiated = true) },
                                         enabled = !isLoading,
                                     ) {
@@ -404,42 +367,18 @@ fun HomeScreen(
                     },
                 ) { padding ->
                     val baseItems = remember(searchState.rows) { searchState.rows ?: emptyList() }
-                    // Snapshot of the quick-test results, keyed on
-                    // resultsVersion so a finished probe refreshes the rows.
-                    // Stage 2F-F.14 (D10/D11): built from the SERVER_LIST
-                    // namespace only. The list is protocol-less, so it reads by
-                    // IP — but it must never pick up an Auto Connect
-                    // server/protocol verdict and render it as a quick test.
-                    val reachabilitySnapshot = remember(resultsVersion) {
-                        ServerReachabilityTester.serverListResultsMap()
-                    }
-                    // Quick-test view: optional healthy-only filter plus the
-                    // health ordering (both in memory, never in SQL).
+                    // BLOCK v1.0.81: the quick reachability test was removed on
+                    // operator request, so there is no results snapshot, no
+                    // "only reachable" filter and no REACHABILITY ordering to
+                    // apply here — the list is exactly the filtered, sorted rows.
                     val serverItems = remember(
                         baseItems,
-                        reachabilitySnapshot,
                         sortProperty,
                         sortType,
-                        activeFilter?.isReachableOnly,
+                        activeFilter,
                         pinnedKey,
                     ) {
                         var items = baseItems
-                        // Stage 2F-F.28S: both the filter and the ordering read
-                        // this one snapshot, never the live result store. The
-                        // quick test mutates that store from up to 60 IO
-                        // coroutines while this list is being composed, which
-                        // is what let a comparator key change mid-sort and
-                        // crash TimSort.
-                        if (activeFilter?.isReachableOnly == true) {
-                            items = ServerReachabilityTester.onlyReachable(items, reachabilitySnapshot)
-                        }
-                        if (sortProperty == VPNGateConnectionList.SortProperty.REACHABILITY) {
-                            items = ServerReachabilityTester.orderByReachability(
-                                items,
-                                reachabilitySnapshot,
-                                descending = sortType == VPNGateConnectionList.ORDER.DESC,
-                            )
-                        }
                         // v1.0.54 (§1.6.48) PART 3: pinning runs LAST, after the
                         // user's filter and sort, so the frozen row survives both
                         // — and so it can never influence Auto Connect's own
@@ -531,19 +470,6 @@ fun HomeScreen(
                                             .fillMaxWidth()
                                             .padding(horizontal = 6.dp, vertical = 2.dp),
                                     ) {
-                                        val testSummary = when {
-                                            testing -> stringResource(
-                                                R.string.server_test_progress,
-                                                testedCount,
-                                                testTotal,
-                                            )
-                                            ServerReachabilityTester.testedCount(baseItems) > 0 -> stringResource(
-                                                R.string.server_test_result,
-                                                ServerReachabilityTester.reachableCount(baseItems),
-                                                baseItems.size,
-                                            )
-                                            else -> ""
-                                        }
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -553,28 +479,6 @@ fun HomeScreen(
                                                 text = stringResource(R.string.server_list_count, serverItems.size),
                                                 style = MaterialTheme.typography.labelMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                            if (testSummary.isNotEmpty()) {
-                                                Text(
-                                                    text = testSummary,
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    color = if (testing) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    } else {
-                                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                                    },
-                                                )
-                                            }
-                                        }
-                                        if (testing) {
-                                            LinearProgressIndicator(
-                                                progress = {
-                                                    if (testTotal <= 0) 0f
-                                                    else testedCount.toFloat() / testTotal.toFloat()
-                                                },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(top = 4.dp),
                                             )
                                         }
                                     }
@@ -588,7 +492,15 @@ fun HomeScreen(
                                     ServerCard(
                                         connection = conn,
                                         dataUtil = dataUtil,
-                                        reachability = reachabilitySnapshot[conn.ip],
+                                        // BLOCK v1.0.81: the star. Reading the
+                                        // snapshot here subscribes this row to the
+                                        // favourite set, so a tap repaints instantly.
+                                        favourite = vn.unlimit.vpngate.favourites
+                                            .FavouriteServers.isFavourite(conn.hostName),
+                                        onToggleFavourite = {
+                                            vn.unlimit.vpngate.favourites.FavouriteServers
+                                                .toggle(conn.hostName)
+                                        },
                                         pinned = pinnedKey != null &&
                                             ServerListPinning.identityOf(conn) == pinnedKey,
                                         highlight = when {

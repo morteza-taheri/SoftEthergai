@@ -210,6 +210,7 @@ fun SettingsScreen(
     var showProtocolPriorityDialog by remember { mutableStateOf(false) }
     var showAutoTimeoutPicker by remember { mutableStateOf(false) }
     var showSoftetherConnectionsPicker by remember { mutableStateOf(false) }
+    var showPurgeServersConfirm by remember { mutableStateOf(false) }
     var showServerUpdateIntervalPicker by remember { mutableStateOf(false) }
 
     val serverUpdateIntervalOptions = remember { dataUtil.serverListUpdateIntervalOptions }
@@ -599,6 +600,14 @@ fun SettingsScreen(
                         ),
                         icon = Icons.Outlined.Hub,
                         onClick = { showSoftetherConnectionsPicker = true },
+                    )
+                    SettingDivider()
+                    // BLOCK v1.0.81: purge the catalogue, keeping the tunnel.
+                    SettingActionRow(
+                        title = stringResource(R.string.setting_purge_servers_label),
+                        subtitle = stringResource(R.string.setting_purge_servers_subtitle),
+                        icon = Icons.Outlined.DeleteOutline,
+                        onClick = { showPurgeServersConfirm = true },
                     )
                     SettingDivider()
                     SettingActionRow(
@@ -1186,6 +1195,36 @@ fun SettingsScreen(
                 dataUtil.setAutoModeTimeoutSeconds(values[index])
             },
             onDismiss = { showAutoTimeoutPicker = false },
+        )
+    }
+
+    if (showPurgeServersConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPurgeServersConfirm = false },
+            title = { Text(stringResource(R.string.setting_purge_servers_label)) },
+            text = { Text(stringResource(R.string.setting_purge_servers_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPurgeServersConfirm = false
+                    scope.launch {
+                        val result = vn.unlimit.vpngate.repository.ServerPurge
+                            .purgeAllExceptConnected(context)
+                        Toast.makeText(
+                            context,
+                            context.getString(
+                                R.string.setting_purge_servers_done,
+                                result.removedServers,
+                            ),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }) { Text(stringResource(R.string.setting_purge_servers_action)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPurgeServersConfirm = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
         )
     }
 
