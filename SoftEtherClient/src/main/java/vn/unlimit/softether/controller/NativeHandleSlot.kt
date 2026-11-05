@@ -79,14 +79,28 @@ internal class NativeHandleSlot : NativeHandleOwner {
     val current: Long get() = synchronized(lock) { handle }
 
     /**
+     * SEC-F4: terminal once a handle's destruction was never proven. Once
+     * true, no replacement may be published — the controller must stay down
+     * until the process is restarted or the old object's cleanup is proven.
+     */
+    val isLost: Boolean get() = synchronized(lock) { lost }
+
+    /**
      * Publish a freshly created handle (initial connect or reconnect replacement).
      *
-     * Must not run while a previous claim on this slot is still in flight — the
-     * flow that claimed it is the same flow that publishes the replacement, so
-     * settlement strictly precedes publication by construction.
+     * SEC-F4: refused while a destruction is unresolved or the slot is `lost`.
+     * Publishing a replacement over an unproven cleanup made the controller
+     * look healthy while the previous native object's fate was unknown.
+     *
+     * @return true only when the handle was actually published.
      */
-    fun publish(handle: Long) {
-        synchronized(lock) { this.handle = handle }
+    fun publish(handle: Long): Boolean = synchronized(lock) {
+        if (lost || destroyInFlight) {
+            false
+        } else {
+            this.handle = handle
+            true
+        }
     }
 
     /**

@@ -335,7 +335,7 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
         // summary the user sees cannot claim an import that did not happen.
         val stored = withContext(Dispatchers.IO) {
             val quota = store.addWithinQuota(result.items)
-            if (quota.stored > 0) {
+            if (quota.persisted && quota.stored > 0) {
                 materializeImported()
                 _importedServers.value = store.items()
             }

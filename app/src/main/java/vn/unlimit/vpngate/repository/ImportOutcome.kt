@@ -25,6 +25,12 @@ data class ImportOutcome(
     /** True when the manual quota refused at least one new row. */
     val quotaReached: Boolean get() = (stored?.quotaRejected ?: 0) > 0
 
+    /**
+     * SEC-F11: the parsed rows never reached disk. The UI must say so instead
+     * of reporting a successful (or partially successful) import.
+     */
+    val storageFailed: Boolean get() = stored?.persisted == false
+
     /** Rows actually written (new + updated); 0 when parsing failed. */
     val storedCount: Int get() = stored?.stored ?: 0
 

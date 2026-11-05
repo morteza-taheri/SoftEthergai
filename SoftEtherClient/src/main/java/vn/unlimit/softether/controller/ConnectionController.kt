@@ -192,6 +192,9 @@ class ConnectionController(
     private var nativeHandle: Long
         get() = nativeHandleSlot.current
         set(value) {
+            // SEC-F4: if the slot is terminal, do not adopt a replacement
+            // native handle. The caller checks isLost before creating one and
+            // aborts the attempt; this is the second line of defence.
             nativeHandleSlot.publish(value)
         }
 
@@ -838,6 +841,13 @@ class ConnectionController(
      * Fully disconnects, waits, then performs a fresh connect() with full lifecycle.
      */
     suspend fun reconnect(): Boolean {
+        // SEC-F4: a slot whose previous destruction was never proven is
+        // terminal. Reconnecting here would publish a replacement handle over
+        // an unproven cleanup; only a process restart can recover it.
+        if (nativeHandleSlot.isLost) {
+            Log.e(TAG, "Reconnection refused: native handle ownership was lost")
+            return false
+        }
         if (isReconnecting.getAndSet(true)) {
             Log.w(TAG, "Reconnection already in progress")
             return false
@@ -1261,6 +1271,10 @@ class ConnectionController(
      * tear down old TUN/native → reconnect → DHCP → establish VPN interface → restart data forwarding
      */
     private suspend fun attemptReconnect() {
+        if (nativeHandleSlot.isLost) {
+            Log.e(TAG, "Reconnection skipped: native handle ownership was lost")
+            return
+        }
         if (isCancelled.get() || nativeLifecycle.isDestroyed() || currentState == ConnectionState.DISCONNECTED || isReconnecting.getAndSet(true)) {
             Log.w(TAG, "Reconnection skipped: cancelled=${isCancelled.get()}, destroyed=${nativeLifecycle.isDestroyed()}, state=$currentState")
             return

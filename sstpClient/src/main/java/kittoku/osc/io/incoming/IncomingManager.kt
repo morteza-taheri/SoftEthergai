@@ -54,6 +54,12 @@ import java.nio.ByteBuffer
  */
 internal const val MIN_DATA_PACKET_SIZE = 8
 
+/** SEC-F13: a PPP control frame must also carry the 1-byte code at offset 8. */
+internal const val MIN_CONTROL_PACKET_SIZE = 9
+
+/** SEC-F13: SSTP control header = version(2) + length(2) + type(2) + count(2). */
+internal const val MIN_SSTP_CONTROL_HEADER_SIZE = 8
+
 
 private const val SSTP_ECHO_INTERVAL = 20_000L
 private const val PPP_ECHO_INTERVAL = 20_000L
@@ -163,6 +169,17 @@ internal class IncomingManager(internal val bridge: SharedBridge) {
 
                 sstpTimer.tick()
 
+                /*
+                 * SEC-F13: confine every parser to the bytes this frame
+                 * actually declared. The receive buffer is an aggregate that
+                 * can already hold the next frame, so unbounded probes/read()
+                 * could walk into it and desynchronise the control protocol.
+                 */
+                val frameStart = buffer.position()
+                val frameEnd = frameStart + size
+                val savedLimit = buffer.limit()
+                buffer.limit(frameEnd)
+                try {
                 when (buffer.probeShort(0)) {
                     SSTP_PACKET_TYPE_DATA -> {
                         // BLOCK v1.0.78: a DATA frame shorter than its own header
@@ -200,6 +217,14 @@ internal class IncomingManager(internal val bridge: SharedBridge) {
                         
 
                         // CONTROL
+                        // SEC-F13: a PPP control frame needs its 1-byte code
+                        // at offset 8, i.e. at least 9 bytes of frame.
+                        if (size < MIN_CONTROL_PACKET_SIZE) {
+                            bridge.controlMailbox.send(
+                                ControlMessage(Where.INCOMING, Result.ERR_INVALID_PACKET_SIZE)
+                            )
+                            return@launch
+                        }
                         val code = buffer.probeByte(8)
                         val isGo = when (protocol) {
                             PPP_PROTOCOL_LCP -> processLcpFrame(code, buffer)
@@ -217,6 +242,15 @@ internal class IncomingManager(internal val bridge: SharedBridge) {
                     }
 
                     SSTP_PACKET_TYPE_CONTROL -> {
+                        // SEC-F13: readHeader() consumes 8 bytes (version,
+                        // length, type, attribute count). A shorter declared
+                        // frame must be rejected before any probe/read.
+                        if (size < MIN_SSTP_CONTROL_HEADER_SIZE) {
+                            bridge.controlMailbox.send(
+                                ControlMessage(Where.INCOMING, Result.ERR_INVALID_PACKET_SIZE)
+                            )
+                            return@launch
+                        }
                         if (!processControlPacket(buffer.probeShort(4), buffer)) {
                             return@launch
                         }
@@ -228,6 +262,16 @@ internal class IncomingManager(internal val bridge: SharedBridge) {
                         )
 
                         return@launch
+                    }
+                }
+                } finally {
+                    // SEC-F13: restore the aggregate buffer's limit and make
+                    // consumption exactly one frame, even if a parser stopped
+                    // early. Otherwise a malformed frame would be re-parsed or
+                    // would swallow the beginning of the next one.
+                    buffer.limit(savedLimit)
+                    if (buffer.position() < frameEnd) {
+                        buffer.position(frameEnd)
                     }
                 }
             }

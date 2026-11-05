@@ -149,7 +149,34 @@ public class ConfigParser {
         }
     }
 
+    /*
+     * SEC-F17: hard ceilings for imported configs. An oversized .ovpn file was
+     * previously read with no total-byte, line-count, line-length or inline
+     * block limit, and inline text was repeatedly concatenated with `+=`.
+     * A hostile or corrupt import could therefore exhaust memory/CPU.
+     */
+    private static final long MAX_CONFIG_BYTES = 2L * 1024 * 1024;   // 2 MiB
+    private static final int MAX_CONFIG_LINES = 20000;
+    private static final int MAX_LINE_CHARS = 64 * 1024;
+    private static final long MAX_INLINE_BLOCK_BYTES = 1024 * 1024;  // 1 MiB
+    private static final int MAX_INLINE_BLOCK_LINES = 10000;
+
+    /** Running byte budget shared by parseConfig and checkinlinefile. */
+    private long parsedBytes = 0L;
+
+    /** Count bytes/chars of one line and enforce the shared budget. */
+    private void accountLine(String line) throws ConfigParseError {
+        parsedBytes += line.length() + 1L;  // +1 for the stripped newline
+        if (line.length() > MAX_LINE_CHARS) {
+            throw new ConfigParseError("Config line exceeds " + MAX_LINE_CHARS + " characters");
+        }
+        if (parsedBytes > MAX_CONFIG_BYTES) {
+            throw new ConfigParseError("Config exceeds " + MAX_CONFIG_BYTES + " bytes");
+        }
+    }
+
     public void parseConfig(Reader reader) throws IOException, ConfigParseError {
+        parsedBytes = 0L;
 
         HashMap<String, String> optionAliases = new HashMap<>();
         optionAliases.put("server-poll-timeout", "timeout-connect");
@@ -163,6 +190,10 @@ public class ConfigParser {
                 lineno++;
                 if (line == null)
                     break;
+                accountLine(line);
+                if (lineno > MAX_CONFIG_LINES) {
+                    throw new ConfigParseError("Config exceeds " + MAX_CONFIG_LINES + " lines");
+                }
 
                 if (lineno == 1) {
                     if ((line.startsWith("PK\003\004")
@@ -219,28 +250,34 @@ public class ConfigParser {
         // CHeck for <foo>
         if (arg0.startsWith("<") && arg0.endsWith(">")) {
             String argname = arg0.substring(1, arg0.length() - 1);
-            String inlinefile = VpnProfile.INLINE_TAG;
-
             String endtag = String.format("</%s>", argname);
+            StringBuilder block = new StringBuilder(VpnProfile.INLINE_TAG);
+            int blockLines = 0;
+            long blockBytes = 0L;
             do {
                 String line = br.readLine();
                 if (line == null) {
                     throw new ConfigParseError(String.format("No endtag </%s> for starttag <%s> found", argname, argname));
                 }
+                accountLine(line);
                 if (line.trim().equals(endtag))
                     break;
-                else {
-                    inlinefile += line;
-                    inlinefile += "\n";
+                if (++blockLines > MAX_INLINE_BLOCK_LINES) {
+                    throw new ConfigParseError("Inline block exceeds " + MAX_INLINE_BLOCK_LINES + " lines");
                 }
+                blockBytes += line.length() + 1L;
+                if (blockBytes > MAX_INLINE_BLOCK_BYTES) {
+                    throw new ConfigParseError("Inline block exceeds " + MAX_INLINE_BLOCK_BYTES + " bytes");
+                }
+                block.append(line).append('\n');
             } while (true);
 
-            if (inlinefile.endsWith("\n"))
-                inlinefile = inlinefile.substring(0, inlinefile.length() - 1);
+            if (block.length() > 0 && block.charAt(block.length() - 1) == '\n')
+                block.setLength(block.length() - 1);
 
             args.clear();
             args.add(argname);
-            args.add(inlinefile);
+            args.add(block.toString());
         }
 
     }
@@ -818,6 +855,19 @@ public class ConfigParser {
 
         checkIgnoreAndInvalidOptions(np);
         fixup(np);
+
+        // SEC-F5: TLS profiles from a feed commonly carry a CA but no server
+        // identity constraint. Preserve whatever directives WERE present (the
+        // parser above sets the flags), and make the absence explicit instead
+        // of silently producing a profile that trusts any cert for that CA.
+        // We deliberately warn rather than reject: VPN Gate's own generated
+        // configs lack these directives, so failing closed would disable every
+        // OpenVPN connection in the app.
+        boolean hasIdentityCheck = np.mExpectTLSCert || np.mCheckRemoteCN ||
+                np.mCheckPeerFingerprint;
+        if (np.mAuthenticationType != VpnProfile.TYPE_STATICKEYS && !hasIdentityCheck) {
+            np.mServerIdentityWarning = true;
+        }
 
         return np;
     }

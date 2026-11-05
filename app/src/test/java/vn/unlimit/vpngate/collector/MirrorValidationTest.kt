@@ -276,7 +276,7 @@ class MirrorValidationTest {
 
     @Test
     fun mirrorRedirectToSameHostIsAccepted() = runBlocking {
-        val sameAuthority = "http://198.51.100.20:1770/en/index.html"
+        val sameAuthority = "http://203.0.114.20:1770/en/index.html"
         val fetcher = FakeHttpFetcher { url ->
             if (isMirrorUrl(url)) {
                 response(url, MirrorTestFixtures.VALID_MIRROR_HTML, finalUrl = sameAuthority)
@@ -362,7 +362,7 @@ class MirrorValidationTest {
         )
         assertFalse(
             "a different port on the same IP is a different mirror",
-            mirrorPolicy.allows(mirror.url, "http://198.51.100.20:9999/en/"),
+            mirrorPolicy.allows(mirror.url, "http://203.0.114.20:9999/en/"),
         )
 
         val canonical = SourceUrl.parse(VpnGateUrls.MAIN_URL, SourceKind.CANONICAL_HTML)!!
@@ -381,7 +381,7 @@ class MirrorValidationTest {
         )
         assertFalse(
             "canonical must not be allowed to move to a mirror",
-            canonicalPolicy.allows(canonical.url, "http://198.51.100.20:1770/en/"),
+            canonicalPolicy.allows(canonical.url, "http://203.0.114.20:1770/en/"),
         )
     }
 
@@ -492,7 +492,7 @@ class MirrorValidationTest {
         assertEquals(2, identities.size)
         assertEquals(SourceKind.CACHED_MIRROR, identities[0].kind)
         assertEquals(MirrorTestFixtures.BOOTSTRAP_MIRROR_URL, identities[0].baseUrl)
-        assertEquals("198.51.100.20", identities[0].host)
+        assertEquals("203.0.114.20", identities[0].host)
         assertEquals(1770, identities[0].port)
         assertEquals("cached.opengw.net", identities[1].host)
         // Same URL in, same identity out.

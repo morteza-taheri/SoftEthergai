@@ -892,15 +892,24 @@ JNIEXPORT jbyteArray JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_na
     }
 
     softether_connection_t* conn = (softether_connection_t*)handle;
-    // conn->ssl is a void* holding the ssl_context_t* for the primary transport;
-    // it is only non-NULL once the TLS handshake has completed.
-    if (conn->ssl == NULL) {
+    /*
+     * SEC-F9: acquire the connection's SSL lifetime lock BEFORE reading
+     * conn->ssl, and hold it across the fingerprint call. Teardown takes this
+     * lock in WRITE mode while NULLing the slot and freeing the context; the
+     * old code read the raw pointer first and only the helper locked later,
+     * so a concurrent teardown could free/replace the context in that gap.
+     */
+    uint8_t fingerprint[32];
+    pthread_rwlock_rdlock(&conn->ssl_lifetime_lock);
+    ssl_context_t* ssl = (ssl_context_t*)conn->ssl;
+    if (ssl == NULL) {
+        pthread_rwlock_unlock(&conn->ssl_lifetime_lock);
         LOGE("nativeGetPeerFingerprint: no SSL context (handshake not complete)");
         return NULL;
     }
-
-    uint8_t fingerprint[32];
-    if (ssl_get_peer_cert_fingerprint((ssl_context_t*)conn->ssl, fingerprint, sizeof(fingerprint)) != 0) {
+    int rc = ssl_get_peer_cert_fingerprint(ssl, fingerprint, sizeof(fingerprint));
+    pthread_rwlock_unlock(&conn->ssl_lifetime_lock);
+    if (rc != 0) {
         return NULL;
     }
 

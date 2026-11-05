@@ -268,6 +268,12 @@ class SstpVpnService : VpnService() {
         beForegrounded()
         return when (intent?.action) {
             ACTION_VPN_CONNECT -> {
+                // SEC-F14: a scheduled reconnect must not survive an explicit
+                // user CONNECT. Without this, its delay elapses and calls
+                // initializeClient() with a fresh generation, replacing the
+                // controller this connect is about to install.
+                runBlocking { jobReconnect?.cancelAndJoin() }
+                jobReconnect = null
                 // BLOCK v1.0.78: bump FIRST, so the teardown started on the next
                 // line is already stale and can never stop the service we are
                 // about to use for this connect.
@@ -375,6 +381,9 @@ class SstpVpnService : VpnService() {
     }
 
     internal fun launchJobReconnect() {
+        // SEC-F14: bind this job to the session that scheduled it. Even if a
+        // cancellation is missed, a stale job must never initialise a client.
+        val scheduledGeneration = sessionGeneration.get()
         jobReconnect = scope.launch {
             try {
                 getIntPrefValue(OscPrefKey.RECONNECTION_LIFE, prefs).also {
@@ -388,6 +397,10 @@ class SstpVpnService : VpnService() {
 
                 delay(getIntPrefValue(OscPrefKey.RECONNECTION_INTERVAL, prefs) * 1000L)
 
+                if (sessionGeneration.get() != scheduledGeneration) {
+                    logWriter?.report("Skipping stale reconnect from session $scheduledGeneration")
+                    return@launch
+                }
                 initializeClient()
             } catch (_: CancellationException) { }
             finally {

@@ -287,6 +287,11 @@ fun SettingsScreen(
                 // the parser recognised — otherwise a full manual quota would
                 // read as a successful import of rows that were never stored.
                 val stored = outcome.stored
+                // SEC-F11: a write that never reached disk is a failure, not
+                // "0 imported, N rejected". Say so before any count summary.
+                if (stored != null && !stored.persisted) {
+                    return context.getString(R.string.manual_server_storage_failed)
+                }
                 val imported = stored?.stored ?: 0
                 val rejected = result.rejectedCount + (stored?.quotaRejected ?: 0)
                 val base = context.getString(

@@ -465,4 +465,6 @@
     <string name="setting_server_list_cap_label">Server list limit</string>
     <string name="setting_server_list_cap_value">%1$d servers</string>
     <string name="setting_server_list_cap_subtitle">Max servers kept. Up to %1$d can be added manually / by import; the rest is rejected with a warning</string>
+    <string name="manual_server_storage_failed">Imported servers could not be saved. Nothing was changed; please retry.</string>
+    <string name="openvpn_server_identity_warning">Warning: this server profile does not verify the identity of the VPN server.</string>
 </resources>

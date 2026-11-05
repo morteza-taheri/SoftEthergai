@@ -16,6 +16,8 @@ import kittoku.osc.preference.accessor.getIntPrefValue
 import kittoku.osc.preference.accessor.getSetPrefValue
 import kittoku.osc.preference.accessor.getStringPrefValue
 import kittoku.osc.preference.accessor.getURIPrefValue
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -59,6 +61,15 @@ private const val CONNECT_TIMEOUT_MS = 10_000
 private const val HANDSHAKE_TIMEOUT_MS = 10_000
 private const val MAX_HTTP_HEADER_BYTES = 16 * 1024
 
+/**
+ * SEC-F12: one absolute monotonic deadline for the *entire* TLS handshake +
+ * proxy CONNECT + SSTP HTTP setup. The individual connect/read/header limits
+ * above are per-operation; a slow-drip peer can keep each one satisfied while
+ * stretching setup forever. 45s leaves room for the 10s connect, the 10s
+ * handshake and a few HTTP round-trips on a slow mobile link.
+ */
+private const val SETUP_DEADLINE_MS = 45_000L
+
 internal const val SSL_REQUEST_INTERVAL = 10_000L
 
 internal class SSLTerminal(private val bridge: SharedBridge) {
@@ -82,11 +93,27 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
 
     internal fun initialize() {
         jobInitialize = bridge.service.scope.launch(bridge.handler) {
-            if (!establishSSL()) return@launch
+            // SEC-F12: bound the whole setup, not each read. On expiry close
+            // the socket so a blocked read cannot keep the coroutine alive;
+            // the normal 1s data-plane timeout is applied only after success.
+            try {
+                withTimeout(SETUP_DEADLINE_MS) {
+                    if (!establishSSL()) return@withTimeout
+                    if (!establishHttp()) return@withTimeout
+                    bridge.controlMailbox.send(ControlMessage(Where.SSL, Result.PROCEEDED))
+                }
+            } catch (_: TimeoutCancellationException) {
+                closeSocketOnFailure()
+                bridge.controlMailbox.send(ControlMessage(Where.SSL, Result.ERR_TIMEOUT))
+            }
+        }
+    }
 
-            if (!establishHttp()) return@launch
-
-            bridge.controlMailbox.send(ControlMessage(Where.SSL, Result.PROCEEDED))
+    private fun closeSocketOnFailure() {
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+            // best-effort: the deadline has already expired
         }
     }
 

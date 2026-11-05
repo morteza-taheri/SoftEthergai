@@ -15,6 +15,21 @@ import kittoku.osc.preference.accessor.getStringPrefValue
 import kittoku.osc.preference.accessor.getURIPrefValue
 
 
+/**
+ * SEC-F15: the hostname fields are interpolated verbatim into an HTTP
+ * `Host:` header and a proxy `CONNECT` request line. Reject control
+ * characters, whitespace and delimiters so an imported/preference value
+ * cannot inject a header or a second request line.
+ */
+private val SAFE_HOST_RE = Regex("^[A-Za-z0-9._-]+$")
+
+internal fun isValidHostname(value: String): Boolean {
+    if (value.isEmpty() || value.length > 253) return false
+    if (!SAFE_HOST_RE.matches(value)) return false
+    if (value.startsWith('.') || value.endsWith('.')) return false
+    return true
+}
+
 internal fun toastInvalidSetting(message: String, context: Context) {
     Toast.makeText(context, "INVALID SETTING: $message", Toast.LENGTH_LONG).show()
 }
@@ -22,6 +37,7 @@ internal fun toastInvalidSetting(message: String, context: Context) {
 internal fun checkPreferences(prefs: SharedPreferences): String? {
     getStringPrefValue(OscPrefKey.HOME_HOSTNAME, prefs).also {
         if (it.isEmpty()) return "Hostname is missing"
+        if (!isValidHostname(it)) return "Hostname contains invalid characters"
     }
 
     getIntPrefValue(OscPrefKey.SSL_PORT, prefs).also {
@@ -46,8 +62,11 @@ internal fun checkPreferences(prefs: SharedPreferences): String? {
     if (doUseCustomSNI && customSNIHostname.isEmpty()) return "Custom SNI Hostname must not be blank"
 
     if (getBooleanPrefValue(OscPrefKey.PROXY_DO_USE_PROXY, prefs)) {
-        getStringPrefValue(OscPrefKey.HOME_HOSTNAME, prefs).also {
+        // SEC-F15: this used to re-check HOME_HOSTNAME, leaving the actual
+        // proxy host completely unvalidated before it reached CONNECT.
+        getStringPrefValue(OscPrefKey.PROXY_HOSTNAME, prefs).also {
             if (it.isEmpty()) return "Proxy server hostname is missing"
+            if (!isValidHostname(it)) return "Proxy server hostname contains invalid characters"
         }
 
         getIntPrefValue(OscPrefKey.PROXY_PORT, prefs).also {

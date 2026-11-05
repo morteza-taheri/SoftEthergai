@@ -362,4 +362,6 @@
     <string name="setting_server_list_cap_label">Giới hạn danh sách máy chủ</string>
     <string name="setting_server_list_cap_value">%1$d máy chủ</string>
     <string name="setting_server_list_cap_subtitle">Số máy chủ tối đa. Có thể thêm tối đa %1$d bằng tay / nhập tệp; phần vượt quá bị từ chối kèm cảnh báo</string>
+    <string name="manual_server_storage_failed">Không thể lưu máy chủ đã nhập. Không có thay đổi nào; vui lòng thử lại.</string>
+    <string name="openvpn_server_identity_warning">Cảnh báo: cấu hình này không xác thực danh tính máy chủ VPN.</string>
 </resources>

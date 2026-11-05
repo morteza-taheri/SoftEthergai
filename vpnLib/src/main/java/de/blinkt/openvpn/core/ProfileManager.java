@@ -155,11 +155,27 @@ public class ProfileManager {
                     }
                 } catch (IOException | GeneralSecurityException ioe)
                 {
-                    VpnStatus.logException(VpnStatus.LogLevel.INFO, "Error trying to write an encrypted VPN profile, disabling " +
-                            "encryption", ioe);
+                    /*
+                     * SEC-F16: never silently downgrade to plaintext. A profile
+                     * can contain passwords, certificates and private keys;
+                     * writing them unencrypted after a Keystore error used to
+                     * happen recursively and invisibly. Fail closed instead —
+                     * the caller surfaces the error and the previously saved
+                     * (encrypted) profile stays intact. A device that must keep
+                     * working without encryption has to opt in explicitly.
+                     */
+                    VpnStatus.logException(VpnStatus.LogLevel.ERROR,
+                            "Encrypted profile write failed; refusing plaintext fallback", ioe);
                     encryptionBroken = true;
-                    saveProfile(context, profile);
-                    return;
+                    if (encryptedFileOld.exists()) {
+                        File current = context.getFileStreamPath(filename + ".cp");
+                        if (!current.exists()) {
+                            //noinspection ResultOfMethodCallIgnored
+                            encryptedFileOld.renameTo(current);
+                        }
+                    }
+                    throw new IllegalStateException(
+                            "Encrypted profile storage failed; profile was not saved in plaintext", ioe);
                 }
             }
             else {

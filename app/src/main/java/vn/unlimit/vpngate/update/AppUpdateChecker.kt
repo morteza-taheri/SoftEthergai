@@ -1,5 +1,8 @@
 package vn.unlimit.vpngate.update
 
+import vn.unlimit.vpngate.data.remote.RedirectPolicy
+import vn.unlimit.vpngate.data.remote.SourceIdentity
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -35,8 +38,22 @@ class AppUpdateChecker(
     private val fetcher: HttpFetcher = OkHttpFetcher(),
 ) {
     suspend fun check(): AppUpdateDecision {
-        val response = runCatching { fetcher.get(AppUpdateManifest.MANIFEST_URL) }.getOrNull()
-        val body = response?.takeIf { it.status in 200..299 }?.body
+        // SEC-F18: the manifest must stay on its own HTTPS origin. Without a
+        // policy the fetcher follows any redirect, and a substituted body is
+        // not signed, so an on-path actor could inject a false update notice.
+        val policy = RedirectPolicy(
+            allowedAuthorities = setOf("raw.githubusercontent.com"),
+            allowedSchemes = setOf(SourceIdentity.HTTPS),
+            allowSecureUpgrade = false,
+        )
+        val response = runCatching {
+            fetcher.get(AppUpdateManifest.MANIFEST_URL, policy)
+        }.getOrNull()
+        val body = response
+            ?.takeIf { it.status in 200..299 }
+            ?.takeIf { !it.redirectRejected }
+            ?.takeIf { policy.allowsFinal(it.finalUrl) }
+            ?.body
         val manifest = AppUpdateCheck.parseManifest(body)
         return AppUpdateCheck.decide(manifest, BuildConfig.VERSION_CODE)
     }

@@ -1072,6 +1072,9 @@ class StatusViewModel(application: Application) : AndroidViewModel(application) 
             val isr = InputStreamReader(ByteArrayInputStream(data.toByteArray()))
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
+            if (vpnProfile!!.mServerIdentityWarning) {
+                Log.w(TAG, "SEC-F5: OpenVPN profile has no server identity verification")
+            }
             vpnProfile!!.mName = connection.getName(useUdp)
             vpnProfile?.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             excludeAppsManager.configureSplitTunneling(vpnProfile)

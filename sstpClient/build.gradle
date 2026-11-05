@@ -39,6 +39,9 @@ dependencies {
     implementation 'androidx.documentfile:documentfile:1.1.0'
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
+
+    // SEC-F15: pure-JVM unit tests for hostname/proxy validation.
+    testImplementation 'junit:junit:4.13.2'
 }
 
 kotlin {

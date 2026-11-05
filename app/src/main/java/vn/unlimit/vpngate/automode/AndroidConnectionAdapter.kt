@@ -849,6 +849,9 @@ class AndroidConnectionAdapter(
             val cp = ConfigParser()
             cp.parseConfig(InputStreamReader(ByteArrayInputStream(data.toByteArray())))
             val profile = cp.convertProfile()
+            if (profile.mServerIdentityWarning) {
+                Log.w(TAG, "SEC-F5: OpenVPN profile has no server identity verification")
+            }
             profile.mName = conn.getName(useUdp)
             profile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             vn.unlimit.vpngate.utils.ExcludeAppsManager(context).configureSplitTunneling(profile)

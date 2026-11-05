@@ -398,4 +398,6 @@
     <string name="setting_server_list_cap_label">سقف لیست سرورها</string>
     <string name="setting_server_list_cap_value">%1$d سرور</string>
     <string name="setting_server_list_cap_subtitle">حداکثر سرورهای نگه داشته شده. تا %1$d سرور را میتوان دستی/با ایمپورت افزود؛ بیشتر با هشدار رد میشود</string>
+    <string name="manual_server_storage_failed">ذخیرهٔ سرورهای ایمپورتشده ممکن نشد. هیچ تغییری انجام نشد؛ دوباره تلاش کنید.</string>
+    <string name="openvpn_server_identity_warning">هشدار: این پروفایل هویت سرور VPN را تأیید نمیکند.</string>
 </resources>

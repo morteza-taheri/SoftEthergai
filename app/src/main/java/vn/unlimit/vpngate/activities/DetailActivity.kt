@@ -1086,6 +1086,16 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         try {
             cp.parseConfig(isr)
             vpnProfile = cp.convertProfile()
+            if (vpnProfile.mServerIdentityWarning) {
+                Log.w(TAG, "SEC-F5: OpenVPN profile has no server identity verification")
+                runOnUiThread {
+                    Toast.makeText(
+                        this@DetailActivity,
+                        R.string.openvpn_server_identity_warning,
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
             vpnProfile.mName = connection.getName(useUDP)
             vpnProfile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
             vpnProfile.mOverrideDNS = true

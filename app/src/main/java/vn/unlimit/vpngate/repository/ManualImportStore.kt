@@ -65,7 +65,10 @@ class ManualImportStore(private val file: File) {
             if (current.containsKey(key)) updated++ else added++
             current[key] = item
         }
-        write(current.values.toList())
+        // SEC-F11: a write that never reached disk must not be reported as a
+        // successful import. The counts are zeroed so no caller can claim
+        // "N imported" for rows that do not exist on disk.
+        if (!write(current.values.toList())) return AddResult(0, 0, persisted = false)
         AddResult(added, updated)
     }
 
@@ -94,6 +97,7 @@ class ManualImportStore(private val file: File) {
         var newRows = 0
         var added = 0
         var updated = 0
+        var persisted = true   // SEC-F11: proven only by a successful write
 
         val decision = admission.admit(
             requested = {
@@ -120,7 +124,13 @@ class ManualImportStore(private val file: File) {
                     }
                     current[key] = item
                 }
-                if (added > 0 || updated > 0) write(current.values.toList())
+                if ((added > 0 || updated > 0) && !write(current.values.toList())) {
+                    // SEC-F11: nothing reached disk. Zero the counts so the
+                    // caller reports a failed import, not a partial success.
+                    added = 0
+                    updated = 0
+                    persisted = false
+                }
             }
         }
 
@@ -134,6 +144,7 @@ class ManualImportStore(private val file: File) {
             manualCount = decision.manualCount,
             quota = admission.quota,
             totalCapacity = admission.totalCapacity,
+            persisted = persisted,
         )
     }
 
@@ -142,7 +153,7 @@ class ManualImportStore(private val file: File) {
         val current = read()
         val remaining = current.filterNot { it.hostName.trim() == key }
         if (remaining.size == current.size) return false
-        write(remaining)
+        if (!write(remaining)) return false   // SEC-F11: old file is intact
         true
     }
 
@@ -151,7 +162,12 @@ class ManualImportStore(private val file: File) {
         file.delete()
     }
 
-    data class AddResult(val added: Int, val updated: Int) {
+    data class AddResult(
+        val added: Int,
+        val updated: Int,
+        /** SEC-F11: false when the replacement never reached disk. */
+        val persisted: Boolean = true,
+    ) {
         val total: Int get() = added + updated
     }
 
@@ -170,6 +186,8 @@ class ManualImportStore(private val file: File) {
         val manualCount: Int,
         val quota: Int,
         val totalCapacity: Int,
+        /** SEC-F11: false when the replacement never reached disk. */
+        val persisted: Boolean = true,
     ) {
         val stored: Int get() = added + updated
     }
@@ -188,26 +206,48 @@ class ManualImportStore(private val file: File) {
         }
     }
 
-    private fun write(rows: List<VPNGateItem>) {
-        try {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(gson.toJson(rows), Charsets.UTF_8)
-            if (file.exists() && !file.delete()) {
-                // Windows cannot rename over an existing file. The temp copy is
-                // still a complete file, so falling back to "delete then move"
-                // keeps the atomicity promise for the content that matters.
-                tmp.copyTo(file, overwrite = true)
-                tmp.delete()
-                return
+    /**
+     * SEC-F11: write to a temp file, then install it. The original is never
+     * deleted first: on Android/Linux `renameTo` atomically replaces the
+     * destination, so a crash at any point leaves either the old file or the
+     * new one, never neither. On a JVM/Windows test host `renameTo` cannot
+     * overwrite, so the original is *renamed aside* (still intact) and only
+     * removed once the replacement is in place; any failure restores it.
+     *
+     * @return whether the data is known to be on disk. Exceptions are no
+     *   longer swallowed into a success-shaped result.
+     */
+    private fun write(rows: List<VPNGateItem>): Boolean {
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        val backup = File(file.parentFile, file.name + ".bak")
+        return try {
+            if (file.parentFile != null && !file.parentFile!!.exists() &&
+                !file.parentFile!!.mkdirs()
+            ) {
+                return false
             }
-            if (!tmp.renameTo(file)) {
-                tmp.copyTo(file, overwrite = true)
+            tmp.writeText(gson.toJson(rows), Charsets.UTF_8)
+            if (tmp.renameTo(file)) {
+                backup.delete()
+                return true
+            }
+            // Fallback for hosts that cannot rename over an existing file.
+            if (backup.exists() && !backup.delete()) return false
+            if (file.exists() && !file.renameTo(backup)) return false
+            if (tmp.renameTo(file)) {
+                backup.delete()
+                true
+            } else {
+                if (backup.exists()) backup.renameTo(file)
                 tmp.delete()
+                false
             }
         } catch (e: Exception) {
-            // A failed write must never crash the UI thread; the in-memory list
-            // the caller already holds is still correct for this session.
+            // A failed write must never crash the UI thread, but it must be
+            // reported. Restore the original if we had already moved it aside.
+            if (backup.exists() && !file.exists()) backup.renameTo(file)
+            tmp.delete()
+            false
         }
     }
 }

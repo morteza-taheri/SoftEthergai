@@ -13,8 +13,8 @@ object MirrorTestFixtures {
     const val SYNTHETIC_IP = "203.0.113.10"
     const val SYNTHETIC_HOST = "mirror-vpn-0001.opengw.net"
 
-    const val BOOTSTRAP_MIRROR_URL = "http://198.51.100.20:1770"
-    const val OTHER_MIRROR_URL = "http://198.51.100.21:1771"
+    const val BOOTSTRAP_MIRROR_URL = "http://203.0.114.20:1770"
+    const val OTHER_MIRROR_URL = "http://203.0.114.21:1771"
 
     private const val HEADER_COUNTRY =
         "<td class='vg_table_header'><b>Country</b><BR>(Physical location)</td>"

@@ -196,7 +196,51 @@ object SourceUrl {
     fun isAcceptableMirrorAuthority(authority: String): Boolean {
         val host = authority.substringBeforeLast(':', authority)
         if (host.isEmpty()) return false
-        return IPV4_RE.matches(host) || host.endsWith(".opengw.net") || host == "opengw.net"
+        // SEC-F19: a syntactically valid IPv4 literal is not automatically a
+        // routable public endpoint. A tampered directory response must not be
+        // able to point the app at loopback / RFC1918 / link-local / CGNAT /
+        // multicast / reserved space.
+        return if (IPV4_RE.matches(host)) {
+            isGlobalIpv4(host)
+        } else {
+            host.endsWith(".opengw.net") || host == "opengw.net"
+        }
+    }
+
+    /**
+     * SEC-F19: true only for a globally routable unicast IPv4 literal.
+     * Rejects 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+     * 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16, 198.18/15,
+     * 198.51.100/24, 203.0.113/24, 224/4, 240/4 and 255.255.255.255.
+     * Octets must be 0..255 with no leading zeros (so "010.0.0.1" is refused
+     * rather than interpreted octally by a downstream resolver).
+     */
+    internal fun isGlobalIpv4(host: String): Boolean {
+        val parts = host.split('.')
+        if (parts.size != 4) return false
+        val o = IntArray(4)
+        for (i in 0..3) {
+            val part = parts[i]
+            if (part.isEmpty() || (part.length > 1 && part[0] == '0')) return false
+            val v = part.toIntOrNull() ?: return false
+            if (v !in 0..255) return false
+            o[i] = v
+        }
+        val (a, b, c) = o
+        if (a == 0 || a == 10 || a == 127) return false               // this-net / private / loopback
+        if (a == 100 && b in 64..127) return false                     // CGNAT
+        if (a == 169 && b == 254) return false                         // link-local
+        if (a == 172 && b in 16..31) return false                      // private
+        if (a == 192 && b == 0 && c == 0) return false                 // IETF protocol assignments
+        if (a == 192 && b == 0 && c == 2) return false                 // TEST-NET-1
+        if (a == 192 && b == 88 && c == 99) return false               // 6to4 relay anycast
+        if (a == 192 && b == 168) return false                         // private
+        if (a == 198 && (b == 18 || b == 19)) return false             // benchmarking
+        if (a == 198 && b == 51 && c == 100) return false              // TEST-NET-2
+        if (a == 203 && b == 0 && c == 113) return false               // TEST-NET-3
+        if (a >= 224) return false                                     // multicast + reserved + broadcast
+        if (a == 255 && b == 255 && c == 255 && o[3] == 255) return false
+        return true
     }
 
     fun parse(

@@ -281,6 +281,17 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      */
     private val liveStacks = java.util.concurrent.CopyOnWriteArrayList<VpnStackReport>()
 
+    /**
+     * SEC-F10: guards the *entire* reconcile -> clear -> republish -> anchor
+     * sequence. CopyOnWriteArrayList keeps the list structurally safe but does
+     * not make a read-modify-write atomic: two producers reconciling at once
+     * could each snapshot the same ledger, then one clear+addAll would erase
+     * the other's event. Every caller of updateState lands on different
+     * threads (service callbacks / OpenVPN / SSTP), so the sequence is one
+     * critical section.
+     */
+    private val stateLock = Any()
+
     val currentStatus: VpnConnectionStatus
         get() = _vpnState.value.status
 
@@ -318,7 +329,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      * "no tunnel is currently connected", which is also what a JVM test
      * sees without any Android runtime.
      */
-    internal fun connectedAtMs(): Long = connectedAtMsValue
+    internal fun connectedAtMs(): Long = synchronized(stateLock) { connectedAtMsValue }
 
     private var prefs: SharedPreferences? = null
     private var isInitialized = false
@@ -655,6 +666,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         assignedIp: String? = _vpnState.value.assignedIp,
         errorMessage: String? = null
     ) {
+        synchronized(stateLock) {
         val verdict = VpnStackLedger.reconcile(
             live = liveStacks.toList(),
             current = _vpnState.value,
@@ -685,6 +697,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                 VpnConnectionStatus.DISCONNECTED,
                 VpnConnectionStatus.ERROR -> connectedAtMsValue = 0L
                 else -> Unit
+            }
             }
         }
     }

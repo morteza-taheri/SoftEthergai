@@ -175,6 +175,15 @@ public class VpnProfile implements Serializable, Cloneable {
     public String mDataCiphers = "";
     public boolean mBlockUnusedAddressFamilies = true;
     public boolean mCheckPeerFingerprint = false;
+
+    /**
+     * SEC-F5: set when a converted profile uses TLS but carries no server-role
+     * (`remote-cert-tls server`) and no server-name (`verify-x509-name` /
+     * `tls-remote`) check. Such a profile accepts any certificate chaining to
+     * its CA. Transient: this is a warning for the current import, not
+     * persisted profile state, and must not change the serialized schema.
+     */
+    public transient boolean mServerIdentityWarning = false;
     public String mPeerFingerPrints = "";
     public int mCompatMode = 0;
     public boolean mUseLegacyProvider = false;

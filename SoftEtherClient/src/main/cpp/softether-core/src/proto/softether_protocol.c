@@ -1834,6 +1834,15 @@ typedef struct {
 struct race_control_s {
     volatile int cancel_flag;
     volatile int winner_claimed;    // AC-02: only one worker may keep its resources
+    /*
+     * SEC-F1/F2: separate *publication* from *arbitration*.
+     *   0 = pending, 1 = payload written and published, -1 = parent abandoned.
+     * Workers CAS 0->1 only AFTER writing the payload; the parent CASes 0->-1
+     * before it detaches/returns. Exactly one side wins, so the parent can
+     * never observe a claimed-but-stale winner, and a late worker can never
+     * publish a winner that nobody will adopt.
+     */
+    volatile int winner_published;
     int winner_index;               // -1 = none
     uint32_t race_timeout_ms;       // budget for this whole attempt (no 5s floor)
     uint64_t race_deadline_ms;      // monotonic deadline for this whole attempt
@@ -1987,7 +1996,21 @@ static void* transport_thread_tcp(void* arg) {
         r->socket_fd = fd;
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
-        __sync_synchronize();   // publish winner payload before ok
+        /*
+         * SEC-F1/F2: the payload above is now complete. Publish it with a
+         * release-store CAS rather than letting winner_claimed (which was
+         * claimed BEFORE the writes) act as the publication flag. If the
+         * parent already abandoned the race, no one will adopt these
+         * resources, so destroy them here instead of leaking a live socket.
+         */
+        __sync_synchronize();
+        if (!__sync_bool_compare_and_swap(&ctx->ctrl->winner_published, 0, 1)) {
+            LOGD("[%s] parent abandoned the race, cleaning up",
+                 transport_name(TRANSPORT_TCP));
+        ssl_destroy(ssl_ctx);
+        close(fd);
+            return NULL;
+        }
         r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_TCP), fd);
     } else {
@@ -2093,7 +2116,21 @@ static void* transport_thread_rudp_direct(void* arg) {
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        /*
+         * SEC-F1/F2: the payload above is now complete. Publish it with a
+         * release-store CAS rather than letting winner_claimed (which was
+         * claimed BEFORE the writes) act as the publication flag. If the
+         * parent already abandoned the race, no one will adopt these
+         * resources, so destroy them here instead of leaking a live socket.
+         */
         __sync_synchronize();
+        if (!__sync_bool_compare_and_swap(&ctx->ctrl->winner_published, 0, 1)) {
+            LOGD("[%s] parent abandoned the race, cleaning up",
+                 transport_name(TRANSPORT_RUDP_DIRECT));
+        ssl_destroy(ssl_ctx);
+        rudp_transport_destroy(tr);
+            return NULL;
+        }
         r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_RUDP_DIRECT), fd);
     } else {
@@ -2212,7 +2249,21 @@ static void* transport_thread_natt(void* arg) {
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        /*
+         * SEC-F1/F2: the payload above is now complete. Publish it with a
+         * release-store CAS rather than letting winner_claimed (which was
+         * claimed BEFORE the writes) act as the publication flag. If the
+         * parent already abandoned the race, no one will adopt these
+         * resources, so destroy them here instead of leaking a live socket.
+         */
         __sync_synchronize();
+        if (!__sync_bool_compare_and_swap(&ctx->ctrl->winner_published, 0, 1)) {
+            LOGD("[%s] parent abandoned the race, cleaning up",
+                 transport_name(TRANSPORT_NATT));
+        ssl_destroy(ssl_ctx);
+        rudp_transport_destroy(tr);
+            return NULL;
+        }
         r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_NATT), fd);
     } else {
@@ -2311,7 +2362,21 @@ static void* transport_thread_dns(void* arg) {
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        /*
+         * SEC-F1/F2: the payload above is now complete. Publish it with a
+         * release-store CAS rather than letting winner_claimed (which was
+         * claimed BEFORE the writes) act as the publication flag. If the
+         * parent already abandoned the race, no one will adopt these
+         * resources, so destroy them here instead of leaking a live socket.
+         */
         __sync_synchronize();
+        if (!__sync_bool_compare_and_swap(&ctx->ctrl->winner_published, 0, 1)) {
+            LOGD("[%s] parent abandoned the race, cleaning up",
+                 transport_name(TRANSPORT_DNS));
+        ssl_destroy(ssl_ctx);
+        rudp_transport_destroy(tr);
+            return NULL;
+        }
         r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_DNS), fd);
     } else {
@@ -2410,7 +2475,21 @@ static void* transport_thread_icmp(void* arg) {
         r->ssl_ctx = ssl_ctx;
         r->ssl = ssl_ctx;
         r->transport = tr;
+        /*
+         * SEC-F1/F2: the payload above is now complete. Publish it with a
+         * release-store CAS rather than letting winner_claimed (which was
+         * claimed BEFORE the writes) act as the publication flag. If the
+         * parent already abandoned the race, no one will adopt these
+         * resources, so destroy them here instead of leaking a live socket.
+         */
         __sync_synchronize();
+        if (!__sync_bool_compare_and_swap(&ctx->ctrl->winner_published, 0, 1)) {
+            LOGD("[%s] parent abandoned the race, cleaning up",
+                 transport_name(TRANSPORT_ICMP));
+        ssl_destroy(ssl_ctx);
+        rudp_transport_destroy(tr);
+            return NULL;
+        }
         r->ok = 1;
         LOGD("[%s] CONNECTED fd=%d", transport_name(TRANSPORT_ICMP), fd);
     } else {
@@ -2587,13 +2666,14 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
         }
     }
 
-    // Wait for the first winner (shared AC-02 slot) or the absolute deadline.
-    // Workers publish the winner via ctrl->winner_claimed / ctrl->winner_index,
-    // so the parent no longer inspects per-thread finished/ok flags.
+    // Wait for the first *published* winner (SEC-F1) or the absolute deadline.
+    // winner_claimed is only arbitration: it flips before the payload is
+    // written, so polling it could observe a stale winner_index/socket. The
+    // worker's release-store on winner_published is the acquire point here.
     transport_result_t* winner = NULL;
     while (softether_tick_ms() < ctrl->race_deadline_ms) {
-        if (ctrl->winner_claimed) {
-            __sync_synchronize();   // AC-02: make winner payload visible here
+        if (ctrl->winner_published == 1) {
+            __sync_synchronize();   // acquire the payload written before publication
             int wi = ctrl->winner_index;
             if (wi >= 0 && wi < num_transports) {
                 winner = &threads[wi].result;
@@ -2601,6 +2681,22 @@ static int softether_connect_parallel_race(softether_connection_t* conn,
             break;
         }
         usleep(10000);  // 10ms poll
+    }
+
+    /*
+     * SEC-F2: revoke the right to publish BEFORE the bounded join / detach.
+     * Any worker still running (or detached later) will fail its 0->1 CAS and
+     * destroy its own socket/TLS/transport instead of claiming a winner that
+     * no parent remains to adopt. If a worker published just before this CAS,
+     * the CAS fails harmlessly and its winner is picked up below.
+     */
+    __sync_bool_compare_and_swap(&ctrl->winner_published, 0, -1);
+    __sync_synchronize();
+    if (winner == NULL && ctrl->winner_published == 1) {
+        int wi = ctrl->winner_index;
+        if (wi >= 0 && wi < num_transports) {
+            winner = &threads[wi].result;
+        }
     }
 
     // Signal all live threads to abort.
