@@ -296,6 +296,9 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
      */
 
     init {
+        // SERVER-ACTIONS: load deletion tombstones before the first list read,
+        // so a deleted server is absent from the very first frame.
+        vn.unlimit.vpngate.repository.DeletedServers.initialise(application)
         vpnGateConnectionList.value = dataUtil.connectionsCache
         lastUpdatedTime.value = dataUtil.connectionCacheUpdatedAt
         // v1.0.57 (§1.6.55): every property this class uses is declared ABOVE
@@ -373,6 +376,37 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
                 }
                 _importedServers.value = store.items()
             }
+        }
+    }
+
+    /**
+     * SERVER-ACTIONS: delete one server completely and permanently.
+     *
+     * Runs the physical deletion off the main thread, then republishes the
+     * list from Room so the row disappears immediately. [DeletedServers]
+     * keeps the tombstone so the next accepted refresh cannot bring it back.
+     */
+    fun deleteServer(hostName: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                vn.unlimit.vpngate.repository.ServerActions.delete(
+                    hostName = hostName,
+                    importStore = App.instance?.manualImportStore,
+                )
+            }
+            refreshFromDatabase()
+            onDone()
+        }
+    }
+
+    /** Rebuilds the published list from the current Room table. */
+    private suspend fun refreshFromDatabase() {
+        val items = withContext(Dispatchers.IO) {
+            App.instance?.vpnGateItemDao?.getAll().orEmpty()
+        }
+        publishLiveData(vpnGateConnectionList, VPNGateConnectionList().fromVPNGateItems(items))
+        _importedServers.value = withContext(Dispatchers.IO) {
+            App.instance?.manualImportStore?.items().orEmpty()
         }
     }
 

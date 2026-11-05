@@ -675,8 +675,14 @@ internal fun mergeAll(
     // The manual overlay must run before the merge so a user server the feed
     // does not list is still present in `withManual` and therefore matched /
     // retained rather than dropped.
-    val withManual = withManualRows(incoming, manualRows)
-    if (withManual.isEmpty()) return
+    // SERVER-ACTIONS: drop user-deleted hosts BEFORE the merge, so a deleted
+    // row cannot be re-inserted by a feed that still lists it.
+    val withManualBeforeDeletes = withManualRows(incoming, manualRows)
+    if (withManualBeforeDeletes.isEmpty()) return
+    val withManual = DeletedServers.filter(withManualBeforeDeletes) { it.hostName }
+    // No early return when filtering emptied the batch: continuing into the
+    // store path is what removes any deleted row still sitting in Room (e.g.
+    // the process died between writing the tombstone and the SQL delete).
 
     val stored = dao.getAll()
     val storedByHost = stored.associateBy { it.hostName.trim() }
@@ -713,7 +719,9 @@ internal fun mergeAll(
     // REQ-RET-001: the retained dataset is capped at 500, manual rows protected.
     dao.replaceAll(
         capRetainedServers(
-            rows = merged,
+            // SERVER-ACTIONS: also drop deleted rows that were retained from
+            // storage because the incoming feed did not mention them.
+            rows = DeletedServers.filter(merged) { it.hostName },
             manualHostNames = manualRows.map { it.hostName.trim() }.toSet(),
             successCounts = successCounts,
         ),
@@ -759,8 +767,14 @@ internal fun mergeFallback(
     if (dao == null) return
     if (incoming.isEmpty()) return
 
-    val withManual = withManualRows(incoming, manualRows)
-    if (withManual.isEmpty()) return
+    // SERVER-ACTIONS: drop user-deleted hosts BEFORE the merge, so a deleted
+    // row cannot be re-inserted by a feed that still lists it.
+    val withManualBeforeDeletes = withManualRows(incoming, manualRows)
+    if (withManualBeforeDeletes.isEmpty()) return
+    val withManual = DeletedServers.filter(withManualBeforeDeletes) { it.hostName }
+    // No early return when filtering emptied the batch: continuing into the
+    // store path is what removes any deleted row still sitting in Room (e.g.
+    // the process died between writing the tombstone and the SQL delete).
 
     val stored = dao.getAll()
     val storedByHost = stored.associateBy { it.hostName.trim() }
@@ -828,7 +842,9 @@ internal fun mergeFallback(
     // REQ-RET-001: the retained dataset is capped at 500, manual rows protected.
     dao.replaceAll(
         capRetainedServers(
-            rows = merged,
+            // SERVER-ACTIONS: also drop deleted rows that were retained from
+            // storage because the incoming feed did not mention them.
+            rows = DeletedServers.filter(merged) { it.hostName },
             manualHostNames = manualRows.map { it.hostName.trim() }.toSet(),
             successCounts = successCounts,
         ),

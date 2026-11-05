@@ -364,4 +364,14 @@
     <string name="setting_server_list_cap_subtitle">Số máy chủ tối đa. Có thể thêm tối đa %1$d bằng tay / nhập tệp; phần vượt quá bị từ chối kèm cảnh báo</string>
     <string name="manual_server_storage_failed">Không thể lưu máy chủ đã nhập. Không có thay đổi nào; vui lòng thử lại.</string>
     <string name="openvpn_server_identity_warning">Cảnh báo: cấu hình này không xác thực danh tính máy chủ VPN.</string>
+    <string name="server_delete">Xóa máy chủ</string>
+    <string name="server_delete_confirm_title">Xóa máy chủ này?</string>
+    <string name="server_delete_confirm_text">Xóa vĩnh viễn %1$s khỏi danh sách. Máy chủ sẽ không xuất hiện lại sau khi cập nhật.</string>
+    <string name="server_delete_confirm_action">Xóa</string>
+    <string name="server_deleted">Đã xóa máy chủ</string>
+    <string name="server_export_clipboard">Xuất CSV vào bảng nhớ tạm</string>
+    <string name="server_export_file">Xuất CSV thành tệp</string>
+    <string name="server_export_copied">Đã sao chép CSV máy chủ</string>
+    <string name="server_export_saved">Đã lưu tệp CSV máy chủ</string>
+    <string name="server_export_failed">Không thể xuất CSV máy chủ</string>
 </resources>

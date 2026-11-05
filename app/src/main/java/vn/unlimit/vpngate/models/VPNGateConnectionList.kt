@@ -256,9 +256,15 @@ class VPNGateConnectionList : Parcelable {
 
     fun fromVPNGateItems(vpnGateItems: List<VPNGateItem>): VPNGateConnectionList {
         data?.clear()
-        vpnGateItems.forEach {
-            data?.add(VPNGateConnection().fromVPNGateItem(it))
-        }
+        // SERVER-ACTIONS: a user-deleted host is filtered at this single
+        // funnel, which every display path (HomeScreen, cache getter) AND the
+        // Auto Mode dataset source go through. The persistence boundary in
+        // mergeAll/mergeFallback is the other half of the guarantee.
+        vn.unlimit.vpngate.repository.DeletedServers
+            .filter(vpnGateItems) { it.hostName }
+            .forEach {
+                data?.add(VPNGateConnection().fromVPNGateItem(it))
+            }
         return this
     }
 

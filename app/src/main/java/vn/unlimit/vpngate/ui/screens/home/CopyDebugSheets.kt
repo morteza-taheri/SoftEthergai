@@ -41,6 +41,9 @@ fun CopySheet(
     onCopyIp: () -> Unit,
     onCopyHostname: () -> Unit,
     onDebugInfo: () -> Unit,
+    onDelete: () -> Unit,
+    onExportClipboard: () -> Unit,
+    onExportFile: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as vn.unlimit.vpngate.App
@@ -74,6 +77,23 @@ fun CopySheet(
             }
             TextButton(onClick = onDebugInfo, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.collector_debug_source))
+            }
+            // SERVER-ACTIONS: both outputs describe exactly this one row.
+            OutlinedButton(onClick = onExportClipboard, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.server_export_clipboard))
+            }
+            OutlinedButton(onClick = onExportFile, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.server_export_file))
+            }
+            androidx.compose.material3.Button(
+                onClick = onDelete,
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) {
+                Text(stringResource(R.string.server_delete))
             }
         }
     }

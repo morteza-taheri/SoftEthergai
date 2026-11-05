@@ -467,4 +467,14 @@
     <string name="setting_server_list_cap_subtitle">Max servers kept. Up to %1$d can be added manually / by import; the rest is rejected with a warning</string>
     <string name="manual_server_storage_failed">Imported servers could not be saved. Nothing was changed; please retry.</string>
     <string name="openvpn_server_identity_warning">Warning: this server profile does not verify the identity of the VPN server.</string>
+    <string name="server_delete">Delete server</string>
+    <string name="server_delete_confirm_title">Delete this server?</string>
+    <string name="server_delete_confirm_text">Permanently remove %1$s from the server list. It will not reappear after an update.</string>
+    <string name="server_delete_confirm_action">Delete</string>
+    <string name="server_deleted">Server deleted</string>
+    <string name="server_export_clipboard">Export CSV to clipboard</string>
+    <string name="server_export_file">Export CSV as file</string>
+    <string name="server_export_copied">Server CSV copied to clipboard</string>
+    <string name="server_export_saved">Server CSV saved</string>
+    <string name="server_export_failed">Could not export server CSV</string>
 </resources>

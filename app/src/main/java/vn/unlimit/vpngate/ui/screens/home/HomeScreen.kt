@@ -6,6 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -112,6 +116,10 @@ fun HomeScreen(
     var showSortSheet by remember { mutableStateOf(false) }
     var copyTarget by remember { mutableStateOf<VPNGateConnection?>(null) }
     var debugTarget by remember { mutableStateOf<VPNGateConnection?>(null) }
+    // SERVER-ACTIONS: the row awaiting a destructive confirmation, and the CSV
+    // text waiting for the SAF document picker to return a Uri.
+    var deleteTarget by remember { mutableStateOf<VPNGateConnection?>(null) }
+    var pendingExportCsv by remember { mutableStateOf<String?>(null) }
     var noNetwork by remember { mutableStateOf(false) }
     var contentVisible by remember { mutableStateOf(false) }
 
@@ -169,6 +177,44 @@ fun HomeScreen(
             }
             applyView(result, emptyRes)
         }
+    }
+
+    // SERVER-ACTIONS: write the single-server CSV to a user-chosen document.
+    // SAF needs no storage permission and works on every API level here.
+    val csvSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        val csv = pendingExportCsv
+        pendingExportCsv = null
+        if (uri == null || csv == null) return@rememberLauncherForActivityResult
+        val ok = runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(csv.toByteArray(Charsets.UTF_8))
+            } != null
+        }.getOrDefault(false)
+        Toast.makeText(
+            context,
+            context.getString(
+                if (ok) R.string.server_export_saved else R.string.server_export_failed,
+            ),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    fun exportToClipboard(connection: VPNGateConnection) {
+        val csv = vn.unlimit.vpngate.repository.ServerActions.toCsv(connection)
+        val ok = runCatching {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("server.csv", csv))
+            true
+        }.getOrDefault(false)
+        Toast.makeText(
+            context,
+            context.getString(
+                if (ok) R.string.server_export_copied else R.string.server_export_failed,
+            ),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     fun search(query: String) {
@@ -614,7 +660,58 @@ fun HomeScreen(
                     copyTarget = null
                     debugTarget = target
                 },
+                onDelete = {
+                    deleteTarget = target
+                    copyTarget = null
+                },
+                onExportClipboard = {
+                    exportToClipboard(target)
+                    copyTarget = null
+                },
+                onExportFile = {
+                    pendingExportCsv =
+                        vn.unlimit.vpngate.repository.ServerActions.toCsv(target)
+                    csvSaver.launch(
+                        vn.unlimit.vpngate.repository.ServerActions.fileNameFor(target),
+                    )
+                    copyTarget = null
+                },
                 onDismiss = { copyTarget = null },
+            )
+        }
+        deleteTarget?.let { target ->
+            AlertDialog(
+                onDismissRequest = { deleteTarget = null },
+                title = { Text(stringResource(R.string.server_delete_confirm_title)) },
+                text = {
+                    Text(
+                        stringResource(
+                            R.string.server_delete_confirm_text,
+                            target.hostName ?: target.ip.orEmpty(),
+                        ),
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        deleteTarget = null
+                        val identity = target.hostName?.trim().orEmpty()
+                            .ifEmpty { target.ip.orEmpty() }
+                        connectionListViewModel.deleteServer(identity) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.server_deleted),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }) {
+                        Text(stringResource(R.string.server_delete_confirm_action))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deleteTarget = null }) {
+                        Text(stringResource(android.R.string.cancel))
+                    }
+                },
             )
         }
         debugTarget?.let { target ->
