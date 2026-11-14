@@ -631,7 +631,9 @@ class AndroidConnectionAdapter(
      *
      * Ownership is decided by the system's own VPN owner UID, so an unrelated
      * third-party VPN is never mistaken for this app's tunnel. `minSdk` is 24
-     * and `NetworkCapabilities.getOwnerUid()` is API 29+, hence the guard.
+     * and `NetworkCapabilities.getOwnerUid()` only exists from API 30, so the
+     * UID is read reflectively via [VpnOwnerUidReader]: a direct compiled call
+     * used to crash the app on Android 10 with `NoSuchMethodError`.
      *
      * Deliberately NOT sourced from `GlobalVpnTracker`: that tracker is itself
      * driven by the same listener chain that can be late, so consulting it
@@ -646,19 +648,26 @@ class AndroidConnectionAdapter(
                 val sdk = android.os.Build.VERSION.SDK_INT
                 for (net in cm.allNetworks) {
                     val caps = cm.getNetworkCapabilities(net) ?: continue
-                    val owned = OwnedVpnDecision.isOwnedByThisApp(
-                        hasVpnTransport = caps.hasTransport(
+                    if (!caps.hasTransport(
                             android.net.NetworkCapabilities.TRANSPORT_VPN
-                        ),
-                        ownerUid = caps.ownerUid,
+                        )
+                    ) continue
+                    // Never link getOwnerUid() directly: on API 29 the method is
+                    // absent from the framework and the call throws
+                    // NoSuchMethodError, which is an Error, not an Exception.
+                    val ownerUid = VpnOwnerUidReader.read(caps, sdk) ?: continue
+                    val owned = OwnedVpnDecision.isOwnedByThisApp(
+                        hasVpnTransport = true,
+                        ownerUid = ownerUid,
                         sdkInt = sdk,
                         myUid = myUid,
                     )
                     if (owned) return@withContext true
                 }
                 false
-            } catch (e: Exception) {
-                Log.w(TAG, "Owned-VPN check failed: ${e.message}")
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.w(TAG, "Owned-VPN check failed: ${e.javaClass.simpleName}: ${e.message}")
                 false
             }
         }

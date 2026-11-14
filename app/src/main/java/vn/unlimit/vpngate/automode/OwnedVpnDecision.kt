@@ -22,12 +22,17 @@ package vn.unlimit.vpngate.automode
 internal object OwnedVpnDecision {
 
     /**
-     * `NetworkCapabilities.getOwnerUid()` is API 29+, while the app's `minSdk`
-     * is 24. Below that level the owner UID is unavailable, so ownership cannot
-     * be established and the conservative answer is `false`: Auto Connect keeps
-     * its previous behaviour rather than adopting a VPN it cannot attribute.
+     * `NetworkCapabilities.getOwnerUid()` was added in API 30 (Android 11),
+     * while the app's `minSdk` is 24. On API 29 and below the method does not
+     * exist in the framework at all — calling it raises `NoSuchMethodError`,
+     * which is an `Error`, not an `Exception`. The caller must therefore never
+     * link the method directly; see [VpnOwnerUidReader].
+     *
+     * Below this level ownership is undecidable and the conservative answer is
+     * `false`: Auto Connect keeps its previous behaviour rather than adopting a
+     * VPN it cannot attribute.
      */
-    const val MIN_SDK_FOR_OWNER_UID = 29
+    const val MIN_SDK_FOR_OWNER_UID = 30
 
     /**
      * @param hasVpnTransport whether the network has `TRANSPORT_VPN`.

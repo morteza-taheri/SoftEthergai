@@ -425,13 +425,13 @@ class AutoModeLifecycleF28Test {
     }
 
     @Test
-    fun `TEST I - ownership is undecidable below API 29 and must answer false`() {
+    fun `TEST I - ownership is undecidable below API 30 and must answer false`() {
         assertFalse(
             OwnedVpnDecision.isOwnedByThisApp(
                 hasVpnTransport = true, ownerUid = 10340, sdkInt = 24, myUid = 10340,
             ),
         )
-        assertEquals(29, OwnedVpnDecision.MIN_SDK_FOR_OWNER_UID)
+        assertEquals(30, OwnedVpnDecision.MIN_SDK_FOR_OWNER_UID)
     }
 
     @Test

@@ -5319,7 +5319,7 @@ Package visibility is declared in the manifest as a `<queries>` element for `MAI
 | `GlobalVpnTracker.currentPhysicalNetwork()` | the `Network` object of a **NOT_VPN** network with `INTERNET` + `VALIDATED`, preferring `TRANSPORT_WIFI`, then `TRANSPORT_CELLULAR`, then any | `GlobalVpnTracker.kt:540-555` |
 | `GlobalVpnTracker.isAnyNetworkAvailable()` | `cm.activeNetwork != null` — "is there any network at all"; fails open when uninitialised | `:490-495` |
 | `DataUtil.isOnline(context)` | capability **or** any of WIFI / CELLULAR / ETHERNET / VPN | `utils/DataUtil.kt:677-699` |
-| `AndroidConnectionAdapter` own-tunnel probe | enumerates `cm.allNetworks` and compares `NetworkCapabilities.ownerUid` (API 29+ guard; this is the one `NewApi` lint error at `:653`) | `AndroidConnectionAdapter.kt:634-651`; `OwnedVpnDecision.kt:20-25` |
+| `AndroidConnectionAdapter` own-tunnel probe | enumerates `cm.allNetworks` and compares the VPN owner UID read reflectively by `VpnOwnerUidReader` (API 30+ guard — `getOwnerUid()` was added in API 30; a direct call crashes Android 10 with `NoSuchMethodError`) | `AndroidConnectionAdapter.kt:634-665`; `OwnedVpnDecision.kt:24-35`; `VpnOwnerUidReader.kt` |
 | Manifest | `ACCESS_NETWORK_STATE` is declared | `AndroidManifest.xml:6` |
 
 `VERIFIED CURRENT IMPLEMENTATION`: **no component classifies the transport into a Wi-Fi / cellular label.** Every existing consumer asks a boolean question ("is any network available", "is this a NOT_VPN network", "is this my own tunnel"). There is no SSID access anywhere and no location permission is requested. Transport-level classification is available from `NetworkCapabilities` without any additional permission; SSID would require `ACCESS_FINE_LOCATION` and is explicitly **out of scope**.
