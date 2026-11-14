@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "versionCode": 151,
-  "versionName": "2.4.17",
+  "versionCode": 154,
+  "versionName": "2.4.20",
   "releasePageUrl": "https://github.com/morteza-taheri/SoftEthergai/releases/latest",
-  "notes": "Star any server to keep it forever (and filter to favourites only); the Status screen is a full report (server, protocol, live rates, session, today, all-time) instead of a dead power button; faster failure on dead servers (bounded TLS handshake); new connecting spinner and semantic icons; quicker list update feedback"
+  "notes": "Fixes the arm64-v8a APK not installing on phones with 32-bit Android userspace (the ARM64 asset now includes both ARM ABIs); fixes the app closing by itself on Android 10; permanent server deletion and one-server CSV export (clipboard or file) from the long-press menu; Check for update moved to the About screen"
 }

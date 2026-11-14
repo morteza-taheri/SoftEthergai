@@ -25,7 +25,8 @@ import vn.unlimit.vpngate.utils.DataUtil
  * this repository, same pattern as the emergency CSV) and compares it with the
  * installed build. Two entry points:
  *
- *  - [check] — the manual button in Settings; returns the decision for a dialog.
+ *  - [check] — the manual button on the About screen; returns the decision
+ *    for a dialog. (BLOCK v1.0.76 moved it here from Settings.)
  *  - [AppUpdateWeeklyCheck.runIfNeeded] — the automatic weekly check from
  *    `App.onCreate`; posts a notification (tap → release page) when a newer
  *    build is published. Never auto-installs, never auto-downloads.

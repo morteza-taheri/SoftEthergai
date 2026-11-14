@@ -31,7 +31,7 @@ android {
     // one ~30 MB slice). WITHOUT the property nothing changes: the module keeps
     // emitting the single universal `app-pro-debug.apk` every existing build
     // script, test and release step already relies on.
-    if (project.hasProperty("abiSplits")) {
+    if (project.hasProperty("abiSplits") && !project.hasProperty("arm64Fallback")) {
         splits {
             abi {
                 enable true
@@ -41,6 +41,27 @@ android {
                 // the list (or a user who does not know their ABI) must still
                 // have something installable.
                 universalApk true
+            }
+        }
+    }
+    // ── BLOCK v1.0.81: ARM64 install fallback, opt-in only ───────────────
+    // A strict `arm64-v8a`-only APK carries just lib/arm64-v8a/*.so. On an
+    // ARMv8 phone that runs a 32-bit Android userspace (ro.product.cpu.abilist
+    // has no arm64-v8a), and for anyone who picks the 64-bit slice for a 32-bit
+    // ARM phone, the package installer refuses it with
+    // INSTALL_FAILED_NO_MATCHING_ABIS / "App not installed". Users reported this
+    // for the v2.4.16 and v2.4.19 arm64-v8a assets.
+    //
+    // `-Parm64Fallback` assembles ONE APK with BOTH ARM ABIs. A 64-bit device
+    // still loads arm64-v8a first; a 32-bit device falls back to armeabi-v7a,
+    // so the same file installs on every ARM phone. The release publishes this
+    // APK as the arm64-v8a asset; the other four slices stay strict and small.
+    // Mutually exclusive with -PabiSplits: the release runs two invocations,
+    // each from the same committed tree and signed with the same key.
+    if (project.hasProperty("arm64Fallback")) {
+        defaultConfig {
+            ndk {
+                abiFilters "arm64-v8a", "armeabi-v7a"
             }
         }
     }
@@ -98,8 +119,12 @@ android {
             // (device-verified 2026-11-04).
             // v2.4.19 (153) — replaces v2.4.18 with per-ABI APKs and ships the
             // 2026-11-05 deep-review security remediation (device-verified).
-            versionCode 153
-            versionName "2.4.19"
+            // v2.4.20 (154) — dual-ABI ARM64 release asset (installs on 32-bit
+            // Android userspace too), Android 10 getOwnerUid() crash fix,
+            // About-screen update check, permanent server delete + one-row CSV
+            // export, and a current update-checker manifest.
+            versionCode 154
+            versionName "2.4.20"
         }
     }
 

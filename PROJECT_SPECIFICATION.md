@@ -7454,3 +7454,77 @@ The operator set a speed record at 32 connections, confirming the wiring was the
 **Release v2.4.16 (150)** published with per-ABI APKs (`-PabiSplits`) and a clean
 versionName (`-PofficialBuild` suppresses the `-dev` debug suffix); the update-checker
 manifest (`app-update/version.json`) points at 150/2.4.16.
+
+## §12.15 — BLOCK v1.0.81: the `arm64-v8a` APK that would not install (2026-11-14)
+
+### 12.15.1 — The report and the diagnosis
+
+Several users reported that the **ARM version 8** install file would not install.
+The five `v2.4.19` release assets were downloaded and inspected: all carry
+`versionCode 153` / `versionName 2.4.19`, `minSdk 24`, `targetSdk 37`, the same
+debug signing certificate (`b1aa796a…`), and all pass `zipalign -c -v 4`. Every
+`.so` was checked as an ELF image — `arm64-v8a` is genuine 64-bit AArch64,
+`armeabi-v7a` 32-bit ARM, `x86` 32-bit x86, `x86_64` 64-bit x86-64. AAPT2
+badging and `zipinfo` agree on the packaged libraries:
+
+| `v2.4.19` asset | `native-code` |
+|---|---|
+| `…-arm64-v8a.apk` | `arm64-v8a` only |
+| `…-armeabi-v7a.apk` | `armeabi-v7a` only |
+| `…-x86.apk` / `…-x86_64.apk` | one ABI each |
+| `…-universal.apk` | all four ABIs |
+
+The `arm64-v8a` slice installs correctly on a genuine 64-bit device
+(`5585fecc`, Redmi 10C, Android 13, `ro.product.cpu.abilist =
+arm64-v8a,armeabi-v7a,armeabi`). So the file itself is **not** corrupt.
+
+The defect is the strict split design, not the artifact. An APK that contains
+**only** `lib/arm64-v8a/*.so` requires `arm64-v8a` in the device's ABI list.
+ARMv8 SoCs that ship a **32-bit Android userspace** (common on low-cost phones,
+Android Go and older tablets) expose only `armeabi-v7a,armeabi`, and a user who
+picks the 64-bit slice for a genuinely 32-bit ARM phone gets the same result.
+Android rejects the package with `INSTALL_FAILED_NO_MATCHING_ABIS`, which the
+system installer surfaces as the generic "App not installed". `v2.4.16 (150)`
+shipped the same five strict slices, so this is a **packaging** problem present
+since per-ABI publishing began, not a regression introduced in `2.4.19`.
+
+### 12.15.2 — The fix
+
+`app/build.gradle` gains an opt-in `-Parm64Fallback` path that sets
+`defaultConfig.ndk.abiFilters = ["arm64-v8a", "armeabi-v7a"]` and disables the
+`abiSplits` block. That produces **one APK carrying both ARM ABIs**: a 64-bit
+device still loads `arm64-v8a` first, while a 32-bit device falls back to
+`armeabi-v7a`. The release publishes this APK under the `arm64-v8a` asset name;
+`armeabi-v7a`, `x86`, `x86_64` stay strict (small downloads) and `universal`
+keeps all four. Two build invocations from the same committed tree, both with
+`-PofficialBuild`, produce the five assets — signing is unchanged because
+`proDebug` still resolves to the same debug keystore.
+
+Default builds are untouched: with neither property the module keeps emitting
+the single universal `app-pro-debug.apk`, and `-PabiSplits` alone is unchanged.
+
+### 12.15.3 — The regression guard
+
+`scripts/verify_release_abis.py` parses `aapt2 dump badging` for every release
+asset and **fails** when the `arm64-v8a` asset lacks `armeabi-v7a`, when the
+universal asset lacks any of the four ABIs, when a strict slice gains an extra
+ABI, or when an asset is missing. `scripts/test_verify_release_abis.py` pins
+these rules with 12 stdlib `unittest` cases, including a case that reproduces
+the exact `v2.4.19` defect. Run against the downloaded `v2.4.19` assets the gate
+correctly reports:
+
+```
+…-2.4.19-arm64-v8a.apk: arm64-v8a
+  FAIL arm64-v8a asset is missing the 32-bit ARM fallback (armeabi-v7a)
+ABI gate FAILED — do not publish these APKs.
+```
+
+### 12.15.4 — Release content
+
+`versionCode 154` / `versionName 2.4.20`. `app-update/version.json` was stale at
+`151 / 2.4.17` and now points at `154 / 2.4.20`, so the in-app checker (moved to
+the About screen in this cycle) actually reports the new release. This build
+also ships the Android 10 `NoSuchMethodError: getOwnerUid()` crash fix
+(`3657e39`), the About-screen manual update check (`9148a33`), and permanent
+server deletion plus one-row CSV export (`59508d7`).
+
