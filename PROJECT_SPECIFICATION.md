@@ -7528,3 +7528,50 @@ also ships the Android 10 `NoSuchMethodError: getOwnerUid()` crash fix
 (`3657e39`), the About-screen manual update check (`9148a33`), and permanent
 server deletion plus one-row CSV export (`59508d7`).
 
+### 12.15.5 — Verification (2026-11-14)
+
+Builds ran from a clean `git archive HEAD` tree at `ad2ebe3` with `CI=true`,
+JDK 21 and `-PofficialBuild`. `:app:assembleProDebug -Parm64Fallback` produced
+the dual-ABI ARM APK in 3m 7s; `:app:assembleProDebug -PabiSplits` produced the
+four strict slices plus universal in 37s. All five carry `versionCode 154` /
+`versionName 2.4.20` (no `-dev`), pass `zipalign -c -v 4`, and share signing
+certificate `b1aa796a19f574b231fc37a1d174535af43695752c55b689f376bce40a2eba96`
+— verified with `apksigner verify --print-certs` across both build invocations.
+The committed ABI gate passes on all five.
+
+**Device (`5585fecc`, Redmi 10C, Android 13, `abilist = arm64-v8a,armeabi-v7a,armeabi`).**
+The reported failure was reproduced rather than inferred. Forcing the 32-bit ABI
+selection with `pm install -r --abi armeabi-v7a`:
+
+| APK | Result |
+|---|---|
+| `v2.4.19` strict `arm64-v8a` | `Failure [INSTALL_FAILED_NO_MATCHING_ABIS: Failed to extract native libraries, res=-113]` |
+| `v2.4.20` dual-ABI `arm64-v8a` | `Success`, `primaryCpuAbi=armeabi-v7a`, `versionCode=154` |
+
+A normal `adb install -r` then restored `primaryCpuAbi=arm64-v8a` on the same
+build. No uninstall and no data clear were performed. The VPN tunnel stayed up
+(the home screen showed "Connected"), the app launched, the About screen showed
+`Version: 2.4.20`, and **About → Check for update returned "Up to date — You
+are running the latest published version (2.4.20, build 154)"**, confirming that
+the refreshed manifest is live on `main`. The only two `data_app_crash` dropbox
+entries (2026-11-13 14:04 and 2026-11-14 09:59, both `v153`) predate the
+10:08:15 install; there are no new crashes and no ANR entries.
+
+**Tests.** Python ABI gate: **12 / 0**. Full JVM suites from the committed tree:
+`:app:testProDebugUnitTest` **1444 tests, 3 failed, 1 skipped**; the three
+failures are the known pre-existing F.29 / emergency ones
+(`AutoModeNextServerIdentityTest.skipFiltersByIdentityNotByIp`,
+`EmergencyMergeRetentionTest` ×2) in untouched code; `:SoftEtherClient`,
+`:sstpClient` and `:vpnLib` are green (the latter has no test sources). No new
+regressions. The standing ten-green-run push gate cannot be satisfied while
+those three failures remain; the operator's explicit instruction to push all
+changes was treated as a waiver, and `git status --short` was identical before
+and after.
+
+**Publication.** Fast-forward `71b3b08..ad2ebe3` pushed to `origin/main`.
+GitHub release `v2.4.20` ("build 154 — ARM64 install fix") is **Latest**,
+targeted at full SHA `ad2ebe3acf4c85c20cdd79a863436ab0495541af`, with exactly
+five per-ABI assets; the API-reported `sha256:` digests match the local
+`SHA256SUMS.txt`. `v2.4.19` was **not deleted** — the operator asked for a new
+release under the previous per-ABI conditions, not a delete+replace.
+
