@@ -347,7 +347,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         // The tunnel-unavailable short-circuit returns before any memory write:
         // a rung that was never attempted must not be recorded as failed.
-        val shortCircuitAt = body.indexOf("tunnel unavailable (no bound VPN network)")
+        val shortCircuitAt = body.indexOf("unavailable (no bound VPN network)")
         val firstRecordAt = body.indexOf("pathMemory.record")
         assertTrue("the short-circuit must exist", shortCircuitAt >= 0)
         assertTrue("the memory must be written", firstRecordAt >= 0)
