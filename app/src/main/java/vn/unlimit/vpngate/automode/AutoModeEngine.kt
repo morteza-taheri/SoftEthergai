@@ -400,7 +400,9 @@ object AutoModeEngine {
         // rewritten, and only null when this is null), so ONE flag covers both
         // transports. The ports themselves are still carried verbatim: this is
         // a usability gate, not a data edit.
-        openVpnConfigAvailable = !openVpnConfigData.isNullOrBlank(),
+        openVpnConfigAvailable = !openVpnConfigData.isNullOrBlank() ||
+            (!openVpnDownloadSid.isNullOrBlank() && !openVpnDownloadHid.isNullOrBlank() &&
+                !openVpnDownloadHost.isNullOrBlank()),
         l2tpSupported = isL2TPSupport == 1,
         sstpSupported = isSSTPSupport == 1,
         // Stage 2F-F.2 (Q-6): carry SSTP's own port and provenance so Auto
