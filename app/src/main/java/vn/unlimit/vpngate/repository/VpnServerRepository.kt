@@ -186,9 +186,14 @@ class VpnServerRepository(
          */
         internal fun productionRouting(): CollectorRoutingInput {
             val usable = GlobalVpnTracker.isTunnelUsableForRouting()
+            val hasBoundNetwork = if (usable) {
+                GlobalVpnTracker.currentVpnNetwork() != null
+            } else {
+                GlobalVpnTracker.currentExternalVpnNetwork() != null
+            }
             return CollectorRoutingInput(
                 tunnelUsable = usable,
-                hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
+                hasBoundNetwork = hasBoundNetwork,
             )
         }
 
