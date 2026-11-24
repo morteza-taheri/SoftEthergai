@@ -34,6 +34,10 @@ interface VPNGateItemDao {
     @Query("SELECT COUNT(hostName) FROM vpngateitem WHERE openVpnConfigData IS NOT NULL AND openVpnConfigData != ''")
     fun countWithOpenVpnConfig(): Int
 
+    /** Persist a profile fetched on demand without replacing the server dataset. */
+    @Query("UPDATE vpngateitem SET openVpnConfigData = :profile WHERE hostName = :hostName")
+    suspend fun updateOpenVpnConfig(hostName: String, profile: String): Int
+
     /**
      * Atomically swap the stored dataset.
      *
