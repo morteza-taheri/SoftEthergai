@@ -413,6 +413,9 @@ class VPNGateConnection : Parcelable {
         openVpnDownloadSid = vpnGateItem.openVpnDownloadSid
         openVpnDownloadHid = vpnGateItem.openVpnDownloadHid
         openVpnDownloadHost = vpnGateItem.openVpnDownloadHost
+        openVpnDownloadSid = vpnGateItem.openVpnDownloadSid
+        openVpnDownloadHid = vpnGateItem.openVpnDownloadHid
+        openVpnDownloadHost = vpnGateItem.openVpnDownloadHost
         return this
     }
 
