@@ -716,7 +716,7 @@ enum class AttemptOutcome {
         const val RECONNECT_RATE_LIMIT_DELAY_MS = 30_000L
 
         /** Defer a server after an unexpected tunnel loss while trying alternatives. */
-        const val UNSTABLE_SERVER_COOLDOWN_MS = 5L * 60L * 1000L
+        const val UNSTABLE_SERVER_COOLDOWN_MS = 60_000L
 
         /**
          * The user enabled no protocol in Auto Connect Protocol Priority.
