@@ -52,6 +52,11 @@ data class VPNGateItem(
     var lastSeenAt: Long = 0L,
     @ColumnInfo(name = "healthScore", defaultValue = "0")
     var healthScore: Int = 0
+    // Per-server OpenVPN profile download identity. Nullable because older API-only
+    // snapshots and manual servers may not have a fresh VPN Gate download token.
+    @ColumnInfo val openVpnDownloadSid: String? = null,
+    @ColumnInfo val openVpnDownloadHid: String? = null,
+    @ColumnInfo val openVpnDownloadHost: String? = null
 ) {
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpPort > 0
