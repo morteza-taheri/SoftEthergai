@@ -458,7 +458,7 @@ object VpnGateHtmlParser {
                     // does not include profile bytes.
                     val downloadSid = params["sid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
                     val downloadHid = params["hid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
-                    val downloadHost = params["host"]?.lowercase()
+                    val downloadHost = (params["host"] ?: params["fqdn"])?.lowercase()
                         ?.takeIf {
                             it.length <= 253 &&
                                 Regex("^[a-z0-9.-]+$").matches(it) &&
