@@ -7,7 +7,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.Handler
+import android.os.Process
 import android.os.Looper
 import android.util.Log
 import androidx.preference.PreferenceManager
@@ -528,6 +530,28 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      * network that can disappear underneath it.
      */
     fun currentVpnNetwork(): Network? = systemVpnNetwork
+
+    /**
+     * Returns a VPN Network owned by a different application. On Android 10+
+     * NetworkCapabilities.ownerUid lets us distinguish this app's own VPN
+     * from a third-party VPN; on older releases we conservatively use the
+     * tracker state as the fallback signal.
+     */
+    fun currentExternalVpnNetwork(): Network? {
+        val network = currentVpnNetwork() ?: return null
+        val ctx = appContext ?: return null
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        val capabilities = cm.getNetworkCapabilities(network) ?: return null
+        if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val ownerUid = capabilities.ownerUid
+            if (ownerUid >= 0) {
+                return if (ownerUid != Process.myUid()) network else null
+            }
+        }
+        return if (!isConnected) network else null
+    }
 
     // v1.0.52 (§1.6.44): `prefersVpnForCollector()` was REMOVED here, together
     // with the Settings switch, the DataUtil accessors and the `preferVpn`
