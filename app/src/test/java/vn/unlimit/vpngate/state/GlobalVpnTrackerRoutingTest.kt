@@ -139,4 +139,54 @@ class GlobalVpnTrackerRoutingTest {
         )
     }
 
+    @Test
+    fun `collector routing tries an idle connected tunnel unless it recently errored`() {
+        val now = 5_000_000L
+        assertTrue(
+            collectorTunnelAvailableFromSignals(
+                isConnected = true,
+                hasBoundNetwork = true,
+                isUsable = false,
+                lastEioAtMs = 0L,
+                nowMs = now,
+            ),
+        )
+        assertTrue(
+            collectorTunnelAvailableFromSignals(
+                isConnected = true,
+                hasBoundNetwork = true,
+                isUsable = false,
+                lastEioAtMs = now - TunnelHealth.EIO_WINDOW_MS - 1L,
+                nowMs = now,
+            ),
+        )
+        assertFalse(
+            collectorTunnelAvailableFromSignals(
+                isConnected = true,
+                hasBoundNetwork = true,
+                isUsable = false,
+                lastEioAtMs = now - TunnelHealth.EIO_WINDOW_MS,
+                nowMs = now,
+            ),
+        )
+        assertFalse(
+            collectorTunnelAvailableFromSignals(
+                isConnected = false,
+                hasBoundNetwork = true,
+                isUsable = true,
+                lastEioAtMs = 0L,
+                nowMs = now,
+            ),
+        )
+        assertFalse(
+            collectorTunnelAvailableFromSignals(
+                isConnected = true,
+                hasBoundNetwork = false,
+                isUsable = true,
+                lastEioAtMs = 0L,
+                nowMs = now,
+            ),
+        )
+    }
+
 }

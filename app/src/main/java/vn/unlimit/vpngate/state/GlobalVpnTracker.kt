@@ -481,6 +481,21 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     )
 
     /**
+     * Collector-specific availability check. A connected, OS-bound tunnel
+     * remains a valid route while idle: the collector request itself will
+     * generate traffic. Only a recent native TUN EIO suppresses the route.
+     * This avoids silently sending VPN Gate requests over a filtered physical
+     * network merely because the tunnel has not received recent packets.
+     */
+    fun isCollectorTunnelAvailableForRouting(): Boolean = collectorTunnelAvailableFromSignals(
+        isConnected = isConnected,
+        hasBoundNetwork = currentVpnNetwork() != null,
+        isUsable = isTunnelUsable(),
+        lastEioAtMs = TunnelHealth.lastEioAtMs(),
+        nowMs = System.currentTimeMillis(),
+    )
+
+    /**
      * A VPN owned by another application has no entry in this app's state
      * ledger. When our own stack is DISCONNECTED or ERROR but Android exposes an
      * INTERNET-capable VPN Network, allow the collector to bind requests to
@@ -871,6 +886,23 @@ internal fun externalVpnCanCarryCollectorTraffic(
     status: VpnConnectionStatus,
     hasVpnNetwork: Boolean,
 ): Boolean = (status == VpnConnectionStatus.DISCONNECTED || status == VpnConnectionStatus.ERROR) && hasVpnNetwork
+
+/**
+ * An idle but connected and bound VPN is still a candidate for collector
+ * traffic. The request being routed is itself a fresh probe; only a recent
+ * native TUN EIO is sufficient reason to avoid this network.
+ */
+internal fun collectorTunnelAvailableFromSignals(
+    isConnected: Boolean,
+    hasBoundNetwork: Boolean,
+    isUsable: Boolean,
+    lastEioAtMs: Long,
+    nowMs: Long,
+): Boolean {
+    if (!isConnected || !hasBoundNetwork) return false
+    if (isUsable) return true
+    return lastEioAtMs == 0L || nowMs - lastEioAtMs > TunnelHealth.EIO_WINDOW_MS
+}
 
 /**
  * v1.0.41 (§1.6.34): the pure decision behind

@@ -188,7 +188,7 @@ class VpnServerRepository(
          * exists — the collector decides from the network state alone.
          */
         internal fun productionRouting(): CollectorRoutingInput {
-            val usable = GlobalVpnTracker.isTunnelUsableForRouting() ||
+            val usable = GlobalVpnTracker.isCollectorTunnelAvailableForRouting() ||
                 GlobalVpnTracker.isExternalVpnAvailableForRouting()
             return CollectorRoutingInput(
                 tunnelUsable = usable,
