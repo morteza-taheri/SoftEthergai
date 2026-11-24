@@ -550,7 +550,9 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
                 return if (ownerUid != Process.myUid()) network else null
             }
         }
-        return if (!isConnected) network else null
+        return if (currentStatus == VpnConnectionStatus.DISCONNECTED ||
+            currentStatus == VpnConnectionStatus.ERROR
+        ) network else null
     }
 
     // v1.0.52 (§1.6.44): `prefersVpnForCollector()` was REMOVED here, together
