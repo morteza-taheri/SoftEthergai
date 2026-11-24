@@ -707,6 +707,9 @@ internal fun mergeAll(
                     // unconnectable one, so the stored bytes survive until the
                     // feed can supply the real thing again.
                     openVpnConfigData = item.openVpnConfigData ?: prev?.openVpnConfigData,
+                    openVpnDownloadSid = item.openVpnDownloadSid ?: prev?.openVpnDownloadSid,
+                    openVpnDownloadHid = item.openVpnDownloadHid ?: prev?.openVpnDownloadHid,
+                    openVpnDownloadHost = item.openVpnDownloadHost ?: prev?.openVpnDownloadHost,
                 )
             )
     }
