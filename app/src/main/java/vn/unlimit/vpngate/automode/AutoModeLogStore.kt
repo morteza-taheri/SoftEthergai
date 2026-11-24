@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.automode
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,14 +41,12 @@ object AutoModeLogStore {
 
     fun add(source: Source, text: String) {
         if (paused || text.isBlank()) return
-        val line = Line(System.currentTimeMillis(), source, text.replace('\n', ' ').trim())
-        val current = _lines.value
-        val updated = if (current.size >= MAX_LINES) {
-            current.takeLast(MAX_LINES - 1) + line
-        } else {
-            current + line
+        val normalized = text.replace('\n', ' ').trim()
+        _lines.update { current ->
+            val line = Line(System.currentTimeMillis(), source, normalized)
+            if (current.size >= MAX_LINES) current.takeLast(MAX_LINES - 1) + line
+            else current + line
         }
-        _lines.value = updated
     }
 
     /** All lines joined for clipboard copy (all sources, not filtered). */
