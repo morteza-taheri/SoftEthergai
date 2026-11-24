@@ -2894,7 +2894,7 @@ val sstp = AutoModeCandidate(
             .substringBefore("\n    }")
         assertTrue(
             "the funnel must be the single production dispatch site",
-            funnelBody.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+            funnelBody.contains("launchReconnectJob { onUnexpectedDisconnect(dropped) }"),
         )
     }
 
@@ -2918,7 +2918,7 @@ val sstp = AutoModeCandidate(
         }
         assertTrue(
             "the funnel must dispatch the follow-up through the controller scope",
-            body.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+            body.contains("launchReconnectJob { onUnexpectedDisconnect(dropped) }"),
         )
     }
 
