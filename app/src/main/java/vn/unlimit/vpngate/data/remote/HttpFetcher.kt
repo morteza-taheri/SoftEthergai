@@ -676,6 +676,9 @@ enum class CollectorPath {
     /** The app's own VPN network, bound per request. */
     TUNNEL,
 
+    /** A VPN network established by another app, bound per request. */
+    SYSTEM_VPN,
+
     /** Bundled/emergency servers.csv source; no network binding. */
     EMERGENCY,
 }
