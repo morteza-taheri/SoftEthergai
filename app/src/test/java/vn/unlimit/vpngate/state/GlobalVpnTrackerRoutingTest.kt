@@ -125,6 +125,12 @@ class GlobalVpnTrackerRoutingTest {
                 hasVpnNetwork = true,
             ),
         )
+        assertTrue(
+            externalVpnCanCarryCollectorTraffic(
+                status = VpnConnectionStatus.ERROR,
+                hasVpnNetwork = true,
+            ),
+        )
         assertFalse(
             externalVpnCanCarryCollectorTraffic(
                 status = VpnConnectionStatus.DISCONNECTED,

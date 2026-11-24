@@ -482,7 +482,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
 
     /**
      * A VPN owned by another application has no entry in this app's state
-     * ledger. When our own stack is DISCONNECTED but Android exposes an
+     * ledger. When our own stack is DISCONNECTED or ERROR but Android exposes an
      * INTERNET-capable VPN Network, allow the collector to bind requests to
      * that network instead of incorrectly selecting the physical interface.
      */
@@ -870,7 +870,7 @@ internal const val VPN_LOST_RECHECK_MS = 50L
 internal fun externalVpnCanCarryCollectorTraffic(
     status: VpnConnectionStatus,
     hasVpnNetwork: Boolean,
-): Boolean = status == VpnConnectionStatus.DISCONNECTED && hasVpnNetwork
+): Boolean = (status == VpnConnectionStatus.DISCONNECTED || status == VpnConnectionStatus.ERROR) && hasVpnNetwork
 
 /**
  * v1.0.41 (§1.6.34): the pure decision behind
