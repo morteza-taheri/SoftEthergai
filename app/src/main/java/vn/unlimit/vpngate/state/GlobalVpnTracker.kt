@@ -545,11 +545,15 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         val capabilities = cm.getNetworkCapabilities(network) ?: return null
         if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val ownerUid = capabilities.ownerUid
-            if (ownerUid >= 0) {
-                return if (ownerUid != Process.myUid()) network else null
-            }
+            // VPN owner UID is intentionally hidden from non-owners. INVALID_UID
+            // therefore also means "not this app", which is exactly the signal
+            // needed here. Do not consult currentStatus: Auto Mode marks itself
+            // CONNECTING before it fetches a profile, while an external VPN may
+            // still be carrying that request.
+            return if (capabilities.ownerUid != Process.myUid()) network else null
         }
+        // Before API 30 ownerUid is unavailable. An app-owned VPN is never
+        // treated as external while one of our own connection transitions runs.
         return if (currentStatus == VpnConnectionStatus.DISCONNECTED ||
             currentStatus == VpnConnectionStatus.ERROR
         ) network else null
