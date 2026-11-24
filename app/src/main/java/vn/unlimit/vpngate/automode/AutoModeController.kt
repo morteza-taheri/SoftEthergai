@@ -1511,6 +1511,7 @@ enum class AttemptOutcome {
         // about to tear down. Using isTunnelBusy() here is what made a
         // watchdog-declared loss end in "skipping Auto-Reconnect" and silence.
         if (isConnectingToAnotherServer(droppedServer)) {
+            if (!isReconnectCurrent(generation)) return
             adapter.log("[AUTO] Another server is connecting; skipping Auto-Reconnect")
             // A-5 (§3.5): Disconnected is published on the way OUT of the
             // decision, never ahead of it — so the OQ-7/OQ-6/OQ-1 follow-up is
@@ -1521,6 +1522,7 @@ enum class AttemptOutcome {
 
         // OQ-6 (§11.13.4): the setting governs behaviour AFTER a drop.
         if (!autoReconnectEnabled()) {
+            if (!isReconnectCurrent(generation)) return
             adapter.log("[AUTO] Auto-Reconnect is disabled; staying disconnected")
             setState(AutoModeState.Disconnected)
             return
@@ -1539,6 +1541,7 @@ enum class AttemptOutcome {
             }
         }
         if (attempts < 0) {
+            if (!isReconnectCurrent(generation)) return
             adapter.log(
                 "[AUTO] Auto-Reconnect limit reached " +
                     "($RECONNECT_MAX_ATTEMPTS in ${RECONNECT_WINDOW_MS / 60_000} min); stopping",
@@ -1554,6 +1557,7 @@ enum class AttemptOutcome {
         // up to [reconnectInitialDelayMs] + log traffic, during which the UI
         // could show "disconnected" next to a log that still says a reconnect
         // is being considered.
+        if (!isReconnectCurrent(generation)) return
         setState(AutoModeState.Disconnected)
 
         adapter.log(
@@ -1723,6 +1727,9 @@ enum class AttemptOutcome {
 
     private fun launchUnexpectedDisconnect(dropped: AutoModeCandidate?) {
         synchronized(transitionLock) {
+            // A stop/disconnect may have won the transition lock after the OS
+            // callback fired but before it could dispatch this reconnect.
+            if (_state.value !is AutoModeState.Connected) return
             reconnectGeneration++
             val generation = reconnectGeneration
             reconnectJob?.cancel()
