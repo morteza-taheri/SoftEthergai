@@ -754,12 +754,12 @@ class VpnServerRepository(
         // the VPN is inactive the rung is PHYSICAL and the default network is
         // used. EMERGENCY is a separate dataset source, not a fallback of this
         // request.
-        if (path == CollectorPath.TUNNEL && boundFetcher == null) {
-            fetchLog("[fetch] path=tunnel unavailable (no bound VPN network); no physical fallback")
+        val boundVpnPath = path == CollectorPath.TUNNEL || path == CollectorPath.SYSTEM_VPN
+        if (boundVpnPath && boundFetcher == null) {
+            fetchLog("[fetch] path=${if (path == CollectorPath.SYSTEM_VPN) "system-vpn" else "tunnel"} unavailable (no bound VPN network); no physical fallback")
             return null
         }
 
-        val boundVpnPath = path == CollectorPath.TUNNEL || path == CollectorPath.SYSTEM_VPN
         val pathLabel = if (path == CollectorPath.SYSTEM_VPN) "system-vpn" else "tunnel"
         val result = if (boundVpnPath) {
             fetchLog("[fetch] path=$pathLabel source=$sourceTag")
@@ -783,7 +783,7 @@ class VpnServerRepository(
         // tracker's CURRENT VPN network and retry the same TUNNEL rung once.
         // This is not a downgrade — the retry never touches the physical path
         // (REQ-ROUTE-001 is preserved).
-        if (path == CollectorPath.TUNNEL) {
+        if (boundVpnPath) {
             // Wait out a VPN network handover window (bounded, 8 s): after a
             // reconnect the Network object the run captured may already be gone
             // while the tracker is about to publish its replacement
@@ -813,8 +813,8 @@ class VpnServerRepository(
         // The chosen transport produced nothing for this source. Record the
         // failure and stop: no cross-rung retry, by policy.
         pathMemory.recordFailure(path)
-        if (path == CollectorPath.TUNNEL) {
-            fetchLog("[fetch] path=tunnel failed (no result); no physical fallback (VPN active)")
+        if (boundVpnPath) {
+            fetchLog("[fetch] path=$pathLabel failed (no result); no physical fallback (VPN active)")
         } else {
             fetchLog("[fetch] path=physical failed (no result)")
         }
