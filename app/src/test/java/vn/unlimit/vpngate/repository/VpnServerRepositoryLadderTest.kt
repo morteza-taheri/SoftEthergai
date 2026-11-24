@@ -19,12 +19,11 @@ import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
  *  - **Base order** — `PHYSICAL` when no VPN Network exists; `SYSTEM_VPN` when
  *    Android has a VPN Network but this app's tunnel is not verified usable;
  *    `TUNNEL` when this app's own tunnel is usable and bound. EMERGENCY is last.
- *  - **Promotion is evidence-based** — `TUNNEL` moves to the front only when
- *    [VpnServerRepository.PathMemory] says PHYSICAL is cooling down after a
- *    failure, or that TUNNEL is the transport that last delivered a dataset.
- *    No input value can promote it on its own (T-NEW-56*, T-LADDER-*).
- *  - **Invariants** — PHYSICAL is always present, EMERGENCY is always last and
- *    appears exactly once, and no rung repeats (T-NEW-57*).
+ *  - **Selection is state-based** — a usable app tunnel selects TUNNEL; a
+ *    system VPN without a usable app tunnel selects SYSTEM_VPN; PHYSICAL is
+ *    selected only when Android exposes no VPN Network.
+ *  - **Invariants** — exactly one network rung is selected, EMERGENCY is always
+ *    last and appears exactly once, and no rung repeats (T-NEW-57*).
  *
  * [VpnServerRepository.routeLadder] and [VpnServerRepository.PathMemory] are
  * both pure Kotlin with an injectable clock, so the entire decision — including
