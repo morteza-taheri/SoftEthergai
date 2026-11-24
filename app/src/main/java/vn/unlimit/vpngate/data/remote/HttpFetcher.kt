@@ -614,28 +614,25 @@ class OkHttpFetcher(
     private suspend fun callWithCancel(request: Request): Response {
         val call = client.newCall(request)
         return suspendCancellableCoroutine { cont ->
-            // Cancel the underlying OkHttp Call the moment the coroutine is
-            // cancelled, so a blocked read is interrupted immediately and the
-            // socket is released rather than lingering until OkHttp's own
-            // connect(10 s) + read(15 s) budget elapses.
+            // Use OkHttp's asynchronous API: execute() blocks the coroutine
+            // thread inside the continuation builder, which can starve the
+            // dispatcher responsible for delivering the outer refresh timeout.
+            // Cancellation always cancels the underlying call, including while
+            // DNS, connect, interceptor execution, or response reading is pending.
             cont.invokeOnCancellation { call.cancel() }
-            try {
-                val raw = call.execute()
-                if (cont.isActive) {
-                    cont.resumeWith(Result.success(raw))
-                } else {
-                    // Cancelled between execute() returning and this check:
-                    // we already own the response, so close it to avoid a leak.
-                    raw.close()
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
                 }
-            } catch (e: IOException) {
-                // On cancellation invokeOnCancellation has already called
-                // call.cancel(), which makes execute() throw IOException.
-                // Do not resume a cancelled continuation.
-                if (cont.isActive) {
-                    cont.resumeWith(Result.failure(e))
+
+                override fun onResponse(call: okhttp3.Call, response: Response) {
+                    if (cont.isActive) {
+                        cont.resumeWith(Result.success(response))
+                    } else {
+                        response.close()
+                    }
                 }
-            }
+            })
         }
     }
 }
