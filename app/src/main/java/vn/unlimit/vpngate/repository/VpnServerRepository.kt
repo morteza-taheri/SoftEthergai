@@ -203,8 +203,8 @@ class VpnServerRepository(
          * exists, the ladder puts TUNNEL first. A successful path is
          * remembered for [successTtlMs] and wins ties.
          *
-         * **Bounded by construction.** The key space is the three-value
-         * [CollectorPath] enum, so at most three success timestamps and three
+         * **Bounded by construction.** The key space is the four-value
+         * [CollectorPath] enum, so at most four success timestamps and four
          * failure timestamps are ever held, regardless of how long the process
          * runs. No eviction policy is needed because no unbounded key can be
          * created.
@@ -483,13 +483,13 @@ class VpnServerRepository(
         // run's sources could provide, and is reported with the dataset.
         var collectedCapability = SourceCapability.UNKNOWN
 
-        // v1.0.45: re-read per refresh, never cached across runs, so a tunnel
-        // that comes up between two refreshes is honoured by the next one.
+        // Re-read per refresh, never cached across runs, so a tunnel or a
+        // different system VPN that appears between refreshes is honoured.
         //
-        // BLOCK v1.0.64: the ladder is TUNNEL (when usable and bound) ->
-        // PHYSICAL -> EMERGENCY. With a usable, bound VPN Network the TUNNEL
-        // rung is the primary and PHYSICAL the fallback; with no usable+bound
-        // tunnel the ladder is PHYSICAL -> EMERGENCY. EMERGENCY is always last.
+        // Prefer this app's verified tunnel, then an external/system VPN Network,
+        // and only then NOT_VPN physical connectivity. The chosen network rung is
+        // used alone; a failed VPN request is not silently moved to PHYSICAL.
+        // EMERGENCY remains last as a dataset source, not a transport fallback.
         val input = routing()
         // Re-arm the one-shot retry whenever a run starts with a usable tunnel:
         // the recovery it guards is "the tunnel came back", so its availability
@@ -503,12 +503,9 @@ class VpnServerRepository(
         val primary = ladder.first()
         val physicalFetcher: HttpFetcher =
             runCatching { productionBoundFetcher() }.getOrNull() ?: run {
-                // BLOCK v1.0.76 audit fix: make the unbound fallback visible.
-                // With NO VPN network present the default network IS the
-                // physical one and the fallback is correct. With a VPN network
-                // present (a tunnel that is not usable for routing), the
-                // default network is the VPN — the fetch would ride the tunnel
-                // while being logged as PHYSICAL, so say so in the log.
+                        // With no VPN Network, this is the explicit physical network.
+                // The SYSTEM_VPN rung is selected whenever a VPN Network exists,
+                // so a third-party VPN is not mislabelled as PHYSICAL.
                 if (GlobalVpnTracker.currentVpnNetwork() != null) {
                     fetchLog(
                         "[ladder] PHYSICAL has no bound network while a VPN " +
