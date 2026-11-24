@@ -31,7 +31,7 @@ interface VPNGateItemDao {
      * Used to tell a healthy list from one whose profiles are missing, so a
      * degraded download cannot replace a connectable list.
      */
-    @Query("SELECT COUNT(hostName) FROM vpngateitem WHERE openVpnConfigData IS NOT NULL AND openVpnConfigData != ''")
+    @Query("SELECT COUNT(hostName) FROM vpngateitem WHERE (openVpnConfigData IS NOT NULL AND openVpnConfigData != '') OR (openVpnDownloadSid IS NOT NULL AND openVpnDownloadHid IS NOT NULL AND openVpnDownloadHost IS NOT NULL)")
     fun countWithOpenVpnConfig(): Int
 
     /** Persist a profile fetched on demand without replacing the server dataset. */
