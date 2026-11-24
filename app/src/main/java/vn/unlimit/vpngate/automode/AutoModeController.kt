@@ -653,7 +653,9 @@ enum class AttemptOutcome {
 
         /**
          * R8 (§11.13.3/§11.13.5, OQ-1/OQ-8): Auto Mode stopped reconnecting
-         * because its bounded reconnect budget was exhausted.
+         * because the reconnect burst entered its cooldown window. Kept as a
+         * legacy message identifier for older UI translations; the controller no
+         * longer publishes it as a permanent terminal state.
          *
          * Distinct from [ERROR_NO_SERVER] and [ERROR_NATIVE_UNRESOLVED]: the
          * server list was not proven exhausted, and no native slot was stuck.
@@ -3587,16 +3589,16 @@ enum class AttemptOutcome {
 
         adapter.log("[AUTO] All compatible servers failed")
         setState(AutoModeState.Error(ERROR_NO_SERVER))
-        if (runOrigin == ConnectionOrigin.AUTO_RECONNECT && autoReconnectEnabled()) {
-            adapter.log("[AUTO] Reconnect cycle exhausted; scheduling another bounded cycle")
-            scheduleReconnectAfterExhaustion()
-        }
         // v1.0.31 (D-5): the continuation is spent. This is a second, defensive
         // reset — [resumeFromServerKey] is already cleared when it is consumed
         // above; clearing here too means "the list is exhausted" can never leave
         // a position behind for a later run.
         resumeFromServerKey = null
-        job = null // terminal state: the run is over; next press restarts cleanly
+        job = null // release the run slot before scheduling any delayed retry
+        if (runOrigin == ConnectionOrigin.AUTO_RECONNECT && autoReconnectEnabled()) {
+            adapter.log("[AUTO] Reconnect cycle exhausted; scheduling another bounded cycle")
+            scheduleReconnectAfterExhaustion()
+        }
     }
 
     /**
