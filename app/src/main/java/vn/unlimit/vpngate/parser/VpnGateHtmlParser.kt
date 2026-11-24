@@ -452,6 +452,24 @@ object VpnGateHtmlParser {
                     VpnRecords.setField(server, "protocols.openvpn.configAvailable", true, source)
                     VpnRecords.markSupported(server, "openvpn", source)
 
+                    // The API's embedded profile is only a fast path. Preserve the
+                    // official per-server download identity so the app can fetch one
+                    // small .ovpn profile later when the bulk CSV is unavailable or
+                    // does not include profile bytes.
+                    val downloadSid = params["sid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
+                    val downloadHid = params["hid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
+                    val downloadHost = params["host"]?.lowercase()
+                        ?.takeIf {
+                            it.length <= 253 &&
+                                Regex("^[a-z0-9.-]+$").matches(it) &&
+                                (it.endsWith(".opengw.net") || VpnUtil.validIp(it))
+                        }
+                    if (downloadSid != null && downloadHid != null && downloadHost != null) {
+                        VpnRecords.setField(server, "protocols.openvpn.download.sid", downloadSid, source)
+                        VpnRecords.setField(server, "protocols.openvpn.download.hid", downloadHid, source)
+                        VpnRecords.setField(server, "protocols.openvpn.download.host", downloadHost, source)
+                    }
+
                     val tcpQ = VpnUtil.toInt(params["tcp"] ?: "0")
                     val udpQ = VpnUtil.toInt(params["udp"] ?: "0")
 
