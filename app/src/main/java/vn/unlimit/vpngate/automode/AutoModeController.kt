@@ -1823,6 +1823,7 @@ enum class AttemptOutcome {
             // R8: a user stop ends the ownership record; no reconnect may name it.
             connectedCandidate = null
             pendingReconnectServer = null
+            pendingReconnectDemotedKey = null
             // BLOCK v1.0.80: a user stop is the operator's "I disconnected" — the
             // pending connectivity retry must not resurrect the tunnel later.
             networkRetryJob?.cancel()
@@ -2002,6 +2003,7 @@ enum class AttemptOutcome {
         // reconnect a tunnel the user deliberately closed.
         connectedCandidate = null
         pendingReconnectServer = null
+        pendingReconnectDemotedKey = null
         // BLOCK v1.0.80: an explicit disconnect cancels a pending network retry.
         networkRetryJob?.cancel()
         networkRetryJob = null
@@ -2315,8 +2317,10 @@ enum class AttemptOutcome {
         adapter.log("[AUTO] Connected successfully")
         onSuccess(server, protocol)
         rememberRemaining(servers, server)
+        // A verified tunnel ends the previous failed-server demotion window.
+        pendingReconnectDemotedKey = null
         // R8: remember the exact candidate so an unexpected disconnect can
-        // name it and re-seed it as the first reconnect candidate.
+        // name it and re-seed it for a later reconnect decision.
         connectedCandidate = server
         // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
         connectedAt = System.currentTimeMillis()
@@ -2528,9 +2532,10 @@ enum class AttemptOutcome {
         // The seed is consumed here regardless of outcome so it cannot leak into
         // the next run.
         val wasReconnect = runOrigin == ConnectionOrigin.AUTO_RECONNECT
+        val reconnectCandidate = pendingReconnectServer
         pendingReconnectServer = null
-        if (wasReconnect && isTunnelBusy()) {
-            adapter.log("[AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run")
+        if (wasReconnect && isConnectingToAnotherServer(reconnectCandidate)) {
+            adapter.log("[AUTO] Another server is connecting; aborting Auto-Reconnect run")
             setState(AutoModeState.Disconnected)
             return
         }
@@ -2672,9 +2677,7 @@ enum class AttemptOutcome {
         val rankedByQuality = all
             .withActiveRtt(priorities)
             .sortedForAutoConnect(history, runNetworkType)
-        val demotedKey = if (wasReconnect) pendingReconnectDemotedKey.also {
-            pendingReconnectDemotedKey = null
-        } else null
+        val demotedKey = if (wasReconnect) pendingReconnectDemotedKey else null
         val qualitySorted = if (demotedKey == null) rankedByQuality else {
             rankedByQuality.filterNot { serverKey(it) == demotedKey } +
                 rankedByQuality.filter { serverKey(it) == demotedKey }
