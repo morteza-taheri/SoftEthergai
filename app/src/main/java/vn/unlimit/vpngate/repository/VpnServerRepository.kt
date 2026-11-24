@@ -19,6 +19,7 @@ import vn.unlimit.vpngate.data.remote.CollectorPath
 import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
 import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
+import vn.unlimit.vpngate.data.remote.OpenVpnProfileDownloader
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
 import vn.unlimit.vpngate.data.remote.VpnGateHtmlSource
 import vn.unlimit.vpngate.data.remote.VpnGateMirrorSource
@@ -445,6 +446,31 @@ class VpnServerRepository(
                 }
             }
             result
+        }
+    }
+
+    /**
+     * Fetch one server's OpenVPN profile through the same measured route policy
+     * used by full list refreshes: this app's verified tunnel, otherwise any
+     * Android system VPN (including a different VPN app), otherwise the explicit
+     * non-VPN physical network. The selected VPN path is never silently
+     * downgraded to PHYSICAL after failure.
+     */
+    suspend fun fetchOpenVpnProfile(
+        connection: VPNGateConnection,
+        useUdp: Boolean,
+    ): String? = withContext(Dispatchers.IO) {
+        val path = routeLadder(routing(), pathMemory).first()
+        val physicalFetcher = runCatching { productionBoundFetcher() }.getOrNull() ?: fetcher
+        val boundFetcher = bindHttpFetcher()
+        fetchOnChosenPath(
+            sourceTag = "openvpn-profile",
+            path = path,
+            boundFetcher = boundFetcher,
+            succeeded = { !it.isNullOrBlank() },
+            physicalFetcher = physicalFetcher,
+        ) { selectedFetcher ->
+            OpenVpnProfileDownloader(selectedFetcher).download(connection, useUdp)
         }
     }
 
