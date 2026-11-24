@@ -81,6 +81,10 @@ object VpnConnectionMapper {
 
         // Fully decoded OpenVPN profile (app-specific field).
         conn.openVpnConfigData = VpnRecords.str(ov["rawConfig"]).takeIf { it.isNotEmpty() }
+        val openVpnDownload = VpnRecords.map(ov["download"])
+        conn.openVpnDownloadSid = VpnRecords.str(openVpnDownload["sid"]).takeIf { it.isNotEmpty() }
+        conn.openVpnDownloadHid = VpnRecords.str(openVpnDownload["hid"]).takeIf { it.isNotEmpty() }
+        conn.openVpnDownloadHost = VpnRecords.str(openVpnDownload["host"]).takeIf { it.isNotEmpty() }
 
         conn.tcpPort = VpnRecords.int(VpnRecords.transport(ov, "tcp")["port"])
         conn.udpPort = VpnRecords.int(VpnRecords.transport(ov, "udp")["port"])
