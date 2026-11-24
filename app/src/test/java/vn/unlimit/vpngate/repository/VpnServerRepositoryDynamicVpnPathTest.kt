@@ -114,7 +114,7 @@ class VpnServerRepositoryDynamicVpnPathTest {
     @Test
     fun `D bound network with a dead tunnel adds no TUNNEL rung`() {
         val result = ladder(tunnelUsable = false, hasBoundNetwork = true)
-        assertEquals(listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY), result)
+        assertEquals(listOf(CollectorPath.SYSTEM_VPN, CollectorPath.EMERGENCY), result)
         assertFalse("TUNNEL must not be offered for a dead tunnel", result.contains(CollectorPath.TUNNEL))
     }
 
@@ -342,9 +342,9 @@ class VpnServerRepositoryDynamicVpnPathTest {
                         tu && hb,
                     )
                     assertEquals(
-                        "PHYSICAL only when the VPN is inactive ($tu,$hb)",
+                        "PHYSICAL only when Android exposes no VPN Network ($tu,$hb)",
                         result.contains(CollectorPath.PHYSICAL),
-                        !(tu && hb),
+                        !hb,
                     )
                 }
             }
