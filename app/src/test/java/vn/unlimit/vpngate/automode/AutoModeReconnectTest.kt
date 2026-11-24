@@ -112,6 +112,8 @@ class AutoModeReconnectTest {
         isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
         /** R8: a 0 ms settle delay keeps the JVM test fast. */
         reconnectInitialDelayMs: Long = 0L,
+        reconnectCooldownMs: Long = 0L,
+        reconnectBackoffMaxMs: Long = 0L,
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -122,6 +124,8 @@ class AutoModeReconnectTest {
         isTunnelBusy = isTunnelBusy,
         isConnectingToAnotherServer = isConnectingToAnotherServer,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        reconnectCooldownMs = reconnectCooldownMs,
+        reconnectBackoffMaxMs = reconnectBackoffMaxMs,
     )
 
     /** Wait until the controller settles in [AutoModeState.Connected] with no run active. */
@@ -252,36 +256,45 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T4 — Loop guard: the (N+1)th drop within the window stops with
-    //      ERROR_RECONNECT_LIMIT.
+    // T4 — A burst of drops is cooled down, not treated as a permanent stop.
     // ------------------------------------------------------------------
     @Test
-    fun t4_loopGuardStopsAfterMaxAttempts() = runBlocking {
+    fun t4_loopGuardCoolsDownAndStartsAnotherReconnectCycle() = runBlocking {
         val servers = listOf(candidate("alpha"))
-        val controller = controller(servers = servers)
+        val controller = controller(
+            servers = servers,
+            reconnectCooldownMs = 0L,
+            reconnectBackoffMaxMs = 0L,
+        )
 
         controller.start()
         controller.awaitConnected()
 
-        // Consume the budget: RECONNECT_MAX_ATTEMPTS successful launches.
-        repeat(AutoModeController.RECONNECT_MAX_ATTEMPTS) {
+        // Consume the first bounded burst. Each reconnect must complete and
+        // reach Connected again; the sixth loss must begin a fresh cycle.
+        repeat(AutoModeController.RECONNECT_MAX_ATTEMPTS + 1) {
+            val before = adapter.connects.size
             invokeArmedTunnelLost(controller)
-            // Wait for the reconnect run to reach Connected again before the next drop.
-            withTimeoutOrNull(5_000) { controller.awaitConnected() }
+            val deadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < deadline &&
+                adapter.connects.size <= before
+            ) delay(10)
+            assertTrue(
+                "expected another connection attempt after drop #${it + 1}; logs=${adapter.logs}",
+                adapter.connects.size > before,
+            )
+            controller.awaitConnected()
         }
 
-        // The next drop must trip the guard.
-        invokeArmedTunnelLost(controller)
-        val error = controller.awaitError()
-
-        assertEquals(
-            "the guard must publish ERROR_RECONNECT_LIMIT",
-            AutoModeController.ERROR_RECONNECT_LIMIT,
-            error.message,
+        assertFalse(
+            "the old permanent ERROR_RECONNECT_LIMIT terminal must not be published",
+            controller.state.value is AutoModeState.Error &&
+                (controller.state.value as AutoModeState.Error).message ==
+                AutoModeController.ERROR_RECONNECT_LIMIT,
         )
         assertTrue(
-            "expected the limit log line; logs=${adapter.logs}",
-            adapter.logs.any { it.contains("limit reached") },
+            "expected the bounded cooldown log; logs=${adapter.logs}",
+            adapter.logs.any { it.contains("burst limit reached") },
         )
     }
 
