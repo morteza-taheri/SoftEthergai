@@ -58,6 +58,19 @@ class EmergencyMergeRetentionTest {
         override fun count(): Int = rows.size
         override fun countWithOpenVpnConfig(): Int =
             rows.count { !it.openVpnConfigData.isNullOrBlank() }
+
+        override suspend fun updateOpenVpnConfig(hostName: String, profile: String): Int {
+            var updated = 0
+            this.rows = this.rows.map { item ->
+                if (item.hostName == hostName) {
+                    updated++
+                    item.copy(openVpnConfigData = profile)
+                } else {
+                    item
+                }
+            }
+            return updated
+        }
     }
 
     /** Room stand-in that counts the two writes this contract is about. */
