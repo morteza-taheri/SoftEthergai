@@ -253,15 +253,14 @@ class AutoModeNextServerIdentityTest {
         c.skipToNextServer()
         val second = c.awaitTerminal()
 
-        assertTrue("expected the exhausted-session terminal, got $second", second is AutoModeState.Error)
+        // BLOCK v1.0.85: exhausting the current session starts a new cycle,
+        // retaining only the server being left as tried. The failed sibling
+        // shares an IP but has a different hostname identity, so it is eligible.
+        assertTrue("expected the next cycle to connect, got $second", second is AutoModeState.Connected)
         assertEquals(
-            "both same-IP servers were tried in this session",
-            AutoModeController.ERROR_NO_MORE_UNTRIED,
-            (second as AutoModeState.Error).message,
-        )
-        assertTrue(
-            "the failed same-IP sibling must not be re-dialled: ${adapter.connects}",
-            adapter.connects.none { it.first == "s2" },
+            "the same-IP sibling remains a distinct candidate",
+            "s2" to AutoModeProtocol.SOFTETHER_UDP,
+            adapter.connects.first(),
         )
     }
 
