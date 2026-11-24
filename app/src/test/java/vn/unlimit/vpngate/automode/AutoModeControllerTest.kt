@@ -319,6 +319,9 @@ class AutoModeControllerTest {
         isTunnelBusy: () -> Boolean = { false },
         /** R8 (OQ-3): settle delay before the first reconnect attempt; 0 keeps JVM tests fast. */
         reconnectInitialDelayMs: Long = 0L,
+        /** Rate guard and unstable-server cooldown are disabled in deterministic JVM tests. */
+        reconnectRateLimitDelayMs: Long = 0L,
+        unstableServerCooldownMs: Long = 0L,
         /**
          * AUTOCONNECT-FIX-4 (v1.0.34): the ledger to inject.
          *
@@ -354,6 +357,8 @@ class AutoModeControllerTest {
         autoReconnectEnabled = autoReconnectEnabled,
         isTunnelBusy = isTunnelBusy,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        reconnectRateLimitDelayMs = reconnectRateLimitDelayMs,
+        unstableServerCooldownMs = unstableServerCooldownMs,
         historyProvider = { history },
         networkTypeProvider = { networkType },
         persistOrigin = persistOrigin,
