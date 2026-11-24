@@ -6955,6 +6955,13 @@ protocol order, v1.0.37 no-terminal contract).
 
 ### 12.9.12 Deferred (D-9, reasons)
 
+**Current reconnect safety policy (2026-11-24):** five unexpected disconnects within
+10 minutes form a burst. The controller applies bounded exponential backoff (maximum
+60 seconds); when the burst budget is reached it waits a 60-second cooldown and starts
+a fresh retry cycle. The legacy `ERROR_RECONNECT_LIMIT` identifier remains only for
+older UI translations and is no longer published as a permanent terminal state.
+The failed server is demoted behind other candidates until a tunnel is successfully
+established. This policy is deliberately bounded but still self-recovering.
 Network-identity hashing; staged probing; connect-time statistics; extending the Iranian app list; a
 rescan button — all need on-device measurements and are out of scope for this block.
 
