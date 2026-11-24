@@ -544,7 +544,7 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
             ?: return null
         val capabilities = cm.getNetworkCapabilities(network) ?: return null
         if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val ownerUid = capabilities.ownerUid
             if (ownerUid >= 0) {
                 return if (ownerUid != Process.myUid()) network else null
