@@ -51,7 +51,7 @@ data class VPNGateItem(
     @ColumnInfo(name = "lastSeenAt", defaultValue = "0")
     var lastSeenAt: Long = 0L,
     @ColumnInfo(name = "healthScore", defaultValue = "0")
-    var healthScore: Int = 0
+    var healthScore: Int = 0,
     // Per-server OpenVPN profile download identity. Nullable because older API-only
     // snapshots and manual servers may not have a fresh VPN Gate download token.
     @ColumnInfo val openVpnDownloadSid: String? = null,
