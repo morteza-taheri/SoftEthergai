@@ -475,7 +475,37 @@ class VpnServerRepository(
             succeeded = { !it.isNullOrBlank() },
             physicalFetcher = physicalFetcher,
         ) { selectedFetcher ->
-            OpenVpnProfileDownloader(selectedFetcher).download(connection, useUdp)
+            val cachedMirrorUrls = runCatching {
+                vn.unlimit.vpngate.App.instance?.dataUtil?.getCachedMirrors().orEmpty()
+            }.getOrDefault(emptyList())
+            val downloader = OpenVpnProfileDownloader(selectedFetcher)
+            val cachedResult = downloader.download(
+                connection = connection,
+                useUdp = useUdp,
+                mirrorBaseUrls = cachedMirrorUrls,
+            )
+            if (!cachedResult.isNullOrBlank()) {
+                cachedResult
+            } else {
+                // A descriptor can outlive a mirror cache. Refresh the official
+                // mirror directory only after the canonical + cached attempts
+                // fail, then retry this one profile over the newly discovered
+                // authorities. This keeps the common path cheap.
+                val discovered = runCatching {
+                    VpnGateMirrorSource(selectedFetcher).discoverMirrors(cachedMirrorUrls)
+                }.getOrDefault(emptyList())
+                val freshMirrorUrls = discovered.map { it.baseUrl }
+                if (freshMirrorUrls.isNotEmpty()) {
+                    runCatching {
+                        vn.unlimit.vpngate.App.instance?.dataUtil?.setCachedMirrors(freshMirrorUrls)
+                    }
+                }
+                downloader.download(
+                    connection = connection,
+                    useUdp = useUdp,
+                    mirrorBaseUrls = freshMirrorUrls.ifEmpty { cachedMirrorUrls },
+                )
+            }
         }
     }
 
