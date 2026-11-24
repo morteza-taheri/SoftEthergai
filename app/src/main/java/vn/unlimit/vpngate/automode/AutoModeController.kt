@@ -1720,13 +1720,10 @@ enum class AttemptOutcome {
     private val reconnectLock = Any()
 
     /**
-     * R8 (§11.13.3): the server Auto Mode was connected to when the unexpected
-     * disconnect happened.
-     *
-     * Seeded as the FIRST candidate of the reconnect run, so the flow matches
-     * §11.13.3 step 1 ("first to the same server"), then the rest of the sorted
-     * list follows. Set by [onUnexpectedDisconnect] and consumed (and nulled) at
-     * the top of [runAutoMode].
+     * Identity of the server that just disconnected unexpectedly. It is consumed
+     * at the top of [runAutoMode] for transition/ownership checks. The separate
+     * [pendingReconnectDemotedKey] moves this server behind alternatives and
+     * remains active until a replacement tunnel is successfully established.
      */
     @Volatile
     private var pendingReconnectServer: AutoModeCandidate? = null
