@@ -27,7 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ServerProtocolSummary::class,
         ServerHistoryEvent::class,
     ],
-    version = 11,
+    version = 12,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -325,6 +325,25 @@ abstract class AppDatabase: RoomDatabase() {
                 )
                 database.execSQL(
                     "ALTER TABLE `server_history_summary` ADD COLUMN `unknownLastFailureAt` INTEGER"
+                )
+            }
+        }
+
+        
+        /**
+         * Room 11 -> 12: persist the short-lived VPN Gate OpenVPN download identity.
+         * These nullable fields are additive; existing embedded profiles remain intact.
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnDownloadSid` TEXT"
+                )
+                database.execSQL(
+                    "ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnDownloadHid` TEXT"
+                )
+                database.execSQL(
+                    "ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnDownloadHost` TEXT"
                 )
             }
         }
