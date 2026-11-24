@@ -177,21 +177,19 @@ class AutoModeReconnectTest {
         controller.awaitConnected()
         assertNotNull("precondition: a tunnel is owned", controller.state.value)
 
-        val before = adapter.connects.count { it.first == "alpha" }
-        // Simulate the armed-path loss. The controller's watcher callback sets
-        // Disconnected then launches onUnexpectedDisconnect, which re-seeds and
-        // starts a fresh run over [alpha, beta].
+        val beforeBeta = adapter.connects.count { it.first == "beta" }
+        // Simulate the armed-path loss. The reconnect must rotate to another
+        // candidate before retrying the server that just dropped.
         invokeArmedTunnelLost(controller)
 
-        // The reconnect re-dials alpha first.
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline) {
-            if (adapter.connects.count { it.first == "alpha" } > before) break
+            if (adapter.connects.count { it.first == "beta" } > beforeBeta) break
             delay(10)
         }
         assertTrue(
-            "expected a reconnect to re-dial alpha; connects=${adapter.connects}",
-            adapter.connects.count { it.first == "alpha" } > before,
+            "expected reconnect to rotate to beta before alpha; connects=${adapter.connects}",
+            adapter.connects.count { it.first == "beta" } > beforeBeta,
         )
         assertTrue(
             "expected the reconnect log line; logs=${adapter.logs}",
