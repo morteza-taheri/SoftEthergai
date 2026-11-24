@@ -1459,6 +1459,84 @@ enum class AttemptOutcome {
     }
 
     /**
+     * Own every delayed Auto-Reconnect decision in one cancellable Job. Duplicate
+     * loss signals cannot create parallel reconnect loops.
+     */
+    private fun launchReconnectJob(block: suspend () -> Unit) {
+        synchronized(reconnectLock) {
+            if (reconnectJob?.isActive == true) {
+                adapter.log("[AUTO] Reconnect already pending; duplicate loss ignored")
+                return
+            }
+            reconnectJob = scope.launch {
+                try {
+                    block()
+                } finally {
+                    val finished = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    synchronized(reconnectLock) {
+                        if (reconnectJob === finished) reconnectJob = null
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Exponential backoff with a bounded burst window. Once the burst budget is
+     * consumed, pause for a cooldown and begin a new bounded cycle rather than
+     * publishing a permanent ERROR_RECONNECT_LIMIT terminal state.
+     */
+    private fun nextReconnectDelayMs(): Long = synchronized(reconnectLock) {
+        val now = System.currentTimeMillis()
+        reconnectTimestamps.removeAll { it < now - RECONNECT_WINDOW_MS }
+        if (reconnectTimestamps.size >= RECONNECT_MAX_ATTEMPTS) {
+            reconnectTimestamps.clear()
+            reconnectTimestamps.add(now)
+            adapter.log(
+                "[AUTO] Reconnect burst limit reached; cooling down for ${reconnectCooldownMs}ms",
+            )
+            reconnectCooldownMs.coerceAtLeast(0L)
+        } else {
+            reconnectTimestamps.add(now)
+            var delayMs = reconnectInitialDelayMs.coerceAtLeast(0L)
+            repeat((reconnectTimestamps.size - 1).coerceAtMost(10)) {
+                delayMs = (delayMs * 2L).coerceAtMost(reconnectBackoffMaxMs.coerceAtLeast(0L))
+            }
+            delayMs.coerceAtMost(reconnectBackoffMaxMs.coerceAtLeast(0L))
+        }
+    }
+
+    /**
+     * A full failed catalogue walk during Auto-Reconnect is not a reason to
+     * abandon recovery forever. Keep the failure state visible, then retry the
+     * catalogue after a bounded delay while the setting and network still allow it.
+     */
+    private fun scheduleReconnectAfterExhaustion() {
+        if (!autoReconnectEnabled()) return
+        launchReconnectJob {
+            val delayMs = nextReconnectDelayMs()
+            adapter.log("[AUTO] Waiting ${delayMs}ms before retrying the server catalogue")
+            kotlinx.coroutines.delay(delayMs)
+            if (!autoReconnectEnabled()) return@launchReconnectJob
+            if (!isNetworkAvailable()) {
+                adapter.log("[AUTO] Network unavailable after retry delay; handing off to network wait")
+                scheduleNetworkRetry()
+                return@launchReconnectJob
+            }
+            if (isConnectingToAnotherServer(null)) {
+                adapter.log("[AUTO] Another server is connecting; suppressing catalogue retry")
+                return@launchReconnectJob
+            }
+            runOrigin = ConnectionOrigin.AUTO_RECONNECT
+            pendingReconnectServer = null
+            pendingReconnectDemotedKey = null
+            overrideServers = null
+            synchronized(reconnectLock) { reconnectJob = null }
+            start()
+        }
+    }
+
+    /**
      * A-4 (§3.4): the one place an armed-tunnel loss becomes an
      * Auto-Reconnect.
      *
@@ -1905,6 +1983,7 @@ enum class AttemptOutcome {
     private fun resetReconnectBudget() {
         synchronized(reconnectLock) { reconnectTimestamps.clear() }
         pendingReconnectServer = null
+        pendingReconnectDemotedKey = null
     }
 
     /** Â§3/Â§29-Test10: pressing while Connected disconnects via the normal flow. */
