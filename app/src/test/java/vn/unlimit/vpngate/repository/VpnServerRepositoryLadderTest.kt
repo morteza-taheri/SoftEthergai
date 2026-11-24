@@ -381,8 +381,8 @@ class VpnServerRepositoryLadderTest {
         }
 
         assertEquals(
-            "the key space must be exactly the CollectorPath enum",
-            CollectorPath.entries.size,
+            "the key space must include all four collector paths",
+            4,
             CollectorPath.entries.size,
         )
         val preferred = memory.preferred()
