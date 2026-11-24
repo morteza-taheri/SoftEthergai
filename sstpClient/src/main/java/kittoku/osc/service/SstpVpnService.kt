@@ -92,6 +92,7 @@ class SstpVpnService : VpnService() {
     private var jobReconnect: Job? = null
 
     companion object {
+        private const val TAG = "SstpVpnService"
         const val ACTION_CONNECT = ACTION_VPN_CONNECT
         const val ACTION_DISCONNECT = ACTION_VPN_DISCONNECT
         private const val STATS_INTERVAL_MS = 1000L
