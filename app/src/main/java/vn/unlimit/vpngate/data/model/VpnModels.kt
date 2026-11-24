@@ -246,6 +246,14 @@ object VpnRecords {
                 ),
                 "configAvailable" to false,
                 "configs" to mutableListOf<OpenVpnRemote>(),
+                // Per-server profile download descriptor discovered from VPN Gate
+                // mirror pages. The mapper reads this nested map for every record,
+                // so it must exist even when the source has no downloadable profile.
+                "download" to linkedMapOf<String, Any?>(
+                    "sid" to "",
+                    "hid" to "",
+                    "host" to "",
+                ),
             ),
             VpnProtocolNames.L2TP_IPSEC to linkedMapOf<String, Any?>(
                 "supported" to false,
