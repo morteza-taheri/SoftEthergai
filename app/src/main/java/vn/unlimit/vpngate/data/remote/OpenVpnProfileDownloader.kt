@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.data.remote
 
+import kotlinx.coroutines.withTimeoutOrNull
 import vn.unlimit.vpngate.data.model.VpnUtil
 import vn.unlimit.vpngate.models.VPNGateConnection
 
@@ -15,6 +16,8 @@ class OpenVpnProfileDownloader(
 ) {
     companion object {
         private const val MAX_PROFILE_CHARS = 1_048_576
+        private const val MAX_MIRROR_ATTEMPTS = 2
+        private const val SOURCE_TIMEOUT_MS = 8_000L
         private val HOST_RE = Regex("^[a-z0-9.-]{1,253}$")
         private val REMOTE_RE = Regex("(?m)^\\s*remote\\s+([^\\s#]+)\\s+(\\d+)(?:\\s+.*)?$")
     }
@@ -45,10 +48,11 @@ class OpenVpnProfileDownloader(
         // reachable through a rotating mirror.
         val bases = buildList {
             add("https://www.vpngate.net")
-            mirrorBaseUrls.forEach { raw ->
-                val base = raw.trim().trimEnd('/')
-                if (base.isNotEmpty() && base !in this) add(base)
-            }
+            mirrorBaseUrls.asSequence().map { it.trim().trimEnd('/') }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .take(MAX_MIRROR_ATTEMPTS)
+                .forEach { base -> if (base !in this) add(base) }
         }
         for (base in bases) {
             val endpoint = "$base/common/openvpn_download.aspx"
@@ -59,7 +63,9 @@ class OpenVpnProfileDownloader(
             } ?: continue
             val url = endpoint + query
             val response = runCatching {
-                fetcher.get(url, identity.redirectPolicy())
+                withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                    fetcher.get(url, identity.redirectPolicy())
+                }
             }.getOrNull() ?: continue
 
             if (response.status !in 200..299 || response.redirectRejected) continue
