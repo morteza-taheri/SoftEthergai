@@ -222,6 +222,10 @@ class AutoModeController(
      * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
      */
     private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
+    /** Cooldown after a burst of repeated unexpected disconnects. */
+    private val reconnectCooldownMs: Long = RECONNECT_COOLDOWN_MS,
+    /** Upper bound for exponential reconnect backoff. */
+    private val reconnectBackoffMaxMs: Long = RECONNECT_BACKOFF_MAX_MS,
     /**
      * FIX-3: the per-server wedge ledger Auto Mode consults before dialling.
      *
@@ -708,6 +712,12 @@ enum class AttemptOutcome {
          */
         const val RECONNECT_MAX_ATTEMPTS = 5
 
+        /** After the burst limit, pause before starting a fresh bounded cycle. */
+        const val RECONNECT_COOLDOWN_MS = 60_000L
+
+        /** Exponential reconnect delay never grows beyond this value. */
+        const val RECONNECT_BACKOFF_MAX_MS = 60_000L
+
         /**
          * R8 (§11.13.3, OQ-1): rolling window for [RECONNECT_MAX_ATTEMPTS], in
          * milliseconds (10 minutes). Attempts older than this are forgotten, so
@@ -806,6 +816,14 @@ enum class AttemptOutcome {
         private set
 
     /**
+     * Owns every delayed Auto-Reconnect decision/retry. Keeping this Job separate
+     * from the connection run is essential: stop/disconnect must cancel the delay
+     * itself, not merely the run that has not started yet.
+     */
+    private var reconnectJob: Job? = null
+        private set
+
+    /**
      * v1.0.52 (§1.6.44) TASK B.3(a): the single-owner transition lock.
      *
      * `start()`, `stop()` and the skip/relaunch path used to be check-then-act:
@@ -843,6 +861,8 @@ enum class AttemptOutcome {
         // the first one began.
         networkRetryJob?.cancel()
         networkRetryJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
         job = scope.launch { runAutoMode() }
     }
 
@@ -1481,7 +1501,7 @@ enum class AttemptOutcome {
         // a separate event with NEUTRAL outcome.
         recordLoss(dropped, lossReason, connectedProtocolForHistory)
         connectedProtocolForHistory = null
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        launchReconnectJob { onUnexpectedDisconnect(dropped) }
     }
 
     /**
@@ -1527,26 +1547,14 @@ enum class AttemptOutcome {
             return
         }
 
-        // OQ-1: rolling-window loop guard.
-        val now = System.currentTimeMillis()
-        val attempts: Int
-        synchronized(reconnectLock) {
-            reconnectTimestamps.removeAll { it < now - RECONNECT_WINDOW_MS }
-            if (reconnectTimestamps.size >= RECONNECT_MAX_ATTEMPTS) {
-                attempts = -1
-            } else {
-                reconnectTimestamps.add(now)
-                attempts = reconnectTimestamps.size
-            }
-        }
-        if (attempts < 0) {
-            adapter.log(
-                "[AUTO] Auto-Reconnect limit reached " +
-                    "($RECONNECT_MAX_ATTEMPTS in ${RECONNECT_WINDOW_MS / 60_000} min); stopping",
-            )
-            setState(AutoModeState.Error(ERROR_RECONNECT_LIMIT))
-            return
-        }
+        // Bounded exponential backoff replaces the old terminal loop-guard.
+        // A burst of five drops pauses for a cooldown, clears the burst window,
+        // and then starts a fresh cycle instead of permanently abandoning Auto Mode.
+        val reconnectDelayMs = nextReconnectDelayMs()
+        adapter.log(
+            "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
+                "retrying after ${reconnectDelayMs}ms",
+        )
 
         // A-5 (§3.5): the decision is now final — reconnect. Publishing
         // Disconnected here rather than before the OQ-7/OQ-6/OQ-1 checks is the
@@ -1557,14 +1565,9 @@ enum class AttemptOutcome {
         // is being considered.
         setState(AutoModeState.Disconnected)
 
-        adapter.log(
-            "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
-                "reconnecting (attempt $attempts/$RECONNECT_MAX_ATTEMPTS)",
-        )
-
-        // OQ-3: let the native slot unwind before redialling. Cancellable, so a
-        // user stop during the wait ends the coroutine cleanly.
-        kotlinx.coroutines.delay(reconnectInitialDelayMs)
+        // The delay is owned by reconnectJob. A user stop/disconnect cancels it,
+        // so a delayed reconnect can never resurrect a tunnel after an explicit stop.
+        kotlinx.coroutines.delay(reconnectDelayMs)
 
         // Someone may have started connecting / stopping during the delay. Only a
         // transition blocks here, for the same reason as the entry check.
@@ -1581,19 +1584,12 @@ enum class AttemptOutcome {
             return
         }
 
-        // Seed the reconnect: the dropped server first (§11.13.3 step 1), then
-        // the un-attempted tail of the original sorted list, exactly as the
-        // "Try next server on a Connected server" path does.
+        // Do not immediately redial the server that just dropped. The next run
+        // ranks the full current catalogue and moves that exact identity to the
+        // end, giving every alternative server a chance before revisiting it.
         pendingReconnectServer = droppedServer
-        val remaining = remainingCandidates
-        overrideServers = when {
-            droppedServer == null && remaining.isEmpty() -> null
-            droppedServer == null -> remaining
-            remaining.isEmpty() -> listOf(droppedServer)
-            else -> listOf(droppedServer) + remaining.filterNot {
-                it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
-            }
-        }
+        pendingReconnectDemotedKey = droppedServer?.let(::serverKey)
+        overrideServers = null
         // BLOCK v1.0.75 (D-3): this run exists because the tunnel we owned was
         // lost — the status must say "reconnected automatically".
         runOrigin = ConnectionOrigin.AUTO_RECONNECT
@@ -1622,7 +1618,7 @@ enum class AttemptOutcome {
     @androidx.annotation.VisibleForTesting
     internal fun onUnexpectedDisconnectForTests() {
         val dropped = connectedCandidate
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        launchReconnectJob { onUnexpectedDisconnect(dropped) }
     }
 
     /** When set, the next runAutoMode uses this candidate list instead of the provider. */
@@ -1657,6 +1653,10 @@ enum class AttemptOutcome {
      */
     @Volatile
     private var pendingReconnectServer: AutoModeCandidate? = null
+
+    /** Server that just dropped; it is demoted behind the other candidates once. */
+    @Volatile
+    private var pendingReconnectDemotedKey: String? = null
 
     /**
      * R8 (§11.13.3): the candidate the CURRENT connected tunnel was established
@@ -1749,6 +1749,8 @@ enum class AttemptOutcome {
             // pending connectivity retry must not resurrect the tunnel later.
             networkRetryJob?.cancel()
             networkRetryJob = null
+            reconnectJob?.cancel()
+            reconnectJob = null
             // BLOCK v1.0.77 (REQ-ORIGIN-001): an ended run owns no tunnel, so the
             // persisted origin is cleared here rather than left to age into a lie.
             persistOrigin(null, null)
@@ -1924,6 +1926,8 @@ enum class AttemptOutcome {
         // BLOCK v1.0.80: an explicit disconnect cancels a pending network retry.
         networkRetryJob?.cancel()
         networkRetryJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
         // BLOCK v1.0.77 (REQ-ORIGIN-001): the record ends with the tunnel.
         persistOrigin(null, null)
         // BLOCK v1.0.75 (D-2): a user disconnect ends the session — the next
@@ -2444,7 +2448,7 @@ enum class AttemptOutcome {
         // connect that began during the settle delay or the list resolution.
         // The seed is consumed here regardless of outcome so it cannot leak into
         // the next run.
-        val wasReconnect = pendingReconnectServer != null
+        val wasReconnect = runOrigin == ConnectionOrigin.AUTO_RECONNECT
         pendingReconnectServer = null
         if (wasReconnect && isTunnelBusy()) {
             adapter.log("[AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run")
@@ -2586,9 +2590,16 @@ enum class AttemptOutcome {
             }
         }
 
-        val qualitySorted = all
+        val rankedByQuality = all
             .withActiveRtt(priorities)
             .sortedForAutoConnect(history, runNetworkType)
+        val demotedKey = if (wasReconnect) pendingReconnectDemotedKey.also {
+            pendingReconnectDemotedKey = null
+        } else null
+        val qualitySorted = if (demotedKey == null) rankedByQuality else {
+            rankedByQuality.filterNot { serverKey(it) == demotedKey } +
+                rankedByQuality.filter { serverKey(it) == demotedKey }
+        }
         adapter.log("[AUTO] Servers available = ${all.size}")
         adapter.log("[AUTO] Sorted by quality")
 
@@ -3493,7 +3504,11 @@ enum class AttemptOutcome {
         }
 
         adapter.log("[AUTO] All compatible servers failed")
-        setState(AutoModeState.Error(ERROR_NO_SERVER)) // no auto loop back to #1
+        setState(AutoModeState.Error(ERROR_NO_SERVER))
+        if (runOrigin == ConnectionOrigin.AUTO_RECONNECT && autoReconnectEnabled()) {
+            adapter.log("[AUTO] Reconnect cycle exhausted; scheduling another bounded cycle")
+            scheduleReconnectAfterExhaustion()
+        }
         // v1.0.31 (D-5): the continuation is spent. This is a second, defensive
         // reset — [resumeFromServerKey] is already cleared when it is consumed
         // above; clearing here too means "the list is exhausted" can never leave
