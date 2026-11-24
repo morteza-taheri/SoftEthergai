@@ -687,20 +687,15 @@ enum class CollectorPath {
  * The two inputs the routing decision needs.
  *
  * v1.0.52 (§1.6.44): the user-facing "try the tunnel first" opt-in is **gone**.
- * Routing is fully automatic — the ladder is derived from measured signals
- * only: whether the tunnel is usable right now, whether a VPN `Network` handle
- * exists to bind with, and (in `VpnServerRepository`) the in-process path
- * memory that records which transport last worked. A stale stored
+ * Routing is fully automatic — the ladder is derived from measured signals:
+ * whether this app's tunnel is usable and whether Android exposes any system
+ * VPN Network to bind with. A stale stored
  * `vpn_always_prefer_vpn` value is simply never read again.
  *
- * Both must hold for the `TUNNEL` rung to be *offered*:
- *
- *  1. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsableForRouting()`, i.e. a
- *     tunnel that is CONNECTED *and* forwarding, not a half-up one.
- *  2. [hasBoundNetwork] — a system VPN Network is actually at hand.
- *
- * Anything missing keeps the request on `CollectorPath.PHYSICAL` — an explicit
- * non-VPN network, never the unbound OS default.
+ * [tunnelUsable] plus [hasBoundNetwork] selects this app's verified TUNNEL.
+ * When only [hasBoundNetwork] is true, SYSTEM_VPN is selected so a different
+ * VPN app is not bypassed. PHYSICAL is selected only when no system VPN
+ * Network exists; it is bound to NOT_VPN Wi-Fi/cellular.
  */
 data class CollectorRoutingInput(
     val tunnelUsable: Boolean,
