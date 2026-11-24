@@ -543,7 +543,12 @@ class ServerListUpdater(
     private fun dropsOpenVpnProfiles(items: List<VPNGateItem>): Boolean {
         val stored = store.currentOpenVpnConfigCount()
         if (stored <= 0) return false
-        return items.none { !it.openVpnConfigData.isNullOrBlank() }
+        return items.none {
+            !it.openVpnConfigData.isNullOrBlank() ||
+                (!it.openVpnDownloadSid.isNullOrBlank() &&
+                    !it.openVpnDownloadHid.isNullOrBlank() &&
+                    !it.openVpnDownloadHost.isNullOrBlank())
+        }
     }
 
     companion object {
