@@ -1117,7 +1117,7 @@ enum class AttemptOutcome {
                     // end: start a new cycle, keeping only the server we are
                     // leaving so Next really moves somewhere else.
                     if (untried.isEmpty()) {
-                        val leaving = connectedCandidate?.let { serverKey(it) }
+                        val leaving = currentKey
                         sessionTriedKeys = if (leaving == null) {
                             HashSet()
                         } else {
