@@ -353,10 +353,10 @@ class VpnServerRepositoryDynamicVpnPathTest {
 
     // ── P: resolvePrimary reflects VPN-first ─────────────────────────────────
     @Test
-    fun `P resolvePrimary is TUNNEL only when a usable bound tunnel exists`() {
+    fun `P resolvePrimary uses system VPN when app tunnel is not usable but a VPN network exists`() {
         assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, false)))
         assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, false)))
-        assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true)))
+        assertEquals(CollectorPath.SYSTEM_VPN, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true)))
         assertEquals(CollectorPath.TUNNEL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, true)))
     }
 
