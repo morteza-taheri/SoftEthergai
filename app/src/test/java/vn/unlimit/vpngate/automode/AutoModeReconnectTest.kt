@@ -297,7 +297,37 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T5 — Manual precedence: a busy tunnel suppresses the reconnect.
+    // T5 — An explicit stop cancels a delayed reconnect.
+    // ------------------------------------------------------------------
+    @Test
+    fun t5_stopDuringBackoffPreventsTunnelResurrection() = runBlocking {
+        val controller = controller(
+            servers = listOf(candidate("alpha"), candidate("beta")),
+            reconnectInitialDelayMs = 700L,
+            reconnectBackoffMaxMs = 700L,
+        )
+        controller.start()
+        controller.awaitConnected()
+        val before = adapter.connects.size
+
+        invokeArmedTunnelLost(controller)
+        assertTrue(
+            "the reconnect decision should have been scheduled",
+            adapter.logs.any { it.contains("retrying after") },
+        )
+        controller.stop()
+        delay(900)
+
+        assertEquals(
+            "stop must cancel the delayed reconnect before it can dial again",
+            before,
+            adapter.connects.size,
+        )
+        assertTrue(controller.state.value is AutoModeState.Disconnected)
+    }
+
+    // ------------------------------------------------------------------
+    // T6 — Manual precedence: a busy tunnel suppresses the reconnect.
     // ------------------------------------------------------------------
     @Test
     fun t5_manualPrecedenceSuppressesReconnect() = runBlocking {
@@ -336,7 +366,7 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T6 — The settle delay is applied before the first reconnect attempt.
+    // T7 — The settle delay is applied before the first reconnect attempt.
     //
     // There is no kotlinx-coroutines-test on the classpath, so the delay is
     // asserted by construction: the production default is the named constant.
@@ -347,7 +377,7 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T7 — Regression: the manual-start (user button) branch resets the
+    // T8 — Regression: the manual-start (user button) branch resets the
     //      reconnect budget.
     //
     // The reset is deliberately applied ONLY by the user-facing start branches
