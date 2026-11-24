@@ -422,12 +422,12 @@ class OkHttpFetcher(
                     (uri.rawQuery?.let { "?$it" } ?: "")
                 val hostHeader = if (port == 80) uri.host else "${uri.host}:$port"
                 val request = buildString {
-                    append("GET $pathAndQuery HTTP/1.1\\r\\n")
-                    append("Host: $hostHeader\\r\\n")
-                    append("User-Agent: Mozilla/5.0 (Android) VPNGateCollector\\r\\n")
-                    append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\\r\\n")
-                    append("Accept-Encoding: gzip\\r\\n")
-                    append("Connection: close\\r\\n\\r\\n")
+                    append("GET $pathAndQuery HTTP/1.1\r\n")
+                    append("Host: $hostHeader\r\n")
+                    append("User-Agent: Mozilla/5.0 (Android) VPNGateCollector\r\n")
+                    append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n")
+                    append("Accept-Encoding: gzip\r\n")
+                    append("Connection: close\r\n\r\n")
                 }
                 output.write(request.toByteArray(StandardCharsets.US_ASCII))
                 output.flush()
