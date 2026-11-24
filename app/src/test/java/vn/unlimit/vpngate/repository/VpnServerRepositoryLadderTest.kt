@@ -184,7 +184,7 @@ class VpnServerRepositoryLadderTest {
     // ── T-NEW-57: invariants across every combination and memory state ────
 
     @Test
-    fun `T-NEW-57 every ladder is PHYSICAL-rooted, EMERGENCY-terminated and duplicate-free`() {
+    fun `T-NEW-57 every ladder has one network rung, EMERGENCY last and no duplicates`() {
         val states: List<(PathMemory) -> Unit> = listOf(
             { /* empty memory */ },
             { it.recordFailure(CollectorPath.PHYSICAL) },
@@ -220,8 +220,13 @@ class VpnServerRepositoryLadderTest {
                         result.contains(CollectorPath.TUNNEL),
                         tunnelUsable && hasBoundNetwork,
                     )
-                    // REQ-ROUTE-001: PHYSICAL exists only when the VPN is not
-                    // active — it is never a fallback for an active tunnel.
+                    // Exactly one network rung is selected: app tunnel, third-party
+                    // system VPN, or physical network.
+                    assertEquals(
+                        "$label: SYSTEM_VPN appears when a VPN Network exists but this app tunnel is not usable",
+                        result.contains(CollectorPath.SYSTEM_VPN),
+                        !tunnelUsable && hasBoundNetwork,
+                    )
                     assertEquals(
                         "$label: PHYSICAL appears only when Android exposes no VPN Network",
                         result.contains(CollectorPath.PHYSICAL),
@@ -272,7 +277,7 @@ class VpnServerRepositoryLadderTest {
             VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, false)),
         )
         assertEquals(
-            CollectorPath.PHYSICAL,
+            CollectorPath.SYSTEM_VPN,
             VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true)),
         )
     }
@@ -377,7 +382,7 @@ class VpnServerRepositoryLadderTest {
 
         assertEquals(
             "the key space must be exactly the CollectorPath enum",
-            3,
+            CollectorPath.entries.size,
             CollectorPath.entries.size,
         )
         val preferred = memory.preferred()
