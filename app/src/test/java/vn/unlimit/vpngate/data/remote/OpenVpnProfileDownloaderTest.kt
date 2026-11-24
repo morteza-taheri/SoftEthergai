@@ -61,6 +61,42 @@ class OpenVpnProfileDownloaderTest {
     }
 
     @Test
+    fun fallsBackToValidatedRotatingMirrorWhenCanonicalProfileEndpointFails() = runBlocking {
+        val profile = """
+            client
+            dev tun
+            proto tcp-client
+            remote public-vpn-53.opengw.net 443
+            nobind
+        """.trimIndent()
+        val mirrorUrl = "http://150.40.105.20:16086/common/openvpn_download.aspx"
+        val mirrorFetcher = object : HttpFetcher {
+            val urls = mutableListOf<String>()
+            override suspend fun get(url: String, redirectPolicy: RedirectPolicy?): HttpResponse? {
+                urls += url
+                if (urls.size == 1) return null // canonical endpoint is blocked
+                return HttpResponse(
+                    requestedUrl = url,
+                    finalUrl = url,
+                    status = 200,
+                    contentType = "application/x-openvpn-profile",
+                    body = profile,
+                )
+            }
+        }
+
+        val result = OpenVpnProfileDownloader(mirrorFetcher).download(
+            connection(),
+            useUdp = false,
+            mirrorBaseUrls = listOf("http://150.40.105.20:16086"),
+        )
+
+        assertTrue(result.orEmpty().contains("remote 203.0.113.53 443"))
+        assertTrue(mirrorFetcher.urls.first().startsWith("https://www.vpngate.net/common/openvpn_download.aspx?"))
+        assertTrue(mirrorFetcher.urls.last().startsWith("$mirrorUrl?"))
+    }
+
+    @Test
     fun buildsUdpDownloadAndRejectsWrongRemotePort() = runBlocking {
         val profile = """
             client
