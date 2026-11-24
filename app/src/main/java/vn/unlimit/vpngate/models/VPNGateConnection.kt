@@ -72,6 +72,11 @@ class VPNGateConnection : Parcelable {
     // SoftEther UDP offered without a published port (§6/§9): the UI
     // shows "supported — port unknown" instead of hiding the option.
     var seUdpSupported = false
+    // Fresh per-server VPN Gate OpenVPN download identity. The `sid` may expire,
+    // so it is refreshed from the HTML source and never treated as a permanent URL.
+    var openVpnDownloadSid: String? = null
+    var openVpnDownloadHid: String? = null
+    var openVpnDownloadHost: String? = null
 
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpSupported
@@ -149,6 +154,9 @@ class VPNGateConnection : Parcelable {
         seTcpPort = `in`.readInt()
         seUdpPort = `in`.readInt()
         seUdpSupported = `in`.readInt() == 1
+        openVpnDownloadSid = `in`.readString()
+        openVpnDownloadHid = `in`.readString()
+        openVpnDownloadHost = `in`.readString()
     }
 
     //Empty constructor
@@ -179,6 +187,9 @@ class VPNGateConnection : Parcelable {
         out.writeInt(seTcpPort)
         out.writeInt(seUdpPort)
         out.writeInt(if (seUdpSupported) 1 else 0)
+        out.writeString(openVpnDownloadSid)
+        out.writeString(openVpnDownloadHid)
+        out.writeString(openVpnDownloadHost)
     }
 
     private fun decodeBase64(base64str: String): String? {
@@ -362,7 +373,10 @@ class VPNGateConnection : Parcelable {
             sstpPortSource = this.sstpPortSource,
             seTcpPort = this.seTcpPort,
             seUdpPort = this.seUdpPort,
-            seUdpSupported = this.seUdpSupported
+            seUdpSupported = this.seUdpSupported,
+            openVpnDownloadSid = this.openVpnDownloadSid,
+            openVpnDownloadHid = this.openVpnDownloadHid,
+            openVpnDownloadHost = this.openVpnDownloadHost
         )
     }
 
@@ -396,6 +410,9 @@ class VPNGateConnection : Parcelable {
         seTcpPort = vpnGateItem.seTcpPort
         seUdpPort = vpnGateItem.seUdpPort
         seUdpSupported = vpnGateItem.seUdpSupported
+        openVpnDownloadSid = vpnGateItem.openVpnDownloadSid
+        openVpnDownloadHid = vpnGateItem.openVpnDownloadHid
+        openVpnDownloadHost = vpnGateItem.openVpnDownloadHost
         return this
     }
 
