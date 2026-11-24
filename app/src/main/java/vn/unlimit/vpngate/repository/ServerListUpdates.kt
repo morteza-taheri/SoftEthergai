@@ -668,6 +668,7 @@ internal fun mergeAll(
     manualRows: List<VPNGateItem>,
     now: Long,
     successCounts: Map<String, Int> = emptyMap(),
+    cap: Int = ServerListCap.current(),
 ) {
     if (dao == null) return
     if (incoming.isEmpty()) return
@@ -727,6 +728,7 @@ internal fun mergeAll(
             rows = DeletedServers.filter(merged) { it.hostName },
             manualHostNames = manualRows.map { it.hostName.trim() }.toSet(),
             successCounts = successCounts,
+            cap = cap,
         ),
     )
 }
