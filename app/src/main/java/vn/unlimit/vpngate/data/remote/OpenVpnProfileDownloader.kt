@@ -51,7 +51,9 @@ class OpenVpnProfileDownloader(
         val profile = response.body?.takeIf { it.length in 50..MAX_PROFILE_CHARS } ?: return null
         if (profile.trimStart().startsWith("<")) return null
 
-        val remotes = REMOTE_RE.findAll(profile).map { it.groupValues[1].lowercase() to it.groupValues[2].toIntOrNull() }.toList()
+        val remotes = REMOTE_RE.findAll(profile)
+            .map { it.groupValues[1].lowercase() to it.groupValues[2].toIntOrNull() }
+            .toList()
         val expectedHost = host.lowercase()
         val expectedIp = connection.ip?.trim()
         if (remotes.none { (remoteHost, remotePort) ->
@@ -64,6 +66,16 @@ class OpenVpnProfileDownloader(
         if (proto != null && (if (useUdp) !proto.startsWith("udp") else !proto.startsWith("tcp"))) {
             return null
         }
-        return profile
+
+        // Normalize the profile's remote host to the server IP. The app's
+        // existing UDP/domain transforms are intentionally IP-based; keeping
+        // a hostname here would prevent their protocol-specific port rewrite.
+        val normalizedIp = expectedIp?.takeIf { VpnUtil.validIp(it) }
+        return if (normalizedIp != null && expectedHost != normalizedIp) {
+            Regex("(?m)^(\\s*remote\\s+)${Regex.escape(expectedHost)}(\\s+\\d+)")
+                .replace(profile) { match ->
+                    "${match.groupValues[1]}${normalizedIp}${match.groupValues[2]}"
+                }
+        } else profile
     }
 }
