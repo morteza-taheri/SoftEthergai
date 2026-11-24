@@ -64,7 +64,7 @@ class HttpFetcherPhysicalBindTest {
     }
 
     @Test
-    fun `T-NEW-58c CollectorPath has exactly PHYSICAL, TUNNEL and EMERGENCY`() {
+    fun `T-NEW-58c CollectorPath has exactly PHYSICAL, SYSTEM_VPN, TUNNEL and EMERGENCY`() {
         val src = source()
         val start = src.indexOf("enum class CollectorPath {")
         assertTrue("CollectorPath must exist", start >= 0)
@@ -76,7 +76,7 @@ class HttpFetcherPhysicalBindTest {
             .filter { it.isNotEmpty() }
         assertEquals(
             "the enum must carry exactly the three honest transports, got $constants",
-            listOf("PHYSICAL", "TUNNEL", "EMERGENCY"),
+            listOf("PHYSICAL", "SYSTEM_VPN", "TUNNEL", "EMERGENCY"),
             constants,
         )
         assertFalse("the OPEN constant must be gone, got $constants", constants.contains("OPEN"))
