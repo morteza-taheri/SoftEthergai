@@ -816,6 +816,9 @@ internal fun mergeFallback(
         // has no stored measurement, so it falls back to the incoming value.
         // Protocol/port fields and OpenVPN config follow the field policy
         // elsewhere in this block; only the quality telemetry is preserved here.
+        val downloadSid = item.openVpnDownloadSid ?: prev?.openVpnDownloadSid
+        val downloadHid = item.openVpnDownloadHid ?: prev?.openVpnDownloadHid
+        val downloadHost = item.openVpnDownloadHost ?: prev?.openVpnDownloadHost
         val quality = prev ?: item
         merged.add(
             item.copy(
@@ -827,6 +830,9 @@ internal fun mergeFallback(
                 lastSeenAt = prev?.lastSeenAt ?: now,
                 healthScore = prev?.healthScore ?: retentionHealthScore(item, now),
                 openVpnConfigData = openVpnConfigData,
+                openVpnDownloadSid = downloadSid,
+                openVpnDownloadHid = downloadHid,
+                openVpnDownloadHost = downloadHost,
                 score = quality.score,
                 ping = quality.ping,
                 speed = quality.speed,
