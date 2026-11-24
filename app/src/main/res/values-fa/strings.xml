@@ -350,7 +350,7 @@
     <string name="manual_server_format_help">قالب‌های پذیرفته‌شده (از سرسطر تشخیص داده می‌شود):\n• CSV اپ: ستون‌های HostName، IP، schema_version=1.0 و SourceTag الزامی‌اند؛ SE_TCP_Port و SE_UDP_Port اختیاری‌اند.\n• CSV API وِی‌پی‌ان‌گیت: با #HostName,IP,Score,Ping,... شروع می‌شود.\nنمونه (API):\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\npublic-vpn-1.opengw.net,203.0.113.7,100,50,1000000,Japan,JP,10,100,100,1000000,2ip,unknown,</string>
     <string name="manual_server_result">%1$d سرور وارد شد، %2$d رد شد</string>
     <string name="manual_server_reject_reasons">ردشده: %1$s</string>
-    <string name="manual_server_too_large">حجم ورودی بیشتر از ۱ مگابایت است</string>
+    <string name="manual_server_too_large">حجم ورودی بیشتر از ۱۶ مگابایت است</string>
     <string name="manual_server_too_many_rows">تعداد سطرها بیش از حد مجاز است (حداکثر %1$d)</string>
     <string name="manual_server_unrecognized">CSV ناشناخته: سرسطر باید CSV اپ یا CSV API وِی‌پی‌ان‌گیت باشد</string>
     <string name="manual_server_import_failed">چیزی وارد نشد</string>
@@ -410,4 +410,9 @@
     <string name="server_export_copied">CSV سرور در کلیپبرد کپی شد</string>
     <string name="server_export_saved">فایل CSV سرور ذخیره شد</string>
     <string name="server_export_failed">امکان اکسپورت CSV سرور نبود</string>
+    <string name="server_export_all">اکسپورت فهرست سرورها</string>
+    <string name="server_export_empty">سروری برای اکسپورت وجود ندارد</string>
+    <string name="setting_server_fetch_timeout_label">مهلت زمانی به‌روزرسانی فهرست سرورها</string>
+    <string name="setting_server_fetch_timeout_subtitle">حداکثر زمان مجاز برای هر بار دریافت کامل فهرست سرورها. مقدار پیش‌فرض: ۴۵ ثانیه.</string>
+    <string name="setting_server_fetch_timeout_value">%1$d ثانیه</string>
 </resources>

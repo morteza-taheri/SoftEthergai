@@ -46,7 +46,9 @@ import java.io.File
  * last-known-good fallback.
  */
 class VpnServerRepository(
-    private val fetcher: HttpFetcher = OkHttpFetcher(),
+    private val fetcher: HttpFetcher = OkHttpFetcher(
+        callTimeoutMsProvider = { configuredFetchTimeoutMs() },
+    ),
     private val cacheDir: File? = null,
     /**
      * R4b: the three inputs to the open-vs-VPN decision, re-read once per
@@ -94,7 +96,9 @@ class VpnServerRepository(
      * exercise the deadline path with a short, deterministic value instead of
      * waiting the full 45 seconds. Production always uses [MAIN_TIMEOUT_MS].
      */
-    private val mainTimeoutMs: Long = MAIN_TIMEOUT_MS,
+    private val mainTimeoutMs: Long? = null,
+    /** Reads the persisted timeout dynamically; an explicit mainTimeoutMs is a test override. */
+    private val mainTimeoutMsProvider: () -> Long = { configuredFetchTimeoutMs() },
 ) {
     /**
      * v1.0.45 (§1.6.38): single-flight guard. At most one refresh runs at a
@@ -184,12 +188,20 @@ class VpnServerRepository(
          * exists — the collector decides from the network state alone.
          */
         internal fun productionRouting(): CollectorRoutingInput {
-            val usable = GlobalVpnTracker.isTunnelUsableForRouting()
+            val usable = GlobalVpnTracker.isTunnelUsableForRouting() ||
+                GlobalVpnTracker.isExternalVpnAvailableForRouting()
             return CollectorRoutingInput(
                 tunnelUsable = usable,
                 hasBoundNetwork = GlobalVpnTracker.currentVpnNetwork() != null,
             )
         }
+
+        private fun configuredFetchTimeoutMs(): Long = runCatching {
+            vn.unlimit.vpngate.App.instance?.dataUtil
+                ?.getServerListFetchTimeoutSeconds()
+                ?.toLong()
+                ?.times(1_000L)
+        }.getOrNull()?.coerceIn(15_000L, 120_000L) ?: MAIN_TIMEOUT_MS
 
         /**
          * v1.0.52 (§1.6.44) — bounded, in-process memory of which transport last
@@ -326,7 +338,10 @@ class VpnServerRepository(
         internal fun productionBoundFetcher(): HttpFetcher? {
             val network = GlobalVpnTracker.currentPhysicalNetwork() ?: return null
             return runCatching {
-                OkHttpFetcher(client = boundToPhysicalNetwork(network))
+                OkHttpFetcher(
+                    client = boundToPhysicalNetwork(network),
+                    callTimeoutMsProvider = { configuredFetchTimeoutMs() },
+                )
             }.getOrNull()
         }
 
@@ -338,7 +353,10 @@ class VpnServerRepository(
         internal fun productionTunnelFetcher(): HttpFetcher? {
             val network = GlobalVpnTracker.currentVpnNetwork() ?: return null
             return runCatching {
-                OkHttpFetcher(client = boundToNetwork(network))
+                OkHttpFetcher(
+                    client = boundToNetwork(network),
+                    callTimeoutMsProvider = { configuredFetchTimeoutMs() },
+                )
             }.getOrNull()
         }
     }
@@ -405,11 +423,13 @@ class VpnServerRepository(
         // withTimeoutOrNull returns null for both.
         refreshMutex.withLock {
             var completed = false
-            val result = withTimeoutOrNull(mainTimeoutMs) {
+            val deadlineMs = (mainTimeoutMs ?: mainTimeoutMsProvider()).coerceAtLeast(1L)
+            val startedNanos = System.nanoTime()
+            val result = withTimeoutOrNull(deadlineMs) {
                 refreshLocked().also { completed = true }
             }
             if (!completed) {
-                fetchLog("[ladder] deadline exceeded (${mainTimeoutMs}ms); preserving DB")
+                fetchLog("[ladder] deadline exceeded (" + deadlineMs + "ms); preserving DB")
                 return@withLock result
             }
 
@@ -427,18 +447,28 @@ class VpnServerRepository(
                 tunnelRetryAvailable.compareAndSet(true, false)
             ) {
                 val usableNow = runCatching {
-                    GlobalVpnTracker.isTunnelUsableForRouting() &&
+                    (GlobalVpnTracker.isTunnelUsableForRouting() ||
+                        GlobalVpnTracker.isExternalVpnAvailableForRouting()) &&
                         GlobalVpnTracker.currentVpnNetwork() != null
                 }.getOrDefault(false)
                 if (usableNow) {
                     fetchLog("[ladder] one-shot retry: a tunnel became usable; retrying through TUNNEL")
-                    val retried = withTimeoutOrNull(TUNNEL_RETRY_TIMEOUT_MS) {
+                    val elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - startedNanos,
+                    )
+                    val remainingMs = (deadlineMs - elapsedMs).coerceAtLeast(0L)
+                    val retryBudgetMs = minOf(TUNNEL_RETRY_TIMEOUT_MS, remainingMs)
+                    if (retryBudgetMs <= 0L) {
+                        fetchLog("[ladder] no deadline budget remains for the tunnel retry")
+                        return@withLock null
+                    }
+                    val retried = withTimeoutOrNull(retryBudgetMs) {
                         refreshLocked()
                     }
                     if (retried == null) {
                         fetchLog(
                             "[ladder] one-shot retry produced nothing " +
-                                "(${TUNNEL_RETRY_TIMEOUT_MS}ms); preserving DB",
+                                "(" + retryBudgetMs + "ms); preserving DB",
                         )
                     }
                     return@withLock retried

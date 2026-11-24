@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -179,8 +180,8 @@ fun HomeScreen(
         }
     }
 
-    // SERVER-ACTIONS: write the single-server CSV to a user-chosen document.
-    // SAF needs no storage permission and works on every API level here.
+    // SERVER-ACTIONS: write a single-server or full-list CSV to a user-chosen
+    // document. SAF needs no storage permission and works on every API level.
     val csvSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri ->
@@ -199,6 +200,22 @@ fun HomeScreen(
             ),
             Toast.LENGTH_SHORT,
         ).show()
+    }
+
+    fun exportAllServers() {
+        scope.launch {
+            val csv = withContext(Dispatchers.IO) {
+                val allServers = connectionListViewModel.vpnGateConnectionList.value?.toList().orEmpty()
+                if (allServers.isEmpty()) null
+                else vn.unlimit.vpngate.repository.ServerActions.toCsv(allServers)
+            }
+            if (csv == null) {
+                Toast.makeText(context, R.string.server_export_empty, Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            pendingExportCsv = csv
+            csvSaver.launch(vn.unlimit.vpngate.repository.ServerActions.fileNameForList())
+        }
     }
 
     fun exportToClipboard(connection: VPNGateConnection) {
@@ -364,6 +381,15 @@ fun HomeScreen(
                                                 contentDescription = stringResource(R.string.refresh),
                                             )
                                         }
+                                    }
+                                    IconButton(
+                                        onClick = { exportAllServers() },
+                                        enabled = !isLoading,
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.FileDownload,
+                                            contentDescription = stringResource(R.string.server_export_all),
+                                        )
                                     }
                                     IconButton(onClick = { searchState.openSearch() }) {
                                         Icon(

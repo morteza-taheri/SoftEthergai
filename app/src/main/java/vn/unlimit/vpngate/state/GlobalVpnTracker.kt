@@ -481,6 +481,23 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
     )
 
     /**
+     * A VPN owned by another application has no entry in this app's state
+     * ledger. When our own stack is DISCONNECTED but Android exposes an
+     * INTERNET-capable VPN Network, allow the collector to bind requests to
+     * that network instead of incorrectly selecting the physical interface.
+     */
+    fun isExternalVpnAvailableForRouting(): Boolean {
+        val network = currentVpnNetwork() ?: return false
+        if (!externalVpnCanCarryCollectorTraffic(currentStatus, hasVpnNetwork = true)) return false
+        val context = appContext ?: return false
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull() ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /**
      * v1.0.42 (§1.6.35 / F2): a process-wide reachability signal.
      *
      * Reads `ConnectivityManager.activeNetwork` — "is there ANY network at
@@ -848,6 +865,12 @@ enum class SelfExclusion { UNKNOWN, NOT_EXCLUDED, EXCLUDED }
  * JVM test costs nothing and initializes nothing.
  */
 internal const val VPN_LOST_RECHECK_MS = 50L
+
+/** True only when the system VPN is external to this app's own active stack. */
+internal fun externalVpnCanCarryCollectorTraffic(
+    status: VpnConnectionStatus,
+    hasVpnNetwork: Boolean,
+): Boolean = status == VpnConnectionStatus.DISCONNECTED && hasVpnNetwork
 
 /**
  * v1.0.41 (§1.6.34): the pure decision behind

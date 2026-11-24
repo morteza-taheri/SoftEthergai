@@ -105,4 +105,32 @@ class GlobalVpnTrackerRoutingTest {
             ),
         )
     }
+    @Test
+    fun `an external VPN is eligible only while this app is disconnected`() {
+        assertTrue(
+            externalVpnCanCarryCollectorTraffic(
+                status = VpnConnectionStatus.DISCONNECTED,
+                hasVpnNetwork = true,
+            ),
+        )
+        assertFalse(
+            externalVpnCanCarryCollectorTraffic(
+                status = VpnConnectionStatus.CONNECTED,
+                hasVpnNetwork = true,
+            ),
+        )
+        assertFalse(
+            externalVpnCanCarryCollectorTraffic(
+                status = VpnConnectionStatus.CONNECTING,
+                hasVpnNetwork = true,
+            ),
+        )
+        assertFalse(
+            externalVpnCanCarryCollectorTraffic(
+                status = VpnConnectionStatus.DISCONNECTED,
+                hasVpnNetwork = false,
+            ),
+        )
+    }
+
 }

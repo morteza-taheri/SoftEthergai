@@ -1517,8 +1517,8 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
 
         /** BLOCK v1.0.77: the one-time legacy-storage request for profile export. */
         const val REQUEST_WRITE_STORAGE: Int = 100
-        const val ACTION_VPN_CONNECT: String = "kittoku.osc.connect"
-        const val ACTION_VPN_DISCONNECT: String = "kittoku.osc.disconnect"
+        const val ACTION_VPN_CONNECT: String = SstpVpnService.ACTION_CONNECT
+        const val ACTION_VPN_DISCONNECT: String = SstpVpnService.ACTION_DISCONNECT
         private const val TAG = "DetailActivity"
         private var mVPNService: IOpenVPNServiceInternal? = null
     }

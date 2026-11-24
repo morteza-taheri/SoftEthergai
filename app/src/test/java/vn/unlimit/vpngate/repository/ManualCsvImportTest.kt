@@ -451,7 +451,7 @@ class ManualCsvImportTest {
 
     @Test
     fun `the caps are the ones the settings help text promises`() {
-        assertEquals(1_048_576, ManualCsvImport.MAX_BYTES)
+        assertEquals(16 * 1_048_576, ManualCsvImport.MAX_BYTES)
         assertEquals(2000, ManualCsvImport.MAX_ROWS)
     }
 

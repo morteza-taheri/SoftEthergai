@@ -414,7 +414,7 @@
     <string name="manual_server_format_help">Accepted formats (detected from the header):\n• App CSV: HostName, IP, schema_version=1.0 and SourceTag are required; SE_TCP_Port / SE_UDP_Port are optional.\n• VPN Gate API CSV: starts with #HostName,IP,Score,Ping,...\nExample (API):\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\npublic-vpn-1.opengw.net,203.0.113.7,100,50,1000000,Japan,JP,10,100,100,1000000,2ip,unknown,</string>
     <string name="manual_server_result">Imported %1$d, rejected %2$d</string>
     <string name="manual_server_reject_reasons">Rejected: %1$s</string>
-    <string name="manual_server_too_large">Input is larger than 1 MiB</string>
+    <string name="manual_server_too_large">Input is larger than 16 MiB</string>
     <string name="manual_server_too_many_rows">Too many rows (limit %1$d)</string>
     <string name="manual_server_unrecognized">Unrecognised CSV: the header must be the app CSV or the VPN Gate API CSV</string>
     <string name="manual_server_import_failed">Nothing was imported</string>
@@ -477,4 +477,9 @@
     <string name="server_export_copied">Server CSV copied to clipboard</string>
     <string name="server_export_saved">Server CSV saved</string>
     <string name="server_export_failed">Could not export server CSV</string>
+    <string name="server_export_all">Export server list</string>
+    <string name="server_export_empty">There are no servers to export</string>
+    <string name="setting_server_fetch_timeout_label">Server-list update timeout</string>
+    <string name="setting_server_fetch_timeout_subtitle">Maximum time allowed for one complete server-list update. Default: 45 seconds.</string>
+    <string name="setting_server_fetch_timeout_value">%1$d seconds</string>
 </resources>

@@ -105,6 +105,35 @@ class DataUtilTimeoutRangeTest {
     }
 
     @Test
+    fun `server-list fetch timeout defaults to 45 seconds`() {
+        assertEquals(45, dataUtil().getServerListFetchTimeoutSeconds())
+        assertEquals(
+            listOf(15, 30, 45, 60, 90, 120),
+            dataUtil().serverListFetchTimeoutOptions.toList(),
+        )
+    }
+
+    @Test
+    fun `server-list fetch timeout clamps writes and preserves in-range values`() {
+        val util = dataUtil()
+        util.setServerListFetchTimeoutSeconds(5)
+        assertEquals(15, util.getServerListFetchTimeoutSeconds())
+        util.setServerListFetchTimeoutSeconds(200)
+        assertEquals(120, util.getServerListFetchTimeoutSeconds())
+        util.setServerListFetchTimeoutSeconds(60)
+        assertEquals(60, util.getServerListFetchTimeoutSeconds())
+    }
+
+    @Test
+    fun `legacy server-list fetch timeout is clamped on read`() {
+        val prefs = TimeoutFakeSharedPreferences()
+        prefs.edit()
+            .putInt(DataUtil.SETTING_SERVER_LIST_FETCH_TIMEOUT_SECONDS, 10)
+            .apply()
+        assertEquals(15, DataUtil(prefs).getServerListFetchTimeoutSeconds())
+    }
+
+    @Test
     fun `T-NEW-72c a legacy value above the new ceiling reads back as 30`() {
         // An install that stored 60 under the old 8..60 range must not keep a
         // value the Settings picker can no longer show.

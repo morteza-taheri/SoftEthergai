@@ -201,6 +201,9 @@ fun SettingsScreen(
     var serverUpdateInterval by remember {
         mutableStateOf(dataUtil.getServerListUpdateIntervalHours())
     }
+    var serverListFetchTimeoutSeconds by remember {
+        mutableStateOf(dataUtil.getServerListFetchTimeoutSeconds())
+    }
 
     // Dialog picker visibility
     var showThemePicker by remember { mutableStateOf(false) }
@@ -214,8 +217,13 @@ fun SettingsScreen(
     var showServerListCapPicker by remember { mutableStateOf(false) }
     var showPurgeServersConfirm by remember { mutableStateOf(false) }
     var showServerUpdateIntervalPicker by remember { mutableStateOf(false) }
+    var showServerListFetchTimeoutPicker by remember { mutableStateOf(false) }
 
     val serverUpdateIntervalOptions = remember { dataUtil.serverListUpdateIntervalOptions }
+    val serverListFetchTimeoutOptions = remember { dataUtil.serverListFetchTimeoutOptions }
+    val serverListFetchTimeoutLabels = serverListFetchTimeoutOptions.map { seconds ->
+        stringResource(R.string.setting_server_fetch_timeout_value, seconds)
+    }
     val serverUpdateIntervalLabels = serverUpdateIntervalOptions.map { hours ->
         when (hours) {
             1 -> stringResource(R.string.setting_server_update_interval_1h)
@@ -684,6 +692,17 @@ fun SettingsScreen(
                         subtitle = stringResource(R.string.setting_server_update_interval_subtitle),
                         icon = Icons.Outlined.Schedule,
                         onClick = { showServerUpdateIntervalPicker = true },
+                    )
+                    SettingDivider()
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_server_fetch_timeout_label),
+                        value = stringResource(
+                            R.string.setting_server_fetch_timeout_value,
+                            serverListFetchTimeoutSeconds,
+                        ),
+                        subtitle = stringResource(R.string.setting_server_fetch_timeout_subtitle),
+                        icon = Icons.Outlined.Schedule,
+                        onClick = { showServerListFetchTimeoutPicker = true },
                     )
                 }
             }
@@ -1230,6 +1249,21 @@ fun SettingsScreen(
                 ServerListUpdateScheduler.runIfDue()
             },
             onDismiss = { showServerUpdateIntervalPicker = false },
+        )
+    }
+
+    if (showServerListFetchTimeoutPicker) {
+        SingleChoiceDialog(
+            title = stringResource(R.string.setting_server_fetch_timeout_label),
+            options = serverListFetchTimeoutLabels,
+            selectedIndex = serverListFetchTimeoutOptions.indexOf(serverListFetchTimeoutSeconds)
+                .let { if (it < 0) serverListFetchTimeoutOptions.indexOf(45) else it },
+            onSelect = { index ->
+                val seconds = serverListFetchTimeoutOptions[index]
+                serverListFetchTimeoutSeconds = seconds
+                dataUtil.setServerListFetchTimeoutSeconds(seconds)
+            },
+            onDismiss = { showServerListFetchTimeoutPicker = false },
         )
     }
 

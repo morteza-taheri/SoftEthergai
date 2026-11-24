@@ -108,7 +108,9 @@ class ResilientDns : Dns {
 internal fun collectorClientBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
     .dns(ResilientDns())
     .connectTimeout(10, TimeUnit.SECONDS)
-    .readTimeout(15, TimeUnit.SECONDS)
+    // The per-call timeout below is the user-configurable cap. Keep the
+    // socket read ceiling high enough for the longest supported setting.
+    .readTimeout(120, TimeUnit.SECONDS)
     // Redirects are followed by hand so every hop can be checked against
     // the source's own policy. OkHttp must not follow them blindly.
     .followRedirects(false)
@@ -188,6 +190,7 @@ fun boundToPhysicalNetwork(network: Network): OkHttpClient =
 class OkHttpFetcher(
     private val client: OkHttpClient = defaultCollectorClient(),
     private val requestDelayMs: Long = 0,
+    private val callTimeoutMsProvider: () -> Long = { DEFAULT_CALL_TIMEOUT_MS },
 ) : HttpFetcher {
     companion object {
         private const val USER_AGENT =
@@ -203,6 +206,7 @@ class OkHttpFetcher(
          * hostile or misconfigured source from exhausting the heap.
          */
         const val MAX_RESPONSE_BYTES: Long = 8L * 1024L * 1024L
+        const val DEFAULT_CALL_TIMEOUT_MS: Long = 15_000L
     }
 
     override suspend fun get(
@@ -387,6 +391,7 @@ class OkHttpFetcher(
      */
     private suspend fun callWithCancel(request: Request): Response {
         val call = client.newCall(request)
+        call.timeout().timeout(callTimeoutMsProvider().coerceAtLeast(1L), TimeUnit.MILLISECONDS)
         return suspendCancellableCoroutine { cont ->
             // Cancel the underlying OkHttp Call the moment the coroutine is
             // cancelled, so a blocked read is interrupted immediately and the

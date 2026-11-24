@@ -1,6 +1,7 @@
 package vn.unlimit.vpngate.repository
 
-import vn.unlimit.vpngate.parser.OpenVpnConfigParser
+import vn.unlimit.vpngate.parser.EmergencyCsvParser
+import vn.unlimit.vpngate.data.model.VpnPortSource
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,9 +10,9 @@ import org.junit.Test
 import vn.unlimit.vpngate.models.VPNGateConnection
 
 /**
- * SERVER-ACTIONS: the long-press export must contain exactly ONE server and
- * must be re-importable through the app's own CSV importer. The delete
- * tombstones must survive as a persistent, case-insensitive set.
+ * SERVER-ACTIONS: single-server and full-list exports must be re-importable
+ * through the app's own CSV importer without changing protocol-port identity.
+ * Delete tombstones must survive as a persistent, case-insensitive set.
  */
 class ServerActionsTest {
 
@@ -35,13 +36,22 @@ class ServerActionsTest {
         logType = "2weeks"
         operator = "Test, Operator"       // comma -> must be quoted
         message = "hello \"world\""       // quote -> must be escaped
-        openVpnConfigData = "client\nremote 203.0.114.25 1194\n"
+        openVpnConfigData = "client\nproto tcp-client\nremote 203.0.114.25 1194\n"
+        tcpPort = 1194
+        udpPort = 1195
+        seTcpPort = 992
+        seUdpPort = 5555
+        seUdpSupported = true
+        isL2TPSupport = 1
+        isSSTPSupport = 1
+        sstpPort = 4443
+        sstpPortSource = VpnPortSource.EXPLICIT
     }
 
     @Test
     fun `export has exactly one header and one data row`() {
         val csv = ServerActions.toCsv(connection())
-        assertEquals(ServerActions.API_HEADER, csv.lines()[0])
+        assertEquals(EmergencyCsvParser.ALL_COLUMNS.joinToString(","), csv.lines()[0])
         assertEquals(1, csv.lines().count { it.isNotBlank() } - 1)
         assertTrue(csv.endsWith("\n"))
     }
@@ -50,7 +60,7 @@ class ServerActionsTest {
     fun `exported CSV is detected and re-imported as one row`() {
         val csv = ServerActions.toCsv(connection())
         assertEquals(
-            ManualCsvImport.Format.VPN_GATE_API,
+            ManualCsvImport.Format.APP_CSV,
             ManualCsvImport.detect(csv),
         )
         val result = ManualCsvImport.parse(csv, now = 1_000L)
@@ -84,15 +94,55 @@ class ServerActionsTest {
     fun `openvpn config is base64 encoded and decoded on re-import`() {
         val original = connection()
         val csv = ServerActions.toCsv(original)
-        val encoded = csv.lines()[1].substringAfterLast(',')
-        assertFalse("config column must not be empty", encoded.isBlank())
-        assertEquals(
-            original.openVpnConfigData,
-            String(OpenVpnConfigParser.decodeBase64(encoded)!!, Charsets.UTF_8),
-        )
         val item = (ManualCsvImport.parse(csv, 1_000L) as ManualCsvImport.Result.Success)
             .items.single()
-        assertFalse(item.openVpnConfigData.isNullOrBlank())
+        assertEquals(original.openVpnConfigData, item.openVpnConfigData)
+    }
+
+    @Test
+    fun `all protocol ports round-trip without TCP UDP column swaps`() {
+        val original = connection()
+        val item = (ManualCsvImport.parse(ServerActions.toCsv(original), 1_000L)
+            as ManualCsvImport.Result.Success).items.single()
+
+        assertEquals(1194, item.tcpPort)
+        assertEquals(1195, item.udpPort)
+        assertEquals(992, item.seTcpPort)
+        assertEquals(5555, item.seUdpPort)
+        assertTrue(item.seUdpSupported)
+        assertTrue(item.isL2TPSupport)
+        assertTrue(item.isSSTPSupport)
+        assertEquals(4443, item.sstpPort)
+    }
+
+    @Test
+    fun `bulk export writes one header and preserves each server protocol mapping`() {
+        val first = connection()
+        val second = connection().apply {
+            hostName = "vpn987654321"
+            ip = "198.51.100.77"
+            openVpnConfigData = "client\nproto tcp-client\nremote 198.51.100.77 443\n"
+            tcpPort = 443
+            udpPort = 1198
+            seTcpPort = 993
+            seUdpPort = 5556
+            sstpPort = 445
+        }
+        val csv = ServerActions.toCsv(listOf(first, second))
+        val result = ManualCsvImport.parse(csv, 1_000L) as ManualCsvImport.Result.Success
+
+        assertEquals(2, csv.lines().count { it.isNotBlank() } - 1)
+        assertEquals(2, result.items.size)
+        val importedFirst = result.items.first { it.hostName == first.hostName }
+        val importedSecond = result.items.first { it.hostName == second.hostName }
+        assertEquals(1194, importedFirst.tcpPort)
+        assertEquals(1195, importedFirst.udpPort)
+        assertEquals(992, importedFirst.seTcpPort)
+        assertEquals(5555, importedFirst.seUdpPort)
+        assertEquals(443, importedSecond.tcpPort)
+        assertEquals(1198, importedSecond.udpPort)
+        assertEquals(993, importedSecond.seTcpPort)
+        assertEquals(5556, importedSecond.seUdpPort)
     }
 
     @Test

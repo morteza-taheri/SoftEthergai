@@ -496,6 +496,20 @@ class DataUtil(context: Context?) {
         )
     }
 
+    /** Total deadline for one server-list collection, independent of the refresh interval. */
+    fun getServerListFetchTimeoutSeconds(): Int =
+        getIntSetting(
+            SETTING_SERVER_LIST_FETCH_TIMEOUT_SECONDS,
+            DEFAULT_SERVER_LIST_FETCH_TIMEOUT_SECONDS,
+        ).coerceIn(MIN_SERVER_LIST_FETCH_TIMEOUT_SECONDS, MAX_SERVER_LIST_FETCH_TIMEOUT_SECONDS)
+
+    fun setServerListFetchTimeoutSeconds(seconds: Int) {
+        setIntSetting(
+            SETTING_SERVER_LIST_FETCH_TIMEOUT_SECONDS,
+            seconds.coerceIn(MIN_SERVER_LIST_FETCH_TIMEOUT_SECONDS, MAX_SERVER_LIST_FETCH_TIMEOUT_SECONDS),
+        )
+    }
+
     /**
      * BLOCK v1.0.75 FIX — the size of the last ACCEPTED fresh network dataset.
      *
@@ -581,6 +595,10 @@ class DataUtil(context: Context?) {
     /** The selectable values, in hours. Index 0 is the default. */
     val serverListUpdateIntervalOptions: IntArray
         get() = intArrayOf(1, 3, 6, 12, 18, 24, 168)
+
+    /** Selectable total collection deadlines, in seconds. */
+    val serverListFetchTimeoutOptions: IntArray
+        get() = intArrayOf(15, 30, 45, 60, 90, 120)
 
     fun setDeveloperMode(enabled: Boolean) {
         setBooleanSetting(SETTING_DEVELOPER_MODE, enabled)
@@ -737,6 +755,8 @@ class DataUtil(context: Context?) {
 
         const val SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS: String =
             "SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS"
+        const val SETTING_SERVER_LIST_FETCH_TIMEOUT_SECONDS: String =
+            "SETTING_SERVER_LIST_FETCH_TIMEOUT_SECONDS"
 
         /** BLOCK v1.0.75 FIX: size of the last accepted fresh dataset (0 = unknown). */
         const val SETTING_LAST_ACCEPTED_DATASET_SIZE: String =
@@ -762,6 +782,9 @@ class DataUtil(context: Context?) {
         const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
         const val MIN_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 1
         const val MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
+        const val DEFAULT_SERVER_LIST_FETCH_TIMEOUT_SECONDS: Int = 45
+        const val MIN_SERVER_LIST_FETCH_TIMEOUT_SECONDS: Int = 15
+        const val MAX_SERVER_LIST_FETCH_TIMEOUT_SECONDS: Int = 120
         const val AUTO_LAST_SUCCESS_HOST: String = "AUTO_LAST_SUCCESS_HOST"
         const val AUTO_LAST_SUCCESS_PROTOCOL: String = "AUTO_LAST_SUCCESS_PROTOCOL"
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"

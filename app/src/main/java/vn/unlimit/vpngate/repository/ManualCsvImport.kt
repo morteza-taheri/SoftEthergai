@@ -24,7 +24,8 @@ import vn.unlimit.vpngate.parser.VpnGateApiParser
  *
  * ## Limits (documented in the UI)
  *
- *  - 1 MiB of input text, measured in UTF-8 bytes;
+ *  - 16 MiB of input text, measured in UTF-8 bytes, so an exported server
+ *    snapshot with profiles can be imported again;
  *  - 2000 data rows.
  *
  * Both are hard: an input over either cap is refused whole rather than
@@ -39,8 +40,8 @@ import vn.unlimit.vpngate.parser.VpnGateApiParser
  */
 object ManualCsvImport {
 
-    /** Hard cap on the input, in UTF-8 bytes. */
-    const val MAX_BYTES: Int = 1_048_576
+    /** Hard cap on the input, in UTF-8 bytes; sized for full exported snapshots. */
+    const val MAX_BYTES: Int = 16 * 1_048_576
 
     /** Hard cap on data rows (header excluded). */
     const val MAX_ROWS: Int = 2000

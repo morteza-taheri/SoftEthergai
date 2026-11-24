@@ -67,7 +67,7 @@ class ServerListRefreshDeadlineTest {
             boundFetcherFactory = { null },
             pathLog = {},
             fetchLog = { fetchLog.add(it) },
-            mainTimeoutMs = 300L,
+            mainTimeoutMsProvider = { 300L },
         )
 
         val startedAt = System.currentTimeMillis()

@@ -3,10 +3,12 @@ package vn.unlimit.vpngate.repository
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.favourites.FavouriteServers
 import vn.unlimit.vpngate.models.VPNGateConnection
+import vn.unlimit.vpngate.data.model.VpnPortSource
+import vn.unlimit.vpngate.parser.EmergencyCsvParser
 
 /**
- * The two actions offered by the server list's long-press sheet: delete one
- * server completely, and export that one server as a re-importable CSV row.
+ * Server-list actions: delete one server completely, and export either one
+ * server or a complete snapshot in the app's re-importable extended CSV format.
  */
 object ServerActions {
 
@@ -50,9 +52,9 @@ object ServerActions {
     }
 
     /**
-     * The canonical 15-column VPN Gate /api/iphone/ header. [ManualCsvImport]
-     * detects this dialect, so a file produced here can be pasted straight back
-     * into Settings → import.
+     * Canonical 15-column VPN Gate API header, retained as a schema reference.
+     * App exports use the extended schema below so transport-specific ports
+     * survive an export/import round-trip.
      */
     const val API_HEADER: String =
         "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions," +
@@ -60,17 +62,33 @@ object ServerActions {
             "OpenVPN_ConfigData_Base64"
 
     /**
-     * One row + header, using the raw API units the model already stores
-     * (Speed = bits/sec, Uptime = ms, TotalTraffic = bytes). [VpnGateApiParser]
-     * applies the inverse conversions on import, so the values round-trip.
-     * Text fields are RFC4180-quoted because Operator/Message are free text.
+     * Export the app's extended CSV dialect. Unlike the public VPN Gate API
+     * dialect, this schema preserves each transport independently, including
+     * SoftEther TCP/UDP, OpenVPN TCP/UDP and the SSTP endpoint.
+     *
+     * The first 15 columns keep the raw API units already stored by the model
+     * (Speed = bits/sec, Uptime = ms, TotalTraffic = bytes). The remaining
+     * columns follow [EmergencyCsvParser.ALL_COLUMNS] exactly, so the normal
+     * importer is the inverse operation and cannot swap protocol ports.
      */
-    fun toCsv(connection: VPNGateConnection): String {
+    fun toCsv(connection: VPNGateConnection): String = toCsv(listOf(connection))
+
+    /** Export a complete server snapshot with one header and one row per server. */
+    fun toCsv(connections: Iterable<VPNGateConnection>): String {
+        val rows = connections.map(::toCsvRow)
+        return EmergencyCsvParser.ALL_COLUMNS.joinToString(",") +
+            "\n" + rows.joinToString("\n") + if (rows.isEmpty()) "" else "\n"
+    }
+
+    private fun toCsvRow(connection: VPNGateConnection): String {
         val configB64 = connection.openVpnConfigData
             ?.takeIf { it.isNotBlank() }
             ?.let { encodeBase64(it.toByteArray(Charsets.UTF_8)) }
             .orEmpty()
-        val row = listOf(
+        val sstpPort = if (
+            VpnPortSource.normalized(connection.sstpPortSource) == VpnPortSource.EXPLICIT
+        ) connection.sstpPort.takeIf { it > 0 }?.toString().orEmpty() else ""
+        val values = listOf(
             connection.hostName.orEmpty(),
             connection.ip.orEmpty(),
             connection.score.toString(),
@@ -86,8 +104,22 @@ object ServerActions {
             connection.operator.orEmpty(),
             connection.message.orEmpty(),
             configB64,
-        ).joinToString(",") { quote(it) }
-        return API_HEADER + "\n" + row + "\n"
+            EmergencyCsvParser.SUPPORTED_SCHEMA_VERSION,
+            connection.seTcpPort.takeIf { it > 0 }?.toString().orEmpty(),
+            connection.seUdpSupported.toString(),
+            connection.seUdpPort.takeIf { connection.seUdpSupported && it > 0 }?.toString().orEmpty(),
+            connection.tcpPort.takeIf { it > 0 }?.toString().orEmpty(),
+            connection.udpPort.takeIf { it > 0 }?.toString().orEmpty(),
+            connection.isL2TPSupport().toString(),
+            connection.isSSTPSupport().toString(),
+            connection.calculateHostName.takeIf { connection.isSSTPSupport() }.orEmpty(),
+            sstpPort,
+            "",
+            "",
+            "",
+            "merged",
+        )
+        return values.joinToString(",") { quote(it) }
     }
 
     /**
@@ -134,6 +166,9 @@ object ServerActions {
         if (!needsQuotes) return value
         return '"' + value.replace("\"", "\"\"") + '"'
     }
+
+    /** Filename used by the full-list export. */
+    fun fileNameForList(): String = "vpngate_servers.csv"
 
     /** A safe, readable filename for the exported single-server CSV. */
     fun fileNameFor(connection: VPNGateConnection): String {

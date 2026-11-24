@@ -112,6 +112,8 @@ class AutoModeReconnectTest {
         isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
         /** R8: a 0 ms settle delay keeps the JVM test fast. */
         reconnectInitialDelayMs: Long = 0L,
+        reconnectRateLimitDelayMs: Long = 0L,
+        unstableServerCooldownMs: Long = 0L,
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -122,6 +124,8 @@ class AutoModeReconnectTest {
         isTunnelBusy = isTunnelBusy,
         isConnectingToAnotherServer = isConnectingToAnotherServer,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        reconnectRateLimitDelayMs = reconnectRateLimitDelayMs,
+        unstableServerCooldownMs = unstableServerCooldownMs,
     )
 
     /** Wait until the controller settles in [AutoModeState.Connected] with no run active. */
@@ -167,27 +171,28 @@ class AutoModeReconnectTest {
     @Test
     fun t1_reconnectFiresOnUnexpectedDisconnectWhenEnabled() = runBlocking {
         val servers = listOf(candidate("alpha"), candidate("beta"))
-        val controller = controller(servers = servers, autoReconnectEnabled = { true })
+        val controller = controller(
+            servers = servers,
+            autoReconnectEnabled = { true },
+            unstableServerCooldownMs = 5_000L,
+        )
 
         controller.start()
         controller.awaitConnected()
         assertNotNull("precondition: a tunnel is owned", controller.state.value)
 
-        val before = adapter.connects.count { it.first == "alpha" }
-        // Simulate the armed-path loss. The controller's watcher callback sets
-        // Disconnected then launches onUnexpectedDisconnect, which re-seeds and
-        // starts a fresh run over [alpha, beta].
+        val beforeBeta = adapter.connects.count { it.first == "beta" }
+        // A dropped endpoint is cooled down and the current full list is
+        // re-resolved, so Auto Mode should move to beta instead of redialling alpha.
         invokeArmedTunnelLost(controller)
-
-        // The reconnect re-dials alpha first.
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline) {
-            if (adapter.connects.count { it.first == "alpha" } > before) break
+            if (adapter.connects.count { it.first == "beta" } > beforeBeta) break
             delay(10)
         }
         assertTrue(
-            "expected a reconnect to re-dial alpha; connects=${adapter.connects}",
-            adapter.connects.count { it.first == "alpha" } > before,
+            "expected rotation to beta after alpha dropped; connects=${adapter.connects}",
+            adapter.connects.count { it.first == "beta" } > beforeBeta,
         )
         assertTrue(
             "expected the reconnect log line; logs=${adapter.logs}",
@@ -252,11 +257,11 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T4 — Loop guard: the (N+1)th drop within the window stops with
-    //      ERROR_RECONNECT_LIMIT.
+    // T4 — The reconnect-rate guard pauses briefly but never permanently
+    //      disables Auto Mode.
     // ------------------------------------------------------------------
     @Test
-    fun t4_loopGuardStopsAfterMaxAttempts() = runBlocking {
+    fun t4_rateGuardBacksOffAndContinuesAfterMaxAttempts() = runBlocking {
         val servers = listOf(candidate("alpha"))
         val controller = controller(servers = servers)
 
@@ -270,18 +275,22 @@ class AutoModeReconnectTest {
             withTimeoutOrNull(5_000) { controller.awaitConnected() }
         }
 
-        // The next drop must trip the guard.
+        // The next drop must trigger a pause and then continue reconnecting.
+        val before = adapter.connects.size
         invokeArmedTunnelLost(controller)
-        val error = controller.awaitError()
+        controller.awaitConnected()
 
-        assertEquals(
-            "the guard must publish ERROR_RECONNECT_LIMIT",
-            AutoModeController.ERROR_RECONNECT_LIMIT,
-            error.message,
+        assertTrue(
+            "the reconnect rate guard must not leave Auto Mode in Error",
+            controller.state.value is AutoModeState.Connected,
         )
         assertTrue(
-            "expected the limit log line; logs=${adapter.logs}",
-            adapter.logs.any { it.contains("limit reached") },
+            "the guard must pause and resume; logs=${adapter.logs}",
+            adapter.logs.any { it.contains("rate guard reached") },
+        )
+        assertTrue(
+            "a new connection should be attempted after the pause; connects=${adapter.connects}",
+            adapter.connects.size > before,
         )
     }
 
@@ -379,9 +388,8 @@ class AutoModeReconnectTest {
             withTimeoutOrNull(5_000) { controller.awaitConnected() }
         }
 
-        // The budget is now exhausted: the NEXT drop would trip the limit. Prove
-        // it by first confirming the guard IS armed, then reset via the user
-        // button and confirm it is cleared.
+        // Five reconnects have filled the rolling window. A user-initiated
+        // disconnect/start must reset it before the next unexpected drop.
 
         // A user-initiated start (button) must hand R8 a clean budget. The button
         // while Connected means "disconnect"; a second press starts a fresh run.
@@ -390,14 +398,12 @@ class AutoModeReconnectTest {
         controller.onButtonPressed()   // Disconnected -> user start (resets budget)
         controller.awaitConnected()
 
-        // One more drop must NOT trip the limit — the counter was reset.
+        // One more drop must not trigger the rate-limit pause.
         invokeArmedTunnelLost(controller)
         delay(500)
         assertFalse(
-            "the budget must reset on a user-initiated start; logs=${adapter.logs}",
-            controller.state.value is AutoModeState.Error &&
-                (controller.state.value as AutoModeState.Error).message ==
-                AutoModeController.ERROR_RECONNECT_LIMIT,
+            "the rolling window must reset on a user-initiated start; logs=${adapter.logs}",
+            adapter.logs.any { it.contains("rate guard reached") },
         )
     }
 }

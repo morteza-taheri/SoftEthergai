@@ -223,6 +223,10 @@ class AutoModeController(
      * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
      */
     private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
+    /** Backoff applied when the rolling reconnect-rate guard is reached. */
+    private val reconnectRateLimitDelayMs: Long = RECONNECT_RATE_LIMIT_DELAY_MS,
+    /** How long an unexpectedly dropped server is deferred while alternatives are tried. */
+    private val unstableServerCooldownMs: Long = UNSTABLE_SERVER_COOLDOWN_MS,
     /**
      * FIX-3: the per-server wedge ledger Auto Mode consults before dialling.
      *
@@ -649,15 +653,10 @@ enum class AttemptOutcome {
         const val ERROR_NATIVE_UNRESOLVED = "native_operation_unresolved"
 
         /**
-         * R8 (§11.13.3/§11.13.5, OQ-1/OQ-8): Auto Mode stopped reconnecting
-         * because its bounded reconnect budget was exhausted.
-         *
-         * Distinct from [ERROR_NO_SERVER] and [ERROR_NATIVE_UNRESOLVED]: the
-         * server list was not proven exhausted, and no native slot was stuck.
-         * The run was simply re-fired too many times in too short a window
-         * ([RECONNECT_MAX_ATTEMPTS] within [RECONNECT_WINDOW_MS]), which is the
-         * only guard preventing an unbounded reconnect loop when a server keeps
-         * accepting a connection and then dropping it (§13 failure mode F5).
+         * Legacy state code retained for compatibility with older diagnostics.
+         * Current reconnect handling no longer emits this terminal state: it
+         * applies a bounded pause and continues after rotating away from the
+         * recently dropped server.
          */
         const val ERROR_RECONNECT_LIMIT = "ERROR_RECONNECT_LIMIT"
 
@@ -699,13 +698,10 @@ enum class AttemptOutcome {
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
 
         /**
-         * R8 (§11.13.3, OQ-1): maximum reconnect attempts within
-         * [RECONNECT_WINDOW_MS] before the run stops with
-         * [ERROR_RECONNECT_LIMIT].
-         *
-         * R7 alone has no frequency bound, so a server that accepts and then
-         * immediately drops would reconnect forever. This guard is the only
-         * thing preventing that unbounded churn.
+         * Maximum reconnect launches counted before a rate-limit pause is
+         * applied. The controller clears the rolling window after reaching this
+         * threshold, waits [RECONNECT_RATE_LIMIT_DELAY_MS], then continues.
+         * It never turns this guard into a permanent Auto Mode stop.
          */
         const val RECONNECT_MAX_ATTEMPTS = 5
 
@@ -715,6 +711,12 @@ enum class AttemptOutcome {
          * the bound is on *recent* churn, not lifetime count.
          */
         const val RECONNECT_WINDOW_MS = 10L * 60L * 1000L
+
+        /** Rate-limit pause; Auto Mode resumes afterwards instead of entering a terminal error. */
+        const val RECONNECT_RATE_LIMIT_DELAY_MS = 30_000L
+
+        /** Defer a server after an unexpected tunnel loss while trying alternatives. */
+        const val UNSTABLE_SERVER_COOLDOWN_MS = 5L * 60L * 1000L
 
         /**
          * The user enabled no protocol in Auto Connect Protocol Priority.
@@ -1528,26 +1530,27 @@ enum class AttemptOutcome {
             return
         }
 
-        // OQ-1: rolling-window loop guard.
+        // An unexpected drop is evidence that the just-connected endpoint is
+        // unstable on the current path. Defer it while alternatives are tried;
+        // do not repeatedly redial it as the first candidate.
+        if (droppedServer != null && isNetworkAvailable()) {
+            markUnexpectedDisconnectCooldown(droppedServer)
+        }
+
+        // Rolling-window rate guard: throttle repeated reconnect churn, but do
+        // not terminate Auto Mode. The per-server cooldown below rotates away
+        // from unstable endpoints; this pause is only a final safety backoff.
         val now = System.currentTimeMillis()
-        val attempts: Int
+        var attempts = 0
+        var rateLimited = false
         synchronized(reconnectLock) {
             reconnectTimestamps.removeAll { it < now - RECONNECT_WINDOW_MS }
             if (reconnectTimestamps.size >= RECONNECT_MAX_ATTEMPTS) {
-                attempts = -1
-            } else {
-                reconnectTimestamps.add(now)
-                attempts = reconnectTimestamps.size
+                reconnectTimestamps.clear()
+                rateLimited = true
             }
-        }
-        if (attempts < 0) {
-            if (!isReconnectCurrent(generation)) return
-            adapter.log(
-                "[AUTO] Auto-Reconnect limit reached " +
-                    "($RECONNECT_MAX_ATTEMPTS in ${RECONNECT_WINDOW_MS / 60_000} min); stopping",
-            )
-            setState(AutoModeState.Error(ERROR_RECONNECT_LIMIT))
-            return
+            reconnectTimestamps.add(now)
+            attempts = reconnectTimestamps.size
         }
 
         // A-5 (§3.5): the decision is now final — reconnect. Publishing
@@ -1562,12 +1565,21 @@ enum class AttemptOutcome {
 
         adapter.log(
             "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
-                "reconnecting (attempt $attempts/$RECONNECT_MAX_ATTEMPTS)",
+                "rotating to another server (reconnect window $attempts/$RECONNECT_MAX_ATTEMPTS)",
         )
+        val reconnectDelay = if (rateLimited) {
+            adapter.log(
+                "[AUTO] Reconnect rate guard reached; pausing for " +
+                    "${reconnectRateLimitDelayMs / 1000}s before continuing",
+            )
+            reconnectRateLimitDelayMs
+        } else {
+            reconnectInitialDelayMs
+        }
 
-        // OQ-3: let the native slot unwind before redialling. Cancellable, so a
-        // user stop during the wait ends the coroutine cleanly.
-        kotlinx.coroutines.delay(reconnectInitialDelayMs)
+        // Let the native slot unwind. The rate guard is a pause, not a terminal
+        // state, so an unstable endpoint cannot permanently disable Auto Mode.
+        kotlinx.coroutines.delay(reconnectDelay)
         if (!isReconnectCurrent(generation)) return
 
         // Someone may have started connecting / stopping during the delay. Only a
@@ -1582,11 +1594,12 @@ enum class AttemptOutcome {
         // reason is clearer than a silent no-op.
         if (!isReconnectCurrent(generation)) return
 
-        // Seed the reconnect: the dropped server first (§11.13.3 step 1), then
-        // the un-attempted tail of the original sorted list, exactly as the
-        // "Try next server on a Connected server" path does.
-        val remaining = remainingCandidates
-        startReconnectIfCurrent(generation, droppedServer, remaining)
+        // Re-resolve the full current list. The dropped endpoint is deferred
+        // by its cooldown, while servers that were earlier in the previous
+        // ranking are allowed to be considered again.
+        val currentCandidates = runCatching { serverProvider() }.getOrDefault(emptyList())
+        val candidates = currentCandidates.ifEmpty { remainingCandidates }
+        startReconnectIfCurrent(generation, droppedServer, candidates)
     }
 
     /**
@@ -1634,6 +1647,9 @@ enum class AttemptOutcome {
      */
     private val reconnectTimestamps = mutableListOf<Long>()
     private val reconnectLock = Any()
+
+    /** Runtime-only cooldowns for servers whose established tunnels unexpectedly dropped. */
+    private val unexpectedDisconnectCooldowns = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * R8 (§11.13.3): the server Auto Mode was connected to when the unexpected
@@ -1740,6 +1756,33 @@ enum class AttemptOutcome {
     private fun isReconnectCurrent(generation: Long): Boolean =
         synchronized(transitionLock) { generation == reconnectGeneration }
 
+    private fun markUnexpectedDisconnectCooldown(candidate: AutoModeCandidate) {
+        if (unstableServerCooldownMs <= 0L) return
+        val now = System.currentTimeMillis()
+        unexpectedDisconnectCooldowns.entries.forEach { entry ->
+            if (entry.value <= now) unexpectedDisconnectCooldowns.remove(entry.key, entry.value)
+        }
+        if (unexpectedDisconnectCooldowns.size >= 1_000) {
+            unexpectedDisconnectCooldowns.entries.minByOrNull { it.value }?.let { oldest ->
+                unexpectedDisconnectCooldowns.remove(oldest.key, oldest.value)
+            }
+        }
+        unexpectedDisconnectCooldowns[serverKey(candidate)] = now + unstableServerCooldownMs
+    }
+
+    private fun deferUnexpectedDisconnectCooldowns(
+        candidates: List<AutoModeCandidate>,
+    ): List<AutoModeCandidate> {
+        val now = System.currentTimeMillis()
+        // sortedBy is stable: normal candidates retain their quality order,
+        // followed by cooling candidates ordered by their expiry time.
+        return candidates.sortedBy { candidate ->
+            unexpectedDisconnectCooldowns[serverKey(candidate)]
+                ?.takeIf { it > now }
+                ?: Long.MIN_VALUE
+        }
+    }
+
     private fun startReconnectIfCurrent(
         generation: Long,
         droppedServer: AutoModeCandidate?,
@@ -1754,14 +1797,12 @@ enum class AttemptOutcome {
             reconnectJob = null
             reconnectGeneration++
             pendingReconnectServer = droppedServer
-            overrideServers = when {
-                droppedServer == null && remaining.isEmpty() -> null
-                droppedServer == null -> remaining
-                remaining.isEmpty() -> listOf(droppedServer)
-                else -> listOf(droppedServer) + remaining.filterNot {
-                    it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
-                }
-            }
+            // [remaining] is the freshly resolved full candidate list, not
+            // merely the tail after the previous connection. Cooldown ordering
+            // in runAutoMode decides when the dropped server is retried.
+            overrideServers = remaining.ifEmpty {
+                if (droppedServer != null) listOf(droppedServer) else emptyList()
+            }.ifEmpty { null }
             runOrigin = ConnectionOrigin.AUTO_RECONNECT
             startLocked()
         }
@@ -2270,6 +2311,7 @@ enum class AttemptOutcome {
         // could never be rehabilitated and the ledger would drift from "known bad"
         // to "once bad".
         if (wedgeKey != null) wedgeTracker.clear(wedgeKey)
+        unexpectedDisconnectCooldowns.remove(serverKey(server))
         adapter.log("[AUTO] Tunnel established")
         adapter.log("[AUTO] Connected successfully")
         onSuccess(server, protocol)
@@ -2787,6 +2829,7 @@ enum class AttemptOutcome {
             servers = servers.filterNot { inFailureCooldown(it, history, runNetworkType, System.currentTimeMillis()) } +
                 coolingDown
         }
+        servers = deferUnexpectedDisconnectCooldowns(servers)
 
         for (i in startAt until servers.size) {
             val server = servers[i]
@@ -2802,6 +2845,28 @@ enum class AttemptOutcome {
                 job = null
                 scheduleNetworkRetry()
                 return
+            }
+
+            val serverIdentity = serverKey(server)
+            val cooldownUntil = unexpectedDisconnectCooldowns[serverIdentity]
+            val cooldownRemaining = (cooldownUntil ?: 0L) - System.currentTimeMillis()
+            if (cooldownRemaining > 0L) {
+                adapter.log(
+                    "[AUTO] Waiting ${cooldownRemaining / 1000}s before retrying recently unstable " +
+                        "${server.hostname ?: server.ip}",
+                )
+                kotlinx.coroutines.delay(cooldownRemaining)
+                if (!currentCoroutineContext().isActive) return
+                if (!isNetworkAvailable()) {
+                    adapter.log("[AUTO] Network lost during server cooldown; waiting for connectivity")
+                    setState(AutoModeState.Error(ERROR_NO_NETWORK))
+                    job = null
+                    scheduleNetworkRetry()
+                    return
+                }
+                unexpectedDisconnectCooldowns.remove(serverIdentity, cooldownUntil)
+            } else if (cooldownUntil != null) {
+                unexpectedDisconnectCooldowns.remove(serverIdentity, cooldownUntil)
             }
 
             val key = wedgeKey(server)
