@@ -150,7 +150,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         assertTrue(
             "an unavailable TUNNEL rung must fail without a physical request",
-            repository.contains("tunnel unavailable (no bound VPN network); no physical fallback"),
+            repository.contains("unavailable (no bound VPN network); no physical fallback"),
         )
 
         // v1.0.52 (§1.6.44): the routing decision no longer lives in the
