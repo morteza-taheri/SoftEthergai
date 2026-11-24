@@ -22,6 +22,7 @@ import vn.unlimit.softether.TeardownCompletion
 import vn.unlimit.softether.model.ConnectionConfig
 import vn.unlimit.softether.model.Route
 import vn.unlimit.vpngate.App
+import vn.unlimit.vpngate.data.remote.OpenVpnProfileDownloader
 import vn.unlimit.vpngate.BuildConfig
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.state.GlobalVpnTracker
@@ -137,6 +138,34 @@ class AndroidConnectionAdapter(
             serverHost = conn.hostName,
             serverIp = conn.ip,
         )
+
+        // VPN Gate's bulk CSV may omit Base64 profiles to reduce transfer size.
+        // Before entering the main-thread service launch, fetch only this server's
+        // profile using the fresh sid/hid/host descriptor collected from HTML.
+        // Prefer a TCP profile because the existing transform safely derives the
+        // UDP variant; UDP-only rows request their UDP profile directly.
+        if ((protocol == AutoModeProtocol.OPENVPN_TCP || protocol == AutoModeProtocol.OPENVPN_UDP) &&
+            conn.openVpnConfigData.isNullOrBlank()
+        ) {
+            val downloadAsUdp = conn.tcpPort <= 0
+            val profile = withContext(Dispatchers.IO) {
+                OpenVpnProfileDownloader().download(conn, useUdp = downloadAsUdp)
+            }
+            if (!profile.isNullOrBlank()) {
+                conn.openVpnConfigData = profile
+                runCatching {
+                    val hostName = conn.hostName.orEmpty()
+                    if (hostName.isNotBlank()) {
+                        App.instance?.vpnGateItemDao?.updateOpenVpnConfig(hostName, profile)
+                    }
+                }.onFailure {
+                    Log.w(TAG, "OpenVPN profile downloaded but cache write failed", it)
+                }
+            } else {
+                Log.w(TAG, "Per-server OpenVPN profile unavailable for ${conn.hostName}")
+            }
+        }
+
         withContext(Dispatchers.Main) {
             when (protocol) {
                 AutoModeProtocol.SOFTETHER_TCP -> connectSoftEther(conn, useTcp = true)
