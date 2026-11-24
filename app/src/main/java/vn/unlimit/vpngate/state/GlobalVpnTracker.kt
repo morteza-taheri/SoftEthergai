@@ -552,11 +552,10 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
             // still be carrying that request.
             return if (capabilities.ownerUid != Process.myUid()) network else null
         }
-        // Before API 30 ownerUid is unavailable. An app-owned VPN is never
-        // treated as external while one of our own connection transitions runs.
-        return if (currentStatus == VpnConnectionStatus.DISCONNECTED ||
-            currentStatus == VpnConnectionStatus.ERROR
-        ) network else null
+        // Before API 30 ownerUid is unavailable. Best-effort fallback: while
+        // this app has no established tunnel, the system VPN Network is likely
+        // owned by another VPN app and should be preferred over NOT_VPN.
+        return if (!isConnected) network else null
     }
 
     // v1.0.52 (§1.6.44): `prefersVpnForCollector()` was REMOVED here, together
