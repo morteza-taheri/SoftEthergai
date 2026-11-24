@@ -114,7 +114,11 @@ data class VPNGateItem(
         /** How many protocols this row can actually be dialled on. */
         internal fun connectOptions(item: VPNGateItem): Int {
             var n = 0
-            if (!item.openVpnConfigData.isNullOrBlank()) n++
+            if (!item.openVpnConfigData.isNullOrBlank() ||
+                (!item.openVpnDownloadSid.isNullOrBlank() &&
+                    !item.openVpnDownloadHid.isNullOrBlank() &&
+                    !item.openVpnDownloadHost.isNullOrBlank())
+            ) n++
             if (item.seTcpPort > 0) n++
             if (item.seUdpPort > 0 || item.seUdpSupported) n++
             if (item.isSSTPSupport && item.sstpPort > 0) n++
