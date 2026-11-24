@@ -83,6 +83,10 @@ class VpnServerRepositoryRoutingDynamicTest {
             "the wrapper's value must be what is passed as tunnelUsable: $body",
             body.contains("tunnelUsable = usable"),
         )
+        assertTrue(
+            "when this app's tunnel is not usable, routing must distinguish a third-party VPN",
+            body.contains("GlobalVpnTracker.currentExternalVpnNetwork()"),
+        )
         assertFalse(
             "the weaker isConnected check must no longer feed the routing input: $body",
             body.contains("isConnected"),
@@ -100,7 +104,7 @@ class VpnServerRepositoryRoutingDynamicTest {
     }
 
     @Test
-    fun `T-NEW-37 resolvePrimary is VPN-first when a usable bound tunnel exists, PHYSICAL otherwise`() {
+    fun `T-NEW-37 resolvePrimary prefers app tunnel, then system VPN, then PHYSICAL`() {
         // BLOCK v1.0.64: `resolvePrimary` is a projection of `routeLadder(input)`
         // — the *no-memory* ladder. With a usable, bound VPN Network the TUNNEL
         // rung is the primary; otherwise PHYSICAL leads. The v1.0.41 lesson still
