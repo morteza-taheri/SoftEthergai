@@ -292,18 +292,15 @@ class VpnServerRepository(
             memory: PathMemory? = null,
         ): List<CollectorPath> {
             val tunnelRungAvailable = input.tunnelUsable && input.hasBoundNetwork
-            // v1.0.70 (REQ-ROUTE-001) — VPN-only while active.
-            //
-            // When a usable, bound VPN Network exists the ONLY network rung is
-            // TUNNEL. PHYSICAL is deliberately absent: a VPN-bound failure must
-            // be reported, not silently retried over Wi-Fi/cellular. When no
-            // usable+bound VPN Network exists, PHYSICAL (the Android default
-            // network) is the only network rung. EMERGENCY stays last in both
-            // cases; it is a separate dataset source, not a transport fallback.
-            val ladder = if (tunnelRungAvailable) {
-                mutableListOf(CollectorPath.TUNNEL)
-            } else {
-                mutableListOf(CollectorPath.PHYSICAL)
+            // Prefer this app's verified tunnel. If the app tunnel is not the
+            // active route but Android reports a system VPN Network, use that
+            // network rather than bypassing another VPN app via NOT_VPN Wi-Fi.
+            // Only when no VPN Network exists do we use the explicit PHYSICAL
+            // rung. A failed selected VPN path is never silently downgraded.
+            val ladder = when {
+                tunnelRungAvailable -> mutableListOf(CollectorPath.TUNNEL)
+                input.hasBoundNetwork -> mutableListOf(CollectorPath.SYSTEM_VPN)
+                else -> mutableListOf(CollectorPath.PHYSICAL)
             }
             ladder += CollectorPath.EMERGENCY
             return ladder
@@ -336,6 +333,9 @@ class VpnServerRepository(
          * `bindProcessToNetwork`). Null when there is no VPN network to bind to.
          */
         internal fun productionTunnelFetcher(): HttpFetcher? {
+            // currentVpnNetwork is the Android system VPN Network. It may belong
+            // to this app or to another VPN application; the route decision above
+            // determines which semantic path is being used.
             val network = GlobalVpnTracker.currentVpnNetwork() ?: return null
             return runCatching {
                 OkHttpFetcher(client = boundToNetwork(network))
@@ -704,7 +704,7 @@ class VpnServerRepository(
     private fun networkLabel(path: CollectorPath): String = when (path) {
         CollectorPath.PHYSICAL ->
             runCatching { GlobalVpnTracker.currentPhysicalNetwork()?.toString() }.getOrNull() ?: "none"
-        CollectorPath.TUNNEL ->
+        CollectorPath.TUNNEL, CollectorPath.SYSTEM_VPN ->
             runCatching { GlobalVpnTracker.currentVpnNetwork()?.toString() }.getOrNull() ?: "none"
         CollectorPath.EMERGENCY -> "none"
     }
@@ -759,9 +759,11 @@ class VpnServerRepository(
             return null
         }
 
-        val result = if (path == CollectorPath.TUNNEL) {
-            fetchLog("[fetch] path=tunnel source=$sourceTag")
-            pathLog("[collector] path=tunnel source=$sourceTag")
+        val boundVpnPath = path == CollectorPath.TUNNEL || path == CollectorPath.SYSTEM_VPN
+        val pathLabel = if (path == CollectorPath.SYSTEM_VPN) "system-vpn" else "tunnel"
+        val result = if (boundVpnPath) {
+            fetchLog("[fetch] path=$pathLabel source=$sourceTag")
+            pathLog("[collector] path=$pathLabel source=$sourceTag")
             fetch(boundFetcher!!)
         } else {
             fetchLog("[fetch] path=physical source=$sourceTag")
@@ -800,7 +802,7 @@ class VpnServerRepository(
                 if (rebuilt == null) delay(500)
             }
             if (rebuilt != null) {
-                fetchLog("[fetch] path=tunnel rebind retry source=$sourceTag (stale VPN network suspected)")
+                fetchLog("[fetch] path=$pathLabel rebind retry source=$sourceTag (stale VPN network suspected)")
                 val retry = fetch(rebuilt)
                 if (retry != null && succeeded(retry)) {
                     pathMemory.recordSuccess(path)
