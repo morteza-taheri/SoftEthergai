@@ -2833,7 +2833,7 @@ val sstp = AutoModeCandidate(
         assertTrue(
             "A-5: Disconnected is published together with the decision to " +
                 "reconnect, after the OQ-7/OQ-6/OQ-1 checks; trace=$after",
-            disconnectedIdx < decisionIdx,
+            decisionIdx < disconnectedIdx,
         )
         assertEquals(
             "exactly one Disconnected publication per drop",
@@ -4603,7 +4603,7 @@ val sstp = AutoModeCandidate(
         c.onUnexpectedDisconnectForTests()
         val decided = withTimeoutOrNull(5_000) {
             while (adapter.logs.none {
-                    it.contains("reconnecting") || it.contains("skipping Auto-Reconnect")
+                    it.contains("Unexpected disconnect:") || it.contains("skipping Auto-Reconnect")
                 }
             ) {
                 delay(50)
