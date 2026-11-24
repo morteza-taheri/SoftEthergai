@@ -318,8 +318,13 @@ class SstpVpnService : VpnService() {
 
             else -> {
                 Log.w(TAG, "Ignoring unknown SSTP service action: ${intent?.action}")
-                stopSelf(startId)
-                Service.START_NOT_STICKY
+                if (controller == null) {
+                    close()
+                    Service.START_NOT_STICKY
+                } else {
+                    // An unrelated/unknown command must not tear down a live VPN.
+                    Service.START_STICKY
+                }
             }
         }
     }
