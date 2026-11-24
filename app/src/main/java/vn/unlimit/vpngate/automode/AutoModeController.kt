@@ -704,13 +704,10 @@ enum class AttemptOutcome {
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
 
         /**
-         * R8 (§11.13.3, OQ-1): maximum reconnect attempts within
-         * [RECONNECT_WINDOW_MS] before the run stops with
-         * [ERROR_RECONNECT_LIMIT].
-         *
-         * R7 alone has no frequency bound, so a server that accepts and then
-         * immediately drops would reconnect forever. This guard is the only
-         * thing preventing that unbounded churn.
+         * Maximum unexpected disconnects in one reconnect burst window.
+         * Reaching this count starts [RECONNECT_COOLDOWN_MS], then a fresh
+         * bounded cycle; it no longer publishes [ERROR_RECONNECT_LIMIT] or
+         * permanently abandons Auto Mode.
          */
         const val RECONNECT_MAX_ATTEMPTS = 5
 
@@ -721,9 +718,9 @@ enum class AttemptOutcome {
         const val RECONNECT_BACKOFF_MAX_MS = 60_000L
 
         /**
-         * R8 (§11.13.3, OQ-1): rolling window for [RECONNECT_MAX_ATTEMPTS], in
-         * milliseconds (10 minutes). Attempts older than this are forgotten, so
-         * the bound is on *recent* churn, not lifetime count.
+         * Rolling window for the reconnect burst budget, in milliseconds
+         * (10 minutes). Attempts older than this are forgotten, so the bound
+         * is on recent churn rather than lifetime count.
          */
         const val RECONNECT_WINDOW_MS = 10L * 60L * 1000L
 
