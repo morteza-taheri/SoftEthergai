@@ -610,4 +610,19 @@ class ServerReachabilityTesterTest {
             ordered.subList(0, 200).map { it.ip }.toSet(),
         )
     }
+    @Test
+    fun concurrentProbeProgressCountsEveryCompletedEndpoint() = runBlocking {
+        val count = 40
+        val servers = List(count) { connection(port = openPort) }
+
+        ServerReachabilityTester.testConnections(
+            servers,
+            timeoutMs = 1_000,
+            concurrency = 8,
+        )
+
+        assertEquals(count, ServerReachabilityTester.testedCount.value)
+        assertFalse(ServerReachabilityTester.isTesting.value)
+    }
+
 }

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlin.concurrent.thread
 
 /**
  * Log window store (user request 2026-08-30): bounded buffer + the
@@ -73,4 +74,25 @@ class AutoModeLogStoreTest {
         assertTrue(text.contains("SOFTETHER: hello world"))
         assertTrue(text.contains(":")) // timestamp present
     }
+    @Test
+    fun concurrentWritersDoNotLoseLines() {
+        val writers = 8
+        val perWriter = 100
+        val workers = (0 until writers).map { writer ->
+            thread {
+                repeat(perWriter) { index ->
+                    AutoModeLogStore.add(
+                        AutoModeLogStore.Source.AUTO,
+                        "writer-$writer-line-$index",
+                    )
+                }
+            }
+        }
+        workers.forEach { it.join() }
+
+        val lines = AutoModeLogStore.lines.value
+        assertEquals(writers * perWriter, lines.size)
+        assertEquals(writers * perWriter, lines.map { it.text }.toSet().size)
+    }
+
 }

@@ -34,6 +34,7 @@ import kotlinx.coroutines.withContext
 import vn.unlimit.softether.controller.ConnectionController
 import vn.unlimit.softether.model.ConnectionConfig
 import vn.unlimit.softether.model.ConnectionState
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * SoftEther VPN Service - Main VPN service implementation for Android
@@ -480,6 +481,7 @@ class SoftEtherVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        cancelPendingStatePublication()
         super.onDestroy()
         Log.d(TAG, "Service destroyed")
         
@@ -797,8 +799,7 @@ if (sessionPolicy.isRunning) {
         // descriptor is either discarded here or completed after this point, at which
         // time the installer no longer owns establishment and is refused.
         tunOwnership.claim(session)
-        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingStateRunnable = null
+        cancelPendingStatePublication()
         lastStateUpdateTime = 0
 
         Log.d(TAG, "Starting VPN with config: ${config.serverHost}:${config.serverPort}")
@@ -1117,6 +1118,7 @@ if (sessionPolicy.isRunning) {
         // asynchronously, so this identity is what stops a late completion from
         // acting on a session that has since been replaced.
         val tearingDown = sessionPolicy.sessionGeneration
+        cancelPendingStatePublication()
 
         // Stage 2F-F.28AA: identify *this teardown attempt*. The session generation above
         // cannot do this job, because one session can be stopped several times — the first
@@ -1666,6 +1668,13 @@ if (sessionPolicy.isRunning) {
     }
 
     private var pendingStateRunnable: Runnable? = null
+    private val statePublicationGeneration = AtomicLong(0L)
+
+    private fun cancelPendingStatePublication() {
+        statePublicationGeneration.incrementAndGet()
+        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingStateRunnable = null
+    }
 
     private fun handleConnectionState(state: ConnectionState, hostname: String) {
         // Stage 2F-F.28 Fix B: suppression is now state-specific and owned by the
@@ -1686,8 +1695,8 @@ if (sessionPolicy.isRunning) {
 
         // Cancel any previously pending delayed state update to prevent stale state
         // from overwriting a newer state (e.g., old AUTH firing after CONNECTED)
-        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingStateRunnable = null
+        cancelPendingStatePublication()
+        val publicationGeneration = statePublicationGeneration.get()
 
         // If we are in ERROR state or DISCONNECTED (and not user disconnect),
         // show error notification but ALWAYS broadcast to activity so it doesn't get stuck
@@ -1750,6 +1759,7 @@ if (sessionPolicy.isRunning) {
                 ConnectionState.ERROR -> STATE_ERROR
             }
             pendingStateRunnable = Runnable {
+                if (statePublicationGeneration.get() != publicationGeneration) return@Runnable
                 pendingStateRunnable = null
                 updateNotification(message, showDisconnectAction)
                 sendConnectionStateBroadcast(stateValue, "")
@@ -1762,8 +1772,7 @@ if (sessionPolicy.isRunning) {
 
         // Terminal states clear any pending update
         if (isTerminalState) {
-            pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-            pendingStateRunnable = null
+            cancelPendingStatePublication()
         }
 
         updateNotification(message, showDisconnectAction)

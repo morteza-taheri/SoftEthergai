@@ -175,10 +175,16 @@ class ConnectionController(
 
     private var isNetworkAvailable = true
     
+    private val stateLock = Any()
+    @Volatile
     private var currentState: ConnectionState = ConnectionState.DISCONNECTED
         set(value) {
-            field = value
-            onStateChange(value)
+            synchronized(stateLock) {
+                if (field != value) {
+                    field = value
+                    onStateChange(value)
+                }
+            }
         }
 
     /**
@@ -1354,7 +1360,6 @@ class ConnectionController(
             }
 
             currentState = ConnectionState.CONNECTING
-            onStateChange(ConnectionState.CONNECTING)
 
             // Wait before reconnecting
             delay(RECONNECT_DELAY_MS)
@@ -1598,7 +1603,6 @@ class ConnectionController(
             claimAndDestroyNativeHandle()
             // Transition to DISCONNECTED so the activity learns the connection is gone
             currentState = ConnectionState.DISCONNECTED
-            onStateChange(ConnectionState.DISCONNECTED)
             // FIX-G1-IMPL (Option A). Reset the counter so a later session is not
             // born pre-exhausted — same rationale as the budget branch above.
             reconnectAttempts.set(0)

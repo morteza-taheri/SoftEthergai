@@ -228,12 +228,11 @@ class AutoModeNextServerIdentityTest {
      */
     /**
      * The skip bookkeeping uses the same `ip|hostname` identity as the
-     * continuation. Two servers share one IP (NAT / load-balancer shape) and
-     * differ by hostname: the run tries s2 (fails) and connects s3, so BOTH are
-     * tried in this session. BLOCK v1.0.75 (D-2): pressing Try Next now finds
-     * no untried candidate — s2 was genuinely tried and must not be re-offered
-     * just because it shares s3's IP. The distinct keys are what let s3 connect
-     * while s2 was marked tried in the first place.
+     * continuation. Two servers share one IP but differ by hostname: s2 fails,
+     * s3 connects, then Next starts a new cycle. The cycle must retain s3 as
+     * the server being left while allowing the distinct s2 identity to be tried
+     * again. This catches the stale-null `connectedCandidate` bug that could
+     * otherwise clear the leaving identity and immediately redial s3.
      */
     @Test
     fun skipFiltersByIdentityNotByIp() = runBlocking {
@@ -253,15 +252,15 @@ class AutoModeNextServerIdentityTest {
         c.skipToNextServer()
         val second = c.awaitTerminal()
 
-        assertTrue("expected the exhausted-session terminal, got $second", second is AutoModeState.Error)
+        assertTrue("expected the new cycle to connect to the other identity, got $second", second is AutoModeState.Connected)
         assertEquals(
-            "both same-IP servers were tried in this session",
-            AutoModeController.ERROR_NO_MORE_UNTRIED,
-            (second as AutoModeState.Error).message,
+            "the server being left must be excluded, while the same-IP sibling remains eligible",
+            "s2",
+            (second as AutoModeState.Connected).hostname,
         )
         assertTrue(
-            "the failed same-IP sibling must not be re-dialled: ${adapter.connects}",
-            adapter.connects.none { it.first == "s2" },
+            "the server being left must not be re-dialled: ${adapter.connects}",
+            adapter.connects.none { it.first == "s3" },
         )
     }
 

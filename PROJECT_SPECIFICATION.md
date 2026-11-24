@@ -6825,7 +6825,7 @@ that server's protocols are exhausted. `skipInFlight` coalescing is unchanged.
 disconnect/stop, and for a manual tunnel starts as `{the connected server}`. Next selects the FIRST
 candidate in the run ordering (history-aware, reachability gate applied lazily inside the walk) that is
 not in the tried set and supports an enabled protocol, then runs the normal walk over the untried tail.
-If none remains the state is `ERROR_NO_MORE_UNTRIED` ("no more untried servers") — never a silent wrap.
+When every candidate has been tried, Next starts a new cycle while retaining the identity of the server being left in the tried set. This prevents an immediate redial of that same server while allowing the remaining candidates to be tried again.
 
 **BLOCK v1.0.75 FIX (operator decision, 2026-10-27, device report):** the GREEN hero button while
 Connected means a **permanent disconnect** — it must never start a new run. "Move on" lives exclusively

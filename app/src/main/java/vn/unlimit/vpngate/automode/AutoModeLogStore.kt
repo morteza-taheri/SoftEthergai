@@ -59,7 +59,7 @@ object AutoModeLogStore {
     }
 
     fun clear() {
-        _lines.value = emptyList()
+        _lines.update { emptyList() }
     }
 
     /**

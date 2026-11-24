@@ -7,6 +7,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -161,7 +162,7 @@ object ServerReachabilityTester {
     fun clearServerList() {
         if (_serverListResults.isNotEmpty()) {
             _serverListResults.clear()
-            _resultsVersion.value++
+            _resultsVersion.update { it + 1 }
         }
     }
 
@@ -195,7 +196,7 @@ object ServerReachabilityTester {
     fun clearAutoConnect() {
         if (_autoConnectResults.isNotEmpty()) {
             _autoConnectResults.clear()
-            _resultsVersion.value++
+            _resultsVersion.update { it + 1 }
         }
     }
 
@@ -211,7 +212,7 @@ object ServerReachabilityTester {
         _autoConnectResults.clear()
         _testedCount.value = 0
         _totalCount.value = 0
-        _resultsVersion.value++
+        _resultsVersion.update { it + 1 }
     }
 
     suspend fun probe(host: String, port: Int, timeoutMs: Int = DEFAULT_TIMEOUT_MS): ReachabilityResult =
@@ -250,7 +251,7 @@ object ServerReachabilityTester {
                         val ip = conn.ip ?: ""
                         val port = resolvePort(conn)
                         if (ip.isBlank() || port <= 0) {
-                            _testedCount.value += 1
+                            _testedCount.update { it + 1 }
                             return@async null
                         }
                         val res = semaphore.withPermit {
@@ -260,8 +261,8 @@ object ServerReachabilityTester {
                         // protocol-less and files under the SERVER_LIST
                         // namespace. It must never land on an Auto Connect key.
                         _serverListResults[ReachabilityKey.ServerList(ip)] = res
-                        _testedCount.value += 1
-                        _resultsVersion.value++
+                        _testedCount.update { it + 1 }
+                        _resultsVersion.update { it + 1 }
                         res
                     }
                 }
@@ -273,7 +274,7 @@ object ServerReachabilityTester {
             // Also reached when the caller's scope is cancelled (e.g. the
             // user leaves the server list), so the progress UI never sticks.
             _isTesting.value = false
-            _resultsVersion.value++
+            _resultsVersion.update { it + 1 }
         }
     }
 

@@ -92,6 +92,8 @@ class SstpVpnService : VpnService() {
     private var jobReconnect: Job? = null
 
     companion object {
+        const val ACTION_CONNECT = ACTION_VPN_CONNECT
+        const val ACTION_DISCONNECT = ACTION_VPN_DISCONNECT
         private const val STATS_INTERVAL_MS = 1000L
         private const val TRAFFIC_PREFS_SUFFIX = "_preferences"
         private const val DOWNLOADED_DATA_KEY = "downloaded_data"
@@ -298,7 +300,7 @@ class SstpVpnService : VpnService() {
                 Service.START_STICKY
             }
 
-            else -> {
+            ACTION_VPN_DISCONNECT -> {
                 // ensure that reconnection has been completely canceled or done
                 runBlocking { jobReconnect?.cancelAndJoin() }
 
@@ -311,6 +313,12 @@ class SstpVpnService : VpnService() {
 
                 close()
 
+                Service.START_NOT_STICKY
+            }
+
+            else -> {
+                Log.w(TAG, "Ignoring unknown SSTP service action: ${intent?.action}")
+                stopSelf(startId)
                 Service.START_NOT_STICKY
             }
         }

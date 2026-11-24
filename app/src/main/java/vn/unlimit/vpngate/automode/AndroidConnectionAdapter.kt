@@ -43,8 +43,8 @@ class AndroidConnectionAdapter(
 
     companion object {
         private const val TAG = "AutoMode"
-        private const val ACTION_VPN_CONNECT = "vn.unlimit.vpngate.VPN_CONNECT"
-        private const val ACTION_VPN_DISCONNECT = "vn.unlimit.vpngate.VPN_DISCONNECT"
+        private const val ACTION_VPN_CONNECT = SstpVpnService.ACTION_CONNECT
+        private const val ACTION_VPN_DISCONNECT = SstpVpnService.ACTION_DISCONNECT
 
         /**
          * Stage 2F-F.28 Fix G: bounded safety net for teardown observation.

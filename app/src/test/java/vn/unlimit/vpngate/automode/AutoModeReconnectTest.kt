@@ -325,6 +325,27 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
+    // Regression: Stop during the unexpected-disconnect delay must cancel the
+    // independently owned reconnect decision and must never redial afterwards.
+    @Test
+    fun stopDuringReconnectDelayPreventsAutomaticRestart() = runBlocking {
+        val controller = controller(
+            servers = listOf(candidate("alpha")),
+            reconnectInitialDelayMs = 600L,
+        )
+        controller.start()
+        controller.awaitConnected()
+        val before = adapter.connects.size
+
+        invokeArmedTunnelLost(controller)
+        controller.stop()
+        delay(850)
+
+        assertTrue("Stop must leave Auto Mode disconnected", controller.state.value is AutoModeState.Disconnected)
+        assertEquals("a pending reconnect must not dial after Stop", before, adapter.connects.size)
+    }
+
+    // ------------------------------------------------------------------
     // T6 — The settle delay is applied before the first reconnect attempt.
     //
     // There is no kotlinx-coroutines-test on the classpath, so the delay is

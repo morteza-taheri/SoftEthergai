@@ -3,6 +3,7 @@ package vn.unlimit.vpngate.automode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -797,6 +798,10 @@ enum class AttemptOutcome {
     /** Â§13 single-job guard. */
     var job: Job? = null
 
+    /** Owns an unexpected-disconnect reconnect decision until it hands off to a run. */
+    private var reconnectJob: Job? = null
+    private var reconnectGeneration: Long = 0L
+
     /**
      * BLOCK v1.0.80: the coroutine that watches for connectivity to return after
      * a run stopped with [ERROR_NO_NETWORK]. Kept apart from [job] so a user
@@ -950,11 +955,11 @@ enum class AttemptOutcome {
      * starts with the connected server as its first entry; it ends when the
      * user disconnects. The run loop adds every server it visits; Try-Next-
      * while-Connected picks the FIRST candidate of the run ordering that is
-     * not in this set and supports an enabled protocol — and never wraps
-     * silently once every candidate has been tried.
+     * not in this set and supports an enabled protocol. When the set is exhausted,
+     * the next cycle retains only the identity of the server being left, so Next
+     * can retry the remaining candidates without immediately redialling that server.
      */
-    @Volatile
-    private var sessionTriedKeys: MutableSet<String> = HashSet()
+    private val sessionTriedKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * User-requested skip of the current server (Try next server button).
@@ -1098,12 +1103,9 @@ enum class AttemptOutcome {
                     // end: start a new cycle, keeping only the server we are
                     // leaving so Next really moves somewhere else.
                     if (untried.isEmpty()) {
-                        val leaving = connectedCandidate?.let { serverKey(it) }
-                        sessionTriedKeys = if (leaving == null) {
-                            HashSet()
-                        } else {
-                            HashSet(listOf(leaving))
-                        }
+                        val leaving = currentKey
+                        sessionTriedKeys.clear()
+                        if (leaving != null) sessionTriedKeys.add(leaving)
                         sessionAttempts = 0
                         sessionTotal = all.size
                         untried = all.filter {
@@ -1243,9 +1245,8 @@ enum class AttemptOutcome {
                 // stack did not report the server's host/ip the identity is
                 // unknown; seeding it is then a no-op against real candidates
                 // and the pick starts at the top, which is the honest fallback.
-                if (currentKey != serverKey(null, null)) {
-                    sessionTriedKeys = HashSet(listOf(currentKey))
-                }
+                sessionTriedKeys.clear()
+                if (currentKey != serverKey(null, null)) sessionTriedKeys.add(currentKey)
                 val priorities = protocolPriorityProvider()
                 val all = (overrideServers ?: serverProvider())
                     .withActiveRtt(priorities)
@@ -1257,11 +1258,8 @@ enum class AttemptOutcome {
                 // BLOCK v1.0.85: same new-cycle rule for the external-tunnel
                 // branch so Next is never a dead end there either.
                 if (untried.isEmpty()) {
-                    sessionTriedKeys = if (currentKey != serverKey(null, null)) {
-                        HashSet(listOf(currentKey))
-                    } else {
-                        HashSet()
-                    }
+                    sessionTriedKeys.clear()
+                    if (currentKey != serverKey(null, null)) sessionTriedKeys.add(currentKey)
                     sessionAttempts = 0
                     sessionTotal = all.size
                     untried = all.filter {
@@ -1481,7 +1479,7 @@ enum class AttemptOutcome {
         // a separate event with NEUTRAL outcome.
         recordLoss(dropped, lossReason, connectedProtocolForHistory)
         connectedProtocolForHistory = null
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        launchUnexpectedDisconnect(dropped)
     }
 
     /**
@@ -1505,7 +1503,8 @@ enum class AttemptOutcome {
      *   if the success record was somehow unavailable — then the reconnect simply
      *   runs over [remainingCandidates]).
      */
-    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {
+    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?, generation: Long) {
+        if (!isReconnectCurrent(generation)) return
         // OQ-7: a connect/teardown that is still IN FLIGHT owns the tunnel; do not
         // race it. A merely CONNECTED tracker does not block us — that is either
         // our own tunnel (which we are here because we just lost) or one the OS is
@@ -1565,6 +1564,7 @@ enum class AttemptOutcome {
         // OQ-3: let the native slot unwind before redialling. Cancellable, so a
         // user stop during the wait ends the coroutine cleanly.
         kotlinx.coroutines.delay(reconnectInitialDelayMs)
+        if (!isReconnectCurrent(generation)) return
 
         // Someone may have started connecting / stopping during the delay. Only a
         // transition blocks here, for the same reason as the entry check.
@@ -1576,28 +1576,13 @@ enum class AttemptOutcome {
         // OQ-7 second chance: if a fresh run is somehow already active, do not
         // stack a second one — start() would refuse it anyway, but logging the
         // reason is clearer than a silent no-op.
-        if (isRunning) {
-            adapter.log("[AUTO] A run is already active; not stacking a reconnect")
-            return
-        }
+        if (!isReconnectCurrent(generation)) return
 
         // Seed the reconnect: the dropped server first (§11.13.3 step 1), then
         // the un-attempted tail of the original sorted list, exactly as the
         // "Try next server on a Connected server" path does.
-        pendingReconnectServer = droppedServer
         val remaining = remainingCandidates
-        overrideServers = when {
-            droppedServer == null && remaining.isEmpty() -> null
-            droppedServer == null -> remaining
-            remaining.isEmpty() -> listOf(droppedServer)
-            else -> listOf(droppedServer) + remaining.filterNot {
-                it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
-            }
-        }
-        // BLOCK v1.0.75 (D-3): this run exists because the tunnel we owned was
-        // lost — the status must say "reconnected automatically".
-        runOrigin = ConnectionOrigin.AUTO_RECONNECT
-        start()
+        startReconnectIfCurrent(generation, droppedServer, remaining)
     }
 
     /**
@@ -1622,7 +1607,7 @@ enum class AttemptOutcome {
     @androidx.annotation.VisibleForTesting
     internal fun onUnexpectedDisconnectForTests() {
         val dropped = connectedCandidate
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        launchUnexpectedDisconnect(dropped)
     }
 
     /** When set, the next runAutoMode uses this candidate list instead of the provider. */
@@ -1724,14 +1709,61 @@ enum class AttemptOutcome {
     }
 
     fun start() {
-        // v1.0.52 (§1.6.44) TASK B.3(a): the check and the assignment are one
-        // atomic transition — see [transitionLock].
-        synchronized(transitionLock) { startLocked() }
+        synchronized(transitionLock) {
+            cancelPendingReconnectLocked()
+            startLocked()
+        }
+    }
+
+    private fun cancelPendingReconnectLocked() {
+        reconnectGeneration++
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
+    private fun launchUnexpectedDisconnect(dropped: AutoModeCandidate?) {
+        synchronized(transitionLock) {
+            reconnectGeneration++
+            val generation = reconnectGeneration
+            reconnectJob?.cancel()
+            reconnectJob = scope.launch { onUnexpectedDisconnect(dropped, generation) }
+        }
+    }
+
+    private fun isReconnectCurrent(generation: Long): Boolean =
+        synchronized(transitionLock) { generation == reconnectGeneration }
+
+    private fun startReconnectIfCurrent(
+        generation: Long,
+        droppedServer: AutoModeCandidate?,
+        remaining: List<AutoModeCandidate>,
+    ) {
+        synchronized(transitionLock) {
+            if (generation != reconnectGeneration) return
+            if (isRunning) {
+                reconnectJob = null
+                return
+            }
+            reconnectJob = null
+            reconnectGeneration++
+            pendingReconnectServer = droppedServer
+            overrideServers = when {
+                droppedServer == null && remaining.isEmpty() -> null
+                droppedServer == null -> remaining
+                remaining.isEmpty() -> listOf(droppedServer)
+                else -> listOf(droppedServer) + remaining.filterNot {
+                    it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
+                }
+            }
+            runOrigin = ConnectionOrigin.AUTO_RECONNECT
+            startLocked()
+        }
     }
 
     /** Â§12: cancel everything; the loop stops at the next suspension point. */
     fun stop() {
         synchronized(transitionLock) {
+            cancelPendingReconnectLocked()
             connectedWatcher?.cancel()
             connectedWatcher = null
             TunnelStateWatcher.onTunnelLost = null
@@ -1907,6 +1939,8 @@ enum class AttemptOutcome {
 
     /** Â§3/Â§29-Test10: pressing while Connected disconnects via the normal flow. */
     fun disconnectNow() {
+        synchronized(transitionLock) {
+            cancelPendingReconnectLocked()
         // BLOCK v1.0.69 PART 1A: capture the just-connected server before clearing it.
         recordQualityRejectIfEligible(connectedCandidate)
         connectedWatcher?.cancel()
@@ -1943,6 +1977,7 @@ enum class AttemptOutcome {
             scope.launch { adapter.disconnect() }
         }
         setState(AutoModeState.Disconnected)
+        }
     }
 
     /** Â§7 filter + Â§8 ordering. Visible for tests. */
