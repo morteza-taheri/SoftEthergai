@@ -46,7 +46,10 @@ class OpenVpnProfileDownloaderTest {
 
         val result = OpenVpnProfileDownloader(fetcher).download(connection(), useUdp = false)
 
-        assertEquals(profile, result)
+        assertEquals(
+            profile.replace("remote public-vpn-53.opengw.net 443", "remote 203.0.113.53 443"),
+            result,
+        )
         val url = fetcher.requestedUrl.orEmpty()
         assertTrue(url.startsWith("https://www.vpngate.net/common/openvpn_download.aspx?"))
         assertTrue(url.contains("sid=1795539088851"))
