@@ -107,10 +107,10 @@ class VpnServerRepositoryRoutingDynamicTest {
         // holds: a usable tunnel with no bound network adds no TUNNEL rung.
         for (tunnelUsable in listOf(true, false)) {
             for (hasBoundNetwork in listOf(true, false)) {
-                val expected = if (tunnelUsable && hasBoundNetwork) {
-                    CollectorPath.TUNNEL
-                } else {
-                    CollectorPath.PHYSICAL
+                val expected = when {
+                    tunnelUsable && hasBoundNetwork -> CollectorPath.TUNNEL
+                    hasBoundNetwork -> CollectorPath.SYSTEM_VPN
+                    else -> CollectorPath.PHYSICAL
                 }
                 assertEquals(
                     "resolvePrimary must be VPN-first only when a usable+bound tunnel exists " +
