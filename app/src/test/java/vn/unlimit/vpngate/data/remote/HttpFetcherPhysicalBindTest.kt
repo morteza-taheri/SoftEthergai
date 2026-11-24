@@ -76,7 +76,7 @@ class HttpFetcherPhysicalBindTest {
             .filter { it.isNotEmpty() }
         assertEquals(
             "the enum must carry exactly the three honest transports, got $constants",
-            listOf("PHYSICAL", "SYSTEM_VPN", "TUNNEL", "EMERGENCY"),
+            listOf("PHYSICAL", "TUNNEL", "SYSTEM_VPN", "EMERGENCY"),
             constants,
         )
         assertFalse("the OPEN constant must be gone, got $constants", constants.contains("OPEN"))
