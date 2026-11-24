@@ -223,9 +223,9 @@ class VpnServerRepositoryLadderTest {
                     // REQ-ROUTE-001: PHYSICAL exists only when the VPN is not
                     // active — it is never a fallback for an active tunnel.
                     assertEquals(
-                        "$label: PHYSICAL appears only when the VPN is inactive",
+                        "$label: PHYSICAL appears only when Android exposes no VPN Network",
                         result.contains(CollectorPath.PHYSICAL),
-                        !(tunnelUsable && hasBoundNetwork),
+                        !hasBoundNetwork,
                     )
                 }
             }
@@ -240,6 +240,7 @@ class VpnServerRepositoryLadderTest {
         // no network and is a source switch, not a transport.
         memory.recordFailure(CollectorPath.PHYSICAL)
         memory.recordFailure(CollectorPath.TUNNEL)
+        memory.recordFailure(CollectorPath.SYSTEM_VPN)
 
         for (tunnelUsable in listOf(true, false)) {
             for (hasBoundNetwork in listOf(true, false)) {
