@@ -16,8 +16,9 @@ import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
  * its `DataUtil` accessors and `GlobalVpnTracker.prefersVpnForCollector()` — is
  * gone. The replacement contract is:
  *
- *  - **Base order** — `PHYSICAL -> TUNNEL (only when usable *and* bound) ->
- *    EMERGENCY`. Unchanged from v1.0.45 and still pinned here (T-NEW-55*).
+ *  - **Base order** — `PHYSICAL` when no VPN Network exists; `SYSTEM_VPN` when
+ *    Android has a VPN Network but this app's tunnel is not verified usable;
+ *    `TUNNEL` when this app's own tunnel is usable and bound. EMERGENCY is last.
  *  - **Promotion is evidence-based** — `TUNNEL` moves to the front only when
  *    [VpnServerRepository.PathMemory] says PHYSICAL is cooling down after a
  *    failure, or that TUNNEL is the transport that last delivered a dataset.
@@ -90,11 +91,11 @@ class VpnServerRepositoryLadderTest {
     }
 
     @Test
-    fun `T-NEW-55d a bound network with a dead tunnel adds no rung`() {
-        // The mirror image of 55c. `hasBoundNetwork` is a capability, not a
-        // reason: it must never resurrect the rung for a tunnel that is down.
+    fun `T-NEW-55d a system VPN network is used when this app tunnel is not usable`() {
+        // The VPN may belong to another app. Do not bind to NOT_VPN and bypass
+        // that tunnel merely because this app's own connection is not active.
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.SYSTEM_VPN, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = false, hasBoundNetwork = true),
         )
     }
