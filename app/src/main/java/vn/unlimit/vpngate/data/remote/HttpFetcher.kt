@@ -663,11 +663,11 @@ class OkHttpFetcher(
 /**
  * Which transport a collector request should be sent on.
  *
- * v1.0.45 (§1.6.38): the two honest, explicit transports replace the old
- * `OPEN`/`VPN` pair. `OPEN` was unbound, so when the app's own tunnel was up it
- * silently followed the OS default — which IS the tunnel. `PHYSICAL` is bound
- * to a NOT_VPN + INTERNET network; `TUNNEL` is bound to the app's VPN network.
- * `EMERGENCY` is the last rung (bundled servers.csv) and carries no network.
+ * PHYSICAL is bound to NOT_VPN Wi-Fi/cellular; TUNNEL is the verified tunnel
+ * established by this app; SYSTEM_VPN is any Android VPN Network when this
+ * app's own tunnel is not the active verified route (including a VPN owned by
+ * another app). EMERGENCY is the bundled servers.csv source and carries no
+ * network.
  */
 enum class CollectorPath {
     /** An explicit non-VPN network (Wi-Fi/cellular), bound per request. */
