@@ -141,16 +141,16 @@ class VpnServerRepositoryLadderTest {
 
     @Test
     fun `T-NEW-56d evidence cannot promote a rung that is not available`() {
-        // PHYSICAL is cooling down and TUNNEL was proven, but the tunnel is
-        // unusable right now. Promotion must not conjure a rung: the ladder is
-        // PHYSICAL -> EMERGENCY, exactly as if memory were empty.
+        // PHYSICAL is cooling down and this app's tunnel was proven, but it is
+        // not currently usable. Android still exposes a system VPN Network, so
+        // use that bound route instead of bypassing it through NOT_VPN.
         val clock = FakeClock()
         val memory = clock.memory()
         memory.recordFailure(CollectorPath.PHYSICAL)
         memory.recordSuccess(CollectorPath.TUNNEL)
 
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
+            listOf(CollectorPath.SYSTEM_VPN, CollectorPath.EMERGENCY),
             ladder(tunnelUsable = false, hasBoundNetwork = true, memory = memory),
         )
         assertEquals(
