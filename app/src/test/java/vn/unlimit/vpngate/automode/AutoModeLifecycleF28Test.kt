@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -267,7 +268,7 @@ class AutoModeLifecycleF28Test {
     @Test
     fun `TEST D - stop publishes Disconnected only after teardown is requested`() = runBlocking {
         adapter.hang += "slow.example.com"
-        val observed = mutableListOf<String>()
+        val observed = CopyOnWriteArrayList<String>()
         val c = AutoModeController(
             scope = scope,
             adapter = adapter,
