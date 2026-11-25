@@ -3,6 +3,7 @@ package vn.unlimit.vpngate.repository
 import vn.unlimit.vpngate.App
 import vn.unlimit.vpngate.favourites.FavouriteServers
 import vn.unlimit.vpngate.models.VPNGateConnection
+import vn.unlimit.vpngate.parser.EmergencyCsvParser
 
 /**
  * The two actions offered by the server list's long-press sheet: delete one
@@ -50,14 +51,20 @@ object ServerActions {
     }
 
     /**
-     * The canonical 15-column VPN Gate /api/iphone/ header. [ManualCsvImport]
-     * detects this dialect, so a file produced here can be pasted straight back
-     * into Settings → import.
+     * Retained for compatibility with older callers, but NOT used for export
+     * any more. The 15-column API dialect has no TCP/UDP port columns, so a
+     * one-server export that used it silently destroyed SoftEther/OpenVPN
+     * transport facts; on re-import a TCP-only profile could be reconstructed
+     * from the embedded config and look like a TCP/UDP "swap".
      */
     const val API_HEADER: String =
         "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions," +
             "Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message," +
             "OpenVPN_ConfigData_Base64"
+
+    /** The 29-column dialect [ManualCsvImport] routes to [EmergencyCsvParser]. */
+    private val EXPORT_HEADER: String =
+        EmergencyCsvParser.ALL_COLUMNS.joinToString(",") { quote(it) }
 
     /**
      * One row + header, using the raw API units the model already stores
@@ -86,8 +93,22 @@ object ServerActions {
             connection.operator.orEmpty(),
             connection.message.orEmpty(),
             configB64,
+            "1.0",                                   // schema_version
+            connection.seTcpPort.toString(),         // SE_TCP_Port
+            connection.seUdpSupported.toString(),    // SE_UDP_Supported (true/false)
+            connection.seUdpPort.toString(),         // SE_UDP_Port
+            connection.tcpPort.toString(),           // OpenVPN_TCP_Port
+            connection.udpPort.toString(),           // OpenVPN_UDP_Port
+            (connection.isL2TPSupport > 0).toString(), // L2TP_Supported
+            (connection.isSSTPSupport > 0).toString(), // SSTP_Supported
+            connection.hostName.orEmpty(),           // SSTP_Hostname
+            connection.sstpConnectPort.toString(),   // SSTP_Port
+            "false",                                 // Has_IPv6 (not stored per row)
+            "0",                                     // FirstSeenAt
+            "0",                                     // LastSeenAt
+            "html_parse",                            // SourceTag (manual tag added on import)
         ).joinToString(",") { quote(it) }
-        return API_HEADER + "\n" + row + "\n"
+        return EXPORT_HEADER + "\n" + row + "\n"
     }
 
     /**

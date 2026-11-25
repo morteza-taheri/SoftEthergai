@@ -12,6 +12,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -481,6 +482,7 @@ class SoftEtherVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        cancelPendingStateUpdate()
         Log.d(TAG, "Service destroyed")
         
         // Cancel any ongoing connection attempt
@@ -797,8 +799,7 @@ if (sessionPolicy.isRunning) {
         // descriptor is either discarded here or completed after this point, at which
         // time the installer no longer owns establishment and is refused.
         tunOwnership.claim(session)
-        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingStateRunnable = null
+        cancelPendingStateUpdate()
         lastStateUpdateTime = 0
 
         Log.d(TAG, "Starting VPN with config: ${config.serverHost}:${config.serverPort}")
@@ -1113,6 +1114,9 @@ if (sessionPolicy.isRunning) {
     }
 
     private fun stopVpn(disconnectByError: Boolean = false, suppliedAttemptId: Int = 0) {
+        // A rate-limited non-terminal update posted before this stop must not
+        // fire afterwards and overwrite the terminal state (S2).
+        cancelPendingStateUpdate()
         // Stage 2F-F.28A-REVIEW: the session being torn down. Teardown finishes
         // asynchronously, so this identity is what stops a late completion from
         // acting on a session that has since been replaced.
@@ -1667,6 +1671,12 @@ if (sessionPolicy.isRunning) {
 
     private var pendingStateRunnable: Runnable? = null
 
+    /** Cancel a rate-limited, non-terminal state update that has not fired yet. */
+    private fun cancelPendingStateUpdate() {
+        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingStateRunnable = null
+    }
+
     private fun handleConnectionState(state: ConnectionState, hostname: String) {
         // Stage 2F-F.28 Fix B: suppression is now state-specific and owned by the
         // policy.
@@ -1686,8 +1696,7 @@ if (sessionPolicy.isRunning) {
 
         // Cancel any previously pending delayed state update to prevent stale state
         // from overwriting a newer state (e.g., old AUTH firing after CONNECTED)
-        pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingStateRunnable = null
+        cancelPendingStateUpdate()
 
         // If we are in ERROR state or DISCONNECTED (and not user disconnect),
         // show error notification but ALWAYS broadcast to activity so it doesn't get stuck
@@ -1737,7 +1746,7 @@ if (sessionPolicy.isRunning) {
         val now = System.currentTimeMillis()
         if (!isTerminalState && now - lastStateUpdateTime < 200) {
             // Cancel any previously queued pending update first
-            pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
+            cancelPendingStateUpdate()
             val stateValue = when (state) {
                 ConnectionState.CONNECTING -> STATE_CONNECTING
                 ConnectionState.TLS_HANDSHAKE -> STATE_TLS_HANDSHAKE
@@ -1762,8 +1771,7 @@ if (sessionPolicy.isRunning) {
 
         // Terminal states clear any pending update
         if (isTerminalState) {
-            pendingStateRunnable?.let { mainHandler.removeCallbacks(it) }
-            pendingStateRunnable = null
+            cancelPendingStateUpdate()
         }
 
         updateNotification(message, showDisconnectAction)
@@ -1788,7 +1796,13 @@ if (sessionPolicy.isRunning) {
     private fun registerNetworkReceiver() {
         val cm = ContextCompat.getSystemService(this, ConnectivityManager::class.java)
             ?: return
-        cm.registerDefaultNetworkCallback(networkCallback)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            cm.registerDefaultNetworkCallback(networkCallback)
+        } else {
+            // registerDefaultNetworkCallback is API 26+; minSdk is 24.
+            @Suppress("DEPRECATION")
+            cm.registerNetworkCallback(NetworkRequest.Builder().build(), networkCallback)
+        }
     }
 
     private fun unregisterNetworkReceiver() {

@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.collector
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -109,19 +110,69 @@ class RepositoryTest {
         }
         assertTrue("public-vpn-206 missing", found)
 
-        // API-only rows (public-vpn-219) carry the decoded OpenVPN
-        // profile needed for connecting.
-        var apiRowFound = false
+        // TIERED SOURCES (v2.4.21): when the page parsed, the CSV feed is NOT
+        // fetched at all — it is 1.33 MB, 99.1% of it Base64, and it carries no
+        // protocol columns. So no row arrives with an inline profile; each must
+        // instead expose the sid/hid that openvpn_download.aspx needs.
+        var downloadable = 0
+        var withInlineProfile = 0
         for (i in 0 until result.connectionList.size()) {
             val conn = result.connectionList.get(i) ?: continue
-            if (conn.hostName == "public-vpn-219") {
-                apiRowFound = true
-                assertEquals("219.100.37.206", conn.ip)
-                assertNotNull(conn.openVpnConfigData)
-                break
-            }
+            if (conn.canDownloadOpenVpnConfig) downloadable++
+            if (!conn.openVpnConfigData.isNullOrBlank()) withInlineProfile++
         }
-        assertTrue("public-vpn-219 (API row) missing", apiRowFound)
+        assertTrue("no server exposes sid/hid for an on-demand profile", downloadable > 0)
+        assertEquals(
+            "the CSV feed must not be fetched when the page parsed",
+            0,
+            withInlineProfile,
+        )
+
+        // The capability must describe the dataset honestly: protocol columns
+        // present, profiles absent.
+        assertTrue(result.capability.providesProtocolColumns)
+        assertFalse(result.capability.providesOpenVpnProfiles)
+        Unit
+    }
+
+    /**
+     * The CSV feed is a genuine fallback, not dead code: when the page cannot
+     * be parsed the run must still produce a dataset, and that dataset is the
+     * one case where inline OpenVPN profiles exist.
+     */
+    @Test
+    fun refreshUsesCsvFeedWhenHtmlProducesNoRecords(): Unit = runBlocking {
+        val repo = VpnServerRepository(
+            fetcher = FakeFetcher(
+                mapOf(
+                    // A body that is not a hosts table: the HTML source is
+                    // rejected by schema validation.
+                    VpnGateUrls.MAIN_URL to "<html><body>no table here</body></html>",
+                    VpnGateUrls.API_URL to
+                        CollectorTestFixtures.load(CollectorTestFixtures.API_SAMPLE),
+                    VpnGateUrls.MIRRORS_URL to mirrorDirectoryPage("http://140.199.128.1:1770/"),
+                    "http://140.199.128.1:1770/en/" to
+                        "<html><body>no table here</body></html>",
+                ),
+            ),
+        )
+
+        val result = repo.refresh()
+
+        assertNotNull("the CSV fallback must produce a dataset", result)
+        result!!
+        assertTrue("no servers collected from the CSV", result.serverCount > 0)
+        assertTrue(result.capability.providesOpenVpnProfiles)
+        // The CSV has no protocol columns, so the capability must not claim
+        // them — that is what stops a CSV-only run from being judged as a
+        // protocol collapse.
+        assertFalse(result.capability.providesProtocolColumns)
+
+        var withProfile = 0
+        for (i in 0 until result.connectionList.size()) {
+            if (!result.connectionList.get(i)?.openVpnConfigData.isNullOrBlank()) withProfile++
+        }
+        assertTrue("the CSV feed carries inline OpenVPN profiles", withProfile > 0)
         Unit
     }
 

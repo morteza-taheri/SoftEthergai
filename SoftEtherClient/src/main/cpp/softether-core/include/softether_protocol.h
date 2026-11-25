@@ -137,6 +137,15 @@ typedef struct {
     pthread_mutex_t io_mutex;  // per-link I/O lock (see softether_connection_t comment)
 } softether_tcp_sock_t;
 
+/** Explicit receive outcome, so Kotlin never mistakes a timeout for traffic. */
+typedef enum softether_rx_event {
+    SOFTETHER_RX_DATA = 1,
+    SOFTETHER_RX_KEEPALIVE = 2,
+    SOFTETHER_RX_IDLE_TIMEOUT = 3,
+    SOFTETHER_RX_SKIPPED = 4,
+    SOFTETHER_RX_ERROR = 5,
+} softether_rx_event_t;
+
 // Connection context
 typedef struct softether_connection {
     int socket_fd;
@@ -185,6 +194,9 @@ typedef struct softether_connection {
     int recv_queue_head;       // read position
     int recv_queue_tail;       // write position
     int recv_queue_count;      // number of queued frames
+    // Event of the most recent fill_recv_queue call. Lets the JNI layer tell
+    // a real keepalive from a 100 ms idle timeout (both used to return 0).
+    softether_rx_event_t last_rx_event;
     uint32_t rx_skipped_blocks;  // Phase 13D: blocks dropped (too large / queue full)
     // RUDP (UDP acceleration)
     rudp_context_t* rudp;
@@ -335,7 +347,8 @@ int softether_receive_raw(softether_connection_t* conn, uint8_t* frame, size_t m
 int softether_receive_batch(softether_connection_t* conn,
                             uint8_t* buffer, uint32_t max_len,
                             uint32_t* lengths, uint32_t max_packets,
-                            uint32_t* out_count);
+                            uint32_t* out_count,
+                            softether_rx_event_t* out_event);
 
 // ARP resolution — resolves gateway MAC after DHCP
 int softether_resolve_gateway(softether_connection_t* conn, uint32_t gateway_ip_host);

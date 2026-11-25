@@ -433,8 +433,9 @@ object VpnGateHtmlParser {
             val ovpnCell = cell("openvpn")
             if (ovpnCell != null) {
                 val link = ovpnCell.select("a").firstOrNull {
-                    val href = it.attr("href")
-                    href.isNotEmpty() && href.lowercase().contains("do_openvpn")
+                    val href = it.attr("href").lowercase()
+                    href.isNotEmpty() &&
+                        (href.contains("do_openvpn") || href.contains("openvpn_download"))
                 }
 
                 val params = LinkedHashMap<String, String>()
@@ -452,8 +453,40 @@ object VpnGateHtmlParser {
                     VpnRecords.setField(server, "protocols.openvpn.configAvailable", true, source)
                     VpnRecords.markSupported(server, "openvpn", source)
 
-                    val tcpQ = VpnUtil.toInt(params["tcp"] ?: "0")
-                    val udpQ = VpnUtil.toInt(params["udp"] ?: "0")
+                    // Stage G-7: `sid` and `hid` are the server's identity for
+                    // the on-demand config endpoint
+                    // (`/common/openvpn_download.aspx?sid=..&hid=..`). They are
+                    // recorded here, at collect time, precisely so the profile
+                    // does NOT have to be downloaded (or carried in the CSV)
+                    // until someone actually dials this server.
+                    params["sid"]?.takeIf { it.isNotBlank() }?.let {
+                        VpnRecords.setField(server, "protocols.openvpn.downloadSid", it, source)
+                    }
+                    params["hid"]?.takeIf { it.isNotBlank() }?.let {
+                        VpnRecords.setField(server, "protocols.openvpn.downloadHid", it, source)
+                    }
+
+                    // v1.0.87 — two link shapes publish the same facts:
+                    //
+                    //   do_openvpn.aspx?...&tcp=443&udp=1195   (ports)
+                    //   openvpn_download.aspx?...&udp=1&port=1195 (flags + port)
+                    //
+                    // In the second form `udp=1` is a boolean, not port 1. The
+                    // discriminator is the presence of `port=`: when it is
+                    // there, `tcp`/`udp` are flags and the port is shared. Read
+                    // literally, the download form would have stored port 1.
+                    val explicitPort = VpnUtil.toInt(params["port"] ?: "0")
+                    val flagForm = explicitPort > 0
+                    val tcpQ = if (flagForm) {
+                        if (params["tcp"] == "1" || params["tcp"] == "true") explicitPort else 0
+                    } else {
+                        VpnUtil.toInt(params["tcp"] ?: "0")
+                    }
+                    val udpQ = if (flagForm) {
+                        if (params["udp"] == "1" || params["udp"] == "true") explicitPort else 0
+                    } else {
+                        VpnUtil.toInt(params["udp"] ?: "0")
+                    }
 
                     if (VpnUtil.validPort(tcpQ)) {
                         VpnRecords.setField(server, "protocols.openvpn.tcp.supported", true, source)

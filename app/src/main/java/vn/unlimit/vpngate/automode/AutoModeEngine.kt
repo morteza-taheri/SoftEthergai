@@ -206,7 +206,15 @@ object AutoModeEngine {
                         runCatching {
                             vn.unlimit.vpngate.App.instance?.serverHistoryDao
                                 ?.historyViews()
-                                ?.associateBy { it.hostName }
+                                // BLOCK v1.0.81 (review finding #8): key by the
+                                // same trimmed host name that `viewOf` looks
+                                // up. `associateBy { it.hostName }` kept the
+                                // stored spelling, so a row whose host name
+                                // carried whitespace could never be found and
+                                // its history silently stopped breaking ties —
+                                // the same trim is already used by
+                                // ServerListUpdates.mergeAll.
+                                ?.associateBy { it.hostName.trim() }
                         }.getOrNull().orEmpty()
                     }
                 },
@@ -400,7 +408,15 @@ object AutoModeEngine {
         // rewritten, and only null when this is null), so ONE flag covers both
         // transports. The ports themselves are still carried verbatim: this is
         // a usability gate, not a data edit.
-        openVpnConfigAvailable = !openVpnConfigData.isNullOrBlank(),
+        //
+        // Stage G-7: "available" means *obtainable*, not merely *stored*. A
+        // server whose page published the `sid`/`hid` download identifiers has
+        // a profile VPN Gate will hand over on demand, so the adapter can dial
+        // it even though the collected list never carried the profile. If that
+        // download fails, the attempt ends as an ordinary MISSING_CONFIG
+        // failure — the same outcome this gate used to force up front, just
+        // decided with real evidence instead of a guess.
+        openVpnConfigAvailable = !openVpnConfigData.isNullOrBlank() || canDownloadOpenVpnConfig,
         l2tpSupported = isL2TPSupport == 1,
         sstpSupported = isSSTPSupport == 1,
         // Stage 2F-F.2 (Q-6): carry SSTP's own port and provenance so Auto

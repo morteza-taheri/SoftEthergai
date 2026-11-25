@@ -201,6 +201,10 @@ fun SettingsScreen(
     var serverUpdateInterval by remember {
         mutableStateOf(dataUtil.getServerListUpdateIntervalHours())
     }
+    // Operator-configurable server-list refresh deadline (10..180 s, default 45).
+    var serverUpdateTimeout by remember {
+        mutableStateOf(dataUtil.getServerListUpdateTimeoutSeconds())
+    }
 
     // Dialog picker visibility
     var showThemePicker by remember { mutableStateOf(false) }
@@ -214,6 +218,7 @@ fun SettingsScreen(
     var showServerListCapPicker by remember { mutableStateOf(false) }
     var showPurgeServersConfirm by remember { mutableStateOf(false) }
     var showServerUpdateIntervalPicker by remember { mutableStateOf(false) }
+    var showServerUpdateTimeoutPicker by remember { mutableStateOf(false) }
 
     val serverUpdateIntervalOptions = remember { dataUtil.serverListUpdateIntervalOptions }
     val serverUpdateIntervalLabels = serverUpdateIntervalOptions.map { hours ->
@@ -684,6 +689,14 @@ fun SettingsScreen(
                         subtitle = stringResource(R.string.setting_server_update_interval_subtitle),
                         icon = Icons.Outlined.Schedule,
                         onClick = { showServerUpdateIntervalPicker = true },
+                    )
+                    SettingDivider()
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_server_update_timeout_label),
+                        value = stringResource(R.string.setting_server_update_timeout_value, serverUpdateTimeout),
+                        subtitle = stringResource(R.string.setting_server_update_timeout_subtitle),
+                        icon = Icons.Outlined.Schedule,
+                        onClick = { showServerUpdateTimeoutPicker = true },
                     )
                 }
             }
@@ -1230,6 +1243,22 @@ fun SettingsScreen(
                 ServerListUpdateScheduler.runIfDue()
             },
             onDismiss = { showServerUpdateIntervalPicker = false },
+        )
+    }
+
+    if (showServerUpdateTimeoutPicker) {
+        val values = listOf(10, 20, 30, 45, 60, 90, 120, 180)
+        SingleChoiceDialog(
+            title = stringResource(R.string.setting_server_update_timeout_label),
+            options = values.map { "$it s" },
+            selectedIndex = values.indexOf(serverUpdateTimeout)
+                .let { if (it < 0) values.indexOf(45) else it },
+            onSelect = { index ->
+                val seconds = values[index]
+                serverUpdateTimeout = seconds
+                dataUtil.setServerListUpdateTimeoutSeconds(seconds)
+            },
+            onDismiss = { showServerUpdateTimeoutPicker = false },
         )
     }
 

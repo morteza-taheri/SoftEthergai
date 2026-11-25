@@ -230,10 +230,11 @@ class AutoModeNextServerIdentityTest {
      * The skip bookkeeping uses the same `ip|hostname` identity as the
      * continuation. Two servers share one IP (NAT / load-balancer shape) and
      * differ by hostname: the run tries s2 (fails) and connects s3, so BOTH are
-     * tried in this session. BLOCK v1.0.75 (D-2): pressing Try Next now finds
-     * no untried candidate — s2 was genuinely tried and must not be re-offered
-     * just because it shares s3's IP. The distinct keys are what let s3 connect
-     * while s2 was marked tried in the first place.
+     * tried in this session. v1.0.85 starts a NEW cycle after exhaustion: the
+     * leaving server (s3) is excluded and the distinct same-IP sibling (s2) is
+     * eligible again. This test pins both invariants — identity filtering keeps
+     * the siblings distinct, and the new cycle never re-dials the server we
+     * are leaving.
      */
     @Test
     fun skipFiltersByIdentityNotByIp() = runBlocking {
@@ -253,15 +254,14 @@ class AutoModeNextServerIdentityTest {
         c.skipToNextServer()
         val second = c.awaitTerminal()
 
-        assertTrue("expected the exhausted-session terminal, got $second", second is AutoModeState.Error)
         assertEquals(
-            "both same-IP servers were tried in this session",
-            AutoModeController.ERROR_NO_MORE_UNTRIED,
-            (second as AutoModeState.Error).message,
+            "the new cycle must dial the distinct same-IP sibling, got $second",
+            "s2",
+            (second as? AutoModeState.Connected)?.hostname,
         )
         assertTrue(
-            "the failed same-IP sibling must not be re-dialled: ${adapter.connects}",
-            adapter.connects.none { it.first == "s2" },
+            "the leaving server must not be re-dialled in the new cycle: ${adapter.connects}",
+            adapter.connects.none { it.first == "s3" },
         )
     }
 

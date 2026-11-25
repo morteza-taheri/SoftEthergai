@@ -51,7 +51,16 @@ data class VPNGateItem(
     @ColumnInfo(name = "lastSeenAt", defaultValue = "0")
     var lastSeenAt: Long = 0L,
     @ColumnInfo(name = "healthScore", defaultValue = "0")
-    var healthScore: Int = 0
+    var healthScore: Int = 0,
+    // Stage G-7: the `sid`/`hid` pair VPN Gate publishes on the server's
+    // `do_openvpn.aspx` link. Together they address that server's `.ovpn`
+    // download endpoint, so the profile can be fetched on demand instead of
+    // being carried in every refresh. Both null = "not published by the
+    // source", which is a normal state (the API dialect never carries them).
+    @ColumnInfo(name = "openVpnSid")
+    val openVpnSid: String? = null,
+    @ColumnInfo(name = "openVpnHid")
+    val openVpnHid: String? = null
 ) {
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpPort > 0

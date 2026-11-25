@@ -117,6 +117,18 @@ class DataUtilTimeoutRangeTest {
             DataUtil(prefs).getAutoModeTimeoutSeconds(),
         )
     }
+
+    @Test
+    fun `server list update timeout defaults to 45 seconds and clamps`() {
+        val util = dataUtil()
+        assertEquals(45, util.getServerListUpdateTimeoutSeconds())
+        util.setServerListUpdateTimeoutSeconds(5)
+        assertEquals(10, util.getServerListUpdateTimeoutSeconds())
+        util.setServerListUpdateTimeoutSeconds(300)
+        assertEquals(180, util.getServerListUpdateTimeoutSeconds())
+        util.setServerListUpdateTimeoutSeconds(90)
+        assertEquals(90, util.getServerListUpdateTimeoutSeconds())
+    }
 }
 
 /**

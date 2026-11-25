@@ -112,6 +112,7 @@ class AutoModeReconnectTest {
         isConnectingToAnotherServer: (AutoModeCandidate?) -> Boolean = { false },
         /** R8: a 0 ms settle delay keeps the JVM test fast. */
         reconnectInitialDelayMs: Long = 0L,
+        recoveryPauseDelayMs: Long = 50L,
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -122,6 +123,7 @@ class AutoModeReconnectTest {
         isTunnelBusy = isTunnelBusy,
         isConnectingToAnotherServer = isConnectingToAnotherServer,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
+        recoveryPauseDelayMs = recoveryPauseDelayMs,
     )
 
     /** Wait until the controller settles in [AutoModeState.Connected] with no run active. */
@@ -252,36 +254,31 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T4 — Loop guard: the (N+1)th drop within the window stops with
-    //      ERROR_RECONNECT_LIMIT.
+    // T4 — Bounded recovery: after the configured number of consecutive
+    //      losses Auto Mode PAUSES and then resumes. It must not enter a
+    //      terminal Error state (the old ERROR_RECONNECT_LIMIT defect).
     // ------------------------------------------------------------------
     @Test
-    fun t4_loopGuardStopsAfterMaxAttempts() = runBlocking {
+    fun t4_recoveryPausesThenResumesInsteadOfStopping() = runBlocking {
         val servers = listOf(candidate("alpha"))
-        val controller = controller(servers = servers)
+        val controller = controller(servers = servers, recoveryPauseDelayMs = 100L)
 
         controller.start()
         controller.awaitConnected()
 
-        // Consume the budget: RECONNECT_MAX_ATTEMPTS successful launches.
-        repeat(AutoModeController.RECONNECT_MAX_ATTEMPTS) {
+        repeat(AutoModeController.RECONNECT_MAX_ATTEMPTS + 1) {
             invokeArmedTunnelLost(controller)
-            // Wait for the reconnect run to reach Connected again before the next drop.
             withTimeoutOrNull(5_000) { controller.awaitConnected() }
         }
 
-        // The next drop must trip the guard.
-        invokeArmedTunnelLost(controller)
-        val error = controller.awaitError()
-
-        assertEquals(
-            "the guard must publish ERROR_RECONNECT_LIMIT",
-            AutoModeController.ERROR_RECONNECT_LIMIT,
-            error.message,
+        assertFalse(
+            "a run of transient losses must not terminate Auto Mode",
+            controller.state.value is AutoModeState.Error,
         )
         assertTrue(
-            "expected the limit log line; logs=${adapter.logs}",
-            adapter.logs.any { it.contains("limit reached") },
+            "every loss must still follow the owned recovery path",
+            adapter.logs.count { it.contains("Unexpected disconnect") } >=
+                AutoModeController.RECONNECT_MAX_ATTEMPTS + 1,
         )
     }
 
@@ -377,6 +374,37 @@ class AutoModeReconnectTest {
             controller.state.value is AutoModeState.Error &&
                 (controller.state.value as AutoModeState.Error).message ==
                 AutoModeController.ERROR_RECONNECT_LIMIT,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // T8 — Stop during the backoff window must cancel the owned recovery
+    //      coroutine. The old fire-and-forget launch reconnected ~2 s later.
+    // ------------------------------------------------------------------
+    @Test
+    fun t8_stopDuringBackoffCancelsReconnect() = runBlocking {
+        val controller = controller(
+            servers = listOf(candidate("alpha")),
+            reconnectInitialDelayMs = 600L,
+        )
+        controller.start()
+        controller.awaitConnected()
+        val before = adapter.connects.size
+
+        // Enters the backoff, then the user stops before it elapses.
+        controller.onUnexpectedDisconnectForTests()
+        delay(150L)
+        controller.stop()
+        delay(800L)
+
+        assertEquals(
+            "a stopped Auto Mode must not reconnect after the backoff: ${adapter.connects}",
+            before,
+            adapter.connects.size,
+        )
+        assertTrue(
+            "state must stay Disconnected after stop",
+            controller.state.value is AutoModeState.Disconnected,
         )
     }
 }

@@ -3814,18 +3814,29 @@ int softether_receive_raw(softether_connection_t* conn, uint8_t* frame, size_t m
 int softether_receive_batch(softether_connection_t* conn,
                             uint8_t* buffer, uint32_t max_len,
                             uint32_t* lengths, uint32_t max_packets,
-                            uint32_t* out_count) {
+                            uint32_t* out_count,
+                            softether_rx_event_t* out_event) {
+    if (out_event != NULL) *out_event = SOFTETHER_RX_ERROR;
     if (conn == NULL || buffer == NULL || out_count == NULL) return -1;
     *out_count = 0;
-    if (max_len == 0 || max_packets == 0 || lengths == NULL) return 0;
-    if (conn->state != STATE_CONNECTED) return -1;
+    if (max_len == 0 || max_packets == 0 || lengths == NULL) {
+        if (out_event != NULL) *out_event = SOFTETHER_RX_ERROR;
+        return 0;
+    }
+    if (conn->state != STATE_CONNECTED) {
+        if (out_event != NULL) *out_event = SOFTETHER_RX_ERROR;
+        return -1;
+    }
 
     softether_maintain_links(conn);
 
     // Fill the queue from the wire when empty
     if (conn->recv_queue_count <= 0) {
         int rc = softether_fill_recv_queue(conn);
-        if (rc < 0) return -1;
+        if (rc < 0) {
+            if (out_event != NULL) *out_event = SOFTETHER_RX_ERROR;
+            return -1;
+        }
     }
 
     uint32_t total = 0;
@@ -3868,6 +3879,9 @@ int softether_receive_batch(softether_connection_t* conn,
         conn->stats_rx_bytes += total;
     }
 
+    if (out_event != NULL) {
+        *out_event = (count > 0) ? SOFTETHER_RX_DATA : conn->last_rx_event;
+    }
     return (int)total;
 }
 

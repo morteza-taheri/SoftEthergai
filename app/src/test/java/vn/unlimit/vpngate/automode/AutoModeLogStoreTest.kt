@@ -73,4 +73,19 @@ class AutoModeLogStoreTest {
         assertTrue(text.contains("SOFTETHER: hello world"))
         assertTrue(text.contains(":")) // timestamp present
     }
+
+    @Test
+    fun concurrentWritersDoNotLoseLines() {
+        val threads = (0 until 4).map { t ->
+            Thread {
+                repeat(500) { i -> AutoModeLogStore.add(AutoModeLogStore.Source.AUTO, "t$t-$i") }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        val lines = AutoModeLogStore.lines.value
+        assertEquals(2000, lines.size)
+        assertEquals(2000, lines.map { it.text }.toSet().size)
+    }
 }

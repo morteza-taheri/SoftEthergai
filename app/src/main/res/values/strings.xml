@@ -192,6 +192,7 @@
     <string name="send_email">Send email</string>
     <string name="email_error_fix">Please check correct error first</string>
     <string name="error_load_profile">Error load VPN profile</string>
+    <string name="downloading_openvpn_profile">Downloading OpenVPN profile…</string>
     <string name="traffic_session">Session traffic</string>
     <string name="clear_statistics">Clear statistics</string>
     <string name="get_pro_version">Get Pro version</string>
@@ -375,6 +376,9 @@
     <string name="softether_disconnecting">Disconnecting SoftEther…</string>
     <string name="error_unknown">An unknown error occurred. Please try again.</string>
     <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_timeout_label">Server List Update Timeout</string>
+    <string name="setting_server_update_timeout_subtitle">Maximum time allowed for one refresh. Increase it on slow or filtered networks.</string>
+    <string name="setting_server_update_timeout_value">%1$d seconds</string>
     <string name="setting_server_update_interval_label">Server List Update Interval</string>
     <string name="setting_server_update_interval_subtitle">How often the server list refreshes on its own. You can always update it manually.</string>
     <string name="setting_server_update_interval_hours">Every %1$d hours</string>

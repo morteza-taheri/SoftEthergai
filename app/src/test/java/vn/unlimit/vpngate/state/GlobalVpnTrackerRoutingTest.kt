@@ -105,4 +105,58 @@ class GlobalVpnTrackerRoutingTest {
             ),
         )
     }
+
+    // ---------------------------------------------------------------
+    // v1.0.88 — the evidence must describe the tunnel it is judging.
+    //
+    // Device evidence, 2026-11-25: with an OpenVPN tunnel established the
+    // collector still logged `[ladder] order=PHYSICAL,EMERGENCY`. The cause was
+    // that `TunnelHealth.rxCounter` — fed only by the SoftEther native stack
+    // and never reset between sessions — was consulted for every protocol, so a
+    // finished SoftEther session made step 4 refuse a healthy OpenVPN tunnel.
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `softether evidence applies to a softether tunnel`() {
+        assertTrue(softEtherHealthAppliesTo("SoftEther"))
+        assertTrue(softEtherHealthAppliesTo("softether"))
+    }
+
+    @Test
+    fun `softether evidence does not apply to any other stack`() {
+        assertFalse(softEtherHealthAppliesTo("OpenVPN"))
+        assertFalse(softEtherHealthAppliesTo("SSTP"))
+        // An unknown label must not inherit SoftEther's veto: refusing a working
+        // tunnel is worse than trusting evidence that cannot describe it.
+        assertFalse(softEtherHealthAppliesTo(null))
+        assertFalse(softEtherHealthAppliesTo(""))
+    }
+
+    @Test
+    fun `a stale softether rx counter refuses a softether tunnel`() {
+        // The behaviour that must NOT change: for SoftEther, "traffic was
+        // observed and then stopped" still means unusable.
+        val decision = decide(
+            isConnected = true,
+            hasBoundNetwork = true,
+            isUsable = false,
+            rxCounter = 42L,
+            lastEioAtMs = 0L,
+        )
+        assertFalse(decision)
+    }
+
+    @Test
+    fun `the same counter cannot refuse an openvpn tunnel`() {
+        // What `isTunnelUsableForRouting` now does for a non-SoftEther stack: it
+        // passes 0 instead of the stale counter, which reaches the grace branch.
+        val decision = decide(
+            isConnected = true,
+            hasBoundNetwork = true,
+            isUsable = false,
+            rxCounter = 0L,
+            lastEioAtMs = 0L,
+        )
+        assertTrue(decision)
+    }
 }

@@ -72,6 +72,22 @@ class VPNGateConnection : Parcelable {
     // SoftEther UDP offered without a published port (§6/§9): the UI
     // shows "supported — port unknown" instead of hiding the option.
     var seUdpSupported = false
+    // Stage G-7: the identifiers VPN Gate publishes on the server's
+    // `do_openvpn.aspx` link. They let the `.ovpn` profile be downloaded on
+    // demand, so a server with no stored profile is still dialable.
+    var openVpnSid: String? = null
+    var openVpnHid: String? = null
+
+    /**
+     * Stage G-7: whether this server's `.ovpn` profile can be fetched on
+     * demand — i.e. the source published both download identifiers.
+     *
+     * Deliberately independent of [openVpnConfigData]: the whole point is that
+     * a server can be dialled over OpenVPN *without* the profile having been
+     * carried in the collected list.
+     */
+    val canDownloadOpenVpnConfig: Boolean
+        get() = !openVpnSid.isNullOrBlank() && !openVpnHid.isNullOrBlank()
 
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpSupported
@@ -149,6 +165,8 @@ class VPNGateConnection : Parcelable {
         seTcpPort = `in`.readInt()
         seUdpPort = `in`.readInt()
         seUdpSupported = `in`.readInt() == 1
+        openVpnSid = `in`.readString()
+        openVpnHid = `in`.readString()
     }
 
     //Empty constructor
@@ -179,6 +197,8 @@ class VPNGateConnection : Parcelable {
         out.writeInt(seTcpPort)
         out.writeInt(seUdpPort)
         out.writeInt(if (seUdpSupported) 1 else 0)
+        out.writeString(openVpnSid)
+        out.writeString(openVpnHid)
     }
 
     private fun decodeBase64(base64str: String): String? {
@@ -213,16 +233,29 @@ class VPNGateConnection : Parcelable {
     }
 
     /**
-     * The profile to hand to the OpenVPN core, or null when this server has
-     * no profile stored.
+     * The profile to hand to the OpenVPN core for the requested transport, or
+     * null when this server has no profile stored.
+     *
+     * v1.0.87: this used to ignore [useUdp] entirely and hand back the stored
+     * profile. That was correct while every stored profile was TCP, and wrong
+     * the moment one could be a UDP profile downloaded on demand — the "TCP"
+     * option then connected over UDP, and the export wrote a UDP file. The
+     * transform now reads the profile's own `proto`/`remote` lines, so the
+     * answer is the requested transport regardless of what was stored.
      *
      * Every step is null-safe: a server can legitimately carry an OpenVPN
      * port with no profile (a collection that only saw the HTML feed), and
      * that must be reported as "no profile", never as a crash.
      */
-    fun getOpenVpnConfigDataString(): String? =
+    fun getOpenVpnConfigDataString(useUdp: Boolean = false): String? =
         OpenVpnConfigTransform.forDomain(
-            config = openVpnConfigData,
+            config = OpenVpnConfigTransform.forTransport(
+                config = openVpnConfigData,
+                wantUdp = useUdp,
+                tcpPort = tcpPort,
+                udpPort = udpPort,
+                ip = ip,
+            ),
             ip = ip,
             hostName = hostName,
             useDomain = useDomainToConnect(),
@@ -282,10 +315,20 @@ class VPNGateConnection : Parcelable {
      * transformation — and a transformation must never throw just because the
      * server has a TCP port but no profile.
      */
+    /**
+     * The UDP variant of the stored profile.
+     *
+     * v1.0.87: delegated to [OpenVpnConfigTransform.forTransport], which reads
+     * the profile's real transport instead of assuming it is TCP. A stored UDP
+     * profile (downloaded on demand with `udp=1`) is therefore returned as UDP
+     * rather than being passed through by accident, and a stored TCP profile
+     * still gets its protocol and port switched.
+     */
     val openVpnConfigDataUdp: String?
         get() = OpenVpnConfigTransform.forDomain(
-            config = OpenVpnConfigTransform.forUdp(
+            config = OpenVpnConfigTransform.forTransport(
                 config = openVpnConfigData,
+                wantUdp = true,
                 tcpPort = tcpPort,
                 udpPort = udpPort,
                 ip = ip,
@@ -362,7 +405,9 @@ class VPNGateConnection : Parcelable {
             sstpPortSource = this.sstpPortSource,
             seTcpPort = this.seTcpPort,
             seUdpPort = this.seUdpPort,
-            seUdpSupported = this.seUdpSupported
+            seUdpSupported = this.seUdpSupported,
+            openVpnSid = this.openVpnSid,
+            openVpnHid = this.openVpnHid
         )
     }
 
@@ -396,6 +441,8 @@ class VPNGateConnection : Parcelable {
         seTcpPort = vpnGateItem.seTcpPort
         seUdpPort = vpnGateItem.seUdpPort
         seUdpSupported = vpnGateItem.seUdpSupported
+        openVpnSid = vpnGateItem.openVpnSid
+        openVpnHid = vpnGateItem.openVpnHid
         return this
     }
 

@@ -97,6 +97,12 @@ object VpnConnectionMapper {
         // UI state (§plan T3.8): UDP offered with no published port.
         conn.seUdpSupported = seUdpSupported
 
+        // Stage G-7: the on-demand download identifiers. Carried through so a
+        // server whose profile was never collected can still be dialled —
+        // the profile is fetched from VPN Gate at that point, not before.
+        conn.openVpnSid = VpnRecords.str(ov["downloadSid"]).takeIf { it.isNotEmpty() }
+        conn.openVpnHid = VpnRecords.str(ov["downloadHid"]).takeIf { it.isNotEmpty() }
+
         return conn
     }
 }

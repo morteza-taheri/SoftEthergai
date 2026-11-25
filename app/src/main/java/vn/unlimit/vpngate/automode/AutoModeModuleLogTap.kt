@@ -45,6 +45,17 @@ object AutoModeModuleLogTap :
     private var prefs: SharedPreferences? = null
     private var logcatThread: Thread? = null
 
+    /**
+     * BLOCK v1.0.81 (review finding #7): the logcat child process.
+     *
+     * [stopLogcatTap] used to only interrupt the reader thread and drop the
+     * reference. `Thread.interrupt()` does NOT unblock a `readLine()` on a
+     * process stream, and nothing ever called `destroy()`, so every
+     * attach/detach cycle leaked one `logcat` process that kept running (and
+     * kept a pipe open) for the lifetime of the app process.
+     */
+    private var logcatProcess: Process? = null
+
     @Volatile
     private var logcatRunning = false
 
@@ -117,6 +128,7 @@ object AutoModeModuleLogTap :
         logcatThread = Thread({
             try {
                 val process = Runtime.getRuntime().exec(command)
+                logcatProcess = process
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 while (logcatRunning) {
                     val raw = reader.readLine() ?: break
@@ -132,6 +144,12 @@ object AutoModeModuleLogTap :
                 if (logcatRunning) {
                     Log.w(TAG, "logcat tap stopped: ${e.message}")
                 }
+            } finally {
+                // BLOCK v1.0.81 (review finding #7): release the child process on
+                // every exit path, including the one where the reader ended on
+                // its own because logcat died.
+                runCatching { logcatProcess?.destroy() }
+                logcatProcess = null
             }
         }, "AutoModeLogcatTap").apply {
             isDaemon = true
@@ -141,6 +159,12 @@ object AutoModeModuleLogTap :
 
     private fun stopLogcatTap() {
         logcatRunning = false
+        // Destroying the process closes its stdout, which is what actually
+        // unblocks the reader; `interrupt()` alone does not (see the field
+        // comment). Both are issued so a reader parked in `readLine()` exits
+        // promptly instead of waiting for the next log line.
+        runCatching { logcatProcess?.destroy() }
+        logcatProcess = null
         logcatThread?.interrupt()
         logcatThread = null
     }

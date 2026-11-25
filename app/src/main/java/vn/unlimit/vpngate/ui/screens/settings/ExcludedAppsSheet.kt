@@ -381,12 +381,14 @@ fun ExcludedAppsSheet(
                                         // the same (packageName, appName) pairs as
                                         // before, so no selection is lost and the
                                         // Room schema is untouched.
-                                        val withSelf = chosen.map {
-                                            ExcludedApp(it.packageName, it.appName)
-                                        }.toMutableList()
-                                        if (withSelf.none { it.packageName == context.packageName }) {
-                                            withSelf.add(ExcludedApp(context.packageName, "Self"))
-                                        }
+                                        // v1.0.88: self is not persisted as an
+                                        // excluded app — see
+                                        // `App.initializeDefaultExcludedApps` for
+                                        // the OpenVPN failure this caused.
+                                        val withSelf = chosen
+                                            .filterNot { it.packageName == context.packageName }
+                                            .map { ExcludedApp(it.packageName, it.appName) }
+                                            .toMutableList()
                                         dao.getAllExcludedApps().forEach { dao.deleteExcludedApp(it) }
                                         withSelf.forEach { dao.insertExcludedApp(it) }
                                         delay(100)

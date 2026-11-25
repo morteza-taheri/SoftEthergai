@@ -497,6 +497,26 @@ class DataUtil(context: Context?) {
     }
 
     /**
+     * Outer deadline for ONE server-list refresh, in seconds.
+     *
+     * On a filtered/slow link the fixed 45 s deadline used to expire before the
+     * collector could finish its physical/tunnel ladder. Operator-configurable
+     * 10..180 s, default 45 s (the previous hard-coded value).
+     */
+    fun getServerListUpdateTimeoutSeconds(): Int =
+        getIntSetting(
+            SETTING_SERVER_LIST_UPDATE_TIMEOUT_SECONDS,
+            DEFAULT_SERVER_LIST_UPDATE_TIMEOUT_SECONDS,
+        ).coerceIn(MIN_SERVER_LIST_UPDATE_TIMEOUT_SECONDS, MAX_SERVER_LIST_UPDATE_TIMEOUT_SECONDS)
+
+    fun setServerListUpdateTimeoutSeconds(seconds: Int) {
+        setIntSetting(
+            SETTING_SERVER_LIST_UPDATE_TIMEOUT_SECONDS,
+            seconds.coerceIn(MIN_SERVER_LIST_UPDATE_TIMEOUT_SECONDS, MAX_SERVER_LIST_UPDATE_TIMEOUT_SECONDS),
+        )
+    }
+
+    /**
      * BLOCK v1.0.75 FIX — the size of the last ACCEPTED fresh network dataset.
      *
      * This is the only honest baseline for the size-collapse check: the stored
@@ -641,7 +661,7 @@ class DataUtil(context: Context?) {
 
     /** BLOCK v1.0.86: how many servers the retained list may hold. */
     const val SETTING_SERVER_LIST_CAP: String = "SETTING_SERVER_LIST_CAP"
-    const val DEFAULT_SERVER_LIST_CAP: Int = 300
+    const val DEFAULT_SERVER_LIST_CAP: Int = 1000
     const val MIN_SERVER_LIST_CAP: Int = 10
     const val MAX_SERVER_LIST_CAP: Int = 2000
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
@@ -738,6 +758,9 @@ class DataUtil(context: Context?) {
         const val SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS: String =
             "SETTING_SERVER_LIST_UPDATE_INTERVAL_HOURS"
 
+        const val SETTING_SERVER_LIST_UPDATE_TIMEOUT_SECONDS: String =
+            "SETTING_SERVER_LIST_UPDATE_TIMEOUT_SECONDS"
+
         /** BLOCK v1.0.75 FIX: size of the last accepted fresh dataset (0 = unknown). */
         const val SETTING_LAST_ACCEPTED_DATASET_SIZE: String =
             "SETTING_LAST_ACCEPTED_DATASET_SIZE"
@@ -762,6 +785,11 @@ class DataUtil(context: Context?) {
         const val DEFAULT_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
         const val MIN_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 1
         const val MAX_SERVER_LIST_UPDATE_INTERVAL_HOURS: Int = 168
+
+        /** Server-list refresh deadline: default 45 s, hard bounds 10..180 s. */
+        const val DEFAULT_SERVER_LIST_UPDATE_TIMEOUT_SECONDS: Int = 45
+        const val MIN_SERVER_LIST_UPDATE_TIMEOUT_SECONDS: Int = 10
+        const val MAX_SERVER_LIST_UPDATE_TIMEOUT_SECONDS: Int = 180
         const val AUTO_LAST_SUCCESS_HOST: String = "AUTO_LAST_SUCCESS_HOST"
         const val AUTO_LAST_SUCCESS_PROTOCOL: String = "AUTO_LAST_SUCCESS_PROTOCOL"
         private const val USE_ALTERNATIVE_SERVER = "USE_ALTERNATIVE_SERVER"

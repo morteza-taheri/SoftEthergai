@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.HandlerThread;
 import android.os.Message;
+import android.util.Log;
 
 import androidx.annotation.StringRes;
 
@@ -438,6 +439,27 @@ public class VpnStatus {
     }
 
     synchronized static void newLogItem(LogItem logItem, boolean cachedLine, boolean enforceUnique) {
+        // v1.0.88 — optional logcat mirror for the OpenVPN core.
+        //
+        // The core's own log only ever reached the in-app log window, so a
+        // connection that dies 30 s after it is established left nothing behind
+        // but "OpenVPN process exited" — no AUTH/TLS/ping-restart reason, which
+        // is exactly the information needed to tell a server-side drop from a
+        // local teardown.
+        //
+        // `Log.isLoggable` keeps this free in production: it is silent unless
+        // someone opts in with
+        //     adb shell setprop log.tag.OpenVPNCore DEBUG
+        // so nothing is added to the normal log volume.
+        if (Log.isLoggable("OpenVPNCore", Log.DEBUG)) {
+            String line;
+            try {
+                line = logItem.getString(null);
+            } catch (Exception e) {
+                line = "<unrenderable log item>";
+            }
+            Log.d("OpenVPNCore", String.valueOf(logItem.getLogLevel()) + " " + line);
+        }
         if (cachedLine) {
             logbuffer.addFirst(logItem);
         } else {

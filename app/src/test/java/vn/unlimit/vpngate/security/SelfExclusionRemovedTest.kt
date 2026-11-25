@@ -167,4 +167,79 @@ class SelfExclusionRemovedTest {
             )
         }
     }
+
+    // ------------------------------------------------------- T-NEW-73 (e)
+
+    /**
+     * T-NEW-73 (e) — v1.0.88: the **third** application point, OpenVPN.
+     *
+     * v1.0.47 fixed SoftEther and MS-SSTP but not `vpnLib`, which applies the
+     * same list in `OpenVPNService.newVPNBuilder`. Device evidence,
+     * 2026-11-25: with an OpenVPN tunnel up, the VPN's `TransportInfo` listed
+     * UIDs `…-10342, 10345-…` — the app's own UID 10344 was missing — and every
+     * collector request bound to that network failed with `Connection reset`,
+     * so the server list could not be refreshed over OpenVPN while it
+     * refreshed normally over MS-SSTP.
+     */
+    @Test
+    fun `T-NEW-73 openvpn builder also skips the app's own package`() {
+        val source = sourceOf("vpnLib/src/main/java/de/blinkt/openvpn/core/OpenVPNService.java")
+
+        assertTrue(
+            "OpenVPNService must compare the excluded package with its own package name",
+            source.contains("pkg.equals(getPackageName())"),
+        )
+        assertTrue(
+            "user-added exclusions must still reach the builder on the OpenVPN path",
+            source.contains("builder.addDisallowedApplication(pkg)"),
+        )
+        assertTrue(
+            "the skip must be documented so a future reader sees it as deliberate",
+            source.contains("v1.0.88"),
+        )
+    }
+
+    /**
+     * T-NEW-73 (f) — v1.0.88: the row itself is gone, and stays gone.
+     *
+     * Filtering at the builders is the belt; not storing the row is the braces.
+     * The seeding call is what created the condition in the first place, and it
+     * runs on every start, so it would re-create a row that a user deleted.
+     */
+    @Test
+    fun `T-NEW-73 the app no longer seeds itself into excluded_apps`() {
+        val app = sourceOf("app/src/main/java/vn/unlimit/vpngate/App.kt")
+
+        assertFalse(
+            "App must not insert itself into excluded_apps",
+            app.contains("insertExcludedApp(selfPackage)"),
+        )
+        assertTrue(
+            "existing installs already have the row, so it must be deleted on start",
+            app.contains("deleteByPackageName(packageName)"),
+        )
+    }
+
+    /**
+     * T-NEW-73 (g) — the two save paths must not put it back.
+     *
+     * `ExcludedAppsSheet` writes the table itself and `ExcludeAppsManager`
+     * writes it for the non-Compose path; both used to force-add self after the
+     * user's selection. Either one alone would resurrect the defect.
+     */
+    @Test
+    fun `T-NEW-73 neither save path force-adds the app itself`() {
+        for ((label, source) in listOf(
+            "ExcludedAppsSheet.kt" to
+                sourceOf("app/src/main/java/vn/unlimit/vpngate/ui/screens/settings/ExcludedAppsSheet.kt"),
+            "ExcludeAppsManager.kt" to
+                sourceOf("app/src/main/java/vn/unlimit/vpngate/utils/ExcludeAppsManager.kt"),
+        )) {
+            assertFalse(
+                "$label must not add a \"Self\" row after saving",
+                source.contains("ExcludedApp(context.packageName, \"Self\")") ||
+                    source.contains("ExcludedApp(selfPackageName, \"Self\")"),
+            )
+        }
+    }
 }

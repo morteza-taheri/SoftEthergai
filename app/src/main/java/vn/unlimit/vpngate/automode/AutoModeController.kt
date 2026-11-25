@@ -222,6 +222,8 @@ class AutoModeController(
      * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
      */
     private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
+    /** Injected so JVM tests can exercise the bounded recovery pause. */
+    private val recoveryPauseDelayMs: Long = RECONNECT_PAUSE_MS,
     /**
      * FIX-3: the per-server wedge ledger Auto Mode consults before dialling.
      *
@@ -275,6 +277,23 @@ class AutoModeController(
      * model persistence exactly as it was.
      */
     private val persistOrigin: (ConnectionOrigin?, String?) -> Unit = { _, _ -> },
+    /**
+     * Servers that connect and then drop quickly, excluded from the next runs
+     * for a bounded cooldown.
+     *
+     * [AutoModeRecoveryPolicy] only sees attempts that never produced a tunnel,
+     * so an unstable server that reaches CONNECTED and dies seconds later
+     * resets the recovery counter on every cycle and is never blamed. This
+     * ledger is the missing half: it records tunnel *uptime*, and a server with
+     * repeated short-lived tunnels is taken out of rotation for a while instead
+     * of being re-dialled forever (see [ServerQuarantine]).
+     *
+     * The default is a fresh ledger owned by this controller, which is itself a
+     * process singleton (`AutoModeEngine.ensure`), so in production the memory
+     * spans every run. Injected so a JVM test can supply its own instance and
+     * its own clock.
+     */
+    private val quarantine: ServerQuarantine = ServerQuarantine(),
 ) {
     interface ConnectionAdapter {
         /** Initiate the connection for [candidate] via [protocol]. */
@@ -715,6 +734,16 @@ enum class AttemptOutcome {
          */
         const val RECONNECT_WINDOW_MS = 10L * 60L * 1000L
 
+        /** Upper bound of the exponential backoff (2 minutes). */
+        const val RECONNECT_MAX_RECOVERY_DELAY_MS = 2L * 60L * 1000L
+
+        /**
+         * Bounded pause after [RECONNECT_MAX_ATTEMPTS] consecutive losses.
+         * Auto Mode resumes after this delay; it never enters a terminal dead
+         * state because of transient server instability.
+         */
+        const val RECONNECT_PAUSE_MS = 60L * 1000L
+
         /**
          * The user enabled no protocol in Auto Connect Protocol Priority.
          * Distinct from [ERROR_NO_SERVER]: servers may well be available, there
@@ -843,6 +872,9 @@ enum class AttemptOutcome {
         // the first one began.
         networkRetryJob?.cancel()
         networkRetryJob = null
+        // A user or network-retry start supersedes any pending recovery.
+        recoveryJob?.cancel()
+        recoveryJob = null
         job = scope.launch { runAutoMode() }
     }
 
@@ -953,8 +985,11 @@ enum class AttemptOutcome {
      * not in this set and supports an enabled protocol — and never wraps
      * silently once every candidate has been tried.
      */
-    @Volatile
-    private var sessionTriedKeys: MutableSet<String> = HashSet()
+    // A stable concurrent set: @Volatile on a mutable HashSet only publishes
+    // the reference, not its internals, while stop()/disconnectNow() clear it
+    // on the main thread and the run loop adds/iterates on Dispatchers.Default.
+    private val sessionTriedKeys: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * User-requested skip of the current server (Try next server button).
@@ -1047,6 +1082,10 @@ enum class AttemptOutcome {
             val connectedState: AutoModeState.Connected? = current
             val currentKey = connectedCandidate?.let { serverKey(it) }
                 ?: connectedState?.let { serverKey(it.ip, it.hostname) }
+            // Captured before `connectedCandidate` is cleared below: the
+            // continuation runs later on Dispatchers.Default and must not
+            // re-read the cleared field (A3).
+            val leavingKey = currentKey
             adapter.log("[AUTO] Connected server skipped by user; trying next ($currentKey)")
             synchronized(transitionLock) {
                 // v1.0.54 (§1.6.46) PART 1 / R-1: the state is still Connected
@@ -1098,12 +1137,9 @@ enum class AttemptOutcome {
                     // end: start a new cycle, keeping only the server we are
                     // leaving so Next really moves somewhere else.
                     if (untried.isEmpty()) {
-                        val leaving = connectedCandidate?.let { serverKey(it) }
-                        sessionTriedKeys = if (leaving == null) {
-                            HashSet()
-                        } else {
-                            HashSet(listOf(leaving))
-                        }
+                        val leavingNullable = leavingKey
+                        sessionTriedKeys.clear()
+                        if (leavingNullable != null) sessionTriedKeys.add(leavingNullable)
                         sessionAttempts = 0
                         sessionTotal = all.size
                         untried = all.filter {
@@ -1244,7 +1280,8 @@ enum class AttemptOutcome {
                 // unknown; seeding it is then a no-op against real candidates
                 // and the pick starts at the top, which is the honest fallback.
                 if (currentKey != serverKey(null, null)) {
-                    sessionTriedKeys = HashSet(listOf(currentKey))
+                    sessionTriedKeys.clear()
+                    sessionTriedKeys.add(currentKey)
                 }
                 val priorities = protocolPriorityProvider()
                 val all = (overrideServers ?: serverProvider())
@@ -1257,11 +1294,8 @@ enum class AttemptOutcome {
                 // BLOCK v1.0.85: same new-cycle rule for the external-tunnel
                 // branch so Next is never a dead end there either.
                 if (untried.isEmpty()) {
-                    sessionTriedKeys = if (currentKey != serverKey(null, null)) {
-                        HashSet(listOf(currentKey))
-                    } else {
-                        HashSet()
-                    }
+                    sessionTriedKeys.clear()
+                    if (currentKey != serverKey(null, null)) sessionTriedKeys.add(currentKey)
                     sessionAttempts = 0
                     sessionTotal = all.size
                     untried = all.filter {
@@ -1481,7 +1515,42 @@ enum class AttemptOutcome {
         // a separate event with NEUTRAL outcome.
         recordLoss(dropped, lossReason, connectedProtocolForHistory)
         connectedProtocolForHistory = null
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        noteTunnelUptime(dropped)
+        launchRecovery(dropped)
+    }
+
+    /**
+     * v1.0.87 — record how long the lost tunnel actually lived.
+     *
+     * The recovery policy counts *failed attempts*, and an unstable server never
+     * produces one: it reaches CONNECTED, resets the counter, then dies. Uptime
+     * is the only signal that distinguishes "the server dropped us after 12 s"
+     * from "we had a three-hour session and the phone changed network", so it is
+     * what the quarantine ledger records. Must run BEFORE the Disconnected state
+     * is published, because [setState] clears [connectedAt] on leaving
+     * Connected.
+     */
+    private fun noteTunnelUptime(dropped: AutoModeCandidate?) {
+        if (dropped == null) return
+        val startedAt = connectedAt
+        if (startedAt <= 0L) return
+        val uptime = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+        val cooldown = quarantine.onTunnelLost(serverKey(dropped), uptime)
+        if (cooldown > 0L) {
+            adapter.log(
+                "[AUTO] ${dropped.hostname ?: dropped.ip ?: "server"} dropped after " +
+                    "${uptime / 1000}s; quarantined for ${cooldown / 1000}s",
+            )
+        }
+    }
+
+    /** Owned launch point for every Auto-Reconnect decision. */
+    private fun launchRecovery(dropped: AutoModeCandidate?) {
+        val epoch = sessionEpoch.get()
+        synchronized(transitionLock) {
+            recoveryJob?.cancel()
+            recoveryJob = scope.launch { onUnexpectedDisconnect(dropped, epoch) }
+        }
     }
 
     /**
@@ -1505,98 +1574,93 @@ enum class AttemptOutcome {
      *   if the success record was somehow unavailable — then the reconnect simply
      *   runs over [remainingCandidates]).
      */
-    private suspend fun onUnexpectedDisconnect(droppedServer: AutoModeCandidate?) {
+    private suspend fun onUnexpectedDisconnect(
+        droppedServer: AutoModeCandidate?,
+        epoch: Int = sessionEpoch.get(),
+    ) {
+        // A stale callback from an older attempt must never decide anything.
+        if (epoch != sessionEpoch.get()) {
+            adapter.log("[AUTO] Ignoring Auto-Reconnect callback from an older session")
+            return
+        }
+
         // OQ-7: a connect/teardown that is still IN FLIGHT owns the tunnel; do not
         // race it. A merely CONNECTED tracker does not block us — that is either
         // our own tunnel (which we are here because we just lost) or one the OS is
-        // about to tear down. Using isTunnelBusy() here is what made a
-        // watchdog-declared loss end in "skipping Auto-Reconnect" and silence.
+        // about to tear down.
         if (isConnectingToAnotherServer(droppedServer)) {
             adapter.log("[AUTO] Another server is connecting; skipping Auto-Reconnect")
-            // A-5 (§3.5): Disconnected is published on the way OUT of the
-            // decision, never ahead of it — so the OQ-7/OQ-6/OQ-1 follow-up is
-            // already visible to any consumer that sees this state.
             setState(AutoModeState.Disconnected)
             return
         }
 
-        // OQ-6 (§11.13.4): the setting governs behaviour AFTER a drop.
+        // OQ-6: the setting governs behaviour AFTER a drop.
         if (!autoReconnectEnabled()) {
             adapter.log("[AUTO] Auto-Reconnect is disabled; staying disconnected")
             setState(AutoModeState.Disconnected)
             return
         }
 
-        // OQ-1: rolling-window loop guard.
-        val now = System.currentTimeMillis()
-        val attempts: Int
-        synchronized(reconnectLock) {
-            reconnectTimestamps.removeAll { it < now - RECONNECT_WINDOW_MS }
-            if (reconnectTimestamps.size >= RECONNECT_MAX_ATTEMPTS) {
-                attempts = -1
-            } else {
-                reconnectTimestamps.add(now)
-                attempts = reconnectTimestamps.size
-            }
-        }
-        if (attempts < 0) {
-            adapter.log(
-                "[AUTO] Auto-Reconnect limit reached " +
-                    "($RECONNECT_MAX_ATTEMPTS in ${RECONNECT_WINDOW_MS / 60_000} min); stopping",
-            )
-            setState(AutoModeState.Error(ERROR_RECONNECT_LIMIT))
-            return
-        }
-
-        // A-5 (§3.5): the decision is now final — reconnect. Publishing
-        // Disconnected here rather than before the OQ-7/OQ-6/OQ-1 checks is the
-        // whole fix: it is still published exactly once per drop (including on
-        // the stand-down paths above), but it no longer leads the follow-up by
-        // up to [reconnectInitialDelayMs] + log traffic, during which the UI
-        // could show "disconnected" next to a log that still says a reconnect
-        // is being considered.
+        // Recovery policy: bounded exponential backoff with jitter. The old
+        // rolling-window terminal (ERROR_RECONNECT_LIMIT) is deliberately
+        // replaced: a bad run of servers pauses and resumes, it no longer
+        // leaves Auto Mode permanently dead.
+        val plan = recoveryPolicy.recordFailure()
         setState(AutoModeState.Disconnected)
-
         adapter.log(
             "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
-                "reconnecting (attempt $attempts/$RECONNECT_MAX_ATTEMPTS)",
+                (if (plan.paused) "pausing before recovery" else "reconnecting") +
+                " (attempt ${plan.consecutiveFailures}/$RECONNECT_MAX_ATTEMPTS, delay ${plan.delayMs}ms)",
         )
 
-        // OQ-3: let the native slot unwind before redialling. Cancellable, so a
-        // user stop during the wait ends the coroutine cleanly.
-        kotlinx.coroutines.delay(reconnectInitialDelayMs)
+        // Let the native slot unwind before redialling. This belongs to the
+        // owned recoveryJob and is cancelled by stop()/disconnectNow().
+        kotlinx.coroutines.delay(plan.delayMs)
 
-        // Someone may have started connecting / stopping during the delay. Only a
-        // transition blocks here, for the same reason as the entry check.
-        if (isConnectingToAnotherServer(droppedServer)) {
-            adapter.log("[AUTO] Another server started connecting; aborting Auto-Reconnect")
+        // Re-validate everything that could have changed during the backoff.
+        if (epoch != sessionEpoch.get()) {
+            adapter.log("[AUTO] Recovery cancelled by user during backoff")
+            return
+        }
+        if (isConnectingToAnotherServer(droppedServer) || isRunning) {
+            adapter.log("[AUTO] Another run started during backoff; not stacking a reconnect")
+            return
+        }
+        if (!autoReconnectEnabled() || !isNetworkAvailable()) {
+            adapter.log("[AUTO] Recovery deferred: auto-reconnect disabled or network unavailable")
+            scheduleNetworkRetry()
             return
         }
 
-        // OQ-7 second chance: if a fresh run is somehow already active, do not
-        // stack a second one — start() would refuse it anyway, but logging the
-        // reason is clearer than a silent no-op.
-        if (isRunning) {
-            adapter.log("[AUTO] A run is already active; not stacking a reconnect")
-            return
-        }
-
-        // Seed the reconnect: the dropped server first (§11.13.3 step 1), then
-        // the un-attempted tail of the original sorted list, exactly as the
-        // "Try next server on a Connected server" path does.
-        pendingReconnectServer = droppedServer
         val remaining = remainingCandidates
-        overrideServers = when {
-            droppedServer == null && remaining.isEmpty() -> null
-            droppedServer == null -> remaining
-            remaining.isEmpty() -> listOf(droppedServer)
-            else -> listOf(droppedServer) + remaining.filterNot {
-                it.ip == droppedServer.ip && it.hostname == droppedServer.hostname
-            }
+        val droppedKey = droppedServer?.let { serverKey(it) }
+        // Rotate away from the server that just failed. The first loss may
+        // retry it (the drop might have been transport-local); every subsequent
+        // consecutive loss puts it last so Auto Mode actually moves on.
+        val tail = remaining.filterNot { serverKey(it) == droppedKey }
+        // BLOCK v1.0.86 — an exhausted session must not become a dead end.
+        //
+        // When the tail is empty every candidate has already been visited this
+        // session, so the override below would name only the dropped server,
+        // fail once, and end in ERROR_NO_SERVER — a permanent stop the user
+        // never asked for. Clearing the tried-set starts a genuinely new cycle.
+        val exhausted = tail.isEmpty()
+        if (exhausted) {
+            adapter.log(
+                "[AUTO] Session candidates exhausted; starting a new cycle after reconnect",
+            )
+            sessionTriedKeys.clear()
         }
-        // BLOCK v1.0.75 (D-3): this run exists because the tunnel we owned was
-        // lost — the status must say "reconnected automatically".
+        overrideServers = when {
+            exhausted -> null
+            droppedServer == null -> remaining
+            plan.rotateAwayFromDropped -> tail + listOf(droppedServer)
+            else -> listOf(droppedServer) + tail
+        }
+        pendingReconnectServer =
+            if (exhausted || plan.rotateAwayFromDropped) null else droppedServer
         runOrigin = ConnectionOrigin.AUTO_RECONNECT
+        detachSelfFromRecoverySlot()
         start()
     }
 
@@ -1621,8 +1685,14 @@ enum class AttemptOutcome {
      */
     @androidx.annotation.VisibleForTesting
     internal fun onUnexpectedDisconnectForTests() {
-        val dropped = connectedCandidate
-        scope.launch { onUnexpectedDisconnect(dropped) }
+        // v1.0.87: the uptime record is part of the production funnel
+        // (reportArmedTunnelLoss calls it immediately before launchRecovery), so
+        // the seam runs it too — otherwise a JVM test could never observe the
+        // quarantine. It is deliberately the only extra step: the rest of
+        // reportArmedTunnelLoss touches TunnelStateWatcher, which cannot be
+        // class-loaded off-device.
+        noteTunnelUptime(connectedCandidate)
+        launchRecovery(connectedCandidate)
     }
 
     /** When set, the next runAutoMode uses this candidate list instead of the provider. */
@@ -1645,6 +1715,31 @@ enum class AttemptOutcome {
      */
     private val reconnectTimestamps = mutableListOf<Long>()
     private val reconnectLock = Any()
+
+    /**
+     * Owned recovery coroutine. Unlike the old fire-and-forget launch, this
+     * handle is cancelled by stop()/disconnectNow(), so a delayed reconnect can
+     * never resurrect a tunnel the user closed.
+     */
+    private var recoveryJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Incremented by user stop/disconnect. Every recovery coroutine captures
+     * the epoch at loss time and re-checks it after its delay, which rejects a
+     * stale callback from an older connection attempt.
+     */
+    private val sessionEpoch = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Bounded exponential backoff with jitter. A run of bad servers now pauses
+     * and resumes instead of entering a terminal ERROR_RECONNECT_LIMIT.
+     */
+    private val recoveryPolicy = AutoModeRecoveryPolicy(
+        baseDelayMs = reconnectInitialDelayMs,
+        maxDelayMs = RECONNECT_MAX_RECOVERY_DELAY_MS,
+        pauseAfter = RECONNECT_MAX_ATTEMPTS,
+        pauseDelayMs = recoveryPauseDelayMs,
+    )
 
     /**
      * R8 (§11.13.3): the server Auto Mode was connected to when the unexpected
@@ -1749,6 +1844,11 @@ enum class AttemptOutcome {
             // pending connectivity retry must not resurrect the tunnel later.
             networkRetryJob?.cancel()
             networkRetryJob = null
+            // Invalidate every in-flight recovery callback and clear its state.
+            sessionEpoch.incrementAndGet()
+            recoveryJob?.cancel()
+            recoveryJob = null
+            recoveryPolicy.reset()
             // BLOCK v1.0.77 (REQ-ORIGIN-001): an ended run owns no tunnel, so the
             // persisted origin is cleared here rather than left to age into a lie.
             persistOrigin(null, null)
@@ -1902,6 +2002,7 @@ enum class AttemptOutcome {
      */
     private fun resetReconnectBudget() {
         synchronized(reconnectLock) { reconnectTimestamps.clear() }
+        recoveryPolicy.reset()
         pendingReconnectServer = null
     }
 
@@ -1924,6 +2025,16 @@ enum class AttemptOutcome {
         // BLOCK v1.0.80: an explicit disconnect cancels a pending network retry.
         networkRetryJob?.cancel()
         networkRetryJob = null
+        // A deliberate disconnect invalidates any stale reconnect callback.
+        sessionEpoch.incrementAndGet()
+        recoveryJob?.cancel()
+        recoveryJob = null
+        recoveryPolicy.reset()
+        // v1.0.87: an explicit disconnect ends the session, including its
+        // quarantine memory. A user who stops Auto Mode and starts it again is
+        // asking for a fresh attempt, not for the servers a previous session
+        // cooled down.
+        quarantine.clear()
         // BLOCK v1.0.77 (REQ-ORIGIN-001): the record ends with the tunnel.
         persistOrigin(null, null)
         // BLOCK v1.0.75 (D-2): a user disconnect ends the session — the next
@@ -2230,6 +2341,8 @@ enum class AttemptOutcome {
         if (wedgeKey != null) wedgeTracker.clear(wedgeKey)
         adapter.log("[AUTO] Tunnel established")
         adapter.log("[AUTO] Connected successfully")
+        // A verified tunnel restores confidence without touching history.
+        recoveryPolicy.recordSuccess()
         onSuccess(server, protocol)
         rememberRemaining(servers, server)
         // R8: remember the exact candidate so an unexpected disconnect can
@@ -2434,12 +2547,57 @@ enum class AttemptOutcome {
         }
         adapter.log("[AUTO] Connection timeout = ${attemptTimeoutMs() / 1000} seconds")
 
-        val all = overrideServers ?: serverProvider()
+        val requested = overrideServers ?: serverProvider()
         // BLOCK v1.0.75 (C3): a Next/continuation run (overrideServers set) must
         // NOT take the fast path — the user asked for a specific place in the
         // list, not for the best-known-good server again.
         val wasOverride = overrideServers != null
         overrideServers = null
+
+        // v1.0.87 — unstable-server quarantine.
+        //
+        // A server that reached CONNECTED and then died inside
+        // ServerQuarantine.RAPID_DROP_MS, twice in a row, is taken out of this
+        // run's rotation. Without this, the run's own "rotate away from the
+        // dropped server" is defeated exactly when it matters: the recovery
+        // path re-seeds a single-server override (or clears the tried-set after
+        // an exhausted walk), the provider then ranks the same high-quality
+        // server first again, and the user sees the connect/disconnect loop.
+        //
+        // Filtering is applied to the override list too, because an override
+        // list built from `remainingCandidates` can still start with the server
+        // that just flapped. When the override list is fully quarantined the
+        // provider's own order is used instead, which is the "move on" the
+        // recovery policy intended.
+        //
+        // Never returns an empty list: if EVERY candidate is quarantined, the
+        // unfiltered list is used (with a log line). Refusing to start would
+        // turn a transient condition into ERROR_NO_SERVER — the permanent stop
+        // this pass is removing, not reintroducing.
+        val requestedUsable = requested.filterNot { quarantine.isQuarantined(serverKey(it)) }
+        val all = if (requestedUsable.size == requested.size) {
+            requested
+        } else {
+            val skipped = requested.size - requestedUsable.size
+            val fallback = if (wasOverride) {
+                serverProvider().filterNot { quarantine.isQuarantined(serverKey(it)) }
+            } else {
+                requestedUsable
+            }
+            val chosen = if (requestedUsable.isNotEmpty()) requestedUsable else fallback
+            if (chosen.isNotEmpty()) {
+                adapter.log(
+                    "[AUTO] Quarantine: skipping $skipped unstable server(s) this run",
+                )
+                chosen
+            } else {
+                adapter.log(
+                    "[AUTO] Quarantine: every candidate is cooling down; " +
+                        "using the full list rather than refusing to start",
+                )
+                requested
+            }
+        }
         // R8 (OQ-7 second chance): a reconnect run must never race a manual
         // connect that began during the settle delay or the list resolution.
         // The seed is consumed here regardless of outcome so it cannot leak into
@@ -3493,13 +3651,96 @@ enum class AttemptOutcome {
         }
 
         adapter.log("[AUTO] All compatible servers failed")
-        setState(AutoModeState.Error(ERROR_NO_SERVER)) // no auto loop back to #1
-        // v1.0.31 (D-5): the continuation is spent. This is a second, defensive
-        // reset — [resumeFromServerKey] is already cleared when it is consumed
-        // above; clearing here too means "the list is exhausted" can never leave
-        // a position behind for a later run.
+        // BLOCK v1.0.86 — a RECONNECT run must not become a dead end.
+        //
+        // The reported symptom was "it connects and disconnects for a while and
+        // then just stops". The path is: a live tunnel is lost, recovery
+        // re-runs over the session tail, that run finds nothing left to dial,
+        // and this terminal ends Auto Mode until somebody presses the button.
+        //
+        // A run that Auto Mode started by itself therefore starts a NEW CYCLE
+        // instead, paced by the same recovery policy as an unexpected
+        // disconnect (exponential backoff with jitter, 60 s pause after a run
+        // of failures). A run the USER started still ends here: "I tried
+        // everything and it failed" is a real answer to an explicit press, and
+        // the operator can press again. A user Stop never reaches this line at
+        // all, because stop() cancels the run.
         resumeFromServerKey = null
-        job = null // terminal state: the run is over; next press restarts cleanly
+        if (runOrigin == ConnectionOrigin.AUTO_RECONNECT && autoReconnectEnabled()) {
+            scheduleFreshCycle("Every compatible server failed")
+        } else {
+            setState(AutoModeState.Error(ERROR_NO_SERVER))
+        }
+        job = null // the run itself is over; a fresh cycle owns what comes next
+    }
+
+    /**
+     * BLOCK v1.0.86 — restart Auto Mode over a **new cycle** instead of ending.
+     *
+     * Used when a run exhausts the list without establishing a tunnel. The
+     * session's tried-set is cleared so the next cycle starts from the top of
+     * the ordering again, which is what "keep me connected" means for a list of
+     * volunteer servers that changes quality minute to minute.
+     *
+     * Paced by [recoveryPolicy], owned by [recoveryJob] (so [stop] and
+     * [disconnectNow] cancel it), and re-validated after the delay exactly like
+     * [onUnexpectedDisconnect].
+     */
+    private fun scheduleFreshCycle(reason: String) {
+        val epoch = sessionEpoch.get()
+        synchronized(transitionLock) {
+            recoveryJob?.cancel()
+            recoveryJob = scope.launch {
+                val plan = recoveryPolicy.recordFailure()
+                adapter.log(
+                    "[AUTO] $reason; starting a fresh cycle in ${plan.delayMs}ms " +
+                        "(attempt ${plan.consecutiveFailures}/$RECONNECT_MAX_ATTEMPTS" +
+                        (if (plan.paused) ", paused" else "") + ")",
+                )
+                setState(AutoModeState.Disconnected)
+                kotlinx.coroutines.delay(plan.delayMs)
+
+                if (epoch != sessionEpoch.get()) {
+                    adapter.log("[AUTO] Fresh-cycle restart cancelled by user")
+                    return@launch
+                }
+                if (isRunning) {
+                    adapter.log("[AUTO] A run started during the fresh-cycle delay; not stacking one")
+                    return@launch
+                }
+                if (!autoReconnectEnabled() || !isNetworkAvailable()) {
+                    adapter.log("[AUTO] Fresh cycle deferred: auto-reconnect disabled or no network")
+                    scheduleNetworkRetry()
+                    return@launch
+                }
+                // A new cycle: nothing is "already tried" any more.
+                sessionTriedKeys.clear()
+                resumeFromServerKey = null
+                overrideServers = null
+                pendingReconnectServer = null
+                runOrigin = ConnectionOrigin.AUTO_RECONNECT
+                detachSelfFromRecoverySlot()
+                start()
+            }
+        }
+    }
+
+    /**
+     * Clear [recoveryJob] when it is the coroutine calling this, so the
+     * [start] that follows does not cancel the job it is running inside.
+     *
+     * `startLocked()` cancels any pending recovery before launching a run.
+     * That is correct for a user press, but when the recovery coroutine itself
+     * is the caller the cancel lands on the calling coroutine. It happens to be
+     * harmless today (the coroutine is already returning), but it makes the
+     * restart depend on that coincidence. Detaching first removes the
+     * dependency.
+     */
+    private suspend fun detachSelfFromRecoverySlot() {
+        val self = kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]
+        synchronized(transitionLock) {
+            if (recoveryJob != null && recoveryJob === self) recoveryJob = null
+        }
     }
 
     /**

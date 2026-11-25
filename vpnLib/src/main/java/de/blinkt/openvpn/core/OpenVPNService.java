@@ -285,7 +285,10 @@ public class OpenVPNService extends VpnService implements StateListener, Callbac
     public void onRevoke() {
         VpnStatus.logError(R.string.permission_revoked);
         final OpenVPNManagement managment = mManagement;
-        mCommandHandler.post(() -> managment.stopVPN(false));
+        // onRevoke can arrive before the management channel is initialised.
+        if (managment != null) {
+            mCommandHandler.post(() -> managment.stopVPN(false));
+        }
 
         endVpnService();
     }
@@ -1202,6 +1205,25 @@ public class OpenVPNService extends VpnService implements StateListener, Callbac
         for (String pkg : mProfile.mAllowedAppsVpn) {
             try {
                 if (mProfile.mAllowedAppsVpnAreDisallowed) {
+                    // v1.0.88 — never exclude THIS app from its own tunnel.
+                    //
+                    // v1.0.47 (§1.6.40) already skips the app's own package at
+                    // the two builders that were failing on device then
+                    // (`SoftEtherVpnService.buildTun` and
+                    // `IPTerminal.addExcludedAppRules`), but this third
+                    // application point was never covered. The app also seeded
+                    // itself into `excluded_apps` ("always exclude self, hidden
+                    // from user"), so on OpenVPN the VPN's allowed UID set
+                    // omitted the app's own UID and every collector request
+                    // bound to that network failed with `Connection reset` —
+                    // i.e. the server list could not be updated over OpenVPN
+                    // while it updated fine over MS-SSTP.
+                    //
+                    // Skipping only self keeps every user exclusion intact.
+                    if (pkg.equals(getPackageName())) {
+                        VpnStatus.logDebug("Ignoring self-exclusion: " + pkg);
+                        continue;
+                    }
                     builder.addDisallowedApplication(pkg);
                 } else {
                     if (!(profileUsesOrBot && pkg.equals(ORBOT_PACKAGE_NAME))) {

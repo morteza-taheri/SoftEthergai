@@ -261,7 +261,19 @@ class VpnServerRepositoryDynamicVpnPathTest {
         val fetcher = sourceOf("src/main/java/vn/unlimit/vpngate/data/remote/HttpFetcher.kt")
         assertTrue("the bound client must set a connect timeout", fetcher.contains("connectTimeout"))
         assertTrue("the bound client must set a read timeout", fetcher.contains("readTimeout"))
-        assertTrue("refresh must be bounded by the total deadline (mainTimeoutMs)", repo.contains("withTimeoutOrNull(mainTimeoutMs)"))
+        // v1.0.88: the deadline is a property, not the raw constructor value,
+        // because it is re-read per refresh from the Settings value. The
+        // guarantee is unchanged: the run is bounded by the configured budget,
+        // and the property falls back to the injected value when no provider
+        // is supplied.
+        assertTrue(
+            "refresh must be bounded by the configured total deadline",
+            repo.contains("withTimeoutOrNull(effectiveMainTimeoutMs)"),
+        )
+        assertTrue(
+            "the effective deadline must derive from the injected mainTimeoutMs",
+            repo.contains("?: mainTimeoutMs"),
+        )
         assertTrue("a timed-out refresh must preserve the DB", repo.contains("[ladder] deadline exceeded"))
     }
 

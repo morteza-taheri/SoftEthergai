@@ -18,6 +18,14 @@ import vn.unlimit.vpngate.parser.VpnGateHtmlParser
  * accepted after HTTP, redirect, content-type, schema and parse-sanity
  * checks have all passed.
  */
+/**
+ * v1.0.87: fallbacks for callers that do not supply a budget (tests, the
+ * debug panel). Production always passes a value derived from the user's
+ * configured update timeout.
+ */
+const val DEFAULT_SOURCE_TIMEOUT_MS = 12_000L
+const val DEFAULT_DIRECTORY_TIMEOUT_MS = 8_000L
+
 object VpnGateUrls {
     const val MAIN_URL = "https://www.vpngate.net/en/"
     const val API_URL = "https://www.vpngate.net/api/iphone/"
@@ -32,12 +40,12 @@ object VpnGateUrls {
      * Reliable official IP mirrors provided by VPN Gate project to bypass DNS/SNI
      * censorship.
      *
-     * SEC-02: these are reached by IP and expose no TLS endpoint, so they are the
-     * ONLY cleartext (HTTP) hosts the app permits. Each IP is listed explicitly in
-     * `app/src/main/res/xml/network_security_config.xml` under a
-     * `<domain-config cleartextTrafficPermitted="true">`. Every other host —
-     * including `www.vpngate.net`, whose HTTP fallback URLs were removed — is
-     * HTTPS-only.
+     * These are reached by IP and expose no TLS endpoint, so they are the only
+     * cleartext (HTTP) hosts this app talks to. They are NOT a static security
+     * boundary any more: `CleartextMirrorPolicy` permits cleartext for these
+     * addresses, for any mirror discovered from the official directory, and for
+     * any global IPv4 inside the mirror hosting ranges — because these
+     * addresses rotate. See `CleartextMirrorPolicy.kt`.
      */
     val BOOTSTRAP_MIRRORS = listOf(
         "http://150.40.105.19:35399",
@@ -55,6 +63,34 @@ object VpnGateUrls {
  * is visible in the logs and in every record's provenance.
  */
 object VpnGateSourceCandidates {
+
+    /**
+     * v1.0.88 — make [identities] fetchable over cleartext **before** they are
+     * handed to a fetcher.
+     *
+     * Device log, 2026-11-25, first run after the mirror race was introduced:
+     *
+     *     GET http://150.40.105.5:32536/en/            -> answered
+     *     CLEARTEXT-BLOCKED host=122.133.207.17 ...    -> refused locally
+     *     CLEARTEXT-BLOCKED host=14.7.148.12   ...     -> refused locally
+     *     Mirrors available: 12 (discovered=5, cached=12, bootstrap=6)
+     *
+     * Eight of the twelve mirrors in that run were cached addresses the app
+     * itself had stored on a previous refresh, and its own cleartext policy
+     * refused all of them: the registry was only fed by
+     * [numberedMirrors], which runs *after* the directory race had already
+     * fired requests at the cached set. The result was a 12-slot mirror pool
+     * with 4 usable slots — the app paid for the fan-out and could not use it.
+     *
+     * Registration is deliberately keyed on identities that have already been
+     * through [SourceUrl.forMirror] (a global IPv4 literal with an explicit
+     * port, or a validated host), so this cannot be used to widen cleartext
+     * access to an arbitrary authority.
+     */
+    fun registerForCleartext(identities: Collection<SourceIdentity>): Int {
+        if (identities.isEmpty()) return CleartextMirrorPolicy.registeredHosts().size
+        return CleartextMirrorPolicy.registerAll(identities.map { it.baseUrl })
+    }
 
     fun canonicalHtml(): List<SourceIdentity> = listOfNotNull(
         SourceUrl.parse(VpnGateUrls.MAIN_URL, SourceKind.CANONICAL_HTML),
@@ -95,6 +131,10 @@ object VpnGateSourceCandidates {
         val combined = (discovered + cached + bootstrapMirrors())
             .distinctBy { it.baseUrl }
             .take(VpnGateUrls.MAX_MIRRORS)
+        // Register before any of them is fetched, so the cleartext interceptor
+        // already knows this run's mirror set. Without this a freshly
+        // discovered mirror would be refused by the app's own policy.
+        CleartextMirrorPolicy.registerAll(combined.map { it.baseUrl })
         return combined.mapIndexed { index, identity ->
             identity.withMirrorId(MIRROR_TAG_PREFIX + (index + 1))
         }
@@ -164,16 +204,29 @@ private suspend fun raceFetch(
 /**
  * Canonical + mirror HTML. Every accepted body keeps its own identity:
  * `"html"` for the canonical page, `mirror_<n>` for a mirror.
+ *
+ * v1.0.87: [timeoutMs] is supplied by the repository from the user's configured
+ * update budget. It used to be a hard-coded 12 s, which silently capped every
+ * refresh regardless of the Settings value — a 120 s setting still aborted each
+ * source after 12 s.
  */
-class VpnGateHtmlSource(private val fetcher: HttpFetcher) {
+class VpnGateHtmlSource(
+    private val fetcher: HttpFetcher,
+    private val timeoutMs: Long = DEFAULT_SOURCE_TIMEOUT_MS,
+) {
     suspend fun fetch(extraCandidates: List<SourceIdentity> = emptyList()): FetchedSource? {
+        // v1.0.88: same ordering rule as the directory race — a mirror must be
+        // registered before it is fetched, otherwise the app's own cleartext
+        // policy refuses it and the race is decided by the canonical host
+        // alone, which is exactly the host a censored network cannot reach.
+        VpnGateSourceCandidates.registerForCleartext(extraCandidates)
         val candidates = VpnGateSourceCandidates.canonicalHtml() +
             extraCandidates.map { it.withPath(VpnGateUrls.HTML_PATH) }
         return raceFetch(
             candidates,
             fetcher,
             validate = { VpnGateSourceValidation.validateHtml(it) },
-            timeoutMs = 12_000L,
+            timeoutMs = timeoutMs,
         )
     }
 }
@@ -183,20 +236,27 @@ class VpnGateHtmlSource(private val fetcher: HttpFetcher) {
  * NOT candidates: a mirror's CSV schema is not defined in this project,
  * and an undefined schema is refused rather than parsed on a guess.
  */
-class VpnGateApiSource(private val fetcher: HttpFetcher) {
+class VpnGateApiSource(
+    private val fetcher: HttpFetcher,
+    private val timeoutMs: Long = DEFAULT_SOURCE_TIMEOUT_MS,
+) {
     suspend fun fetch(extraCandidates: List<SourceIdentity> = emptyList()): FetchedSource? {
         val candidates = VpnGateSourceCandidates.canonicalApi() + extraCandidates
         return raceFetch(
             candidates,
             fetcher,
             validate = { VpnGateSourceValidation.validateApi(it) },
-            timeoutMs = 12_000L,
+            timeoutMs = timeoutMs,
         )
     }
 }
 
 /** Discovery of official mirrors from the canonical `sites.aspx` directory. */
-class VpnGateMirrorSource(private val fetcher: HttpFetcher) {
+class VpnGateMirrorSource(
+    private val fetcher: HttpFetcher,
+    private val directoryTimeoutMs: Long = DEFAULT_DIRECTORY_TIMEOUT_MS,
+    private val pageTimeoutMs: Long = DEFAULT_SOURCE_TIMEOUT_MS,
+) {
 
     /**
      * Discover official mirrors and return them as numbered identities.
@@ -208,6 +268,10 @@ class VpnGateMirrorSource(private val fetcher: HttpFetcher) {
         val cached = VpnGateSourceCandidates.cachedMirrors(cachedMirrorUrls)
         val bootstrap = VpnGateSourceCandidates.bootstrapMirrors()
 
+        // v1.0.88: register BEFORE the race, not in `numberedMirrors` after it.
+        // See `registerForCleartext` for the device evidence.
+        VpnGateSourceCandidates.registerForCleartext(cached + bootstrap)
+
         val discoveryCandidates =
             VpnGateSourceCandidates.canonicalDirectory() +
                 cached.map { it.withPath(VpnGateUrls.DIRECTORY_PATH) } +
@@ -217,7 +281,7 @@ class VpnGateMirrorSource(private val fetcher: HttpFetcher) {
             discoveryCandidates,
             fetcher,
             validate = { VpnGateSourceValidation.validateDirectory(it) },
-            timeoutMs = 8_000L,
+            timeoutMs = directoryTimeoutMs,
         )
 
         val discovered = if (page == null) {
@@ -261,6 +325,7 @@ class VpnGateMirrorSource(private val fetcher: HttpFetcher) {
             listOf(identity.withPath(VpnGateUrls.HTML_PATH)),
             fetcher,
             validate = { VpnGateSourceValidation.validateHtml(it) },
+            timeoutMs = pageTimeoutMs,
         )
     }
 }

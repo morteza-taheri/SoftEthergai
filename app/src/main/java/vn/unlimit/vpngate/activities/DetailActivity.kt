@@ -51,6 +51,9 @@ import vn.unlimit.vpngate.BuildConfig
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.models.SstpPortKind
 import vn.unlimit.vpngate.models.VPNGateConnection
+import kotlinx.coroutines.runBlocking
+import vn.unlimit.vpngate.data.remote.OkHttpFetcher
+import vn.unlimit.vpngate.repository.OpenVpnConfigDownloader
 import vn.unlimit.vpngate.provider.BaseProvider
 import vn.unlimit.vpngate.ui.screens.detail.DetailScreen
 import vn.unlimit.vpngate.ui.screens.detail.DetailUiState
@@ -62,6 +65,7 @@ import vn.unlimit.vpngate.utils.DataUtil
 import vn.unlimit.vpngate.utils.ExcludeAppsManager
 import vn.unlimit.vpngate.utils.Ipv6Ula
 import vn.unlimit.vpngate.utils.NotificationUtil
+import vn.unlimit.vpngate.utils.OpenVpnAuthDefaults
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -664,11 +668,11 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
      */
     private fun handleImport(useUdp: Boolean) {
         val connection = mVpnGateConnection ?: return
-        val data = if (useUdp) {
-            connection.openVpnConfigDataUdp
-        } else {
-            connection.getOpenVpnConfigDataString()
-        }
+        // v1.0.87: one transport-aware getter for both options, so the exported
+        // file always matches the protocol the user picked (the old TCP branch
+        // returned the stored profile verbatim, which was a UDP file whenever
+        // the profile had been downloaded with udp=1).
+        val data = connection.getOpenVpnConfigDataString(useUdp)
         if (data.isNullOrEmpty()) {
             Toast.makeText(this, R.string.error_unknown, Toast.LENGTH_SHORT).show()
             return
@@ -1055,9 +1059,71 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
     private fun prepareVpn(useUdp: Boolean) {
         if (loadVpnProfile(useUdp)) {
             startOpenVpn()
-        } else {
-            Toast.makeText(this, getString(R.string.error_load_profile), Toast.LENGTH_SHORT).show()
+            return
         }
+        // No stored profile. If this server published sid/hid, the profile is
+        // still obtainable from openvpn_download.aspx — that is what makes an
+        // HTML-only collection fully usable. Download off the main thread, then
+        // retry the normal path.
+        val connection = mVpnGateConnection
+        if (connection != null && connection.canDownloadOpenVpnConfig) {
+            downloadProfileThenConnect(connection, useUdp)
+            return
+        }
+        Toast.makeText(this, getString(R.string.error_load_profile), Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Fetch this one server's `.ovpn` and continue the connect flow.
+     *
+     * Bounded by the downloader's own timeout. On failure the user sees the
+     * same `error_load_profile` message as before — nothing is fabricated and
+     * no partial body is parsed.
+     */
+    private fun downloadProfileThenConnect(connection: VPNGateConnection, useUdp: Boolean) {
+        Toast.makeText(
+            this,
+            getString(R.string.downloading_openvpn_profile),
+            Toast.LENGTH_SHORT,
+        ).show()
+
+        Thread({
+            val profile = runCatching {
+                runBlocking {
+                    OpenVpnConfigDownloader(OkHttpFetcher()).download(
+                        OpenVpnConfigDownloader.Request(
+                            sid = connection.openVpnSid.orEmpty(),
+                            hid = connection.openVpnHid.orEmpty(),
+                            hostName = connection.hostName.orEmpty(),
+                            tcpPort = connection.tcpPort,
+                            udpPort = connection.udpPort,
+                        ),
+                        preferUdp = useUdp,
+                    )
+                }
+            }.getOrNull()
+
+            runOnUiThread {
+                if (profile.isNullOrBlank()) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.error_load_profile),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@runOnUiThread
+                }
+                connection.setOpenVpnConfigDataString(profile)
+                if (loadVpnProfile(useUdp)) {
+                    startOpenVpn()
+                } else {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.error_load_profile),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+        }, "ovpn-on-demand").start()
     }
 
     private fun loadVpnProfile(useUDP: Boolean): Boolean {
@@ -1066,11 +1132,9 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
             Log.e(TAG, "loadVpnProfile: no server selected")
             return false
         }
-        val config = if (useUDP) {
-            connection.openVpnConfigDataUdp
-        } else {
-            connection.getOpenVpnConfigDataString()
-        }
+        // v1.0.87: transport-aware, so a stored UDP profile is never loaded
+        // when the user chose TCP.
+        val config = connection.getOpenVpnConfigDataString(useUDP)
         if (config.isNullOrEmpty()) {
             // A server can be stored without an OpenVPN profile, for example
             // when only the HTML feed was collected. Report it as an unloadable
@@ -1095,6 +1159,16 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                         Toast.LENGTH_LONG,
                     ).show()
                 }
+            }
+            // v1.0.88: VPN Gate's .ovpn template leaves `auth-user-pass`
+            // commented out, so the profile parses as certificate-only and the
+            // core never asks for credentials — the server then answers
+            // AUTH_FAILED and no tunnel is ever created. See
+            // OpenVpnAuthDefaults for the full trace.
+            if (OpenVpnAuthDefaults.applyIfMissing(vpnProfile)) {
+                Log.i(TAG, "Enabled VPN Gate user/password auth for ${connection.hostName}")
+            } else {
+                Log.d(TAG, "OpenVPN profile auth left as parsed for ${connection.hostName}")
             }
             vpnProfile.mName = connection.getName(useUDP)
             vpnProfile.mCompatMode = App.VPN_PROFILE_COMPAT_MODE_24X
@@ -1230,7 +1304,12 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
     fun protocolOptions(): List<ProtocolOption> {
         val conn = mVpnGateConnection ?: return emptyList()
         val options = mutableListOf<ProtocolOption>()
-        if (conn.openVpnConfigData != null && conn.tcpPort > 0) {
+        // A profile that is not stored yet is still usable: the HTML source
+        // publishes this server's sid/hid, and openvpn_download.aspx serves
+        // that one profile on demand. Gating on `openVpnConfigData != null`
+        // alone would hide OpenVPN for every server collected from the page.
+        val openVpnUsable = conn.openVpnConfigData != null || conn.canDownloadOpenVpnConfig
+        if (openVpnUsable && conn.tcpPort > 0) {
             options.add(
                 ProtocolOption(
                     VpnProtocol.OPENVPN_TCP,
@@ -1238,7 +1317,7 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                 ),
             )
         }
-        if (conn.openVpnConfigData != null && conn.udpPort > 0) {
+        if (openVpnUsable && conn.udpPort > 0) {
             options.add(
                 ProtocolOption(
                     VpnProtocol.OPENVPN_UDP,

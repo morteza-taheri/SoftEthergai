@@ -25,6 +25,30 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
     @Volatile
     private var watching: AutoModeProtocol? = null
 
+    /**
+     * BLOCK v1.0.81 (review finding #4): which stack the *connected* session
+     * actually belongs to.
+     *
+     * [onTunnelLost] used to be invoked by every stack's terminal event with no
+     * identity check: a SoftEther `STATE_DISCONNECTED`, an OpenVPN
+     * `LEVEL_NOTCONNECTED` and an SSTP `ROOT_STATE = false` all reported "the
+     * tunnel is gone", even when the live session was carried by a different
+     * stack. Terminal events are routinely delivered late — a teardown of the
+     * previous attempt completes after the next tunnel is already up — so a
+     * stale report from stack A could tear down a freshly connected stack B.
+     * That is one of the ways "connect, immediately disconnect" appears.
+     *
+     * Recording the stack that reported CONNECTED makes the check exact: a loss
+     * is reported only by the stack that is actually carrying the session.
+     * Cleared when the attempt begins (nothing is connected yet) and when a
+     * loss has been reported.
+     */
+    @Volatile
+    private var connectedStack: Stack? = null
+
+    /** The three VPN stacks this watcher bridges. */
+    private enum class Stack { SOFTETHER, OPENVPN, SSTP }
+
     @Volatile
     private var onTunnelUp: ((AutoModeProtocol) -> Unit)? = null
 
@@ -37,12 +61,27 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
             if (key == OscPrefKey.ROOT_STATE.toString()) {
                 val isUp = prefs?.getBoolean(OscPrefKey.ROOT_STATE.toString(), false) == true
                 if (watching == AutoModeProtocol.MS_SSTP && isUp) {
+                    connectedStack = Stack.SSTP
                     onTunnelUp?.invoke(AutoModeProtocol.MS_SSTP)
-                } else if (!isUp) {
-                    onTunnelLost?.invoke()
+                } else if (!isUp && connectedStack == Stack.SSTP) {
+                    reportLost(Stack.SSTP)
                 }
             }
         }
+
+    /**
+     * Report a tunnel loss, but only for the stack that is actually connected.
+     *
+     * Single funnel for every stack's terminal event, so the identity rule
+     * cannot be forgotten at one call site. Clears [connectedStack] before
+     * dispatching, so a duplicated terminal event from the same stack cannot
+     * report the same loss twice.
+     */
+    private fun reportLost(stack: Stack) {
+        if (connectedStack != stack) return
+        connectedStack = null
+        onTunnelLost?.invoke()
+    }
 
     fun attach(context: android.content.Context) {
         if (prefs != null) return
@@ -62,6 +101,10 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         SoftEtherVpnService.removeTeardownListener(this)
         VpnStatus.removeStateListener(this)
         onTunnelLost = null
+        // BLOCK v1.0.81: a detached watcher must not remember a connected stack
+        // either, or a re-attach would filter the next session against a stale
+        // one.
+        connectedStack = null
         // Stage 2F-F.28AA: drop any armed waiter. A detach must not leave a completion
         // able to resume a wait whose caller is gone. The high-water mark is cleared too:
         // it is per-watcher state, and nothing may be compared against a stale baseline.
@@ -73,6 +116,9 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
     fun beginAttempt(protocol: AutoModeProtocol, onUp: (AutoModeProtocol) -> Unit) {
         watching = protocol
         onTunnelUp = onUp
+        // A new attempt means no session is connected yet; a terminal event
+        // arriving from the previous one must not be attributed to it.
+        connectedStack = null
         // Stage 2F-F.28 Fix D: replay a state that is ALREADY terminal.
         //
         // Auto Connect now arms this watcher BEFORE issuing the connect
@@ -299,7 +345,14 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
      * server, the slot is ours" rather than "this server did not come up".
      */
     override fun onSoftEtherNativeBusy(sessionId: Int, owner: String) {
-        if (watching != null && isSoftEtherProtocol(watching!!)) {
+        // BLOCK v1.0.81 (review finding #3): read the volatile ONCE.
+        //
+        // `if (watching != null && isSoftEtherProtocol(watching!!))` reads the
+        // field twice, and `endAttempt()` — which runs on another thread —
+        // can null it between the two reads, throwing an NPE out of a
+        // framework callback. A captured local cannot change under us.
+        val armed = watching
+        if (armed != null && isSoftEtherProtocol(armed)) {
             onNativeBusy?.invoke()
         }
     }
@@ -328,9 +381,13 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
     var onAttemptFailed: (() -> Unit)? = null
 
     override fun onSoftEtherStateChanged(state: String, assignedIp: String) {
-        if (watching != null && isSoftEtherProtocol(watching!!)) {
+        // BLOCK v1.0.81 (review finding #3): one read of the volatile, used for
+        // every decision below.
+        val armed = watching
+        if (armed != null && isSoftEtherProtocol(armed)) {
             if (state == SoftEtherVpnService.STATE_CONNECTED) {
-                onTunnelUp?.invoke(watching!!)
+                connectedStack = Stack.SOFTETHER
+                onTunnelUp?.invoke(armed)
             }
             // AUTOCONNECT-AUDIT D-4: a terminal failure of the attempt being watched.
             // SoftEther publishes STATE_ERROR for a connect flow that gave up, which is a
@@ -342,7 +399,10 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         if (state == SoftEtherVpnService.STATE_DISCONNECTED || state == SoftEtherVpnService.STATE_ERROR) {
             // Tunnel LOST is still a logical state, so it is reported here. Only
             // teardown COMPLETION moved to onSoftEtherTeardownComplete().
-            onTunnelLost?.invoke()
+            //
+            // BLOCK v1.0.81 (review finding #4): only when SoftEther is the
+            // stack that is actually connected.
+            reportLost(Stack.SOFTETHER)
         }
     }
 
@@ -357,9 +417,12 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
         status: ConnectionStatus,
         intent: android.content.Intent?,
     ) {
-        if (watching != null && isOpenVpnProtocol(watching!!)) {
+        // BLOCK v1.0.81 (review finding #3): one read of the volatile.
+        val armed = watching
+        if (armed != null && isOpenVpnProtocol(armed)) {
             if (status == ConnectionStatus.LEVEL_CONNECTED) {
-                onTunnelUp?.invoke(watching!!)
+                connectedStack = Stack.OPENVPN
+                onTunnelUp?.invoke(armed)
             }
             // AUTOCONNECT-AUDIT D-4: OpenVPN's own terminal failure for this attempt. A
             // rejected profile or a failed handshake is a verdict, not a slow connect, so
@@ -369,7 +432,11 @@ object TunnelStateWatcher : SoftEtherVpnService.StateListener, VpnStatus.StateLi
             }
         }
         if (status == ConnectionStatus.LEVEL_NOTCONNECTED || status == ConnectionStatus.LEVEL_AUTH_FAILED) {
-            onTunnelLost?.invoke()
+            // BLOCK v1.0.81 (review finding #4): the loss is reported only when
+            // OpenVPN is the connected stack; the teardown completion below is
+            // still delivered unconditionally, because a caller waiting on a
+            // teardown must always be answered.
+            reportLost(Stack.OPENVPN)
             // Stage 2F-F.28A-REVIEW: for OpenVPN the terminal state is the only
             // teardown-completion signal the stack offers — it exposes no
             // equivalent of SoftEther's post-destroy callback. The distinction

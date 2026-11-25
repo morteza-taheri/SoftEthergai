@@ -61,3 +61,7 @@ build_test_baseline.log
 
 # Ad-hoc device-analysis scratch dirs (.dv6, .dv7, ...).
 .dv*/
+
+# Scratch directory for local device/log analysis (logcat captures, pulled
+# databases, UI dumps). Can reach ~100 MB and must never be committed.
+.tmp/

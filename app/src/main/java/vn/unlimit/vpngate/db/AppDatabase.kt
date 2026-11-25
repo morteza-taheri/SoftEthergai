@@ -27,7 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ServerProtocolSummary::class,
         ServerHistoryEvent::class,
     ],
-    version = 11,
+    version = 12,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -326,6 +326,26 @@ abstract class AppDatabase: RoomDatabase() {
                 database.execSQL(
                     "ALTER TABLE `server_history_summary` ADD COLUMN `unknownLastFailureAt` INTEGER"
                 )
+            }
+        }
+
+        /**
+         * Stage G-7 — Room 11 → 12.
+         *
+         * Two nullable TEXT columns on `VPNGateItem` holding the `sid`/`hid`
+         * pair VPN Gate prints on each server's `do_openvpn.aspx` link. They
+         * address that server's `.ovpn` download endpoint, which is what lets
+         * the profile be fetched on demand rather than carried in every
+         * refresh.
+         *
+         * Purely additive and nullable: an existing row keeps NULL, which is
+         * the same state as "the source never published them", so nothing has
+         * to be back-filled and no reader has to special-case the old rows.
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnSid` TEXT")
+                database.execSQL("ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnHid` TEXT")
             }
         }
     }

@@ -64,7 +64,7 @@ class HttpFetcherPhysicalBindTest {
     }
 
     @Test
-    fun `T-NEW-58c CollectorPath has exactly PHYSICAL, TUNNEL and EMERGENCY`() {
+    fun `T-NEW-58c CollectorPath has exactly PHYSICAL, TUNNEL, FOREIGN_VPN and EMERGENCY`() {
         val src = source()
         val start = src.indexOf("enum class CollectorPath {")
         assertTrue("CollectorPath must exist", start >= 0)
@@ -74,9 +74,12 @@ class HttpFetcherPhysicalBindTest {
             .filter { it.isNotEmpty() && !it.startsWith("*") && !it.startsWith("/") && it != "enum class CollectorPath {" }
             .map { it.substringBefore(',').substringBefore(' ').trim() }
             .filter { it.isNotEmpty() }
+        // v1.0.87: FOREIGN_VPN is the fourth transport — a validated VPN owned
+        // by another app. It is a distinct value rather than a wider PHYSICAL
+        // so a request that rode a tunnel is never logged as physical.
         assertEquals(
-            "the enum must carry exactly the three honest transports, got $constants",
-            listOf("PHYSICAL", "TUNNEL", "EMERGENCY"),
+            "the enum must carry exactly the four honest transports, got $constants",
+            listOf("PHYSICAL", "TUNNEL", "FOREIGN_VPN", "EMERGENCY"),
             constants,
         )
         assertFalse("the OPEN constant must be gone, got $constants", constants.contains("OPEN"))

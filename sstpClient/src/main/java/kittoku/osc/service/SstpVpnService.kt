@@ -53,8 +53,9 @@ import java.util.Date
 import java.util.Locale
 
 
-internal const val ACTION_VPN_CONNECT = "kittoku.osc.connect"
-internal const val ACTION_VPN_DISCONNECT = "kittoku.osc.disconnect"
+/** Public contract for every caller that starts or stops the SSTP service. */
+const val ACTION_VPN_CONNECT = "kittoku.osc.connect"
+const val ACTION_VPN_DISCONNECT = "kittoku.osc.disconnect"
 
 internal const val NOTIFICATION_ERROR_CHANNEL = "ERROR"
 internal const val NOTIFICATION_CRITICAL_CHANNEL = "CRITICAL"

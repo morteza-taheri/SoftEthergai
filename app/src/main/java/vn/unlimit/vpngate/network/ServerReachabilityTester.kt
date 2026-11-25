@@ -120,6 +120,21 @@ object ServerReachabilityTester {
     private val _resultsVersion = MutableStateFlow(0L)
     val resultsVersion: StateFlow<Long> = _resultsVersion.asStateFlow()
 
+    // Up to `concurrency` IO coroutines update these flows. Serialise the
+    // read-modify-write; plain `value += 1` drops increments under contention.
+    private val counterLock = Any()
+
+    private fun bumpTestedCount() {
+        synchronized(counterLock) {
+            _testedCount.value++
+            _resultsVersion.value++
+        }
+    }
+
+    private fun bumpResultsVersion() {
+        synchronized(counterLock) { _resultsVersion.value++ }
+    }
+
     // ---- SERVER_LIST namespace (protocol-less, binary, Y5) ----
 
     /** The Server List quick-test result for [ip], or null. Never an Auto Connect result. */
@@ -161,7 +176,7 @@ object ServerReachabilityTester {
     fun clearServerList() {
         if (_serverListResults.isNotEmpty()) {
             _serverListResults.clear()
-            _resultsVersion.value++
+            bumpResultsVersion()
         }
     }
 
@@ -195,7 +210,7 @@ object ServerReachabilityTester {
     fun clearAutoConnect() {
         if (_autoConnectResults.isNotEmpty()) {
             _autoConnectResults.clear()
-            _resultsVersion.value++
+            bumpResultsVersion()
         }
     }
 
@@ -211,7 +226,7 @@ object ServerReachabilityTester {
         _autoConnectResults.clear()
         _testedCount.value = 0
         _totalCount.value = 0
-        _resultsVersion.value++
+        bumpResultsVersion()
     }
 
     suspend fun probe(host: String, port: Int, timeoutMs: Int = DEFAULT_TIMEOUT_MS): ReachabilityResult =
@@ -250,7 +265,7 @@ object ServerReachabilityTester {
                         val ip = conn.ip ?: ""
                         val port = resolvePort(conn)
                         if (ip.isBlank() || port <= 0) {
-                            _testedCount.value += 1
+                            bumpTestedCount()
                             return@async null
                         }
                         val res = semaphore.withPermit {
@@ -260,8 +275,8 @@ object ServerReachabilityTester {
                         // protocol-less and files under the SERVER_LIST
                         // namespace. It must never land on an Auto Connect key.
                         _serverListResults[ReachabilityKey.ServerList(ip)] = res
-                        _testedCount.value += 1
-                        _resultsVersion.value++
+                        bumpTestedCount()
+                        bumpResultsVersion()
                         res
                     }
                 }
@@ -273,7 +288,7 @@ object ServerReachabilityTester {
             // Also reached when the caller's scope is cancelled (e.g. the
             // user leaves the server list), so the progress UI never sticks.
             _isTesting.value = false
-            _resultsVersion.value++
+            bumpResultsVersion()
         }
     }
 

@@ -20,7 +20,10 @@ object ServerListCap {
 
     const val MIN: Int = 10
     const val MAX: Int = 2000
-    const val DEFAULT: Int = 300
+    // One API response is ~100-280 rows; the operator requires retention of
+    // servers discovered from HTML/mirrors as well, so the default ceiling is
+    // 1000. Still fully configurable within [MIN, MAX].
+    const val DEFAULT: Int = 1000
 
     /** Injected by tests; production falls through to the app's DataUtil. */
     @Volatile

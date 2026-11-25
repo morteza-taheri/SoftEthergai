@@ -168,6 +168,7 @@
     <string name="send_email">ارسال ایمیل</string>
     <string name="email_error_fix">لطفاً ابتدا خطای صحیح را بررسی کنید</string>
     <string name="error_load_profile">خطا در بارگذاری پروفایل VPN</string>
+    <string name="downloading_openvpn_profile">در حال دریافت پروفایل OpenVPN…</string>
     <string name="traffic_session">ترافیک نشست</string>
     <string name="clear_statistics">پاک‌سازی آمار</string>
     <string name="get_pro_version">دریافت نسخهٔ Pro</string>
@@ -329,6 +330,9 @@
     <string name="softether_disconnecting">در حال قطع اتصال SoftEther…</string>
     <string name="error_unknown">خطای نامشخصی رخ داد. لطفاً دوباره تلاش کنید.</string>
     <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_timeout_label">مدت انتظار بروزرسانی لیست سرورها</string>
+    <string name="setting_server_update_timeout_subtitle">حداکثر زمان مجاز برای یک بار بروزرسانی. در شبکههای کند یا فیلترشده آنرا افزایش دهید.</string>
+    <string name="setting_server_update_timeout_value">%1$d ثانیه</string>
     <string name="setting_server_update_interval_label">فاصله بروزرسانی لیست سرورها</string>
     <string name="setting_server_update_interval_subtitle">لیست سرورها چند وقت یک‌بار به‌صورت خودکار بروزرسانی شود. شما همیشه می‌توانید دستی بروزرسانی کنید.</string>
     <string name="setting_server_update_interval_hours">هر %1$d ساعت</string>

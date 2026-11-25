@@ -37,11 +37,14 @@ class ExcludeAppsManager(private val context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 App.instance?.excludedAppDao?.let { dao ->
-                    // Force-add self package — always excluded, user cannot remove
-                    val withSelf = selectedApps.toMutableList()
-                    if (withSelf.none { it.packageName == selfPackageName }) {
-                        withSelf.add(ExcludedApp(selfPackageName, "Self"))
-                    }
+                    // v1.0.88: self is deliberately NOT force-added. Excluding
+                    // the app from its own tunnel made every collector request
+                    // fail on the OpenVPN stack, because `vpnLib` honours this
+                    // list and the app's own UID was therefore absent from the
+                    // VPN's allowed UIDs. See `App.initializeDefaultExcludedApps`.
+                    val withSelf = selectedApps
+                        .filterNot { it.packageName == selfPackageName }
+                        .toMutableList()
                     // Simple approach: delete all and insert selected
                     dao.getAllExcludedApps().forEach { dao.deleteExcludedApp(it) }
                     withSelf.forEach { dao.insertExcludedApp(it) }

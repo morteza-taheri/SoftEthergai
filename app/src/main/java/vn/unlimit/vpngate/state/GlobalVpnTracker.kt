@@ -454,6 +454,12 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      * This wrapper therefore applies the strict check once traffic has been
      * observed, and a grace period before that.
      *
+     * v1.0.88: steps 3-5 below are **SoftEther-only**. The RX/EIO counters are
+     * fed by the SoftEther native stack and are never reset between sessions,
+     * so consulting them for another protocol let a finished SoftEther session
+     * declare a healthy OpenVPN tunnel unusable. See the inline comment in the
+     * body.
+     *
      * Decision order (fail-closed at every branch that lacks evidence):
      *   1. not connected → false
      *   2. no OS-bound VPN network → false
@@ -471,14 +477,38 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
      * [routingUsableFromSignals] so it is unit-testable on the JVM without
      * class-loading this Android-dependent object.
      */
-    fun isTunnelUsableForRouting(): Boolean = routingUsableFromSignals(
-        isConnected = isConnected,
-        hasBoundNetwork = currentVpnNetwork() != null,
-        isUsable = isTunnelUsable(),
-        rxCounter = TunnelHealth.rxCounter(),
-        lastEioAtMs = TunnelHealth.lastEioAtMs(),
-        nowMs = System.currentTimeMillis(),
-    )
+    fun isTunnelUsableForRouting(): Boolean {
+        // v1.0.88 — the RX/EIO evidence is SOFTETHER evidence, so it may only
+        // judge a SoftEther tunnel.
+        //
+        // `TunnelHealth` is fed exclusively by the SoftEther native stack
+        // (`ConnectionController.noteRxAdvance`) and is never reset when a
+        // session ends. It was nevertheless consulted for every protocol, so a
+        // perfectly healthy OpenVPN or MS-SSTP tunnel was declared unusable
+        // after any earlier SoftEther session in the same process:
+        //
+        //   isUsable      = false   (no SoftEther RX is arriving — correct)
+        //   rxCounter     > 0       (left over from the previous session)
+        //   -> step 4     -> false  (the OpenVPN tunnel is refused)
+        //
+        // and the collector fell back to PHYSICAL, i.e. the list was fetched
+        // around the tunnel the user had just established. SSTP only escaped
+        // this because a fresh process starts with rxCounter == 0.
+        //
+        // The evidence is kept exactly as it was for SoftEther, where it is
+        // real and load-bearing (it is what stops the grace period from
+        // masking a tunnel that came up, carried traffic and died).
+        val stack = _vpnState.value.protocol
+        val softEtherEvidence = softEtherHealthAppliesTo(stack)
+        return routingUsableFromSignals(
+            isConnected = isConnected,
+            hasBoundNetwork = currentVpnNetwork() != null,
+            isUsable = softEtherEvidence && isTunnelUsable(),
+            rxCounter = if (softEtherEvidence) TunnelHealth.rxCounter() else 0L,
+            lastEioAtMs = if (softEtherEvidence) TunnelHealth.lastEioAtMs() else 0L,
+            nowMs = System.currentTimeMillis(),
+        )
+    }
 
     /**
      * v1.0.42 (§1.6.35 / F2): a process-wide reachability signal.
@@ -563,6 +593,67 @@ object GlobalVpnTracker : SoftEtherVpnService.StateListener, VpnStatus.StateList
         } ?: candidates.firstOrNull { net ->
             cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
         } ?: candidates.firstOrNull()
+    }
+
+    /**
+     * The OS default network, including a VPN established by ANOTHER app.
+     *
+     * Used only to bind a collector request explicitly (never
+     * `bindProcessToNetwork`) when the physical rung is unavailable but a
+     * foreign VPN is the only validated route. Null means no default network.
+     */
+    fun currentDefaultNetwork(): Network? {
+        val ctx = appContext ?: return null
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        return runCatching { cm.activeNetwork }.getOrNull()
+    }
+
+    /**
+     * v1.0.87 — a **validated VPN network owned by another application**, or
+     * null when there is none.
+     *
+     * This exists because the collector used to bypass a third-party VPN by
+     * construction: [currentPhysicalNetwork] deliberately excludes
+     * `TRANSPORT_VPN`, so with another VPN up the refresh left over the
+     * underlying Wi-Fi/cellular — the censored path the user had just routed
+     * around. The list therefore failed to update exactly when the user had
+     * already solved the problem.
+     *
+     * Ownership is decided by the framework's own VPN owner UID where it is
+     * available (`OwnedVpnDecision`, API 30+), so this app's own tunnel can
+     * never be mistaken for a foreign one. On older releases the UID is
+     * unavailable; there the answer falls back to "a VPN network exists and
+     * this app is neither connected nor connecting", which is the same
+     * conservative rule Auto Connect already uses when adopting a tunnel.
+     *
+     * Requires INTERNET + VALIDATED: a VPN that cannot reach the internet is
+     * not a route worth preferring over the physical one.
+     */
+    fun currentForeignVpnNetwork(): Network? {
+        val ctx = appContext ?: return null
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return null
+        val network = runCatching { cm.activeNetwork }.getOrNull() ?: return null
+        val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull() ?: return null
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return null
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return null
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return null
+
+        val sdkInt = android.os.Build.VERSION.SDK_INT
+        val ownerUid = vn.unlimit.vpngate.automode.VpnOwnerUidReader.read(caps, sdkInt)
+        if (ownerUid != null) {
+            val mine = vn.unlimit.vpngate.automode.OwnedVpnDecision.isOwnedByThisApp(
+                hasVpnTransport = true,
+                ownerUid = ownerUid,
+                sdkInt = sdkInt,
+                myUid = android.os.Process.myUid(),
+            )
+            return if (mine) null else network
+        }
+        // Undecidable ownership: only call it foreign when our own tunnel is
+        // definitely not the one holding the default route.
+        return if (isConnected || isConnecting) null else network
     }
 
     /**
@@ -887,3 +978,21 @@ internal fun routingUsableFromSignals(
     if (lastEioAtMs > 0L && nowMs - lastEioAtMs <= TunnelHealth.EIO_WINDOW_MS) return false
     return true
 }
+
+/**
+ * v1.0.88 — does the SoftEther RX/EIO evidence describe this tunnel?
+ *
+ * `TunnelHealth` is fed only by the SoftEther native stack and is never reset
+ * when a session ends. Reading it for a tunnel that another stack established
+ * lets a finished SoftEther session veto a healthy OpenVPN or MS-SSTP tunnel:
+ * `rxCounter > 0` from the old session makes [routingUsableFromSignals] return
+ * `false` at its step 4, so `VpnServerRepository.routeLadder` drops the TUNNEL
+ * rung and the collector fetches around the tunnel the user just built.
+ *
+ * The published protocol label is the discriminator ("SoftEther", "OpenVPN",
+ * "SSTP"). An unknown or missing label is treated as "not SoftEther": the
+ * evidence would be meaningless for it, and refusing a working tunnel is the
+ * worse failure of the two.
+ */
+internal fun softEtherHealthAppliesTo(protocol: String?): Boolean =
+    protocol != null && protocol.contains("SoftEther", ignoreCase = true)

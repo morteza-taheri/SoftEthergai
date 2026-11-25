@@ -187,7 +187,23 @@ internal class SSLTerminal(private val bridge: SharedBridge) {
             }
         }
 
-        val socketHostname = if (doUseProxy) getStringPrefValue(OscPrefKey.PROXY_HOSTNAME, bridge.prefs) else sslHostname
+        // v1.0.87 (VpnM): the app may pre-resolve the hostname (system DNS, then
+        // DNS-over-HTTPS) because a censored/poisoned resolver is the usual
+        // reason an otherwise healthy SSTP server never answers. Only the
+        // socket target changes: `sslHostname` still drives SNI and certificate
+        // verification, so connecting by address keeps TLS identity intact.
+        // An empty preference means "not pre-resolved" and preserves the old
+        // behaviour exactly.
+        val resolvedIp = if (doUseProxy) {
+            ""
+        } else {
+            getStringPrefValue(OscPrefKey.HOME_HOSTNAME_IP, bridge.prefs)
+        }
+        val socketHostname = when {
+            doUseProxy -> getStringPrefValue(OscPrefKey.PROXY_HOSTNAME, bridge.prefs)
+            resolvedIp.isNotBlank() -> resolvedIp
+            else -> sslHostname
+        }
         val socketPort = if (doUseProxy) getIntPrefValue(OscPrefKey.PROXY_PORT, bridge.prefs) else sslPort
         socket = Socket().also {
             // BLOCK v1.0.78: bounded connect, and a read timeout BEFORE the

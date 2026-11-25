@@ -245,6 +245,13 @@ object VpnRecords {
                     "portSource" to VpnPortSource.UNKNOWN,
                 ),
                 "configAvailable" to false,
+                // Stage G-7: the identifiers the HTML page publishes on its
+                // `do_openvpn.aspx` link. They are the only way to ask VPN
+                // Gate for this server's `.ovpn` file later, so they are kept
+                // even when the profile itself is not downloaded at collect
+                // time. Null means "the source never published them".
+                "downloadSid" to null,
+                "downloadHid" to null,
                 "configs" to mutableListOf<OpenVpnRemote>(),
             ),
             VpnProtocolNames.L2TP_IPSEC to linkedMapOf<String, Any?>(

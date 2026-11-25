@@ -60,7 +60,11 @@ object ServerListUpdates {
 
     /** [forUpdateTrigger] for a caller that only has an application instance. */
     fun forUpdateTrigger(app: vn.unlimit.vpngate.App): ServerListUpdater = build(
-        repository = VpnServerRepository(cacheDir = app.filesDir),
+        repository = VpnServerRepository(
+            cacheDir = app.filesDir,
+            mainTimeoutMs = (app.dataUtil?.getServerListUpdateTimeoutSeconds()
+                ?: vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SERVER_LIST_UPDATE_TIMEOUT_SECONDS) * 1000L,
+        ),
         dao = app.vpnGateItemDao,
         acceptCacheFallback = false,
         historyDao = app.serverHistoryDao,
@@ -78,7 +82,11 @@ object ServerListUpdates {
 
     /** [forAcquisition] for a caller that only has an application instance. */
     fun forAcquisition(app: vn.unlimit.vpngate.App): ServerListUpdater = build(
-        repository = VpnServerRepository(cacheDir = app.filesDir),
+        repository = VpnServerRepository(
+            cacheDir = app.filesDir,
+            mainTimeoutMs = (app.dataUtil?.getServerListUpdateTimeoutSeconds()
+                ?: vn.unlimit.vpngate.utils.DataUtil.DEFAULT_SERVER_LIST_UPDATE_TIMEOUT_SECONDS) * 1000L,
+        ),
         dao = app.vpnGateItemDao,
         acceptCacheFallback = true,
         historyDao = app.serverHistoryDao,

@@ -4,6 +4,21 @@ import android.util.Log
 import vn.unlimit.softether.security.ServerFingerprint
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Explicit native receive outcome — never conflate timeout with traffic. */
+enum class RxEvent(val nativeValue: Int) {
+    DATA(1),
+    KEEPALIVE(2),
+    IDLE_TIMEOUT(3),
+    SKIPPED(4),
+    ERROR(5);
+
+    companion object {
+        fun fromNative(value: Int): RxEvent = entries.firstOrNull { it.nativeValue == value } ?: ERROR
+    }
+}
+
+data class ReceiveBatchResult(val total: Int, val event: RxEvent)
+
 /**
  * SoftEtherClient - JNI bridge wrapper to native SoftEther implementation
  * Provides high-level API for connection management
@@ -138,18 +153,24 @@ class SoftEtherClient {
     }
 
     /**
-     * Receive multiple packets in one call (Phase 13D).
+     * Receive multiple packets in one call (Phase 13D), with an explicit event.
      *
-     * @param buffer Buffer to store received frames contiguously
-     * @param lengths Output array; lengths[0..n-1] receive per-frame sizes,
-     *                remaining entries are zeroed. Size caps the batch.
-     * @return Total bytes written into buffer (0 = nothing available), or -1 on error
+     * The native layer distinguishes data, a real keepalive, an idle timeout,
+     * skipped frames and an error/closed socket. Callers must never treat an
+     * idle timeout as evidence of peer liveness.
      */
-    fun receiveBatch(buffer: ByteArray, lengths: IntArray): Int {
+    fun receiveBatchWithEvent(buffer: ByteArray, lengths: IntArray): ReceiveBatchResult {
         val handle = externalHandle.takeIf { it != 0L } ?: nativeHandle
-        if (handle == 0L) return -1
-        return nativeReceiveBatch(handle, buffer, buffer.size, lengths, lengths.size)
+        if (handle == 0L) return ReceiveBatchResult(-1, RxEvent.ERROR)
+        val eventOut = IntArray(1)
+        val total = nativeReceiveBatch(handle, buffer, buffer.size, lengths, lengths.size, eventOut)
+        return ReceiveBatchResult(total, RxEvent.fromNative(eventOut[0]))
     }
+
+    /** Backward-compatible wrapper for callers that only need the byte count. */
+    fun receiveBatch(buffer: ByteArray, lengths: IntArray): Int =
+        receiveBatchWithEvent(buffer, lengths).total
+
 
     /**
      * Permanent traffic/health counters (Phase 13G).
@@ -267,7 +288,7 @@ class SoftEtherClient {
     external fun nativeSendSlice(handle: Long, data: ByteArray, offset: Int, length: Int): Int
     external fun nativeGetStats(handle: Long): LongArray?
     external fun nativeReceive(handle: Long, buffer: ByteArray, maxLength: Int): Int
-    external fun nativeReceiveBatch(handle: Long, buffer: ByteArray, maxLength: Int, lengths: IntArray, maxPackets: Int): Int
+    external fun nativeReceiveBatch(handle: Long, buffer: ByteArray, maxLength: Int, lengths: IntArray, maxPackets: Int, eventOut: IntArray): Int
     external fun nativeSetOption(handle: Long, option: Int, value: Long)
     external fun nativeGetSocketFd(handle: Long): Int
     external fun nativeGetRudpSocketFd(handle: Long): Int

@@ -216,7 +216,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         assertTrue(
             "the whole refresh must be bounded by the total deadline",
-            repository.contains("withTimeoutOrNull(mainTimeoutMs) {"),
+            repository.contains("withTimeoutOrNull(effectiveMainTimeoutMs) {"),
         )
         assertTrue(
             "a timed-out refresh must say it preserved the DB",

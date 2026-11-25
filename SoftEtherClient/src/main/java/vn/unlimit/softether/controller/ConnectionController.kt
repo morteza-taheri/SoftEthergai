@@ -18,6 +18,7 @@ import vn.unlimit.softether.SoftEtherVpnService
 import vn.unlimit.softether.TeardownCompletion
 import vn.unlimit.softether.SoftEtherTrafficSnapshot
 import vn.unlimit.softether.TunnelHealth
+import vn.unlimit.softether.client.RxEvent
 import vn.unlimit.softether.client.SoftEtherClient
 import vn.unlimit.softether.client.protocol.KeepAliveManager
 import vn.unlimit.softether.model.ClientInfo
@@ -175,8 +176,14 @@ class ConnectionController(
 
     private var isNetworkAvailable = true
     
+    @Volatile
     private var currentState: ConnectionState = ConnectionState.DISCONNECTED
-        set(value) {
+        @Synchronized set(value) {
+            // One callback per actual transition. Several callers used to assign
+            // the same value and then call onStateChange again, producing
+            // duplicate broadcasts; the synchronised setter also gives the
+            // field a single ordering point across connect/reconnect/teardown.
+            if (field == value) return
             field = value
             onStateChange(value)
         }
@@ -1176,7 +1183,8 @@ class ConnectionController(
             while (isConnected() && !isCancelled.get()) {
                 try {
                     // Phase 13D: drain multiple frames per JNI crossing
-                    val total = client.receiveBatch(receiveBuffer, batchLengths)
+                    val batch = client.receiveBatchWithEvent(receiveBuffer, batchLengths)
+                    val total = batch.total
                     when {
                         total > 0 -> {
                             // R4b: one RX advance per successfully-received
@@ -1196,6 +1204,10 @@ class ConnectionController(
                             // direction. TunnelHealth is the same module and
                             // already backs both counters.
                             TunnelHealth.noteRxAdvance()
+                            // Real traffic is proof of peer liveness. The old
+                            // code only stamped recordReceived() on idle polls,
+                            // so a busy tunnel could be falsely declared dead.
+                            keepAlive.recordReceived()
 
                             // Valid data received — write frames back-to-back
                             var offset = 0
@@ -1218,11 +1230,19 @@ class ConnectionController(
                             }
                         }
                         total == 0 -> {
-                            // Keepalive or no data. Phase 13E: no Kotlin-side
-                            // delay — native receive blocks up to 100ms in
-                            // poll() when idle, so this loop only wakes ~10x/s
-                            // at idle and instantly when data arrives.
-                            keepAlive.recordReceived()
+                            // No Kotlin-side delay: native receive blocks up to
+                            // 100 ms in poll() when idle. Only a REAL keepalive
+                            // advances the liveness deadline; a timeout is
+                            // neutral and must never reset it.
+                            when (batch.event) {
+                                RxEvent.KEEPALIVE, RxEvent.DATA -> keepAlive.recordReceived()
+                                RxEvent.IDLE_TIMEOUT, RxEvent.SKIPPED -> Unit
+                                RxEvent.ERROR -> {
+                                    Log.e(TAG, "Receive closed by peer")
+                                    if (isConnected() && !isCancelled.get()) triggerReconnect()
+                                    break
+                                }
+                            }
                         }
                         else -> {
                             // Error receiving
@@ -1354,7 +1374,6 @@ class ConnectionController(
             }
 
             currentState = ConnectionState.CONNECTING
-            onStateChange(ConnectionState.CONNECTING)
 
             // Wait before reconnecting
             delay(RECONNECT_DELAY_MS)
@@ -1598,7 +1617,6 @@ class ConnectionController(
             claimAndDestroyNativeHandle()
             // Transition to DISCONNECTED so the activity learns the connection is gone
             currentState = ConnectionState.DISCONNECTED
-            onStateChange(ConnectionState.DISCONNECTED)
             // FIX-G1-IMPL (Option A). Reset the counter so a later session is not
             // born pre-exhausted — same rationale as the budget branch above.
             reconnectAttempts.set(0)

@@ -130,6 +130,7 @@
     <string name="send_email">Gửi email</string>
     <string name="email_error_fix">Vui lòng sửa các lỗi nhập liệu trước</string>
     <string name="error_load_profile">Có lỗi khi nạp cấu hình VPN</string>
+    <string name="downloading_openvpn_profile">Đang tải cấu hình OpenVPN…</string>
     <string name="traffic_session">Lưu lượng phiên</string>
     <string name="uploaded_data">Tải lên</string>
     <string name="downloaded_data">Tải xuống</string>
@@ -287,6 +288,9 @@
     <string name="vpn_permission_denied">Quyền VPN bị từ chối</string>
     <string name="error_unknown">Có lỗi xảy ra. Vui lòng thử lại.</string>
     <!-- Scheduled server list refresh interval (1–24 hours, default 12). -->
+    <string name="setting_server_update_timeout_label">Server List Update Timeout</string>
+    <string name="setting_server_update_timeout_subtitle">How long one refresh may take. Increase it on slow or filtered networks.</string>
+    <string name="setting_server_update_timeout_value">%1$d seconds</string>
     <string name="setting_server_update_interval_label">Server List Update Interval</string>
     <string name="setting_server_update_interval_subtitle">How often the server list refreshes on its own. You can always update it manually.</string>
     <string name="setting_server_update_interval_hours">Every %1$d hours</string>

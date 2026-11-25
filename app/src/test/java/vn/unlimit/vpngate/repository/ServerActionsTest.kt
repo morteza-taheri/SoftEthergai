@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.repository
 
+import vn.unlimit.vpngate.parser.EmergencyCsvParser
 import vn.unlimit.vpngate.parser.OpenVpnConfigParser
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -18,6 +19,28 @@ class ServerActionsTest {
     @After
     fun tearDown() {
         DeletedServers.replaceForTest(emptySet())
+    }
+
+    /** Minimal RFC4180 row splitter: quoted fields may contain commas/quotes. */
+    private fun csvRow(line: String): List<String> {
+        val out = mutableListOf<String>()
+        val field = StringBuilder()
+        var quoted = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                c == '"' && quoted && i + 1 < line.length && line[i + 1] == '"' -> {
+                    field.append('"'); i++
+                }
+                c == '"' -> quoted = !quoted
+                c == ',' && !quoted -> { out += field.toString(); field.setLength(0) }
+                else -> field.append(c)
+            }
+            i++
+        }
+        out += field.toString()
+        return out
     }
 
     private fun connection() = VPNGateConnection().apply {
@@ -41,7 +64,10 @@ class ServerActionsTest {
     @Test
     fun `export has exactly one header and one data row`() {
         val csv = ServerActions.toCsv(connection())
-        assertEquals(ServerActions.API_HEADER, csv.lines()[0])
+        assertEquals(
+            EmergencyCsvParser.ALL_COLUMNS.joinToString(","),
+            csv.lines()[0].removePrefix("#"),
+        )
         assertEquals(1, csv.lines().count { it.isNotBlank() } - 1)
         assertTrue(csv.endsWith("\n"))
     }
@@ -50,7 +76,7 @@ class ServerActionsTest {
     fun `exported CSV is detected and re-imported as one row`() {
         val csv = ServerActions.toCsv(connection())
         assertEquals(
-            ManualCsvImport.Format.VPN_GATE_API,
+            ManualCsvImport.Format.APP_CSV,
             ManualCsvImport.detect(csv),
         )
         val result = ManualCsvImport.parse(csv, now = 1_000L)
@@ -84,7 +110,9 @@ class ServerActionsTest {
     fun `openvpn config is base64 encoded and decoded on re-import`() {
         val original = connection()
         val csv = ServerActions.toCsv(original)
-        val encoded = csv.lines()[1].substringAfterLast(',')
+        val columns = csv.lines()[0].removePrefix("#").split(',')
+        val index = columns.indexOf("OpenVPN_ConfigData_Base64")
+        val encoded = csvRow(csv.lines()[1])[index]
         assertFalse("config column must not be empty", encoded.isBlank())
         assertEquals(
             original.openVpnConfigData,
@@ -93,6 +121,24 @@ class ServerActionsTest {
         val item = (ManualCsvImport.parse(csv, 1_000L) as ManualCsvImport.Result.Success)
             .items.single()
         assertFalse(item.openVpnConfigData.isNullOrBlank())
+    }
+
+    @Test
+    fun `tcp and udp port facts survive export and re-import`() {
+        val original = connection().apply {
+            seTcpPort = 5555
+            seUdpPort = 1194
+            seUdpSupported = true
+            tcpPort = 443
+            udpPort = 1195
+        }
+        val result = ManualCsvImport.parse(ServerActions.toCsv(original), now = 1_000L)
+        val item = (result as ManualCsvImport.Result.Success).items.single()
+        assertEquals(5555, item.seTcpPort)
+        assertEquals(1194, item.seUdpPort)
+        assertTrue(item.seUdpSupported)
+        assertEquals(443, item.tcpPort)
+        assertEquals(1195, item.udpPort)
     }
 
     @Test

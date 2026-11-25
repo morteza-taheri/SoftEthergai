@@ -47,7 +47,7 @@ class HttpFetcherR4bTest {
     }
 
     @Test
-    fun `the routing input exposes exactly tunnelUsable and hasBoundNetwork`() {
+    fun `the routing input exposes exactly tunnelUsable, hasBoundNetwork and foreignVpnAvailable`() {
         // The key space of the routing decision must be measurements only. A
         // preference field here is exactly the regression v1.0.52 removes, and
         // it would be invisible from a value-equality test because every
@@ -58,7 +58,10 @@ class HttpFetcherR4bTest {
             .filterNot { it.startsWith("$") }
             .sorted()
 
-        assertEquals(listOf("hasBoundNetwork", "tunnelUsable"), names)
+        // v1.0.87: the third input is a measurement too — "a validated VPN
+        // owned by another app is the default route" — not a preference. The
+        // rule this test protects (no user toggle in the decision) is intact.
+        assertEquals(listOf("foreignVpnAvailable", "hasBoundNetwork", "tunnelUsable"), names)
     }
 
     @Test

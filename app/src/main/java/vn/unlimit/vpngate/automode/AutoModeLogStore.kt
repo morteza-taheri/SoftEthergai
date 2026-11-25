@@ -40,14 +40,19 @@ object AutoModeLogStore {
 
     fun add(source: Source, text: String) {
         if (paused || text.isBlank()) return
-        val line = Line(System.currentTimeMillis(), source, text.replace('\n', ' ').trim())
-        val current = _lines.value
-        val updated = if (current.size >= MAX_LINES) {
-            current.takeLast(MAX_LINES - 1) + line
-        } else {
-            current + line
+        // Producers run on the main thread, the logcat daemon thread, the
+        // OpenVPN logging thread and Dispatchers.Default. Serialise the whole
+        // read-modify-write so no line is lost and ordering follows the lock.
+        synchronized(this) {
+            if (paused) return
+            val line = Line(System.currentTimeMillis(), source, text.replace('\n', ' ').trim())
+            val current = _lines.value
+            _lines.value = if (current.size >= MAX_LINES) {
+                current.takeLast(MAX_LINES - 1) + line
+            } else {
+                current + line
+            }
         }
-        _lines.value = updated
     }
 
     /** All lines joined for clipboard copy (all sources, not filtered). */
@@ -59,7 +64,13 @@ object AutoModeLogStore {
     }
 
     fun clear() {
-        _lines.value = emptyList()
+        // BLOCK v1.0.81 (review finding #7): take the same lock as [add].
+        // Without it a clear() racing an add() could publish the cleared list
+        // and then have add() write a line built from the pre-clear list,
+        // resurrecting the whole buffer the user just emptied.
+        synchronized(this) {
+            _lines.value = emptyList()
+        }
     }
 
     /**

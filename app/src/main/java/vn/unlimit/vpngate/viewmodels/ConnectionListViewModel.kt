@@ -82,7 +82,17 @@ class ConnectionListViewModel(application: Application) : BaseViewModel(applicat
     }
 
     private val vpnServerRepository =
-        VpnServerRepository(cacheDir = application.filesDir)
+        VpnServerRepository(
+            cacheDir = application.filesDir,
+            // v1.0.88: the Update button is the path a user actually presses,
+            // and it was the one path that ignored the Settings value — the
+            // repository was built with the hard-coded 45 s default. Read it
+            // per refresh so changing the setting takes effect immediately.
+            mainTimeoutProvider = {
+                (App.instance?.dataUtil?.getServerListUpdateTimeoutSeconds()
+                    ?: DataUtil.DEFAULT_SERVER_LIST_UPDATE_TIMEOUT_SECONDS) * 1000L
+            },
+        )
 
     /**
      * The one safe replacement path. Manual button presses and the periodic

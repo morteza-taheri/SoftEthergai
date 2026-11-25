@@ -528,13 +528,18 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeGe
 // so callers detect the frame count by scanning for the first zero.
 JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeReceiveBatch(
     JNIEnv *env, jobject thiz, jlong handle, jbyteArray buffer, jint maxLength,
-    jintArray lengths, jint maxPackets) {
+    jintArray lengths, jint maxPackets, jintArray eventOut) {
     if (handle == 0) {
         LOGE("Invalid handle");
         return -1;
     }
-    if (buffer == NULL || lengths == NULL || maxPackets <= 0 || maxLength <= 0) {
+    if (buffer == NULL || lengths == NULL || eventOut == NULL ||
+        maxPackets <= 0 || maxLength <= 0) {
         LOGE("Invalid arguments for receiveBatch");
+        return -1;
+    }
+    if ((*env)->GetArrayLength(env, eventOut) < 1) {
+        LOGE("receiveBatch eventOut too small");
         return -1;
     }
 
@@ -569,12 +574,24 @@ JNIEXPORT jint JNICALL Java_vn_unlimit_softether_client_SoftEtherClient_nativeRe
         return -1;
     }
 
+    jint* event_elems = (*env)->GetIntArrayElements(env, eventOut, NULL);
+    if (event_elems == NULL) {
+        (*env)->ReleaseIntArrayElements(env, lengths, length_elems, JNI_ABORT);
+        (*env)->ReleaseByteArrayElements(env, buffer, buffer_bytes, JNI_ABORT);
+        LOGE("Failed to get event array");
+        return -1;
+    }
+    event_elems[0] = 0;
+
     softether_connection_t* conn = (softether_connection_t*)handle;
     uint32_t count = 0;
+    softether_rx_event_t rx_event = SOFTETHER_RX_ERROR;
     int result = softether_receive_batch(conn, (uint8_t*)buffer_bytes, (uint32_t)maxLength,
                                          (uint32_t*)length_elems, (uint32_t)maxPackets,
-                                         &count);
+                                         &count, &rx_event);
+    event_elems[0] = (jint)rx_event;
 
+    (*env)->ReleaseIntArrayElements(env, eventOut, event_elems, 0);
     (*env)->ReleaseIntArrayElements(env, lengths, length_elems, 0);
     if (result > 0) {
         (*env)->ReleaseByteArrayElements(env, buffer, buffer_bytes, 0);

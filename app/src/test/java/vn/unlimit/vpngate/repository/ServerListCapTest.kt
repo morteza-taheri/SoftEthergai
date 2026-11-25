@@ -22,15 +22,15 @@ class ServerListCapTest {
 
     @Test
     fun defaults_and_bounds_match_the_operator_decision() {
-        assertEquals(300, ServerListCap.DEFAULT)
+        assertEquals(1000, ServerListCap.DEFAULT)
         assertEquals(10, ServerListCap.MIN)
         assertEquals(2000, ServerListCap.MAX)
-        assertEquals(300, DataUtil.DEFAULT_SERVER_LIST_CAP)
+        assertEquals(1000, DataUtil.DEFAULT_SERVER_LIST_CAP)
         assertEquals(10, DataUtil.MIN_SERVER_LIST_CAP)
         assertEquals(2000, DataUtil.MAX_SERVER_LIST_CAP)
         // No Android instance in a JVM test -> the resolver falls back to DEFAULT.
-        assertEquals(300, ServerListCap.current())
-        assertEquals(150, ServerListCap.manualQuota())
+        assertEquals(1000, ServerListCap.current())
+        assertEquals(500, ServerListCap.manualQuota())
     }
 
     @Test

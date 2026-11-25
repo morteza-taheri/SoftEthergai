@@ -2883,18 +2883,18 @@ val sstp = AutoModeCandidate(
             "the watcher must not repeat the disarm sequence inline",
             !watcherBody.contains("TunnelStateWatcher.onTunnelLost = null"),
         )
-        // One production dispatch (inside the funnel), the definition itself,
-        // and the @VisibleForTesting seam. Nothing else may call it.
+        // One owned production dispatch (launchRecovery) and the definition
+        // itself. The @VisibleForTesting seam also routes through launchRecovery.
         assertEquals(
             "onUnexpectedDisconnect has exactly one production call site",
-            3,
+            2,
             Regex("""onUnexpectedDisconnect\(""").findAll(source).count(),
         )
         val funnelBody = source.substringAfter("private fun reportArmedTunnelLoss(")
             .substringBefore("\n    }")
         assertTrue(
             "the funnel must be the single production dispatch site",
-            funnelBody.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+            funnelBody.contains("launchRecovery(dropped)"),
         )
     }
 
@@ -2917,8 +2917,8 @@ val sstp = AutoModeCandidate(
             previous = index
         }
         assertTrue(
-            "the funnel must dispatch the follow-up through the controller scope",
-            body.contains("scope.launch { onUnexpectedDisconnect(dropped) }"),
+            "the funnel must dispatch the follow-up through the owned recovery job",
+            body.contains("launchRecovery(dropped)"),
         )
     }
 

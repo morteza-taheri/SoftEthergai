@@ -58,6 +58,20 @@ enum class OscPrefKey {
     RECONNECTION_LIFE,
     LOG_DO_SAVE_LOG,
     LOG_DIR,
+
+    /**
+     * v1.0.87 (VpnM): IPv4 address this app resolved for [HOME_HOSTNAME].
+     *
+     * Appended at the END of the enum on purpose: preferences are stored by
+     * `name`, so the position is irrelevant to existing installs, but keeping
+     * the existing order byte-identical removes any doubt about the stacks
+     * that serialise an ordinal.
+     *
+     * Empty means "no pre-resolution": SSLTerminal then resolves the hostname
+     * itself, exactly as before. Only the socket target uses this value — SNI
+     * and certificate verification keep using the hostname.
+     */
+    HOME_HOSTNAME_IP,
 }
 
 
@@ -117,6 +131,7 @@ internal val DEFAULT_STRING_MAP = mapOf(
     OscPrefKey.SSL_VERSION to "DEFAULT",
     OscPrefKey.HOME_COUNTRY to "XX",
     OscPrefKey.HOME_CONNECTED_IP to EMPTY_TEXT,
+    OscPrefKey.HOME_HOSTNAME_IP to EMPTY_TEXT,
     OscPrefKey.ROUTE_APP_LIST_TYPE to LIST_TYPE_ALLOWED,
 )
 

@@ -374,9 +374,12 @@ class VpnServerRepositoryLadderTest {
             clock.now += 1L
         }
 
+        // v1.0.87: four transports (PHYSICAL, TUNNEL, FOREIGN_VPN, EMERGENCY).
+        // The point of the assertion is that the store's key space is the enum,
+        // i.e. a fixed small set, not the number of calls.
         assertEquals(
             "the key space must be exactly the CollectorPath enum",
-            3,
+            4,
             CollectorPath.entries.size,
         )
         val preferred = memory.preferred()

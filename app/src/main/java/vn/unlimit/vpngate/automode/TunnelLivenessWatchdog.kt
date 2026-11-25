@@ -99,10 +99,26 @@ internal class TunnelLivenessWatchdog(
         const val NO_PROOF: Long = Long.MIN_VALUE
 
         /**
-         * Matches the SoftEther keepalive timeout (10 s) used in
-         * ConnectionController.startKeepalive, with headroom for a slow poll.
+         * How long without proof of life before the tunnel is considered lost.
+         *
+         * BLOCK v1.0.81 (review finding #1): raised from 15 s to 30 s.
+         *
+         * The window has to absorb the worst *legitimate* gap between two
+         * proofs, not just the happy path. Samples arrive once per second, so
+         * the reported loss lands at `silenceTimeoutMs + lossThreshold` (33 s
+         * here). A probe that times out at 3 s and then waits a full 8 s
+         * interval produced a 14 s gap before the next success could even be
+         * recorded; with the old 15 s window that left ~1 s of margin, and any
+         * extra jitter tore down a working tunnel. With 30 s plus the probe's
+         * 2 s retry-after-failure, one slow or filtered probe cannot reach the
+         * threshold.
+         *
+         * The cost is detection latency for a genuinely dead tunnel (33 s
+         * instead of 18 s), which is the right trade: a false disconnect
+         * interrupts a working session, a late detection merely delays a
+         * reconnect that Auto Mode then performs anyway.
          */
-        const val DEFAULT_SILENCE_TIMEOUT_MS: Long = 15_000L
+        const val DEFAULT_SILENCE_TIMEOUT_MS: Long = 30_000L
 
         /** 3 samples, matching KeepAliveManager.MISSED_THRESHOLD. */
         const val DEFAULT_LOSS_THRESHOLD: Int = 3

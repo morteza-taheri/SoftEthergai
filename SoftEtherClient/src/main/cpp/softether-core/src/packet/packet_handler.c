@@ -899,11 +899,18 @@ static int drain_rudp_into_recv_queue(softether_connection_t* conn, int max_fram
 // Supports multi-connection: polls all active TCP sockets + optional UDP socket.
 // Returns: 1 = data queued, 0 = keepalive/no data/timeout, -1 = error
 static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
-    if (conn == NULL || conn->ssl == NULL) return -1;
-    if (conn->state == STATE_DISCONNECTED || conn->state == STATE_DISCONNECTING) return -1;
+    if (conn == NULL || conn->ssl == NULL) {
+        if (conn != NULL) conn->last_rx_event = SOFTETHER_RX_ERROR;
+        return -1;
+    }
+    if (conn->state == STATE_DISCONNECTED || conn->state == STATE_DISCONNECTING) {
+        conn->last_rx_event = SOFTETHER_RX_ERROR;
+        return -1;
+    }
 
     // Check for queued RUDP data first (non-blocking)
     if (drain_rudp_into_recv_queue(conn, RECV_QUEUE_SIZE) > 0) {
+        conn->last_rx_event = SOFTETHER_RX_DATA;
         return 1;
     }
 
@@ -1015,10 +1022,12 @@ static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
         int poll_ret = poll(fds, nfds, poll_timeout_ms);
 
         if (poll_ret == 0) {
+            conn->last_rx_event = SOFTETHER_RX_IDLE_TIMEOUT;
             return 0;  // No data available
         }
         if (poll_ret < 0) {
             LOGE("fill_recv_queue: poll error: %d", errno);
+            conn->last_rx_event = SOFTETHER_RX_ERROR;
             return -1;
         }
 
@@ -1079,6 +1088,7 @@ static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
         }
 
         if (ssl_pending_idx < 0) {
+            conn->last_rx_event = SOFTETHER_RX_IDLE_TIMEOUT;
             return 0;  // No TCP data
         }
     }
@@ -1093,10 +1103,11 @@ static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
         // Revalidate: check that the SSL pointer is still valid (not freed by disconnect).
         // This guards against concurrent softether_disconnect / softether_close_additional
         // destroying the SSL context between our poll() wake-up and the upcoming SSL_read.
-        if (sel_ssl == NULL) {
-            LOGW("fill_recv_queue: SSL became NULL for fd=%d, skipping", sel_fd);
-            return 0;
-        }
+            if (sel_ssl == NULL) {
+                LOGW("fill_recv_queue: SSL became NULL for fd=%d, skipping", sel_fd);
+                conn->last_rx_event = SOFTETHER_RX_ERROR;
+                return 0;
+            }
         if (!sel_is_additional) {
             // Primary socket: verify conn->ssl wasn't swapped out by disconnect
             if (conn->ssl != sel_ssl || conn->socket_fd != sel_fd) {
@@ -1175,11 +1186,13 @@ static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
                 }
             }
             LOGT("fill_recv_queue: keepalive (%u bytes) from fd=%d", ka_size, sel_fd);
+            conn->last_rx_event = SOFTETHER_RX_KEEPALIVE;
             softether_send_keepalive(conn);
             return 0;
         }
 
         if (block_count == 0) {
+            conn->last_rx_event = SOFTETHER_RX_SKIPPED;
             return 0; // Empty message
         }
 
@@ -1293,7 +1306,15 @@ static int softether_fill_recv_queue_locked(softether_connection_t* conn) {
     #undef CLOSE_FAILED_ADDITIONAL_SOCKET
 
     LOGT("fill_recv_queue: queued %d frames total", conn->recv_queue_count);
-    return (conn->recv_queue_count > 0) ? 1 : 0;
+    if (conn->recv_queue_count > 0) {
+        conn->last_rx_event = SOFTETHER_RX_DATA;
+        return 1;
+    }
+    if (conn->last_rx_event != SOFTETHER_RX_KEEPALIVE &&
+        conn->last_rx_event != SOFTETHER_RX_ERROR) {
+        conn->last_rx_event = SOFTETHER_RX_SKIPPED;
+    }
+    return 0;
 }
 
 // Public entry point. Holds the SSL-lifetime READ lock across the whole receive

@@ -117,6 +117,9 @@ class App : Application() {
             // BLOCK v1.0.69 PART 1: version 9 -> 10, additive history columns.
             .addMigrations(AppDatabase.MIGRATION_9_10)
             .addMigrations(AppDatabase.MIGRATION_10_11)
+            // Stage G-7: version 11 -> 12, the on-demand OpenVPN download
+            // identifiers (`sid`/`hid`). Additive, nullable, no back-fill.
+            .addMigrations(AppDatabase.MIGRATION_11_12)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()
@@ -218,19 +221,37 @@ class App : Application() {
     }
 
     private fun initializeDefaultExcludedApps() {
-        // Always exclude self — hidden from user, cannot be removed
-        val selfPackage = ExcludedApp(
-            packageName = packageName,
-            appName = "Self"
-        )
+        // v1.0.88 — the app must NOT exclude itself from its own tunnel.
+        //
+        // The previous code seeded `packageName` into `excluded_apps` with the
+        // comment "always exclude self, hidden from user, cannot be removed".
+        // That silently disabled the one mechanism that makes the server list
+        // updatable on a censored network, and only for ONE protocol.
+        //
+        // `vpnLib` (OpenVPN) applies the exclusion list in
+        // `OpenVPNService.newVPNBuilder` (`addDisallowedApplication`), so the
+        // device's VPN `TransportInfo` listed UIDs `…-10342, 10345-…` — our own
+        // UID 10344 was absent. Every collector request bound to that network
+        // was therefore sent into a tunnel that does not carry this app's
+        // traffic, and failed with `Connection reset`; the ladder, correctly,
+        // never fell back to PHYSICAL while a "usable, bound" tunnel existed,
+        // so the refresh failed outright. Reproduced on device 2026-11-25 with
+        // OpenVPN connected.
+        //
+        // SSTP never read the list, which is why the same build refreshed
+        // perfectly over MS-SSTP and not over OpenVPN.
+        //
+        // Excluding self buys nothing: every stack protects its own transport
+        // socket with `VpnService.protect()`, so the tunnel's control
+        // connection cannot loop through the tunnel it establishes. Users can
+        // still exclude any OTHER app.
+        //
+        // The row is deleted rather than merely not seeded, because every
+        // existing install already has it.
         try {
-            val existingSelf = excludedAppDao.isAppExcluded(selfPackage.packageName)
-            if (existingSelf == 0) {
-                excludedAppDao.insertExcludedApp(selfPackage)
-                Log.d(TAG, "Added self as default excluded app")
-            }
+            excludedAppDao.deleteByPackageName(packageName)
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing self excluded app", e)
+            Log.e(TAG, "Error removing self from the excluded-apps list", e)
         }
 
         // Add Android Auto as default excluded app

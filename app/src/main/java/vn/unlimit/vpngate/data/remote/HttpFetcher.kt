@@ -33,6 +33,15 @@ data class HttpResponse(
     val redirectChain: List<String> = emptyList(),
     val redirectRejected: Boolean = false,
     val redirectRejectionReason: String? = null,
+    /**
+     * Stage G-5: the server answered `304 Not Modified` and [body] is the
+     * previously downloaded body it is describing. The content is current by
+     * the server's own assertion; only the transfer was skipped.
+     */
+    val servedFromValidatorCache: Boolean = false,
+    /** Validators the server attached to this body, for the next request. */
+    val etag: String? = null,
+    val lastModified: String? = null,
 )
 
 /** Minimal fetch boundary so parsers stay unit-testable offline. */
@@ -107,6 +116,10 @@ class ResilientDns : Dns {
  */
 internal fun collectorClientBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
     .dns(ResilientDns())
+    // Cleartext is gated in code, not in XML: the VPN Gate mirror addresses
+    // rotate, so a static `network_security_config` allowlist blocked every
+    // newly discovered mirror. See CleartextMirrorPolicy.
+    .addInterceptor(CleartextMirrorInterceptor())
     .connectTimeout(10, TimeUnit.SECONDS)
     .readTimeout(15, TimeUnit.SECONDS)
     // Redirects are followed by hand so every hop can be checked against
@@ -188,6 +201,14 @@ fun boundToPhysicalNetwork(network: Network): OkHttpClient =
 class OkHttpFetcher(
     private val client: OkHttpClient = defaultCollectorClient(),
     private val requestDelayMs: Long = 0,
+    /**
+     * Stage G-5: send `If-None-Match` / `If-Modified-Since` when a previous
+     * body for the URL is remembered, and answer a `304` from that body.
+     *
+     * On by default. A caller that must see the raw wire result (a diagnostic
+     * dump, or a test asserting header behaviour) can turn it off.
+     */
+    private val conditional: Boolean = true,
 ) : HttpFetcher {
     companion object {
         private const val USER_AGENT =
@@ -228,7 +249,12 @@ class OkHttpFetcher(
             var followTo: String? = null
 
             val response: HttpResponse = try {
-                val request = Request.Builder()
+                // Stage G-5: offer the validators this URL last gave us. A null
+                // entry simply means "no conditional request", i.e. exactly the
+                // previous behaviour.
+                val cached = if (conditional) HttpCache.get(current) else null
+
+                val builder = Request.Builder()
                     .url(current)
                     .header("User-Agent", USER_AGENT)
                     .header(
@@ -237,14 +263,36 @@ class OkHttpFetcher(
                     )
                     .header("Accept-Language", "en-US,en;q=0.9")
                     .header("Connection", "keep-alive")
-                    .build()
+                cached?.etag?.let { builder.header("If-None-Match", it) }
+                cached?.lastModified?.let { builder.header("If-Modified-Since", it) }
+                val request = builder.build()
 
                 callWithCancel(request).use { raw ->
                     val status = raw.code
                     val location = raw.header("Location")
                     val isRedirect = status in 300..399
 
-                    if (isRedirect && location.isNullOrBlank()) {
+                    // Stage G-5: 304 is inside 300..399 but is NOT a redirect.
+                    // It asserts that the body we already hold is current, so
+                    // the remembered body is returned as a normal success and
+                    // the megabyte is not transferred again. With no remembered
+                    // body there is nothing to assert about, so this falls
+                    // through to the ordinary handling below and ends as a
+                    // failure, exactly as before.
+                    if (status == 304 && cached != null) {
+                        CollectorLog.d("HTTP 304 for $current — body unchanged, reusing ${cached.body.length} chars")
+                        HttpResponse(
+                            requestedUrl = url,
+                            finalUrl = current,
+                            status = 200,
+                            contentType = cached.contentType,
+                            body = cached.body,
+                            redirectChain = chain.toList(),
+                            servedFromValidatorCache = true,
+                            etag = raw.header("ETag") ?: cached.etag,
+                            lastModified = raw.header("Last-Modified") ?: cached.lastModified,
+                        )
+                    } else if (isRedirect && location.isNullOrBlank()) {
                         HttpResponse(url, current, status, null, null, chain.toList())
                     } else if (isRedirect) {
                         val next = raw.request.url.resolve(location.orEmpty())?.toString()
@@ -332,6 +380,19 @@ class OkHttpFetcher(
                         }
                         if (!raw.isSuccessful) {
                             CollectorLog.d("HTTP ${raw.code} for $current")
+                        } else if (bodyText != null) {
+                            // Stage G-5: remember the body and the validators the
+                            // server gave for it, so the next run can ask "has this
+                            // changed?" for the price of two headers. Bodies with no
+                            // validators are not retained — there would be nothing
+                            // to revalidate with.
+                            HttpCache.put(
+                                url = current,
+                                body = bodyText,
+                                etag = raw.header("ETag"),
+                                lastModified = raw.header("Last-Modified"),
+                                contentType = raw.body?.contentType()?.toString(),
+                            )
                         }
                         HttpResponse(
                             requestedUrl = url,
@@ -340,6 +401,8 @@ class OkHttpFetcher(
                             contentType = raw.body?.contentType()?.toString(),
                             body = bodyText,
                             redirectChain = chain.toList(),
+                            etag = raw.header("ETag"),
+                            lastModified = raw.header("Last-Modified"),
                         )
                     }
                 }
@@ -450,12 +513,27 @@ enum class CollectorPath {
     /** The app's own VPN network, bound per request. */
     TUNNEL,
 
+    /**
+     * A VPN established by **another application**, bound per request.
+     *
+     * v1.0.87. Before this rung existed, a foreign VPN was actively bypassed:
+     * [CollectorPath.PHYSICAL] is bound to a NOT_VPN network on purpose, so
+     * with a third-party VPN up the collector left through the underlying
+     * Wi-Fi/cellular — the very path the user had turned the other VPN on to
+     * escape. The list then failed to update exactly when the user had already
+     * solved the problem for us.
+     *
+     * It is a separate value rather than a wider PHYSICAL so the log and the
+     * path memory never claim "physical" for a request that rode a tunnel.
+     */
+    FOREIGN_VPN,
+
     /** Bundled/emergency servers.csv source; no network binding. */
     EMERGENCY,
 }
 
 /**
- * The two inputs the routing decision needs.
+ * The inputs the routing decision needs.
  *
  * v1.0.52 (§1.6.44): the user-facing "try the tunnel first" opt-in is **gone**.
  * Routing is fully automatic — the ladder is derived from measured signals
@@ -464,11 +542,16 @@ enum class CollectorPath {
  * memory that records which transport last worked. A stale stored
  * `vpn_always_prefer_vpn` value is simply never read again.
  *
- * Both must hold for the `TUNNEL` rung to be *offered*:
+ * [tunnelUsable] and [hasBoundNetwork] must both hold for the `TUNNEL` rung to
+ * be *offered*:
  *
  *  1. [tunnelUsable] — `GlobalVpnTracker.isTunnelUsableForRouting()`, i.e. a
  *     tunnel that is CONNECTED *and* forwarding, not a half-up one.
  *  2. [hasBoundNetwork] — a system VPN Network is actually at hand.
+ *
+ * [foreignVpnAvailable] is independent: a validated VPN network that this app
+ * does not own (see `GlobalVpnTracker.currentForeignVpnNetwork`). It is only
+ * consulted when the app's own tunnel is not usable.
  *
  * Anything missing keeps the request on `CollectorPath.PHYSICAL` — an explicit
  * non-VPN network, never the unbound OS default.
@@ -476,5 +559,7 @@ enum class CollectorPath {
 data class CollectorRoutingInput(
     val tunnelUsable: Boolean,
     val hasBoundNetwork: Boolean,
+    /** v1.0.87: a validated VPN owned by another app is the default route. */
+    val foreignVpnAvailable: Boolean = false,
 )
 

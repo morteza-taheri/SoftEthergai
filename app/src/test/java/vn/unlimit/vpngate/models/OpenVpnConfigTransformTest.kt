@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.models
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -153,5 +154,122 @@ class OpenVpnConfigTransformTest {
             """.trimIndent(),
             combined,
         )
+    }
+
+    // ----------------------------------------------------- forTransport
+    //
+    // v1.0.87: the transform must read the profile instead of assuming TCP.
+    // The regression this covers: a stored UDP profile (downloaded on demand
+    // with `udp=1`) was handed back unchanged by the "TCP" option, and the
+    // "UDP" option only worked by accident because its literal replacements
+    // found nothing to change.
+
+    private val udpProfile = """
+        client
+        dev tun
+        proto udp
+        remote 219.126.84.5 1195
+        cipher AES-256-CBC
+    """.trimIndent()
+
+    @Test
+    fun `a stored udp profile becomes tcp when tcp is requested`() {
+        val tcp = OpenVpnConfigTransform.forTransport(
+            config = udpProfile,
+            wantUdp = false,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )
+        assertEquals(tcpProfile, tcp)
+    }
+
+    @Test
+    fun `a stored tcp profile stays tcp when tcp is requested`() {
+        val tcp = OpenVpnConfigTransform.forTransport(
+            config = tcpProfile,
+            wantUdp = false,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )
+        assertEquals(tcpProfile, tcp)
+    }
+
+    @Test
+    fun `a stored udp profile stays udp when udp is requested`() {
+        val udp = OpenVpnConfigTransform.forTransport(
+            config = udpProfile,
+            wantUdp = true,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )
+        assertEquals(udpProfile, udp)
+    }
+
+    @Test
+    fun `tcp-client is normalised instead of left in place`() {
+        val clientProfile = tcpProfile.replace("proto tcp", "proto tcp-client")
+        val udp = OpenVpnConfigTransform.forTransport(
+            config = clientProfile,
+            wantUdp = true,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )
+        assertEquals(udpProfile, udp)
+    }
+
+    @Test
+    fun `the port is rewritten on the matching remote line only`() {
+        val multi = """
+            client
+            dev tun
+            proto tcp
+            remote 10.0.0.1 443
+            remote 219.126.84.5 443
+        """.trimIndent()
+        val udp = OpenVpnConfigTransform.forTransport(
+            config = multi,
+            wantUdp = true,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )!!
+        assertTrue(udp.contains("remote 10.0.0.1 443"))
+        assertTrue(udp.contains("remote 219.126.84.5 1195"))
+    }
+
+    @Test
+    fun `a domain-form profile rewrites the first remote line when the ip is absent`() {
+        val domain = tcpProfile.replace("219.126.84.5", "Public-1.opengw.net")
+        val udp = OpenVpnConfigTransform.forTransport(
+            config = domain,
+            wantUdp = true,
+            tcpPort = 443,
+            udpPort = 1195,
+            ip = "219.126.84.5",
+        )!!
+        assertEquals(
+            domain.replace("proto tcp", "proto udp").replace(" 443", " 1195"),
+            udp,
+        )
+    }
+
+    @Test
+    fun `no published port leaves the profile untouched`() {
+        assertEquals(
+            udpProfile,
+            OpenVpnConfigTransform.forTransport(udpProfile, false, tcpPort = 0, udpPort = 1195, ip = "219.126.84.5"),
+        )
+        assertNull(OpenVpnConfigTransform.forTransport(null, false, 443, 1195, "219.126.84.5"))
+    }
+
+    @Test
+    fun `the stored transport is detected`() {
+        assertTrue(OpenVpnConfigTransform.isUdp(udpProfile))
+        assertTrue(!OpenVpnConfigTransform.isUdp(tcpProfile))
+        assertTrue(!OpenVpnConfigTransform.isUdp(null))
     }
 }

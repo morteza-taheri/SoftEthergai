@@ -75,6 +75,33 @@ class TunnelLivenessProbe(
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
 ) {
     /**
+     * BLOCK v1.0.81 (review finding #2): every endpoint a probe may use.
+     *
+     * A single hard-coded target made the whole watchdog hostage to one
+     * address: if the VPN exit filtered `1.1.1.1:443`, no probe could ever
+     * succeed, and because the watchdog is seeded with proof when a tunnel
+     * comes up, EVERY tunnel would be declared lost roughly
+     * `silence + hysteresis` after connecting. That is a false disconnect on a
+     * perfectly healthy tunnel, which is precisely the symptom being fixed.
+     *
+     * Several independent anycast/public resolvers are tried in order and the
+     * probe succeeds on the first that completes a round trip, so no single
+     * filtered address can condemn a live tunnel. The cost on a healthy tunnel
+     * is unchanged: the first target answers and the rest are never touched.
+     *
+     * When a caller overrides [probeHost] (the unit tests point at a local
+     * listener, diagnostics may point somewhere specific) only that target is
+     * used — an override means "probe exactly this", never "probe this and
+     * also the internet".
+     */
+    private val targets: List<Pair<String, Int>> =
+        if (probeHost == DEFAULT_PROBE_HOST && probePort == DEFAULT_PROBE_PORT) {
+            DEFAULT_TARGETS
+        } else {
+            listOf(probeHost to probePort)
+        }
+
+    /**
      * Wall-clock time of the last successful round trip, or
      * [TunnelLivenessWatchdog.NO_PROOF] before the first one succeeds.
      */
@@ -87,6 +114,22 @@ class TunnelLivenessProbe(
 
     private val running = AtomicBoolean(false)
     private var job: Job? = null
+
+    /**
+     * BLOCK v1.0.81 (review finding #6): identifies the CURRENT loop.
+     *
+     * `running` alone could not express this. `stop()` cancels the job and
+     * clears the flag, but the cancelled loop still runs its `finally` block
+     * later — on another thread, after `start()` may already have launched a
+     * replacement. That stale `finally` then cleared `running` while the new
+     * loop was live, so a subsequent `start()` saw `false`, acquired the flag
+     * and launched a SECOND concurrent loop against the same socket budget.
+     *
+     * Each `start()` takes a new generation; a loop only clears `running` if
+     * its own generation is still the current one.
+     */
+    @Volatile
+    private var generation: Long = 0
 
     /** Serialises probes so a slow attempt cannot overlap the next interval. */
     private val probeLock = Mutex()
@@ -114,24 +157,45 @@ class TunnelLivenessProbe(
      */
     fun start(protocol: AutoModeProtocol) {
         if (!running.compareAndSet(false, true)) return
+        val myGeneration = ++generation
         lastProofAtMs = TunnelLivenessWatchdog.NO_PROOF
         consumedProofAtMs = TunnelLivenessWatchdog.NO_PROOF
         job = scope.launch(Dispatchers.IO) {
             try {
-                while (isActive) {
-                    if (probeOnce()) {
+                while (isActive && myGeneration == generation) {
+                    val alive = probeOnce()
+                    if (alive) {
                         lastProofAtMs = System.currentTimeMillis()
                     }
-                    delay(intervalMs)
+                    // BLOCK v1.0.81 (review finding #1): a failed probe retries
+                    // quickly instead of waiting a whole interval.
+                    //
+                    // The old code slept [intervalMs] unconditionally, so one
+                    // probe that timed out created a gap of
+                    // `timeout + interval` (3 s + 8 s = 11 s) before the next
+                    // attempt could even start, and up to
+                    // `timeout + interval + timeout` (14 s) before the next
+                    // success could be recorded. With a 15 s silence window
+                    // that left almost no margin, and on a slow-but-working
+                    // link a single timed-out probe could push the gap past
+                    // the window and get a healthy tunnel torn down — the
+                    // exact "connects, then drops for no reason" behaviour.
+                    //
+                    // Retrying after [PROBE_RETRY_MS] bounds the gap caused by
+                    // one failure to `timeout + retry` (5 s), which the 30 s
+                    // silence window absorbs with a wide margin.
+                    delay(if (alive) intervalMs else PROBE_RETRY_MS)
                 }
             } finally {
-                running.set(false)
+                // Only the current loop may clear the flag (see [generation]).
+                if (myGeneration == generation) running.set(false)
             }
         }
     }
 
     /** Stop probing and forget all proof. */
     fun stop() {
+        generation++
         job?.cancel()
         job = null
         running.set(false)
@@ -140,25 +204,29 @@ class TunnelLivenessProbe(
     }
 
     /**
-     * One connect+close round trip. Returns false on any failure, which is
-     * the normal state while the network is down and must not throw.
+     * One connect+close round trip, trying each target in turn.
+     *
+     * Returns false on any failure, which is the normal state while the network
+     * is down and must not throw.
      */
     private suspend fun probeOnce(): Boolean = probeLock.withLock {
         withContext(Dispatchers.IO) {
-            if (probeHost.isBlank() || probePort <= 0 || probePort > 65535) {
-                return@withContext false
-            }
-            try {
-                Socket().use { socket ->
-                    socket.tcpNoDelay = true
-                    socket.soTimeout = probeTimeoutMs
-                    // connect() is the round trip; close() releases immediately.
-                    socket.connect(InetSocketAddress(probeHost, probePort), probeTimeoutMs)
-                    true
+            for ((host, port) in targets) {
+                if (host.isBlank() || port <= 0 || port > 65535) continue
+                try {
+                    Socket().use { socket ->
+                        socket.tcpNoDelay = true
+                        socket.soTimeout = probeTimeoutMs
+                        // connect() is the round trip; close() releases immediately.
+                        socket.connect(InetSocketAddress(host, port), probeTimeoutMs)
+                        return@withContext true
+                    }
+                } catch (_: Throwable) {
+                    // Try the next target: one filtered endpoint is not a
+                    // verdict about the tunnel.
                 }
-            } catch (_: Throwable) {
-                false
             }
+            false
         }
     }
 
@@ -177,11 +245,40 @@ class TunnelLivenessProbe(
         const val DEFAULT_PROBE_TIMEOUT_MS = 3_000
 
         /**
+         * BLOCK v1.0.81: how soon a FAILED probe is retried.
+         *
+         * Short on purpose. A failure is the moment the silence window is
+         * burning down, so waiting a full [DEFAULT_INTERVAL_MS] after one
+         * timeout is what used to let a healthy tunnel be declared dead.
+         */
+        const val PROBE_RETRY_MS = 2_000L
+
+        /**
+         * Independent targets, tried in order, success on the first round trip.
+         *
+         * All are anycast/public resolvers reachable on 443 or 53 from
+         * effectively any network, and none is operated by the VPN provider, so
+         * a probe through the tunnel is a genuine end-to-end path test. Several
+         * are listed so that one filtered address cannot make every tunnel look
+         * dead (review finding #2).
+         */
+        val DEFAULT_TARGETS: List<Pair<String, Int>> = listOf(
+            "1.1.1.1" to 443,
+            "8.8.8.8" to 443,
+            "9.9.9.9" to 443,
+            "1.0.0.1" to 443,
+        )
+
+        /**
          * Must satisfy `intervalMs + probeTimeoutMs < silenceTimeoutMs`, so a
          * healthy tunnel always has time to deliver the next proof before the
          * watchdog's silence window expires. The watchdog's own hysteresis then
-         * adds a further `threshold` samples of margin, so a single slow probe
-         * on a good tunnel cannot be mistaken for a dead one.
+         * adds a further `threshold` samples of margin.
+         *
+         * BLOCK v1.0.81: the failure path is covered too — with
+         * [PROBE_RETRY_MS] the worst case caused by one timed-out probe is
+         * `probeTimeoutMs + PROBE_RETRY_MS` = 5 s, comfortably inside the
+         * watchdog's 30 s window.
          */
         const val DEFAULT_INTERVAL_MS = 8_000L
     }
