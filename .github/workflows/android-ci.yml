@@ -238,6 +238,14 @@ jobs:
       - name: Unit tests
         run: ./gradlew :app:testProDebugUnitTest
 
+      - name: Upload unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-reports
+          path: app/build/test-results/testProDebugUnitTest/*.xml
+          if-no-files-found: warn
+
       - name: Assemble Pro Release APK
         # Gate behind GPG_PRIVATE_KEY: fork PRs do not have the blackbox-
         # encrypted release keystore, and the fail-closed guard in
