@@ -217,6 +217,9 @@
     <string name="setting_auto_protocol_priority_default">هیچ‌کدام فعال نیست</string>
     <string name="setting_auto_protocol_priority_rank">اولویت #%1$d</string>
     <string name="setting_auto_timeout_label">مدت انتظار اتصال حالت خودکار</string>
+    <string name="setting_auto_max_attempts_label">تعداد تلاش روی هر سرور</string>
+    <string name="setting_auto_max_attempts_subtitle">بعد از این تعداد تلاش روی یک سرور، حالت خودکار سراغ سرور بعدی می‌رود.</string>
+    <string name="setting_auto_max_attempts_value">تا %1$d بار</string>
     <string name="setting_auto_reconnect_label">اتصال همیشکی اتوکانکت</string>
     <string name="setting_auto_reconnect_hint">در صورت قطع غیرمنتظره اتصال در حالت خودکار، به‌طور خودکار تلاش به reconnect می‌شود.</string>
     <string name="error_reconnect_limit">محدودیت تلاش برای اتصال مجدد به پایان رسید</string>

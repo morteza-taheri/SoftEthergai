@@ -239,6 +239,13 @@
     <string name="setting_auto_protocol_priority_default">None enabled</string>
     <string name="setting_auto_protocol_priority_rank">Priority #%1$d</string>
     <string name="setting_auto_timeout_label">Auto Mode Connection Timeout</string>
+    <!-- v1.0.88: how many times Auto Mode may re-dial one server before it
+         moves on to the next candidate. The value format is deliberately
+         "Up to %1$d" rather than a pluralised "N attempts" so it stays
+         grammatical for every value in 1..10 in all three locales. -->
+    <string name="setting_auto_max_attempts_label">Attempts per Server</string>
+    <string name="setting_auto_max_attempts_subtitle">After this many tries on one server, Auto Mode moves to the next server.</string>
+    <string name="setting_auto_max_attempts_value">Up to %1$d</string>
     <string name="setting_auto_reconnect_label">Auto-Reconnect in Auto Mode</string>
     <string name="setting_auto_reconnect_hint">Automatically try to reconnect after an unexpected disconnect while Auto Mode is active.</string>
     <string name="error_collector_all_paths_failed">Server-list update failed on every path — keeping the saved list</string>

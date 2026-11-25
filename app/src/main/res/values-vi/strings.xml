@@ -176,6 +176,9 @@
     <string name="setting_auto_protocol_priority_default">Chưa bật giao thức nào</string>
     <string name="setting_auto_protocol_priority_rank">Ưu tiên #%1$d</string>
     <string name="setting_auto_timeout_label">Thời gian chờ kết nối chế độ tự động</string>
+    <string name="setting_auto_max_attempts_label">Số lần thử mỗi máy chủ</string>
+    <string name="setting_auto_max_attempts_subtitle">Sau số lần thử này trên một máy chủ, chế độ tự động sẽ chuyển sang máy chủ tiếp theo.</string>
+    <string name="setting_auto_max_attempts_value">Tối đa %1$d</string>
     <string name="setting_softether_max_connections_label">Số kết nối SoftEther tối đa</string>
     <string name="setting_softether_max_connections_value">%1$d kết nối</string>
     <string name="auto_mode_state_disconnected">Đã ngắt kết nối</string>

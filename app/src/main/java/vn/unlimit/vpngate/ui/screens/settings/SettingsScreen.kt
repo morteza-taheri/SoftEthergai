@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Launch
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Reorder
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Speed
@@ -188,6 +189,9 @@ fun SettingsScreen(
     var excludedAppsCount by remember { mutableStateOf(excludeAppsManager.getExcludedAppsCount()) }
     var showExcludedApps by remember { mutableStateOf(false) }
     var autoTimeout by remember { mutableStateOf(dataUtil.getAutoModeTimeoutSeconds()) }
+    // v1.0.88: how many times Auto Mode may re-dial one server before moving on.
+    var autoMaxAttempts by remember { mutableStateOf(dataUtil.getAutoMaxAttemptsPerServer()) }
+    var showAutoMaxAttemptsPicker by remember { mutableStateOf(false) }
     // v1.0.52 (§1.6.44) TASK B.1: the "Auto-Reconnect in Auto Mode" switch moved
     // to the Auto Connect screen (AutoModeScreen.kt). It keeps the same
     // persisted key and the same default, so this is a move, not a behaviour
@@ -613,6 +617,21 @@ fun SettingsScreen(
                         value = "$autoTimeout s",
                         icon = Icons.Outlined.Timer,
                         onClick = { showAutoTimeoutPicker = true },
+                    )
+                    SettingDivider()
+                    // v1.0.88: the per-server reconnect budget. Sits directly
+                    // under the connection timeout because the two together
+                    // decide how long one bad server can hold up Auto Mode:
+                    // `attempts × timeout` is the worst case before it moves on.
+                    SettingValueRow(
+                        title = stringResource(R.string.setting_auto_max_attempts_label),
+                        subtitle = stringResource(R.string.setting_auto_max_attempts_subtitle),
+                        value = stringResource(
+                            R.string.setting_auto_max_attempts_value,
+                            autoMaxAttempts,
+                        ),
+                        icon = Icons.Outlined.Refresh,
+                        onClick = { showAutoMaxAttemptsPicker = true },
                     )
                     SettingDivider()
                     // v1.0.52 (§1.6.44) TASK B.1: "Auto-Reconnect in Auto Mode"
@@ -1157,6 +1176,25 @@ fun SettingsScreen(
                 dataUtil.setAutoModeTimeoutSeconds(values[index])
             },
             onDismiss = { showAutoTimeoutPicker = false },
+        )
+    }
+
+    if (showAutoMaxAttemptsPicker) {
+        // v1.0.88: 1..10, default 2. `autoMaxAttempts` comes from
+        // DataUtil.getAutoMaxAttemptsPerServer(), which clamps on read, so
+        // `indexOf` always finds a valid index.
+        val values = (DataUtil.MIN_AUTO_MAX_ATTEMPTS_PER_SERVER..
+            DataUtil.MAX_AUTO_MAX_ATTEMPTS_PER_SERVER).toList()
+        SingleChoiceDialog(
+            title = stringResource(R.string.setting_auto_max_attempts_label),
+            options = values.map { stringResource(R.string.setting_auto_max_attempts_value, it) },
+            selectedIndex = values.indexOf(autoMaxAttempts)
+                .let { if (it < 0) values.indexOf(DataUtil.DEFAULT_AUTO_MAX_ATTEMPTS_PER_SERVER) else it },
+            onSelect = { index ->
+                autoMaxAttempts = values[index]
+                dataUtil.setAutoMaxAttemptsPerServer(values[index])
+            },
+            onDismiss = { showAutoMaxAttemptsPicker = false },
         )
     }
 

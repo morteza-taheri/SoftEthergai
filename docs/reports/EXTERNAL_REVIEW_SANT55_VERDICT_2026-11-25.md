@@ -420,3 +420,120 @@ it was physically issued from the tunnel's local address.
 Suite after D-3: **1738 tests, 0 failures, 1 skipped**
 (app 1544 / SoftEther 191 / sstp 3), `:app:assembleProDebug` BUILD SUCCESSFUL.
 
+# Part 8 — Per-server attempt budget (operator request, 2026-11-25)
+
+Operator: *"monitor the app on an unstable server, it keeps connecting and
+reconnecting; I want the number of attempts on one server to be configurable in
+Settings, and after that number Auto Mode should move to the next server."*
+
+## 8.1 What the monitoring showed
+
+Auto Mode started at `10:23:07` on `public-vpn-102` over OpenVPN/TCP and
+connected in 5.4 s. It died 12 s later:
+
+```
+10:23:12.676  Vpn: setting state=CONNECTED, reason=agentConnect
+10:23:24.704  [AUTO] GlobalVpnTracker confirmed disconnected
+10:23:24.714  [AUTO] Unexpected disconnect: public-vpn-102; reconnecting (attempt 1/5, delay 2204ms)
+10:23:26.921  [AUTO] Started
+10:23:26.924  [AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run
+10:23:35.259  Vpn: setting state=DISCONNECTED, reason=agentDisconnect
+```
+
+Auto Mode then stopped for good — nothing further for 90 s. Two separate defects
+are visible in those five lines.
+
+### D-4: the reconnect aborted on our own dying tunnel
+
+The OS took **10.5 s** to remove the VPN network after the tunnel died, so
+`GlobalVpnTracker.isActiveOrBusy` still reported `true` when the reconnect run
+started 2 s in. The guard at the top of `runAutoMode` used that broad predicate,
+aborted, and published `Disconnected`.
+
+`isConnectingToAnotherServer(dropped)` already existed for exactly this question
+— it blocks only when a *different* server is being dialled, and the loss
+handler above the guard already used it. The reconnect guard was simply never
+moved over to it. Fixed by passing the seeded candidate:
+
+```kotlin
+val reconnectTarget = pendingReconnectServer
+if (wasReconnect && isConnectingToAnotherServer(reconnectTarget)) { … abort … }
+```
+
+### D-5: the attempt budget was session-wide, and the rotation was a no-op
+
+`RECONNECT_MAX_ATTEMPTS = 5` was a constant counted **across the whole
+session**, and `rotateAwayFromDropped = consecutiveFailures > 1` meant the first
+loss *always* re-dialled the same host, whatever the user wanted.
+
+Worse, "put the dropped server last" could never work: `runAutoMode` re-sorts
+the override list with `sortedForAutoConnect`, and an unstable server is usually
+still one of the fastest, so it returned to position #1. Device log with the new
+budget set to 1, before the ordering fix:
+
+```
+10:40:46  public-vpn-102 reached 1 attempt(s) on this server; moving to the next one
+10:40:59  Trying #1 public-vpn-102        <-- rotation undone by the sort
+```
+
+## 8.2 The change
+
+**Setting.** `SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER`, default **2** (which
+reproduces the old behaviour — re-dial once, then rotate), range **1..10**,
+clamped in both the reader and the writer. `1` is meaningful and is not
+normalised away: "never re-dial a server that just dropped". Settings →
+Attempts per Server, directly under the connection timeout, because
+`attempts × timeout` is the worst case one bad server can cost.
+
+**Controller.** A per-server counter (`attemptsPerServer`, keyed by
+`serverKey`) replaces the session-wide rule:
+
+- incremented once per loss (guarded by a compare-and-set, `lossReported`, so
+  the OS callback, the 1 s poll and the liveness watchdog cannot each spend an
+  attempt for one drop);
+- cleared for a server the moment it produces a verified tunnel, and wholesale
+  on every user start/stop;
+- once a server reaches the limit it is **deferred to the tail of the ranked
+  list** — after the quality sort, so the sort cannot undo it. It is never
+  removed: removing it would turn "move on" into `ERROR_NO_SERVER` when it is
+  the only candidate.
+
+## 8.3 Device verification (limit = 1)
+
+Setting changed to **Up to 1** in Settings, then Auto Mode started:
+
+```
+10:45:30.895  Fast path: known-good public-vpn-102 via OPENVPN_UDP
+10:45:35.976  CONNECTED outcome=TUNNEL_UP
+10:45:55.019  GlobalVpnTracker confirmed disconnected          (19 s uptime)
+10:45:55.024  Unexpected disconnect: public-vpn-102; reconnecting (attempt 1/5,
+              delay 2397ms, server attempt 1/1)
+10:45:55.024  public-vpn-102 reached 1 attempt(s) on this server; moving to the next one
+10:45:57.425  Started                                          <-- no abort
+10:45:57.487  Deferring 1 server(s) that used their 1 attempt(s): public-vpn-102
+10:46:08.738  Trying #1 vpn102800483                            <-- different server
+10:46:43.365  Trying #2 vpn559198341
+10:47:07.460  Trying #3 vpn693017146
+10:47:33.355  Trying #4 vpn720447102
+10:47:45.425  Trying #5 vpn705816574
+```
+
+Every requirement is visible in that trace: the per-server count is reported,
+the limit is honoured, the run no longer aborts, the dropped server is deferred
+rather than re-dialled, and the walk continues to distinct servers. The UI
+showed `Attempting server 5 of 343` throughout.
+
+Suite after D-4/D-5: **1748 tests, 0 failures, 1 skipped**
+(app 1554 / SoftEther 191 / sstp 3) — +10 cases
+(`AutoModeReconnectTest` t14–t16, `DataUtilMaxAttemptsTest` ×7).
+
+## 8.4 Not fixed, recorded only
+
+While monitoring, a **zombie `OpenVPNService`** was found: the process still
+held a `ServiceRecord` with a stale CONNECTED state while `tun0` was gone, and
+that made the Auto Mode button refuse to start with
+`start refused: a tunnel is already active` — while the UI showed
+`Disconnected`. A force-stop cleared it. This is a separate defect from the
+operator's report and was not changed in this pass; it is recorded here because
+it can make Auto Mode look "stuck" and is worth its own investigation.
+

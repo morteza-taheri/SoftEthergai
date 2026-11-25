@@ -198,6 +198,29 @@ class AutoModeController(
      */
     private val autoReconnectEnabled: () -> Boolean = { true },
     /**
+     * v1.0.88 — how many times Auto Mode may re-dial the SAME server after an
+     * unexpected disconnect before it moves on to the next candidate.
+     *
+     * Before this, the only budget was [AutoModeRecoveryPolicy.pauseAfter],
+     * which counts **consecutive losses across the whole session** and does not
+     * know which server produced them. Two consequences the operator saw as
+     * "it keeps connecting and reconnecting to the same unstable server":
+     *
+     *  - the first loss always re-dialled the same host
+     *    (`rotateAwayFromDropped = consecutiveFailures > 1`), so one flapping
+     *    server always got two dials no matter what;
+     *  - the counter was shared, so drops on one host ate the budget that was
+     *    meant to bound the whole run.
+     *
+     * Injected rather than read from [vn.unlimit.vpngate.utils.DataUtil]
+     * directly for the same reason as [autoReconnectEnabled]: this class stays
+     * free of Android/SharedPreferences types and remains JVM-unit-testable.
+     * Production supplies `{ du.getAutoMaxAttemptsPerServer() }`. The default
+     * `2` reproduces the pre-v1.0.88 behaviour (re-dial once, then rotate), so
+     * a caller that does not model the setting is unchanged.
+     */
+    private val maxAttemptsPerServer: () -> Int = { 2 },
+    /**
      * v1.0.42 (§1.6.35 / F2): whether ANY network is available at all.
      *
      * The run loop consults this before the server loop and again before every
@@ -1503,6 +1526,20 @@ enum class AttemptOutcome {
         dropped: AutoModeCandidate?,
         lossReason: String = HistoryFailureReason.UNKNOWN,
     ) {
+        // v1.0.88: exactly one loss report per established tunnel.
+        //
+        // Three armed sources can report the same loss (the OS callback, the
+        // 1 s `GlobalVpnTracker` poll and the liveness watchdog). The disarm
+        // below closes all three, but two of them can fire in the same instant
+        // before it runs. That was harmless when the only consumer was a
+        // session-wide backoff ladder; it is NOT harmless now that a
+        // per-server attempt counter is incremented here — a double report
+        // would spend two of the server's attempts for one drop and move on
+        // early. Compare-and-set, so exactly one caller wins.
+        if (!lossReported.compareAndSet(false, true)) {
+            adapter.log("[AUTO] Duplicate loss report ignored (already handling this drop)")
+            return
+        }
         adapter.log(reason)
         connectedWatcher?.cancel()
         connectedWatcher = null
@@ -1607,11 +1644,48 @@ enum class AttemptOutcome {
         // leaves Auto Mode permanently dead.
         val plan = recoveryPolicy.recordFailure()
         setState(AutoModeState.Disconnected)
+
+        // v1.0.88 — the per-server budget the operator can now set.
+        //
+        // `plan` above is a SESSION-wide backoff ladder: it bounds how hard the
+        // whole run retries, but it cannot answer "this one host has flapped
+        // three times, stop dialling it". That question needs a per-server
+        // counter, which is this one. When a server spends its allowance it is
+        // pushed to the back of the queue (never removed — removing it would
+        // turn "move on" into ERROR_NO_SERVER when it is the only candidate)
+        // and the log names the exact numbers so the behaviour is auditable
+        // from a log instead of inferred from the UI.
+        val droppedKey = droppedServer?.let { serverKey(it) }
+        val perServerLimit = maxAttemptsPerServer().coerceAtLeast(1)
+        val attemptsOnDropped = if (droppedKey == null) {
+            0
+        } else {
+            synchronized(reconnectLock) {
+                val next = (attemptsPerServer[droppedKey] ?: 0) + 1
+                // Clamped at the limit: once spent, it stays spent for this
+                // session, so the server keeps its "last resort" position
+                // instead of earning a fresh allowance every cycle.
+                attemptsPerServer[droppedKey] = next.coerceAtMost(perServerLimit)
+                next
+            }
+        }
+        val serverBudgetSpent = droppedKey != null && attemptsOnDropped >= perServerLimit
+
         adapter.log(
             "[AUTO] Unexpected disconnect: ${droppedServer?.hostname ?: droppedServer?.ip ?: "unknown"}; " +
                 (if (plan.paused) "pausing before recovery" else "reconnecting") +
-                " (attempt ${plan.consecutiveFailures}/$RECONNECT_MAX_ATTEMPTS, delay ${plan.delayMs}ms)",
+                " (attempt ${plan.consecutiveFailures}/$RECONNECT_MAX_ATTEMPTS, delay ${plan.delayMs}ms" +
+                (if (droppedKey != null) ", server attempt $attemptsOnDropped/$perServerLimit" else "") +
+                ")",
         )
+        if (serverBudgetSpent) {
+            // `serverBudgetSpent` implies `droppedServer != null`, so the
+            // receiver is already non-null here.
+            adapter.log(
+                "[AUTO] ${droppedServer.hostname ?: droppedServer.ip ?: "unknown"} reached " +
+                    "$perServerLimit attempt(s) on this server; moving to the next one",
+            )
+        }
 
         // Let the native slot unwind before redialling. This belongs to the
         // owned recoveryJob and is cancelled by stop()/disconnectNow().
@@ -1633,10 +1707,16 @@ enum class AttemptOutcome {
         }
 
         val remaining = remainingCandidates
-        val droppedKey = droppedServer?.let { serverKey(it) }
-        // Rotate away from the server that just failed. The first loss may
-        // retry it (the drop might have been transport-local); every subsequent
-        // consecutive loss puts it last so Auto Mode actually moves on.
+        // Rotate away from the server that just failed.
+        //
+        // v1.0.88: this is now driven by the PER-SERVER budget, not by the
+        // session-wide failure count. The old rule (`consecutiveFailures > 1`)
+        // always re-dialled the same host exactly once regardless of the
+        // setting, which is the "keeps connecting to the same unstable server"
+        // loop. `serverBudgetSpent` is true as soon as that host has used the
+        // number of attempts the operator configured, so a limit of 1 moves on
+        // immediately and a limit of 3 gives it three dials.
+        val rotateAway = plan.rotateAwayFromDropped || serverBudgetSpent
         val tail = remaining.filterNot { serverKey(it) == droppedKey }
         // BLOCK v1.0.86 — an exhausted session must not become a dead end.
         //
@@ -1654,11 +1734,11 @@ enum class AttemptOutcome {
         overrideServers = when {
             exhausted -> null
             droppedServer == null -> remaining
-            plan.rotateAwayFromDropped -> tail + listOf(droppedServer)
+            rotateAway -> tail + listOf(droppedServer)
             else -> listOf(droppedServer) + tail
         }
         pendingReconnectServer =
-            if (exhausted || plan.rotateAwayFromDropped) null else droppedServer
+            if (exhausted || rotateAway) null else droppedServer
         runOrigin = ConnectionOrigin.AUTO_RECONNECT
         detachSelfFromRecoverySlot()
         start()
@@ -1731,6 +1811,17 @@ enum class AttemptOutcome {
     private val sessionEpoch = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
+     * v1.0.88 — has the loss of the CURRENT tunnel already been handled?
+     *
+     * Set by the first [reportArmedTunnelLoss] for an established tunnel and
+     * cleared when a new tunnel is published, so the three armed loss sources
+     * (OS callback, 1 s poll, liveness watchdog) cannot each advance the
+     * per-server attempt budget for one drop. See the comment at the
+     * compare-and-set for why that matters.
+     */
+    private val lossReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
      * Bounded exponential backoff with jitter. A run of bad servers now pauses
      * and resumes instead of entering a terminal ERROR_RECONNECT_LIMIT.
      */
@@ -1752,6 +1843,27 @@ enum class AttemptOutcome {
      */
     @Volatile
     private var pendingReconnectServer: AutoModeCandidate? = null
+
+    /**
+     * v1.0.88 — how many times each server has been re-dialled since it last
+     * produced a working tunnel, keyed by [serverKey].
+     *
+     * This is the per-server budget behind the "max attempts per server"
+     * setting. It is deliberately NOT [AutoModeRecoveryPolicy]'s counter:
+     * that one is a session-wide backoff ladder, while this one answers the
+     * operator's question — "how many times am I willing to sit through this
+     * particular server flapping before you try someone else?".
+     *
+     * A server is removed from the map the moment it produces a verified
+     * tunnel ([publishConnected]), so a host that recovers is treated as fresh
+     * the next time it drops. Cleared wholesale by [resetReconnectBudget],
+     * i.e. on every user-initiated start and every stop.
+     *
+     * Guarded by [reconnectLock]: losses arrive from the OS callback, the 1 s
+     * poll and the liveness watchdog, and two of those can fire for the same
+     * loss.
+     */
+    private val attemptsPerServer = mutableMapOf<String, Int>()
 
     /**
      * R8 (§11.13.3): the candidate the CURRENT connected tunnel was established
@@ -2002,6 +2114,11 @@ enum class AttemptOutcome {
      */
     private fun resetReconnectBudget() {
         synchronized(reconnectLock) { reconnectTimestamps.clear() }
+        // v1.0.88: a user-initiated start or stop ends the per-server budget
+        // session too. Without this, a server that had already used its
+        // attempts would stay deprioritised after the user pressed the button
+        // again, which is not what "start" means.
+        synchronized(reconnectLock) { attemptsPerServer.clear() }
         recoveryPolicy.reset()
         pendingReconnectServer = null
     }
@@ -2343,6 +2460,12 @@ enum class AttemptOutcome {
         adapter.log("[AUTO] Connected successfully")
         // A verified tunnel restores confidence without touching history.
         recoveryPolicy.recordSuccess()
+        // v1.0.88: and it clears this server's own reconnect budget. A host
+        // that actually works is not "the server that keeps failing", so the
+        // next time it drops it starts again from a full allowance.
+        synchronized(reconnectLock) { attemptsPerServer.remove(serverKey(server)) }
+        // ...and re-arms the once-per-tunnel loss guard for the new tunnel.
+        lossReported.set(false)
         onSuccess(server, protocol)
         rememberRemaining(servers, server)
         // R8: remember the exact candidate so an unexpected disconnect can
@@ -2602,9 +2725,28 @@ enum class AttemptOutcome {
         // connect that began during the settle delay or the list resolution.
         // The seed is consumed here regardless of outcome so it cannot leak into
         // the next run.
-        val wasReconnect = pendingReconnectServer != null
+        //
+        // v1.0.88: this guard used the broad `isTunnelBusy()` (CONNECTED ||
+        // CONNECTING || DISCONNECTING) and that made every recovery on an
+        // unstable server a no-op. Device log 2026-11-25, public-vpn-102 over
+        // OpenVPN:
+        //
+        //   10:23:24.704  GlobalVpnTracker confirmed disconnected
+        //   10:23:24.714  reconnecting (attempt 1/5, delay 2204ms)
+        //   10:23:26.921  Started
+        //   10:23:26.924  Tunnel owned elsewhere; aborting Auto-Reconnect run
+        //   10:23:35.259  setting state=DISCONNECTED, reason=agentDisconnect
+        //
+        // The tracker still reported our OWN dying tunnel as active for the
+        // 10.5 s the OS needed to remove the VPN network, so the run aborted
+        // 2 s in and Auto Mode stopped for good. The identity-based predicate
+        // [isConnectingToAnotherServer] is exactly the question this guard
+        // needs — it blocks only when a DIFFERENT server is being dialled —
+        // and it was already used by the loss handler above.
+        val reconnectTarget = pendingReconnectServer
+        val wasReconnect = reconnectTarget != null
         pendingReconnectServer = null
-        if (wasReconnect && isTunnelBusy()) {
+        if (wasReconnect && isConnectingToAnotherServer(reconnectTarget)) {
             adapter.log("[AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run")
             setState(AutoModeState.Disconnected)
             return
@@ -2750,6 +2892,43 @@ enum class AttemptOutcome {
         adapter.log("[AUTO] Servers available = ${all.size}")
         adapter.log("[AUTO] Sorted by quality")
 
+        // v1.0.88 — the per-server budget must survive the quality sort.
+        //
+        // The reconnect path puts a spent server LAST in the override list
+        // (`tail + listOf(droppedServer)`), but that order was thrown away two
+        // lines above: `sortedForAutoConnect` ranks by quality, and an unstable
+        // server that just dropped is usually still one of the fastest — so it
+        // went straight back to position #1 and the loop continued. Device log
+        // 2026-11-25 with the budget set to 1:
+        //
+        //   10:40:46  public-vpn-102 reached 1 attempt(s) on this server; moving to the next one
+        //   10:40:59  Trying #1 public-vpn-102          <-- rotation undone by the sort
+        //
+        // Moving them to the tail AFTER the sort is the smallest change that
+        // makes the setting mean what it says: quality still ranks everything
+        // the user has not exhausted, and an exhausted server is only dialled
+        // when nothing else is left. `quarantine` covers the rapid-drop case
+        // separately; this covers the "used its allowance" case, which needs no
+        // second drop to trigger.
+        val budgetLimit = maxAttemptsPerServer().coerceAtLeast(1)
+        val spentKeys = synchronized(reconnectLock) {
+            attemptsPerServer.filterValues { it >= budgetLimit }.keys.toSet()
+        }
+        val ranked = if (spentKeys.isEmpty()) {
+            qualitySorted
+        } else {
+            val (exhausted, rest) = qualitySorted.partition { serverKey(it) in spentKeys }
+            if (exhausted.isNotEmpty() && rest.isNotEmpty()) {
+                adapter.log(
+                    "[AUTO] Deferring ${exhausted.size} server(s) that used their " +
+                        "$budgetLimit attempt(s): " +
+                        exhausted.take(3).joinToString(", ") { it.hostname ?: it.ip ?: "?" } +
+                        if (exhausted.size > 3) ", …" else "",
+                )
+            }
+            rest + exhausted
+        }
+
         // Stage 2F-F.17 (D1): the probe is handed one protocol/endpoint pair per
         // **usable protocol**, per server. A server with no usable protocol produces
         // no target at all, so it is never probed and never gated on by D1 — it is
@@ -2760,7 +2939,7 @@ enum class AttemptOutcome {
         // turned Protocol Priority into a global eligibility gate: a server that
         // could not speak that one protocol was discarded even when it could
         // perfectly well speak the second one.
-        val targets = probeTargets(qualitySorted, priorities)
+        val targets = probeTargets(ranked, priorities)
         val gate = if (reachabilityFilter != null && targets.isNotEmpty()) {
             adapter.log(
                 "[AUTO] Pre-filtering reachable servers via probe " +
@@ -2787,7 +2966,8 @@ enum class AttemptOutcome {
         // Stage 2F-F.17 (D1 = FILTER_ONLY): three outcomes, deliberately distinct.
         //
         // - the gate kept something -> use it. It is a subsequence of
-        //   `qualitySorted`, so the comparator stays the only ranking authority;
+        //   `ranked`, so the comparator (plus the v1.0.88 budget deferral)
+        //   stays the only ranking authority;
         // - the gate removed everything *and says so* -> that is a real
         //   measurement (every usable protocol of every server definitively
         //   UNREACHABLE), so honour it and let the existing empty-list path report
@@ -2800,22 +2980,22 @@ enum class AttemptOutcome {
         // D1 that read as "keep everything", which silently undid the removal of a
         // genuinely dead network.
         var servers = when {
-            gate == null -> qualitySorted
+            gate == null -> ranked
             gate.kept.isNotEmpty() -> {
                 adapter.log("[AUTO] Reachable servers selected: ${gate.kept.size}")
-                // The result is rebuilt by walking `qualitySorted` and keeping the
+                // The result is rebuilt by walking `ranked` and keeping the
                 // entries the gate named, never by walking the gate's own list.
                 // That is what makes the comparator the sole authority on order: a
                 // gate that returned its survivors in any other order still yields
                 // a subsequence of the ranked input. Identity, not equality, is the
                 // match — two different servers may compare equal by value.
-                qualitySorted.filter { candidate -> gate.kept.any { it === candidate } }
+                ranked.filter { candidate -> gate.kept.any { it === candidate } }
             }
             gate.allUnreachable -> {
                 adapter.log("[AUTO] Every server's usable protocols are unreachable; none left to try")
                 emptyList()
             }
-            else -> qualitySorted
+            else -> ranked
         }
 
         if (servers.isEmpty()) {

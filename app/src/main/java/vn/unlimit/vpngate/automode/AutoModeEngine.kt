@@ -190,6 +190,10 @@ object AutoModeEngine {
                 // R8 (§11.13.2): the Auto-Reconnect setting, read live so a
                 // toggle takes effect at the next unexpected disconnect.
                 autoReconnectEnabled = { du.getAutoReconnectInAutoMode() },
+                // v1.0.88: the per-server reconnect budget, also read live so a
+                // change in Settings applies to the next drop instead of
+                // requiring a restart of Auto Mode.
+                maxAttemptsPerServer = { du.getAutoMaxAttemptsPerServer() },
                 // v1.0.42 (§1.6.35 / F2): read live before the run and before every
                 // attempt. A device with no network at all must stop with
                 // ERROR_NO_NETWORK instead of marking every server TIMED_OUT and

@@ -313,6 +313,36 @@ class DataUtil(context: Context?) {
     }
 
     /**
+     * v1.0.88 — how many times Auto Mode may re-dial the SAME server after an
+     * unexpected disconnect before it moves on to the next candidate.
+     *
+     * The reconnect budget used to be a fixed constant that counted
+     * **consecutive losses across the whole session**, not per server. On an
+     * unstable server that produced the operator-visible loop: connect, drop,
+     * re-dial the same host, drop again, and only then rotate — with the
+     * counter shared with every other server, so a run of drops on one host
+     * could also exhaust the budget for servers that had not been tried yet.
+     *
+     * `1` means "never re-dial a server that just dropped" — move on
+     * immediately. Both the reader and the writer clamp to
+     * [MIN_AUTO_MAX_ATTEMPTS_PER_SERVER]..[MAX_AUTO_MAX_ATTEMPTS_PER_SERVER],
+     * so a value stored by an older build (there is none) or a corrupt value
+     * reads back inside the range without a migration.
+     */
+    fun getAutoMaxAttemptsPerServer(): Int =
+        getIntSetting(
+            SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER,
+            DEFAULT_AUTO_MAX_ATTEMPTS_PER_SERVER,
+        ).coerceIn(MIN_AUTO_MAX_ATTEMPTS_PER_SERVER, MAX_AUTO_MAX_ATTEMPTS_PER_SERVER)
+
+    fun setAutoMaxAttemptsPerServer(attempts: Int) {
+        setIntSetting(
+            SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER,
+            attempts.coerceIn(MIN_AUTO_MAX_ATTEMPTS_PER_SERVER, MAX_AUTO_MAX_ATTEMPTS_PER_SERVER),
+        )
+    }
+
+    /**
      * v1.0.46 (§1.6.39) — true once the default emergency source has been
      * seeded into `emergency_source_config`.
      *
@@ -667,6 +697,21 @@ class DataUtil(context: Context?) {
         const val SETTING_NOTIFY_SPEED: String = "SETTING_NOTIFY_SPEED"
         const val SETTING_AUTO_PROTOCOL_PRIORITY: String = "SETTING_AUTO_PROTOCOL_PRIORITY"
         const val SETTING_AUTO_MODE_TIMEOUT_SECONDS: String = "SETTING_AUTO_MODE_TIMEOUT_SECONDS"
+
+        /**
+         * v1.0.88 — per-server reconnect budget for Auto Mode. See
+         * [getAutoMaxAttemptsPerServer].
+         */
+        const val SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER: String =
+            "SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER"
+
+        /** Re-dial a dropped server once before moving on. */
+        const val DEFAULT_AUTO_MAX_ATTEMPTS_PER_SERVER: Int = 2
+
+        /** 1 = never re-dial a server that just dropped; go straight to the next one. */
+        const val MIN_AUTO_MAX_ATTEMPTS_PER_SERVER: Int = 1
+
+        const val MAX_AUTO_MAX_ATTEMPTS_PER_SERVER: Int = 10
 
         /**
          * v1.0.54 (§1.6.47) PART 2.4: the profile a fresh install starts with.

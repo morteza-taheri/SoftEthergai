@@ -113,6 +113,8 @@ class AutoModeReconnectTest {
         /** R8: a 0 ms settle delay keeps the JVM test fast. */
         reconnectInitialDelayMs: Long = 0L,
         recoveryPauseDelayMs: Long = 50L,
+        /** v1.0.88: how many dials one server gets before Auto Mode moves on. */
+        maxAttemptsPerServer: () -> Int = { 2 },
     ) = AutoModeController(
         scope = scope,
         adapter = adapter,
@@ -124,6 +126,7 @@ class AutoModeReconnectTest {
         isConnectingToAnotherServer = isConnectingToAnotherServer,
         reconnectInitialDelayMs = reconnectInitialDelayMs,
         recoveryPauseDelayMs = recoveryPauseDelayMs,
+        maxAttemptsPerServer = maxAttemptsPerServer,
     )
 
     /** Wait until the controller settles in [AutoModeState.Connected] with no run active. */
@@ -405,6 +408,108 @@ class AutoModeReconnectTest {
         assertTrue(
             "state must stay Disconnected after stop",
             controller.state.value is AutoModeState.Disconnected,
+        )
+    }
+
+    // ==================================================================
+    // v1.0.88 — configurable attempts per server.
+    //
+    // Operator report: "it keeps connecting and reconnecting on one unstable
+    // server". The reconnect budget used to be a session-wide counter that
+    // always re-dialled the same host exactly once (`rotateAwayFromDropped =
+    // consecutiveFailures > 1`), and the number was not configurable at all.
+    // These three cases pin the replacement: a per-server allowance that the
+    // setting controls, after which Auto Mode moves to the next candidate.
+    // ==================================================================
+
+    /** Wait until [host] has been dialled at least [times] times in total. */
+    private suspend fun awaitDialCount(host: String, times: Int) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            if (adapter.connects.count { it.first == host } >= times) return
+            delay(10)
+        }
+        error("expected $host to be dialled $times time(s); connects=${adapter.connects}")
+    }
+
+    @Test
+    fun t14_limitOneMovesToTheNextServerAfterTheFirstDrop() = runBlocking {
+        val servers = listOf(candidate("alpha"), candidate("beta"))
+        val controller = controller(servers = servers, maxAttemptsPerServer = { 1 })
+
+        controller.start()
+        controller.awaitConnected()
+        assertEquals("precondition: the run starts on alpha", "alpha", adapter.connects.last().first)
+
+        invokeArmedTunnelLost(controller)
+
+        // With a limit of 1 the dropped server must NOT be re-dialled: the
+        // very next dial has to be a different host.
+        awaitDialCount("beta", 1)
+        assertEquals(
+            "alpha reached its 1-attempt allowance and must not be re-dialled: ${adapter.connects}",
+            1,
+            adapter.connects.count { it.first == "alpha" },
+        )
+        assertTrue(
+            "the move-on must be logged; logs=${adapter.logs}",
+            adapter.logs.any { it.contains("reached 1 attempt(s) on this server") },
+        )
+    }
+
+    @Test
+    fun t15_limitTwoRedialsTheSameServerOnceThenMovesOn() = runBlocking {
+        val servers = listOf(candidate("alpha"), candidate("beta"))
+        val controller = controller(servers = servers, maxAttemptsPerServer = { 2 })
+
+        controller.start()
+        controller.awaitConnected()
+
+        // First loss: the server still has allowance, so alpha is re-dialled.
+        invokeArmedTunnelLost(controller)
+        awaitDialCount("alpha", 2)
+        assertEquals(
+            "the first loss must re-dial the same server; connects=${adapter.connects}",
+            2,
+            adapter.connects.count { it.first == "alpha" },
+        )
+        assertTrue(
+            "alpha must have reconnected before the second loss",
+            controller.state.value is AutoModeState.Connected,
+        )
+
+        // Second loss: the allowance is spent, so Auto Mode must move on.
+        invokeArmedTunnelLost(controller)
+        awaitDialCount("beta", 1)
+        assertEquals(
+            "alpha used its 2 attempts and must not be re-dialled a third time: ${adapter.connects}",
+            2,
+            adapter.connects.count { it.first == "alpha" },
+        )
+    }
+
+    @Test
+    fun t16_aVerifiedTunnelRestoresTheServersAllowance() = runBlocking {
+        val servers = listOf(candidate("alpha"), candidate("beta"))
+        val controller = controller(servers = servers, maxAttemptsPerServer = { 2 })
+
+        controller.start()
+        controller.awaitConnected()
+
+        // Spend one of alpha's two attempts, then let it come back. The
+        // successful connection clears the counter, so the NEXT loss must again
+        // be allowed to re-dial alpha — otherwise a server that flaps once an
+        // hour would be demoted for the rest of the session.
+        invokeArmedTunnelLost(controller)
+        awaitDialCount("alpha", 2)
+        controller.awaitConnected()
+
+        invokeArmedTunnelLost(controller)
+        awaitDialCount("alpha", 3)
+        assertEquals(
+            "a verified tunnel must reset the per-server budget; connects=${adapter.connects}",
+            3,
+            adapter.connects.count { it.first == "alpha" },
         )
     }
 }
