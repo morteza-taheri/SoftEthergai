@@ -541,7 +541,10 @@ class VpnServerRepository(
                         // With no VPN Network, this is the explicit physical network.
                 // The SYSTEM_VPN rung is selected whenever a VPN Network exists,
                 // so a third-party VPN is not mislabelled as PHYSICAL.
-                if (GlobalVpnTracker.currentVpnNetwork() != null) {
+                val vpnNetworkExists = runCatching {
+                    GlobalVpnTracker.currentVpnNetwork() != null
+                }.getOrDefault(false)
+                if (vpnNetworkExists) {
                     fetchLog(
                         "[ladder] PHYSICAL has no bound network while a VPN " +
                             "network exists; the default network may ride the VPN",
