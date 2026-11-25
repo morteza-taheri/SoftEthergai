@@ -245,7 +245,16 @@ class AutoModeController(
      * instead of the production [RECONNECT_INITIAL_DELAY_MS] 2 s.
      */
     private val reconnectInitialDelayMs: Long = RECONNECT_INITIAL_DELAY_MS,
-    /** Injected so JVM tests can exercise the bounded recovery pause. */
+    /**
+     * Injected so JVM tests can exercise the bounded recovery pause.
+     *
+     * Merge note: the `fix/vpngate-resilient-collector-autoreconnect` branch
+     * carried two extra knobs here (`reconnectCooldownMs`,
+     * `reconnectBackoffMaxMs`) for an inline burst-window backoff. That
+     * mechanism and [AutoModeRecoveryPolicy] answer the same question, and only
+     * one may own the delay, so the policy — which is separately unit-tested and
+     * already the source of the "pause, then resume" behaviour — is kept.
+     */
     private val recoveryPauseDelayMs: Long = RECONNECT_PAUSE_MS,
     /**
      * FIX-3: the per-server wedge ledger Auto Mode consults before dialling.
@@ -691,7 +700,9 @@ enum class AttemptOutcome {
 
         /**
          * R8 (§11.13.3/§11.13.5, OQ-1/OQ-8): Auto Mode stopped reconnecting
-         * because its bounded reconnect budget was exhausted.
+         * because the reconnect burst entered its cooldown window. Kept as a
+         * legacy message identifier for older UI translations; the controller no
+         * longer publishes it as a permanent terminal state.
          *
          * Distinct from [ERROR_NO_SERVER] and [ERROR_NATIVE_UNRESOLVED]: the
          * server list was not proven exhausted, and no native slot was stuck.
@@ -740,20 +751,20 @@ enum class AttemptOutcome {
         const val RECONNECT_INITIAL_DELAY_MS = 2_000L
 
         /**
-         * R8 (§11.13.3, OQ-1): maximum reconnect attempts within
-         * [RECONNECT_WINDOW_MS] before the run stops with
-         * [ERROR_RECONNECT_LIMIT].
+         * R8 (§11.13.3, OQ-1): how many consecutive losses [AutoModeRecoveryPolicy]
+         * absorbs before it inserts a pause.
          *
-         * R7 alone has no frequency bound, so a server that accepts and then
-         * immediately drops would reconnect forever. This guard is the only
-         * thing preventing that unbounded churn.
+         * It is a *pause*, not a terminal: reaching it no longer publishes
+         * [ERROR_RECONNECT_LIMIT] or abandons Auto Mode. That terminal is what
+         * made "it connects and disconnects for a while and then just stops"
+         * permanent.
          */
         const val RECONNECT_MAX_ATTEMPTS = 5
 
         /**
-         * R8 (§11.13.3, OQ-1): rolling window for [RECONNECT_MAX_ATTEMPTS], in
-         * milliseconds (10 minutes). Attempts older than this are forgotten, so
-         * the bound is on *recent* churn, not lifetime count.
+         * Rolling window for [RECONNECT_MAX_ATTEMPTS], in milliseconds
+         * (10 minutes). Attempts older than this are forgotten, so the bound
+         * is on recent churn rather than lifetime count.
          */
         const val RECONNECT_WINDOW_MS = 10L * 60L * 1000L
 
@@ -1160,6 +1171,9 @@ enum class AttemptOutcome {
                     // end: start a new cycle, keeping only the server we are
                     // leaving so Next really moves somewhere else.
                     if (untried.isEmpty()) {
+                        // The server being left is the one whose attempt just
+                        // ended, which is `leavingKey` — not `connectedCandidate`,
+                        // which is already null by the time a failure is counted.
                         val leavingNullable = leavingKey
                         sessionTriedKeys.clear()
                         if (leavingNullable != null) sessionTriedKeys.add(leavingNullable)
@@ -1643,7 +1657,6 @@ enum class AttemptOutcome {
         // replaced: a bad run of servers pauses and resumes, it no longer
         // leaves Auto Mode permanently dead.
         val plan = recoveryPolicy.recordFailure()
-        setState(AutoModeState.Disconnected)
 
         // v1.0.88 — the per-server budget the operator can now set.
         //
@@ -1686,6 +1699,14 @@ enum class AttemptOutcome {
                     "$perServerLimit attempt(s) on this server; moving to the next one",
             )
         }
+
+        // A-5 (§3.5): the decision is final at this point — every check above
+        // has passed — so the state is published exactly once, together with the
+        // log that explains it. Publishing it before the checks made the UI show
+        // "disconnected" while the log still said a reconnect was being
+        // considered; publishing it after the decision log keeps the two in step
+        // and still guarantees one publication per drop.
+        setState(AutoModeState.Disconnected)
 
         // Let the native slot unwind before redialling. This belongs to the
         // owned recoveryJob and is cancelled by stop()/disconnectNow().
@@ -1836,10 +1857,12 @@ enum class AttemptOutcome {
      * R8 (§11.13.3): the server Auto Mode was connected to when the unexpected
      * disconnect happened.
      *
-     * Seeded as the FIRST candidate of the reconnect run, so the flow matches
-     * §11.13.3 step 1 ("first to the same server"), then the rest of the sorted
-     * list follows. Set by [onUnexpectedDisconnect] and consumed (and nulled) at
-     * the top of [runAutoMode].
+     * Seeded as the FIRST candidate of the reconnect run while that server still
+     * has attempts left on its budget, so "up to N attempts on this server" is
+     * literal; once the budget is spent the run is seeded with the rest of the
+     * list and the server is deferred to the tail. Set by
+     * [onUnexpectedDisconnect] and consumed (and nulled) at the top of
+     * [runAutoMode].
      */
     @Volatile
     private var pendingReconnectServer: AutoModeCandidate? = null
@@ -2468,8 +2491,9 @@ enum class AttemptOutcome {
         lossReported.set(false)
         onSuccess(server, protocol)
         rememberRemaining(servers, server)
+        // A verified tunnel ends the previous failed-server demotion window.
         // R8: remember the exact candidate so an unexpected disconnect can
-        // name it and re-seed it as the first reconnect candidate.
+        // name it and re-seed it for a later reconnect decision.
         connectedCandidate = server
         // BLOCK v1.0.69 PART 1A: stamp the post-connect window start.
         connectedAt = System.currentTimeMillis()
@@ -2743,11 +2767,17 @@ enum class AttemptOutcome {
         // [isConnectingToAnotherServer] is exactly the question this guard
         // needs — it blocks only when a DIFFERENT server is being dialled —
         // and it was already used by the loss handler above.
+        //
+        // The run is a reconnect whenever it was seeded by one OR its origin
+        // says so: a rotate-away run deliberately clears the seed, and a
+        // catalogue retry after exhaustion has no seed at all, yet both must
+        // still refuse to race a manual connect that started during the delay.
         val reconnectTarget = pendingReconnectServer
-        val wasReconnect = reconnectTarget != null
+        val wasReconnect = reconnectTarget != null ||
+            runOrigin == ConnectionOrigin.AUTO_RECONNECT
         pendingReconnectServer = null
         if (wasReconnect && isConnectingToAnotherServer(reconnectTarget)) {
-            adapter.log("[AUTO] Tunnel owned elsewhere; aborting Auto-Reconnect run")
+            adapter.log("[AUTO] Another server is connecting; aborting Auto-Reconnect run")
             setState(AutoModeState.Disconnected)
             return
         }

@@ -55,8 +55,13 @@ class VpnServerRepositoryDynamicVpnPathTest {
         tunnelUsable: Boolean,
         hasBoundNetwork: Boolean,
         memory: PathMemory? = null,
+        foreignVpnAvailable: Boolean = false,
     ) = VpnServerRepository.routeLadder(
-        CollectorRoutingInput(tunnelUsable = tunnelUsable, hasBoundNetwork = hasBoundNetwork),
+        CollectorRoutingInput(
+            tunnelUsable = tunnelUsable,
+            hasBoundNetwork = hasBoundNetwork,
+            foreignVpnAvailable = foreignVpnAvailable,
+        ),
         memory,
     )
 
@@ -113,8 +118,12 @@ class VpnServerRepositoryDynamicVpnPathTest {
     // ── D: bound network but dead tunnel → no TUNNEL rung ────────────────────
     @Test
     fun `D bound network with a dead tunnel adds no TUNNEL rung`() {
-        val result = ladder(tunnelUsable = false, hasBoundNetwork = true)
-        assertEquals(listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY), result)
+        val result = ladder(
+            tunnelUsable = false,
+            hasBoundNetwork = true,
+            foreignVpnAvailable = true,
+        )
+        assertEquals(listOf(CollectorPath.FOREIGN_VPN, CollectorPath.EMERGENCY), result)
         assertFalse("TUNNEL must not be offered for a dead tunnel", result.contains(CollectorPath.TUNNEL))
     }
 
@@ -354,7 +363,7 @@ class VpnServerRepositoryDynamicVpnPathTest {
                         tu && hb,
                     )
                     assertEquals(
-                        "PHYSICAL only when the VPN is inactive ($tu,$hb)",
+                        "PHYSICAL only when no VPN rung can carry the request ($tu,$hb)",
                         result.contains(CollectorPath.PHYSICAL),
                         !(tu && hb),
                     )
@@ -365,10 +374,10 @@ class VpnServerRepositoryDynamicVpnPathTest {
 
     // ── P: resolvePrimary reflects VPN-first ─────────────────────────────────
     @Test
-    fun `P resolvePrimary is TUNNEL only when a usable bound tunnel exists`() {
+    fun `P resolvePrimary uses a foreign VPN when the app tunnel is not usable`() {
         assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, false)))
         assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, false)))
-        assertEquals(CollectorPath.PHYSICAL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true)))
+        assertEquals(CollectorPath.FOREIGN_VPN, VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true, true)))
         assertEquals(CollectorPath.TUNNEL, VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, true)))
     }
 

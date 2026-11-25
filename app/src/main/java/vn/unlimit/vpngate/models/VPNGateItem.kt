@@ -52,15 +52,22 @@ data class VPNGateItem(
     var lastSeenAt: Long = 0L,
     @ColumnInfo(name = "healthScore", defaultValue = "0")
     var healthScore: Int = 0,
-    // Stage G-7: the `sid`/`hid` pair VPN Gate publishes on the server's
-    // `do_openvpn.aspx` link. Together they address that server's `.ovpn`
-    // download endpoint, so the profile can be fetched on demand instead of
-    // being carried in every refresh. Both null = "not published by the
-    // source", which is a normal state (the API dialect never carries them).
+    // Per-server OpenVPN profile download identity: the `sid`/`hid` pair VPN
+    // Gate publishes on the server's `do_openvpn.aspx` link plus the host it
+    // names. Together they address that one `.ovpn` file, so a server whose
+    // profile was not carried in the collected list is still dialable.
+    //
+    // The two identifier columns keep their original physical names
+    // (`openVpnSid`, `openVpnHid`) because database version 12 already shipped
+    // them under those names; renaming a column on SQLite would require a full
+    // table rebuild for no functional gain. The Kotlin property names follow
+    // the download descriptor so call sites read consistently.
     @ColumnInfo(name = "openVpnSid")
-    val openVpnSid: String? = null,
+    val openVpnDownloadSid: String? = null,
     @ColumnInfo(name = "openVpnHid")
-    val openVpnHid: String? = null
+    val openVpnDownloadHid: String? = null,
+    @ColumnInfo(name = "openVpnDownloadHost")
+    val openVpnDownloadHost: String? = null
 ) {
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpPort > 0
@@ -118,7 +125,11 @@ data class VPNGateItem(
         /** How many protocols this row can actually be dialled on. */
         internal fun connectOptions(item: VPNGateItem): Int {
             var n = 0
-            if (!item.openVpnConfigData.isNullOrBlank()) n++
+            if (!item.openVpnConfigData.isNullOrBlank() ||
+                (!item.openVpnDownloadSid.isNullOrBlank() &&
+                    !item.openVpnDownloadHid.isNullOrBlank() &&
+                    !item.openVpnDownloadHost.isNullOrBlank())
+            ) n++
             if (item.seTcpPort > 0) n++
             if (item.seUdpPort > 0 || item.seUdpSupported) n++
             if (item.isSSTPSupport && item.sstpPort > 0) n++

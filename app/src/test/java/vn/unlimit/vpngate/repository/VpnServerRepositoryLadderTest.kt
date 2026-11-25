@@ -16,14 +16,13 @@ import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
  * its `DataUtil` accessors and `GlobalVpnTracker.prefersVpnForCollector()` — is
  * gone. The replacement contract is:
  *
- *  - **Base order** — `PHYSICAL -> TUNNEL (only when usable *and* bound) ->
- *    EMERGENCY`. Unchanged from v1.0.45 and still pinned here (T-NEW-55*).
- *  - **Promotion is evidence-based** — `TUNNEL` moves to the front only when
- *    [VpnServerRepository.PathMemory] says PHYSICAL is cooling down after a
- *    failure, or that TUNNEL is the transport that last delivered a dataset.
- *    No input value can promote it on its own (T-NEW-56*, T-LADDER-*).
- *  - **Invariants** — PHYSICAL is always present, EMERGENCY is always last and
- *    appears exactly once, and no rung repeats (T-NEW-57*).
+ *  - **Base order** — `TUNNEL` when this app's own tunnel is usable and bound;
+ *    `FOREIGN_VPN` when a validated VPN owned by another app is available and
+ *    this app's tunnel is not usable; otherwise `PHYSICAL`. EMERGENCY is last.
+ *  - **Selection is state-based** — exactly one of the three network rungs is
+ *    chosen from the measured inputs, never from a stored preference.
+ *  - **Invariants** — exactly one network rung is selected, EMERGENCY is always
+ *    last and appears exactly once, and no rung repeats (T-NEW-57*).
  *
  * [VpnServerRepository.routeLadder] and [VpnServerRepository.PathMemory] are
  * both pure Kotlin with an injectable clock, so the entire decision — including
@@ -44,8 +43,13 @@ class VpnServerRepositoryLadderTest {
         tunnelUsable: Boolean,
         hasBoundNetwork: Boolean,
         memory: PathMemory? = null,
+        foreignVpnAvailable: Boolean = false,
     ) = VpnServerRepository.routeLadder(
-        CollectorRoutingInput(tunnelUsable = tunnelUsable, hasBoundNetwork = hasBoundNetwork),
+        CollectorRoutingInput(
+            tunnelUsable = tunnelUsable,
+            hasBoundNetwork = hasBoundNetwork,
+            foreignVpnAvailable = foreignVpnAvailable,
+        ),
         memory,
     )
 
@@ -90,12 +94,12 @@ class VpnServerRepositoryLadderTest {
     }
 
     @Test
-    fun `T-NEW-55d a bound network with a dead tunnel adds no rung`() {
-        // The mirror image of 55c. `hasBoundNetwork` is a capability, not a
-        // reason: it must never resurrect the rung for a tunnel that is down.
+    fun `T-NEW-55d a foreign VPN network is used when this app tunnel is not usable`() {
+        // The VPN may belong to another app. Do not bind to NOT_VPN and bypass
+        // that tunnel merely because this app's own connection is not active.
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
-            ladder(tunnelUsable = false, hasBoundNetwork = true),
+            listOf(CollectorPath.FOREIGN_VPN, CollectorPath.EMERGENCY),
+            ladder(tunnelUsable = false, hasBoundNetwork = true, foreignVpnAvailable = true),
         )
     }
 
@@ -140,17 +144,22 @@ class VpnServerRepositoryLadderTest {
 
     @Test
     fun `T-NEW-56d evidence cannot promote a rung that is not available`() {
-        // PHYSICAL is cooling down and TUNNEL was proven, but the tunnel is
-        // unusable right now. Promotion must not conjure a rung: the ladder is
-        // PHYSICAL -> EMERGENCY, exactly as if memory were empty.
+        // PHYSICAL is cooling down and this app's tunnel was proven, but it is
+        // not currently usable. Android still exposes a system VPN Network, so
+        // use that bound route instead of bypassing it through NOT_VPN.
         val clock = FakeClock()
         val memory = clock.memory()
         memory.recordFailure(CollectorPath.PHYSICAL)
         memory.recordSuccess(CollectorPath.TUNNEL)
 
         assertEquals(
-            listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
-            ladder(tunnelUsable = false, hasBoundNetwork = true, memory = memory),
+            listOf(CollectorPath.FOREIGN_VPN, CollectorPath.EMERGENCY),
+            ladder(
+                tunnelUsable = false,
+                hasBoundNetwork = true,
+                memory = memory,
+                foreignVpnAvailable = true,
+            ),
         )
         assertEquals(
             listOf(CollectorPath.PHYSICAL, CollectorPath.EMERGENCY),
@@ -184,7 +193,7 @@ class VpnServerRepositoryLadderTest {
     // ── T-NEW-57: invariants across every combination and memory state ────
 
     @Test
-    fun `T-NEW-57 every ladder is PHYSICAL-rooted, EMERGENCY-terminated and duplicate-free`() {
+    fun `T-NEW-57 every ladder has one network rung, EMERGENCY last and no duplicates`() {
         val states: List<(PathMemory) -> Unit> = listOf(
             { /* empty memory */ },
             { it.recordFailure(CollectorPath.PHYSICAL) },
@@ -196,15 +205,17 @@ class VpnServerRepositoryLadderTest {
         )
 
         for (tunnelUsable in listOf(true, false)) {
-            for (hasBoundNetwork in listOf(true, false)) {
+          for (hasBoundNetwork in listOf(true, false)) {
+            for (foreignVpnAvailable in listOf(true, false)) {
                 for ((index, seed) in states.withIndex()) {
                     val clock = FakeClock()
                     val memory = clock.memory()
                     seed(memory)
 
-                    val result = ladder(tunnelUsable, hasBoundNetwork, memory)
+                    val result = ladder(tunnelUsable, hasBoundNetwork, memory, foreignVpnAvailable)
                     val label = "ladder(tunnelUsable=$tunnelUsable, " +
-                        "hasBoundNetwork=$hasBoundNetwork, memoryState=$index)=$result"
+                        "hasBoundNetwork=$hasBoundNetwork, " +
+                        "foreignVpnAvailable=$foreignVpnAvailable, memoryState=$index)=$result"
 
                     assertTrue("$label must end with EMERGENCY — it is the last rung, never promoted",
                         CollectorPath.EMERGENCY == result.last())
@@ -220,15 +231,27 @@ class VpnServerRepositoryLadderTest {
                         result.contains(CollectorPath.TUNNEL),
                         tunnelUsable && hasBoundNetwork,
                     )
-                    // REQ-ROUTE-001: PHYSICAL exists only when the VPN is not
-                    // active — it is never a fallback for an active tunnel.
+                    // Exactly one network rung is selected: this app's tunnel,
+                    // a foreign VPN, or the physical network — in that order.
+                    // Exactly one network rung wins, in ladder order: the app's
+                    // own tunnel when it is usable AND bound, otherwise a
+                    // validated foreign VPN, otherwise the physical network.
+                    val tunnelRung = tunnelUsable && hasBoundNetwork
+                    val foreignRung = !tunnelRung && foreignVpnAvailable
                     assertEquals(
-                        "$label: PHYSICAL appears only when the VPN is inactive",
+                        "$label: FOREIGN_VPN appears when a validated foreign VPN " +
+                            "exists and this app's tunnel cannot carry the request",
+                        result.contains(CollectorPath.FOREIGN_VPN),
+                        foreignRung,
+                    )
+                    assertEquals(
+                        "$label: PHYSICAL appears only when neither VPN rung is available",
                         result.contains(CollectorPath.PHYSICAL),
-                        !(tunnelUsable && hasBoundNetwork),
+                        !tunnelRung && !foreignRung,
                     )
                 }
             }
+          }
         }
     }
 
@@ -240,6 +263,7 @@ class VpnServerRepositoryLadderTest {
         // no network and is a source switch, not a transport.
         memory.recordFailure(CollectorPath.PHYSICAL)
         memory.recordFailure(CollectorPath.TUNNEL)
+        memory.recordFailure(CollectorPath.FOREIGN_VPN)
 
         for (tunnelUsable in listOf(true, false)) {
             for (hasBoundNetwork in listOf(true, false)) {
@@ -271,8 +295,8 @@ class VpnServerRepositoryLadderTest {
             VpnServerRepository.resolvePrimary(CollectorRoutingInput(true, false)),
         )
         assertEquals(
-            CollectorPath.PHYSICAL,
-            VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true)),
+            CollectorPath.FOREIGN_VPN,
+            VpnServerRepository.resolvePrimary(CollectorRoutingInput(false, true, true)),
         )
     }
 

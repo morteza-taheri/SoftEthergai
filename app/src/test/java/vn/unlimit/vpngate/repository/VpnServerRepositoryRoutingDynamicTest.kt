@@ -83,6 +83,10 @@ class VpnServerRepositoryRoutingDynamicTest {
             "the wrapper's value must be what is passed as tunnelUsable: $body",
             body.contains("tunnelUsable = usable"),
         )
+        assertTrue(
+            "when this app's tunnel is not usable, routing must distinguish a third-party VPN",
+            body.contains("GlobalVpnTracker.currentForeignVpnNetwork()"),
+        )
         assertFalse(
             "the weaker isConnected check must no longer feed the routing input: $body",
             body.contains("isConnected"),
@@ -100,26 +104,29 @@ class VpnServerRepositoryRoutingDynamicTest {
     }
 
     @Test
-    fun `T-NEW-37 resolvePrimary is VPN-first when a usable bound tunnel exists, PHYSICAL otherwise`() {
+    fun `T-NEW-37 resolvePrimary prefers app tunnel, then system VPN, then PHYSICAL`() {
         // BLOCK v1.0.64: `resolvePrimary` is a projection of `routeLadder(input)`
         // — the *no-memory* ladder. With a usable, bound VPN Network the TUNNEL
         // rung is the primary; otherwise PHYSICAL leads. The v1.0.41 lesson still
         // holds: a usable tunnel with no bound network adds no TUNNEL rung.
         for (tunnelUsable in listOf(true, false)) {
             for (hasBoundNetwork in listOf(true, false)) {
-                val expected = if (tunnelUsable && hasBoundNetwork) {
-                    CollectorPath.TUNNEL
-                } else {
-                    CollectorPath.PHYSICAL
+                for (foreignVpnAvailable in listOf(true, false)) {
+                val expected = when {
+                    tunnelUsable && hasBoundNetwork -> CollectorPath.TUNNEL
+                    foreignVpnAvailable -> CollectorPath.FOREIGN_VPN
+                    else -> CollectorPath.PHYSICAL
                 }
                 assertEquals(
                     "resolvePrimary must be VPN-first only when a usable+bound tunnel exists " +
-                        "(tunnelUsable=$tunnelUsable, hasBoundNetwork=$hasBoundNetwork)",
+                        "(tunnelUsable=$tunnelUsable, hasBoundNetwork=$hasBoundNetwork, " +
+                        "foreignVpnAvailable=$foreignVpnAvailable)",
                     expected,
                     VpnServerRepository.resolvePrimary(
-                        CollectorRoutingInput(tunnelUsable, hasBoundNetwork),
+                        CollectorRoutingInput(tunnelUsable, hasBoundNetwork, foreignVpnAvailable),
                     ),
                 )
+                }
             }
         }
         // A dead tunnel (usable but unbound) must add no TUNNEL rung.
@@ -146,7 +153,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         assertTrue(
             "an unavailable TUNNEL rung must fail without a physical request",
-            repository.contains("tunnel unavailable (no bound VPN network); no physical fallback"),
+            repository.contains("unavailable (no bound VPN network); no physical fallback"),
         )
 
         // v1.0.52 (§1.6.44): the routing decision no longer lives in the
@@ -343,7 +350,7 @@ class VpnServerRepositoryRoutingDynamicTest {
         )
         // The tunnel-unavailable short-circuit returns before any memory write:
         // a rung that was never attempted must not be recorded as failed.
-        val shortCircuitAt = body.indexOf("tunnel unavailable (no bound VPN network)")
+        val shortCircuitAt = body.indexOf("unavailable (no bound VPN network)")
         val firstRecordAt = body.indexOf("pathMemory.record")
         assertTrue("the short-circuit must exist", shortCircuitAt >= 0)
         assertTrue("the memory must be written", firstRecordAt >= 0)

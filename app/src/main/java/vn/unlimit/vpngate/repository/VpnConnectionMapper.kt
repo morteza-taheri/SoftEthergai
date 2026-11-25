@@ -81,6 +81,18 @@ object VpnConnectionMapper {
 
         // Fully decoded OpenVPN profile (app-specific field).
         conn.openVpnConfigData = VpnRecords.str(ov["rawConfig"]).takeIf { it.isNotEmpty() }
+        // On-demand download descriptor. The nested `download` map is the
+        // current shape; the flat `downloadSid`/`downloadHid` keys are read as a
+        // fallback so a snapshot written by the earlier single-level form still
+        // yields a dialable server instead of silently losing the identifiers.
+        val openVpnDownload = VpnRecords.map(ov["download"])
+        conn.openVpnDownloadSid = VpnRecords.str(openVpnDownload["sid"])
+            .takeIf { it.isNotEmpty() }
+            ?: VpnRecords.str(ov["downloadSid"]).takeIf { it.isNotEmpty() }
+        conn.openVpnDownloadHid = VpnRecords.str(openVpnDownload["hid"])
+            .takeIf { it.isNotEmpty() }
+            ?: VpnRecords.str(ov["downloadHid"]).takeIf { it.isNotEmpty() }
+        conn.openVpnDownloadHost = VpnRecords.str(openVpnDownload["host"]).takeIf { it.isNotEmpty() }
 
         conn.tcpPort = VpnRecords.int(VpnRecords.transport(ov, "tcp")["port"])
         conn.udpPort = VpnRecords.int(VpnRecords.transport(ov, "udp")["port"])
@@ -96,12 +108,6 @@ object VpnConnectionMapper {
         conn.seUdpPort = seUdpPort
         // UI state (§plan T3.8): UDP offered with no published port.
         conn.seUdpSupported = seUdpSupported
-
-        // Stage G-7: the on-demand download identifiers. Carried through so a
-        // server whose profile was never collected can still be dialled —
-        // the profile is fetched from VPN Gate at that point, not before.
-        conn.openVpnSid = VpnRecords.str(ov["downloadSid"]).takeIf { it.isNotEmpty() }
-        conn.openVpnHid = VpnRecords.str(ov["downloadHid"]).takeIf { it.isNotEmpty() }
 
         return conn
     }

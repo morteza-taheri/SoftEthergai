@@ -51,9 +51,8 @@ import vn.unlimit.vpngate.BuildConfig
 import vn.unlimit.vpngate.R
 import vn.unlimit.vpngate.models.SstpPortKind
 import vn.unlimit.vpngate.models.VPNGateConnection
+import vn.unlimit.vpngate.repository.VpnServerRepository
 import kotlinx.coroutines.runBlocking
-import vn.unlimit.vpngate.data.remote.OkHttpFetcher
-import vn.unlimit.vpngate.repository.OpenVpnConfigDownloader
 import vn.unlimit.vpngate.provider.BaseProvider
 import vn.unlimit.vpngate.ui.screens.detail.DetailScreen
 import vn.unlimit.vpngate.ui.screens.detail.DetailUiState
@@ -1088,19 +1087,11 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
         ).show()
 
         Thread({
+            // Same repository entry point Auto Mode uses, so the manual path
+            // gets the identical transport choice, descriptor validation and
+            // mirror escalation instead of its own private request builder.
             val profile = runCatching {
-                runBlocking {
-                    OpenVpnConfigDownloader(OkHttpFetcher()).download(
-                        OpenVpnConfigDownloader.Request(
-                            sid = connection.openVpnSid.orEmpty(),
-                            hid = connection.openVpnHid.orEmpty(),
-                            hostName = connection.hostName.orEmpty(),
-                            tcpPort = connection.tcpPort,
-                            udpPort = connection.udpPort,
-                        ),
-                        preferUdp = useUdp,
-                    )
-                }
+                runBlocking { VpnServerRepository().fetchOpenVpnProfile(connection, useUdp) }
             }.getOrNull()
 
             runOnUiThread {

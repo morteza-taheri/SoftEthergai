@@ -120,6 +120,9 @@ class App : Application() {
             // Stage G-7: version 11 -> 12, the on-demand OpenVPN download
             // identifiers (`sid`/`hid`). Additive, nullable, no back-fill.
             .addMigrations(AppDatabase.MIGRATION_11_12)
+            // Version 12 -> 13: the download host that belongs to those
+            // identifiers. Additive and nullable for the same reason.
+            .addMigrations(AppDatabase.MIGRATION_12_13)
             .allowMainThreadQueries() // Allow main thread queries for VPN profile configuration
             .build()
         vpnGateItemDao = appDatabase.vpnGateItemDao()

@@ -24,11 +24,10 @@ import vn.unlimit.softether.TeardownCompletion
 import vn.unlimit.softether.model.ConnectionConfig
 import vn.unlimit.softether.model.Route
 import vn.unlimit.vpngate.App
+import vn.unlimit.vpngate.repository.VpnServerRepository
 import vn.unlimit.vpngate.BuildConfig
-import vn.unlimit.vpngate.data.remote.OkHttpFetcher
 import vn.unlimit.vpngate.models.VPNGateConnection
 import vn.unlimit.vpngate.network.SstpHostResolver
-import vn.unlimit.vpngate.repository.OpenVpnConfigDownloader
 import vn.unlimit.vpngate.state.GlobalVpnTracker
 import vn.unlimit.vpngate.utils.AppConfig
 import vn.unlimit.vpngate.utils.DataUtil
@@ -90,17 +89,6 @@ class AndroidConnectionAdapter(
 
     @Volatile
     private var currentProtocol: AutoModeProtocol? = null
-
-    /**
-     * Stage G-7: the on-demand `.ovpn` fetcher.
-     *
-     * Constructed lazily so every existing test double — which never dials
-     * OpenVPN — keeps working unchanged, and so a run that never touches
-     * OpenVPN never builds an HTTP client.
-     */
-    private val openVpnConfigDownloader: OpenVpnConfigDownloader by lazy {
-        OpenVpnConfigDownloader(OkHttpFetcher())
-    }
 
     /**
      * Stage G-7: the profile download is bounded well inside one attempt's
@@ -896,9 +884,7 @@ class AndroidConnectionAdapter(
         val existing = if (useUdp) conn.openVpnConfigDataUdp else conn.openVpnConfigData
         if (!existing.isNullOrEmpty()) return
 
-        val sid = conn.openVpnSid
-        val hid = conn.openVpnHid
-        if (sid.isNullOrBlank() || hid.isNullOrBlank()) {
+        if (!conn.canDownloadOpenVpnConfig) {
             Log.w(
                 TAG,
                 "No OpenVPN profile and no download identifiers for ${conn.hostName}; " +
@@ -907,15 +893,14 @@ class AndroidConnectionAdapter(
             return
         }
 
-        val request = OpenVpnConfigDownloader.Request(
-            sid = sid,
-            hid = hid,
-            hostName = conn.hostName.orEmpty(),
-            tcpPort = conn.tcpPort,
-            udpPort = conn.udpPort,
-        )
+        // One implementation, shared with the manual connect path: the
+        // repository picks the measured transport (own tunnel, foreign VPN or
+        // physical), validates the descriptor, escalates to the rotating
+        // mirror directory only when the canonical host and the cached mirrors
+        // both fail, and never returns a body whose remote/port/proto do not
+        // match the server being dialled.
         val profile = withTimeoutOrNull(openVpnConfigDownloadTimeoutMs) {
-            runCatching { openVpnConfigDownloader.download(request, preferUdp = useUdp) }
+            runCatching { VpnServerRepository().fetchOpenVpnProfile(conn, useUdp = useUdp) }
                 .getOrNull()
         }
         if (profile.isNullOrBlank()) {
@@ -924,6 +909,17 @@ class AndroidConnectionAdapter(
         }
 
         conn.openVpnConfigData = profile
+        // Persist it so the next attempt on this server is a plain connect and
+        // a refresh that omits the profile no longer costs a download. Failure
+        // here is not fatal: the profile is already in memory for this attempt.
+        runCatching {
+            val hostName = conn.hostName.orEmpty()
+            if (hostName.isNotBlank()) {
+                App.instance?.vpnGateItemDao?.updateOpenVpnConfig(hostName, profile)
+            }
+        }.onFailure {
+            Log.w(TAG, "OpenVPN profile downloaded but cache write failed", it)
+        }
         Log.i(TAG, "Downloaded OpenVPN profile on demand for ${conn.hostName}")
     }
 

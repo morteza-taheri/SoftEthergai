@@ -453,17 +453,36 @@ object VpnGateHtmlParser {
                     VpnRecords.setField(server, "protocols.openvpn.configAvailable", true, source)
                     VpnRecords.markSupported(server, "openvpn", source)
 
-                    // Stage G-7: `sid` and `hid` are the server's identity for
-                    // the on-demand config endpoint
-                    // (`/common/openvpn_download.aspx?sid=..&hid=..`). They are
-                    // recorded here, at collect time, precisely so the profile
-                    // does NOT have to be downloaded (or carried in the CSV)
-                    // until someone actually dials this server.
-                    params["sid"]?.takeIf { it.isNotBlank() }?.let {
-                        VpnRecords.setField(server, "protocols.openvpn.downloadSid", it, source)
-                    }
-                    params["hid"]?.takeIf { it.isNotBlank() }?.let {
-                        VpnRecords.setField(server, "protocols.openvpn.downloadHid", it, source)
+                    // Per-server `.ovpn` download identity.
+                    //
+                    // `sid` and `hid` are the server's identity for
+                    // `/common/openvpn_download.aspx`; `host` (or `fqdn`) is the
+                    // authority that endpoint names. Recording them at collect
+                    // time is what lets the profile stay un-downloaded — and
+                    // un-carried in the CSV — until someone actually dials this
+                    // server. Both identifiers are validated as decimal tokens
+                    // because they are interpolated into a query string; the
+                    // host is validated against the two shapes VPN Gate uses
+                    // (an `.opengw.net` name or a bare IP).
+                    val downloadSid = params["sid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
+                    val downloadHid = params["hid"]?.takeIf { it.matches(Regex("\\d{1,20}")) }
+                    if (downloadSid != null && downloadHid != null) {
+                        VpnRecords.setField(server, "protocols.openvpn.download.sid", downloadSid, source)
+                        VpnRecords.setField(server, "protocols.openvpn.download.hid", downloadHid, source)
+                        val downloadHost = (params["host"] ?: params["fqdn"])?.lowercase()
+                            ?.takeIf {
+                                it.length <= 253 &&
+                                    Regex("^[a-z0-9.-]+$").matches(it) &&
+                                    (it.endsWith(".opengw.net") || VpnUtil.validIp(it))
+                            }
+                        if (downloadHost != null) {
+                            VpnRecords.setField(
+                                server,
+                                "protocols.openvpn.download.host",
+                                downloadHost,
+                                source,
+                            )
+                        }
                     }
 
                     // v1.0.87 — two link shapes publish the same facts:

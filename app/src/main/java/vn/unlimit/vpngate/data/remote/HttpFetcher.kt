@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.data.remote
 
 import android.net.Network
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -12,6 +13,14 @@ import okhttp3.Response
 import vn.unlimit.vpngate.data.model.CollectorLog
 import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.URI
+import java.net.Socket
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.nio.charset.StandardCharsets
+import java.util.zip.GZIPInputStream
 import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
 
@@ -209,6 +218,19 @@ class OkHttpFetcher(
      * dump, or a test asserting header behaviour) can turn it off.
      */
     private val conditional: Boolean = true,
+    /**
+     * Whether a discovered public HTTP mirror may be fetched over a raw socket.
+     *
+     * Android's cleartext policy is static and the official VPN Gate mirror
+     * directory rotates IP:port endpoints, so a fixed allowlist goes stale and
+     * those mirrors would otherwise be unreachable. The raw path is narrowly
+     * scoped (see [executeCleartextMirror]) but it deliberately bypasses the
+     * OkHttp client — including any interceptor a caller installed. A test that
+     * needs every request to travel through its own client (a blocking
+     * interceptor proving the refresh deadline, for example) must turn it off,
+     * or the mirror can answer around the client it is trying to observe.
+     */
+    private val allowCleartextMirrors: Boolean = true,
 ) : HttpFetcher {
     companion object {
         private const val USER_AGENT =
@@ -239,6 +261,17 @@ class OkHttpFetcher(
      * rejected, so no foreign body can ever be returned.
      */
     private suspend fun execute(url: String, redirectPolicy: RedirectPolicy?): HttpResponse? {
+        // Android's cleartext policy is static and the official VPN Gate mirror
+        // directory intentionally rotates IP:port endpoints. A fixed XML
+        // allowlist therefore becomes stale. Use a narrowly scoped raw-socket
+        // HTTP/1.1 path only for SourceUrl-validated public mirrors; canonical
+        // feeds and all HTTPS traffic remain on OkHttp with normal TLS checks.
+        if (allowCleartextMirrors &&
+            url.startsWith("http://", ignoreCase = true) &&
+            SourceUrl.forMirror(url, SourceKind.DISCOVERED_MIRROR) != null
+        ) {
+            return executeCleartextMirror(url, redirectPolicy)
+        }
         CollectorLog.d("GET $url")
         val chain = mutableListOf<String>()
         var current = url
@@ -432,6 +465,225 @@ class OkHttpFetcher(
     }
 
     /**
+     * Fetch a dynamically discovered public HTTP mirror without weakening the
+     * app-wide Android cleartext policy. The source identity has already been
+     * restricted to an official mirror authority; redirects are checked on
+     * every hop and only same-source redirects are followed.
+     */
+    @OptIn(InternalCoroutinesApi::class)
+    private suspend fun executeCleartextMirror(
+        initialUrl: String,
+        redirectPolicy: RedirectPolicy?,
+    ): HttpResponse? = withContext(Dispatchers.IO) {
+        val chain = mutableListOf<String>()
+        var current = initialUrl
+        val maxHops = redirectPolicy?.maxHops ?: RedirectPolicy.DEFAULT_MAX_HOPS
+        var hops = 0
+        while (true) {
+            val uri = runCatching { URI(current) }.getOrNull() ?: return@withContext null
+            val identity = SourceUrl.forMirror(current, SourceKind.DISCOVERED_MIRROR)
+                ?: return@withContext null
+            if (uri.scheme != "http" || uri.userInfo != null || uri.host.isNullOrBlank()) {
+                return@withContext null
+            }
+            val port = if (uri.port > 0) uri.port else 80
+            val socket = client.socketFactory.createSocket()
+            val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+            // Run while the Job is entering cancellation, not after it has
+            // completed. A blocking Socket.connect/read prevents completion;
+            // the default completion handler therefore ran too late to unblock it.
+            val cancellation = job?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is kotlinx.coroutines.CancellationException) {
+                    runCatching { socket.close() }
+                }
+            }
+            try {
+                socket.connect(InetSocketAddress(uri.host, port), 10_000)
+                socket.soTimeout = 15_000
+                socket.tcpNoDelay = true
+                val output = socket.getOutputStream()
+                val pathAndQuery = (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") +
+                    (uri.rawQuery?.let { "?$it" } ?: "")
+                val hostHeader = if (port == 80) uri.host else "${uri.host}:$port"
+                val request = buildString {
+                    append("GET $pathAndQuery HTTP/1.1\r\n")
+                    append("Host: $hostHeader\r\n")
+                    append("User-Agent: Mozilla/5.0 (Android) VPNGateCollector\r\n")
+                    append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n")
+                    append("Accept-Encoding: gzip\r\n")
+                    append("Connection: close\r\n\r\n")
+                }
+                output.write(request.toByteArray(StandardCharsets.US_ASCII))
+                output.flush()
+
+                val input = BufferedInputStream(socket.getInputStream())
+                val statusLine = readHttpLine(input) ?: return@withContext null
+                val status = statusLine.split(' ').getOrNull(1)?.toIntOrNull()
+                    ?: return@withContext null
+                val headers = LinkedHashMap<String, String>()
+                while (true) {
+                    val line = readHttpLine(input) ?: break
+                    if (line.isEmpty()) break
+                    val colon = line.indexOf(':')
+                    if (colon > 0) {
+                        val key = line.substring(0, colon).trim().lowercase()
+                        val value = line.substring(colon + 1).trim()
+                        headers[key] = if (headers.containsKey(key)) "${headers[key]}, $value" else value
+                    }
+                }
+
+                if (status in 300..399) {
+                    val location = headers["location"]
+                    if (location.isNullOrBlank() || hops >= maxHops) {
+                        return@withContext HttpResponse(
+                            initialUrl, current, status, headers["content-type"], null,
+                            chain.toList(), redirectRejected = true,
+                            redirectRejectionReason = if (location.isNullOrBlank()) "redirect without Location" else "too many redirects",
+                        )
+                    }
+                    val next = runCatching { uri.resolve(location).toString() }.getOrNull()
+                        ?: return@withContext null
+                    val rejection = redirectPolicy?.rejectionReason(current, next)
+                    if (rejection != null) {
+                        return@withContext HttpResponse(
+                            initialUrl, current, status, headers["content-type"], null,
+                            chain.toList(), redirectRejected = true,
+                            redirectRejectionReason = rejection,
+                        )
+                    }
+                    val nextUri = runCatching { URI(next) }.getOrNull()
+                        ?: return@withContext null
+                    if (nextUri.scheme != "http" || nextUri.host != uri.host ||
+                        (if (nextUri.port > 0) nextUri.port else 80) != port
+                    ) {
+                        return@withContext HttpResponse(
+                            initialUrl, current, status, headers["content-type"], null,
+                            chain.toList(), redirectRejected = true,
+                            redirectRejectionReason = "cleartext mirror redirect changed authority or scheme",
+                        )
+                    }
+                    chain.add(next)
+                    current = next
+                    hops++
+                    continue
+                }
+
+                if (status !in 200..299) {
+                    return@withContext HttpResponse(
+                        initialUrl, current, status, headers["content-type"], null, chain.toList(),
+                    )
+                }
+                val encodedBody = when {
+                    headers["transfer-encoding"]?.contains("chunked", true) == true ->
+                        readChunkedBody(input, MAX_RESPONSE_BYTES) ?: return@withContext null
+                    headers["content-length"]?.toLongOrNull()?.let { it > MAX_RESPONSE_BYTES } == true ->
+                        return@withContext null
+                    headers["content-length"]?.toLongOrNull()?.let { it >= 0L } != null ->
+                        readFixedBody(
+                            input,
+                            headers["content-length"]!!.toLong(),
+                            MAX_RESPONSE_BYTES,
+                        ) ?: return@withContext null
+                    else -> readUntilEof(input, MAX_RESPONSE_BYTES) ?: return@withContext null
+                }
+                val bodyBytes = if (headers["content-encoding"]?.contains("gzip", true) == true) {
+                    runCatching {
+                        GZIPInputStream(encodedBody.inputStream()).use { it.readBounded(MAX_RESPONSE_BYTES) }
+                    }.getOrNull() ?: return@withContext null
+                } else encodedBody
+                val body = bodyBytes.toString(StandardCharsets.UTF_8)
+                return@withContext HttpResponse(
+                    initialUrl, current, status, headers["content-type"], body, chain.toList(),
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CollectorLog.d("Cleartext mirror request failed: ${e.javaClass.simpleName}: ${e.message}")
+                return@withContext null
+            } finally {
+                cancellation?.dispose()
+                runCatching { socket.close() }
+            }
+        }
+        @Suppress("UNREACHABLE_CODE")
+        null
+    }
+
+    private fun readHttpLine(input: InputStream): String? {
+        val bytes = ByteArrayOutputStream()
+        var previous = -1
+        while (bytes.size() <= 16_384) {
+            val value = input.read()
+            if (value < 0) return if (bytes.size() == 0) null else bytes.toString("UTF-8")
+            if (previous == 13 && value == 10) {
+                val raw = bytes.toByteArray()
+                return String(raw, 0, (raw.size - 1).coerceAtLeast(0), StandardCharsets.UTF_8)
+            }
+            bytes.write(value)
+            previous = value
+        }
+        throw IOException("HTTP header line exceeded limit")
+    }
+
+    private fun readFixedBody(input: InputStream, length: Long, cap: Long): ByteArray? {
+        if (length < 0 || length > cap) return null
+        val output = ByteArrayOutputStream(length.toInt())
+        val buffer = ByteArray(8192)
+        var remaining = length
+        while (remaining > 0) {
+            val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (read < 0) return null
+            output.write(buffer, 0, read)
+            remaining -= read
+        }
+        return output.toByteArray()
+    }
+
+    private fun readUntilEof(input: InputStream, cap: Long): ByteArray? {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            if (output.size().toLong() + read > cap) return null
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
+    }
+
+    private fun readChunkedBody(input: InputStream, cap: Long): ByteArray? {
+        val output = ByteArrayOutputStream()
+        while (true) {
+            val sizeLine = readHttpLine(input) ?: return null
+            val size = sizeLine.substringBefore(';').trim().toLongOrNull(16) ?: return null
+            if (size == 0L) {
+                while (!readHttpLine(input).isNullOrEmpty()) { /* trailers */ }
+                return output.toByteArray()
+            }
+            if (size < 0 || output.size().toLong() + size > cap) return null
+            val chunk = readFixedBody(input, size, cap) ?: return null
+            output.write(chunk)
+            // Each chunk is followed by CRLF.
+            if (input.read() != 13 || input.read() != 10) return null
+        }
+    }
+
+    private fun InputStream.readBounded(cap: Long): ByteArray? {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = read(buffer)
+            if (read < 0) break
+            if (output.size().toLong() + read > cap) return null
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
+    }
+
+    /**
      * v1.0.69 (overnight consolidation) — B-1 fix: make a blocking OkHttp
      * exchange cancellation-cooperative.
      *
@@ -451,28 +703,25 @@ class OkHttpFetcher(
     private suspend fun callWithCancel(request: Request): Response {
         val call = client.newCall(request)
         return suspendCancellableCoroutine { cont ->
-            // Cancel the underlying OkHttp Call the moment the coroutine is
-            // cancelled, so a blocked read is interrupted immediately and the
-            // socket is released rather than lingering until OkHttp's own
-            // connect(10 s) + read(15 s) budget elapses.
+            // Use OkHttp's asynchronous API: execute() blocks the coroutine
+            // thread inside the continuation builder, which can starve the
+            // dispatcher responsible for delivering the outer refresh timeout.
+            // Cancellation always cancels the underlying call, including while
+            // DNS, connect, interceptor execution, or response reading is pending.
             cont.invokeOnCancellation { call.cancel() }
-            try {
-                val raw = call.execute()
-                if (cont.isActive) {
-                    cont.resumeWith(Result.success(raw))
-                } else {
-                    // Cancelled between execute() returning and this check:
-                    // we already own the response, so close it to avoid a leak.
-                    raw.close()
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
                 }
-            } catch (e: IOException) {
-                // On cancellation invokeOnCancellation has already called
-                // call.cancel(), which makes execute() throw IOException.
-                // Do not resume a cancelled continuation.
-                if (cont.isActive) {
-                    cont.resumeWith(Result.failure(e))
+
+                override fun onResponse(call: okhttp3.Call, response: Response) {
+                    if (cont.isActive) {
+                        cont.resumeWith(Result.success(response))
+                    } else {
+                        response.close()
+                    }
                 }
-            }
+            })
         }
     }
 }
@@ -500,11 +749,10 @@ class OkHttpFetcher(
 /**
  * Which transport a collector request should be sent on.
  *
- * v1.0.45 (§1.6.38): the two honest, explicit transports replace the old
- * `OPEN`/`VPN` pair. `OPEN` was unbound, so when the app's own tunnel was up it
- * silently followed the OS default — which IS the tunnel. `PHYSICAL` is bound
- * to a NOT_VPN + INTERNET network; `TUNNEL` is bound to the app's VPN network.
- * `EMERGENCY` is the last rung (bundled servers.csv) and carries no network.
+ * PHYSICAL is bound to NOT_VPN Wi-Fi/cellular; TUNNEL is the verified tunnel
+ * established by this app; FOREIGN_VPN is a validated VPN owned by a different
+ * application. EMERGENCY is the bundled servers.csv source and carries no
+ * network.
  */
 enum class CollectorPath {
     /** An explicit non-VPN network (Wi-Fi/cellular), bound per request. */
@@ -525,6 +773,13 @@ enum class CollectorPath {
      *
      * It is a separate value rather than a wider PHYSICAL so the log and the
      * path memory never claim "physical" for a request that rode a tunnel.
+     *
+     * Merge note: the `fix/vpngate-resilient-collector-autoreconnect` branch
+     * modelled the same rung as `SYSTEM_VPN`. The two were unified on this
+     * value because the detection that feeds it (`currentForeignVpnNetwork`,
+     * which validates the network and reads the owning UID) already existed
+     * here, and because "foreign" states the actual property — the tunnel is
+     * not ours — rather than merely that Android reported one.
      */
     FOREIGN_VPN,
 
@@ -536,10 +791,9 @@ enum class CollectorPath {
  * The inputs the routing decision needs.
  *
  * v1.0.52 (§1.6.44): the user-facing "try the tunnel first" opt-in is **gone**.
- * Routing is fully automatic — the ladder is derived from measured signals
- * only: whether the tunnel is usable right now, whether a VPN `Network` handle
- * exists to bind with, and (in `VpnServerRepository`) the in-process path
- * memory that records which transport last worked. A stale stored
+ * Routing is fully automatic — the ladder is derived from measured signals:
+ * whether this app's tunnel is usable and whether Android exposes any system
+ * VPN Network to bind with. A stale stored
  * `vpn_always_prefer_vpn` value is simply never read again.
  *
  * [tunnelUsable] and [hasBoundNetwork] must both hold for the `TUNNEL` rung to

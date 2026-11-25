@@ -20,6 +20,7 @@ import vn.unlimit.vpngate.data.remote.CollectorRoutingInput
 import vn.unlimit.vpngate.data.remote.FetchedSource
 import vn.unlimit.vpngate.data.remote.HttpFetcher
 import vn.unlimit.vpngate.data.remote.OkHttpFetcher
+import vn.unlimit.vpngate.data.remote.OpenVpnProfileDownloader
 import vn.unlimit.vpngate.data.remote.SourceIdentity
 import vn.unlimit.vpngate.data.remote.VpnGateApiSource
 import vn.unlimit.vpngate.data.remote.VpnGateHtmlSource
@@ -274,8 +275,8 @@ class VpnServerRepository(
          * exists, the ladder puts TUNNEL first. A successful path is
          * remembered for [successTtlMs] and wins ties.
          *
-         * **Bounded by construction.** The key space is the three-value
-         * [CollectorPath] enum, so at most three success timestamps and three
+         * **Bounded by construction.** The key space is the four-value
+         * [CollectorPath] enum, so at most four success timestamps and four
          * failure timestamps are ever held, regardless of how long the process
          * runs. No eviction policy is needed because no unbounded key can be
          * created.
@@ -417,6 +418,9 @@ class VpnServerRepository(
          * `bindProcessToNetwork`). Null when there is no VPN network to bind to.
          */
         internal fun productionTunnelFetcher(): HttpFetcher? {
+            // currentVpnNetwork is the Android system VPN Network. It may belong
+            // to this app or to another VPN application; the route decision above
+            // determines which semantic path is being used.
             val network = GlobalVpnTracker.currentVpnNetwork() ?: return null
             return runCatching {
                 OkHttpFetcher(client = boundToNetwork(network))
@@ -574,13 +578,13 @@ class VpnServerRepository(
         // run's sources could provide, and is reported with the dataset.
         var collectedCapability = SourceCapability.UNKNOWN
 
-        // v1.0.45: re-read per refresh, never cached across runs, so a tunnel
-        // that comes up between two refreshes is honoured by the next one.
+        // Re-read per refresh, never cached across runs, so a tunnel or a
+        // different system VPN that appears between refreshes is honoured.
         //
-        // BLOCK v1.0.64: the ladder is TUNNEL (when usable and bound) ->
-        // PHYSICAL -> EMERGENCY. With a usable, bound VPN Network the TUNNEL
-        // rung is the primary and PHYSICAL the fallback; with no usable+bound
-        // tunnel the ladder is PHYSICAL -> EMERGENCY. EMERGENCY is always last.
+        // Prefer this app's verified tunnel, then an external/system VPN Network,
+        // and only then NOT_VPN physical connectivity. The chosen network rung is
+        // used alone; a failed VPN request is not silently moved to PHYSICAL.
+        // EMERGENCY remains last as a dataset source, not a transport fallback.
         val input = routing()
         // Re-arm the one-shot retry whenever a run starts with a usable tunnel:
         // the recovery it guards is "the tunnel came back", so its availability
@@ -954,9 +958,8 @@ class VpnServerRepository(
         // the VPN is inactive the rung is PHYSICAL and the default network is
         // used. EMERGENCY is a separate dataset source, not a fallback of this
         // request.
-        if ((path == CollectorPath.TUNNEL || path == CollectorPath.FOREIGN_VPN) &&
-            boundFetcher == null
-        ) {
+        val boundVpnPath = path == CollectorPath.TUNNEL || path == CollectorPath.FOREIGN_VPN
+        if (boundVpnPath && boundFetcher == null) {
             // Literal per rung, not an interpolated label: these two lines are
             // the contract a device log and the routing tests read, and a
             // generic `path=...` line would make "tunnel unavailable" vanish
@@ -999,7 +1002,7 @@ class VpnServerRepository(
         // tracker's CURRENT VPN network and retry the same TUNNEL rung once.
         // This is not a downgrade — the retry never touches the physical path
         // (REQ-ROUTE-001 is preserved).
-        if (path == CollectorPath.TUNNEL) {
+        if (boundVpnPath) {
             // Wait out a VPN network handover window (bounded, 8 s): after a
             // reconnect the Network object the run captured may already be gone
             // while the tracker is about to publish its replacement
@@ -1032,7 +1035,8 @@ class VpnServerRepository(
                     if (rebuilt == null) delay(500)
                 }
                 if (rebuilt != null) {
-                    fetchLog("[fetch] path=tunnel rebind retry source=$sourceTag (stale VPN network suspected)")
+                    val rungLabel = if (path == CollectorPath.FOREIGN_VPN) "foreign-vpn" else "tunnel"
+                    fetchLog("[fetch] path=$rungLabel rebind retry source=$sourceTag (stale VPN network suspected)")
                     val retry = fetch(rebuilt)
                     if (retry != null && succeeded(retry)) {
                         pathMemory.recordSuccess(path)
@@ -1053,6 +1057,79 @@ class VpnServerRepository(
                 fetchLog("[fetch] path=physical failed (no result)")
         }
         return null
+    }
+
+    /**
+     * Fetch one server's OpenVPN profile on demand, over the same measured
+     * route policy a full refresh uses: this app's verified tunnel, otherwise a
+     * validated foreign VPN, otherwise the explicit non-VPN physical network.
+     *
+     * The profile is what makes an HTML-only collection dialable: the bulk CSV
+     * omits the Base64 body to stay small, but the row still carries the
+     * short-lived `sid`/`hid`/`host` identity and the protocol port, which is
+     * enough to request that single `.ovpn` file.
+     *
+     * Mirror escalation is deliberately second-stage: the canonical host plus
+     * whatever mirrors are already cached are tried first, and the rotating
+     * mirror directory is only re-discovered after both produce nothing. That
+     * keeps the common path one request wide, and still lets a blocked
+     * canonical host fall back to an official mirror that answers.
+     *
+     * Returns null — never throws — when the server published no usable
+     * descriptor or every attempt failed; the caller then reports the attempt
+     * as MISSING_CONFIG, which is the same outcome as before the descriptor
+     * existed.
+     */
+    suspend fun fetchOpenVpnProfile(
+        connection: VPNGateConnection,
+        useUdp: Boolean,
+    ): String? = withContext(Dispatchers.IO) {
+        val path = routeLadder(routing(), pathMemory).first()
+        val physicalFetcher = runCatching { productionBoundFetcher() }.getOrNull() ?: fetcher
+        val boundFetcher: HttpFetcher? = when (path) {
+            CollectorPath.TUNNEL -> bindHttpFetcher()
+            CollectorPath.FOREIGN_VPN -> runCatching { foreignFetcherFactory() }.getOrNull()
+            else -> null
+        }
+        fetchOnChosenPath(
+            sourceTag = "openvpn-profile",
+            path = path,
+            boundFetcher = boundFetcher,
+            succeeded = { !it.isNullOrBlank() },
+            physicalFetcher = physicalFetcher,
+        ) { selectedFetcher ->
+            val cachedMirrorUrls = runCatching {
+                vn.unlimit.vpngate.App.instance?.dataUtil?.getCachedMirrors().orEmpty()
+            }.getOrDefault(emptyList())
+            val downloader = OpenVpnProfileDownloader(selectedFetcher)
+            val cachedResult = downloader.download(
+                connection = connection,
+                useUdp = useUdp,
+                mirrorBaseUrls = cachedMirrorUrls,
+            )
+            if (!cachedResult.isNullOrBlank()) {
+                cachedResult
+            } else {
+                // A descriptor can outlive a mirror cache. Refresh the official
+                // mirror directory only after the canonical + cached attempts
+                // fail, then retry this one profile over the newly discovered
+                // authorities.
+                val discovered = runCatching {
+                    VpnGateMirrorSource(selectedFetcher).discoverMirrors(cachedMirrorUrls)
+                }.getOrDefault(emptyList())
+                val freshMirrorUrls = discovered.map { it.baseUrl }
+                if (freshMirrorUrls.isNotEmpty()) {
+                    runCatching {
+                        vn.unlimit.vpngate.App.instance?.dataUtil?.setCachedMirrors(freshMirrorUrls)
+                    }
+                }
+                downloader.download(
+                    connection = connection,
+                    useUdp = useUdp,
+                    mirrorBaseUrls = freshMirrorUrls.ifEmpty { cachedMirrorUrls },
+                )
+            }
+        }
     }
 
     /**

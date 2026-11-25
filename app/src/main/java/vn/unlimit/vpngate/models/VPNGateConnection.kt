@@ -72,22 +72,25 @@ class VPNGateConnection : Parcelable {
     // SoftEther UDP offered without a published port (§6/§9): the UI
     // shows "supported — port unknown" instead of hiding the option.
     var seUdpSupported = false
-    // Stage G-7: the identifiers VPN Gate publishes on the server's
-    // `do_openvpn.aspx` link. They let the `.ovpn` profile be downloaded on
-    // demand, so a server with no stored profile is still dialable.
-    var openVpnSid: String? = null
-    var openVpnHid: String? = null
+    // Fresh per-server VPN Gate OpenVPN download identity. The `sid` may expire,
+    // so it is refreshed from the HTML source and never treated as a permanent
+    // URL. `openVpnDownloadHost` is the host the download link names; when the
+    // source published only the identifiers the downloader falls back to
+    // `<hostName>.opengw.net`, which is the same authority the app dials.
+    var openVpnDownloadSid: String? = null
+    var openVpnDownloadHid: String? = null
+    var openVpnDownloadHost: String? = null
 
     /**
-     * Stage G-7: whether this server's `.ovpn` profile can be fetched on
-     * demand — i.e. the source published both download identifiers.
+     * Whether this server's `.ovpn` profile can be fetched on demand — i.e. the
+     * source published both download identifiers.
      *
      * Deliberately independent of [openVpnConfigData]: the whole point is that
      * a server can be dialled over OpenVPN *without* the profile having been
      * carried in the collected list.
      */
     val canDownloadOpenVpnConfig: Boolean
-        get() = !openVpnSid.isNullOrBlank() && !openVpnHid.isNullOrBlank()
+        get() = !openVpnDownloadSid.isNullOrBlank() && !openVpnDownloadHid.isNullOrBlank()
 
     val isUdpOnly: Boolean
         get() = seTcpPort <= 0 && seUdpSupported
@@ -165,8 +168,9 @@ class VPNGateConnection : Parcelable {
         seTcpPort = `in`.readInt()
         seUdpPort = `in`.readInt()
         seUdpSupported = `in`.readInt() == 1
-        openVpnSid = `in`.readString()
-        openVpnHid = `in`.readString()
+        openVpnDownloadSid = `in`.readString()
+        openVpnDownloadHid = `in`.readString()
+        openVpnDownloadHost = `in`.readString()
     }
 
     //Empty constructor
@@ -197,8 +201,9 @@ class VPNGateConnection : Parcelable {
         out.writeInt(seTcpPort)
         out.writeInt(seUdpPort)
         out.writeInt(if (seUdpSupported) 1 else 0)
-        out.writeString(openVpnSid)
-        out.writeString(openVpnHid)
+        out.writeString(openVpnDownloadSid)
+        out.writeString(openVpnDownloadHid)
+        out.writeString(openVpnDownloadHost)
     }
 
     private fun decodeBase64(base64str: String): String? {
@@ -406,8 +411,9 @@ class VPNGateConnection : Parcelable {
             seTcpPort = this.seTcpPort,
             seUdpPort = this.seUdpPort,
             seUdpSupported = this.seUdpSupported,
-            openVpnSid = this.openVpnSid,
-            openVpnHid = this.openVpnHid
+            openVpnDownloadSid = this.openVpnDownloadSid,
+            openVpnDownloadHid = this.openVpnDownloadHid,
+            openVpnDownloadHost = this.openVpnDownloadHost
         )
     }
 
@@ -441,8 +447,9 @@ class VPNGateConnection : Parcelable {
         seTcpPort = vpnGateItem.seTcpPort
         seUdpPort = vpnGateItem.seUdpPort
         seUdpSupported = vpnGateItem.seUdpSupported
-        openVpnSid = vpnGateItem.openVpnSid
-        openVpnHid = vpnGateItem.openVpnHid
+        openVpnDownloadSid = vpnGateItem.openVpnDownloadSid
+        openVpnDownloadHid = vpnGateItem.openVpnDownloadHid
+        openVpnDownloadHost = vpnGateItem.openVpnDownloadHost
         return this
     }
 

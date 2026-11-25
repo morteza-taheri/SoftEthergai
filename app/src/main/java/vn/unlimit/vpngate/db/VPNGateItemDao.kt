@@ -26,13 +26,23 @@ interface VPNGateItemDao {
     fun count(): Int
 
     /**
-     * How many stored servers carry an OpenVPN profile.
+     * How many stored servers carry an OpenVPN profile — either the profile
+     * bytes themselves, or the download identifiers that make one obtainable.
      *
      * Used to tell a healthy list from one whose profiles are missing, so a
      * degraded download cannot replace a connectable list.
+     *
+     * The identifiers keep their version-12 column names (`openVpnSid`,
+     * `openVpnHid`); see [vn.unlimit.vpngate.models.VPNGateItem] for why the
+     * Kotlin property names differ. The host column is not required here: a
+     * descriptor without it still resolves to `<hostName>.opengw.net`.
      */
-    @Query("SELECT COUNT(hostName) FROM vpngateitem WHERE openVpnConfigData IS NOT NULL AND openVpnConfigData != ''")
+    @Query("SELECT COUNT(hostName) FROM vpngateitem WHERE (openVpnConfigData IS NOT NULL AND openVpnConfigData != '') OR (openVpnSid IS NOT NULL AND openVpnSid != '' AND openVpnHid IS NOT NULL AND openVpnHid != '')")
     fun countWithOpenVpnConfig(): Int
+
+    /** Persist a profile fetched on demand without replacing the server dataset. */
+    @Query("UPDATE vpngateitem SET openVpnConfigData = :profile WHERE hostName = :hostName")
+    suspend fun updateOpenVpnConfig(hostName: String, profile: String): Int
 
     /**
      * Atomically swap the stored dataset.

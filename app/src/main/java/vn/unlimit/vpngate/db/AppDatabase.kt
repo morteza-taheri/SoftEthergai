@@ -27,7 +27,7 @@ import vn.unlimit.vpngate.models.VPNGateItem
         ServerProtocolSummary::class,
         ServerHistoryEvent::class,
     ],
-    version = 12,
+    version = 13,
 )
 abstract class AppDatabase: RoomDatabase() {
     abstract fun vpnGateItemDao() : VPNGateItemDao
@@ -346,6 +346,24 @@ abstract class AppDatabase: RoomDatabase() {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnSid` TEXT")
                 database.execSQL("ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnHid` TEXT")
+            }
+        }
+
+        /**
+         * Room 12 → 13 — the host half of the download descriptor.
+         *
+         * Version 12 shipped the two identifiers but not the host they belong
+         * to, so a downloaded profile could only be requested from whatever
+         * authority the caller guessed. This adds the host the link actually
+         * names (`host`/`fqdn` query parameter) as one more nullable column.
+         *
+         * Additive and nullable, same reasoning as 11 → 12: NULL means "the
+         * source did not publish it", which is a state every reader already
+         * has to handle for API-only rows.
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `VPNGateItem` ADD COLUMN `openVpnDownloadHost` TEXT")
             }
         }
     }

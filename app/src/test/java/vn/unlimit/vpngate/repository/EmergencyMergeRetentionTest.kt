@@ -58,6 +58,19 @@ class EmergencyMergeRetentionTest {
         override fun count(): Int = rows.size
         override fun countWithOpenVpnConfig(): Int =
             rows.count { !it.openVpnConfigData.isNullOrBlank() }
+
+        override suspend fun updateOpenVpnConfig(hostName: String, profile: String): Int {
+            var updated = 0
+            this.rows = this.rows.map { item ->
+                if (item.hostName == hostName) {
+                    updated++
+                    item.copy(openVpnConfigData = profile)
+                } else {
+                    item
+                }
+            }
+            return updated
+        }
     }
 
     /** Room stand-in that counts the two writes this contract is about. */
@@ -126,7 +139,7 @@ class EmergencyMergeRetentionTest {
         dao.rows = storedDataset()
         val before = dao.rows.map { it.hostName }.toSet()
 
-        mergeAll(dao, emergencyDataset(), emptyList(), now = 1_000L)
+        mergeAll(dao, emergencyDataset(), emptyList(), now = 1_000L, cap = 500)
 
         val after = dao.rows.map { it.hostName }.toSet()
         assertEquals(
@@ -145,7 +158,7 @@ class EmergencyMergeRetentionTest {
         dao.rows = (1..261).map { row("stored-$it", lastSeenAt = 500L) }
         val firstSeen = dao.rows.associate { it.hostName to it.firstSeenAt }
 
-        mergeAll(dao, emergencyDataset(), emptyList(), now = 9_000L)
+        mergeAll(dao, emergencyDataset(), emptyList(), now = 9_000L, cap = 500)
 
         val byHost = dao.rows.associateBy { it.hostName }
         // Refreshed: an overlapping row takes the new observation timestamp…
@@ -165,7 +178,7 @@ class EmergencyMergeRetentionTest {
         dao.rows = storedDataset()
         val manual = row("my-server.example", ip = "198.51.100.7")
 
-        mergeAll(dao, emergencyDataset(), listOf(manual), now = 1_000L)
+        mergeAll(dao, emergencyDataset(), listOf(manual), now = 1_000L, cap = 500)
 
         assertTrue(
             "a user-owned row must never be pruned by a supplementary source",

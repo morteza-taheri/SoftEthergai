@@ -143,6 +143,21 @@ class VpnServerRepositoryRoutingTest {
         )
     }
 
+    // ── External VPN: use the system VPN Network rather than NOT_VPN. ───────
+    @Test
+    fun `external foreign VPN path uses the bound VPN fetcher`() = runBlocking {
+        collectorLogs.clear(); fetchLogs.clear()
+        val result = runFetch(
+            CollectorPath.FOREIGN_VPN,
+            boundFetcher = tunnelFetcher,
+            tunnelResult = "FOREIGN_VPN_OK",
+        )
+
+        assertEquals("FOREIGN_VPN_OK", result)
+        assertEquals(listOf("[fetch] path=foreign-vpn source=html"), fetchLogs.toList())
+        assertEquals(listOf("[collector] path=foreign-vpn source=html"), collectorLogs.toList())
+    }
+
     // ── Permutation 3 ────────────────────────────────────────────────────────
     // tunnel UP + PHYSICAL ok → with PHYSICAL passed as the explicit PRIMARY,
     // TUNNEL is NOT tried (the primary already succeeded). (Routing order is

@@ -6955,6 +6955,22 @@ protocol order, v1.0.37 no-terminal contract).
 
 ### 12.9.12 Deferred (D-9, reasons)
 
+**Current reconnect safety policy (2026-11-25):** two independent budgets, because
+they answer two different questions.
+
+*Session-wide* (`AutoModeRecoveryPolicy`): bounded exponential backoff with jitter
+(maximum 60 s between attempts). Five consecutive losses insert a pause, after which
+recovery resumes. The legacy `ERROR_RECONNECT_LIMIT` identifier remains only for older
+UI translations and is no longer published as a permanent terminal state. A run that
+exhausts the catalogue during an Auto-Reconnect starts a fresh cycle instead of
+stopping.
+
+*Per server* (`SETTING_AUTO_MAX_ATTEMPTS_PER_SERVER`, 1–10, default 2): how many times
+Auto Mode may re-dial the SAME server before moving on. The counter is reset when that
+server produces a working tunnel and survives the quality re-sort, so an unstable
+server that still ranks first by ping is deferred to the tail once its allowance is
+spent, and is only dialled again when nothing else is left. Setting it to 1 reproduces
+"never re-dial the server that just dropped".
 Network-identity hashing; staged probing; connect-time statistics; extending the Iranian app list; a
 rescan button — all need on-device measurements and are out of scope for this block.
 

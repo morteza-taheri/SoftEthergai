@@ -178,21 +178,19 @@ class AutoModeReconnectTest {
         controller.awaitConnected()
         assertNotNull("precondition: a tunnel is owned", controller.state.value)
 
-        val before = adapter.connects.count { it.first == "alpha" }
-        // Simulate the armed-path loss. The controller's watcher callback sets
-        // Disconnected then launches onUnexpectedDisconnect, which re-seeds and
-        // starts a fresh run over [alpha, beta].
+        val beforeBeta = adapter.connects.count { it.first == "beta" }
+        // Simulate the armed-path loss. The reconnect must rotate to another
+        // candidate before retrying the server that just dropped.
         invokeArmedTunnelLost(controller)
 
-        // The reconnect re-dials alpha first.
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline) {
-            if (adapter.connects.count { it.first == "alpha" } > before) break
+            if (adapter.connects.count { it.first == "beta" } > beforeBeta) break
             delay(10)
         }
         assertTrue(
-            "expected a reconnect to re-dial alpha; connects=${adapter.connects}",
-            adapter.connects.count { it.first == "alpha" } > before,
+            "expected reconnect to rotate to beta before alpha; connects=${adapter.connects}",
+            adapter.connects.count { it.first == "beta" } > beforeBeta,
         )
         assertTrue(
             "expected the reconnect log line; logs=${adapter.logs}",
@@ -286,7 +284,42 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T5 — Manual precedence: a busy tunnel suppresses the reconnect.
+    // T5 — An explicit stop cancels a delayed reconnect.
+    // ------------------------------------------------------------------
+    @Test
+    fun t5_stopDuringBackoffPreventsTunnelResurrection() = runBlocking {
+        val controller = controller(
+            servers = listOf(candidate("alpha"), candidate("beta")),
+            reconnectInitialDelayMs = 700L,
+        )
+        controller.start()
+        controller.awaitConnected()
+        val before = adapter.connects.size
+
+        invokeArmedTunnelLost(controller)
+        // The decision is taken on the owned recovery coroutine, so wait for it
+        // to be logged rather than assuming it already ran.
+        val decisionDeadline = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < decisionDeadline &&
+            adapter.logs.none { it.contains("Unexpected disconnect:") }
+        ) delay(10)
+        assertTrue(
+            "the reconnect decision should have been scheduled; logs=${adapter.logs}",
+            adapter.logs.any { it.contains("Unexpected disconnect:") },
+        )
+        controller.stop()
+        delay(900)
+
+        assertEquals(
+            "stop must cancel the delayed reconnect before it can dial again",
+            before,
+            adapter.connects.size,
+        )
+        assertTrue(controller.state.value is AutoModeState.Disconnected)
+    }
+
+    // ------------------------------------------------------------------
+    // T6 — Manual precedence: a busy tunnel suppresses the reconnect.
     // ------------------------------------------------------------------
     @Test
     fun t5_manualPrecedenceSuppressesReconnect() = runBlocking {
@@ -325,7 +358,7 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T6 — The settle delay is applied before the first reconnect attempt.
+    // T7 — The settle delay is applied before the first reconnect attempt.
     //
     // There is no kotlinx-coroutines-test on the classpath, so the delay is
     // asserted by construction: the production default is the named constant.
@@ -336,7 +369,7 @@ class AutoModeReconnectTest {
     }
 
     // ------------------------------------------------------------------
-    // T7 — Regression: the manual-start (user button) branch resets the
+    // T8 — Regression: the manual-start (user button) branch resets the
     //      reconnect budget.
     //
     // The reset is deliberately applied ONLY by the user-facing start branches
