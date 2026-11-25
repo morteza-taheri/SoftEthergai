@@ -15,6 +15,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -35,19 +37,20 @@ class HttpFetcherCancellationTest {
     @Test
     fun `a cancelled fetch returns promptly and cancels the underlying call`() = runBlocking {
         val callCancelled = AtomicBoolean(false)
+        val interceptorEntered = CountDownLatch(1)
+        val cancellationObserved = CountDownLatch(1)
         val client = OkHttpClient.Builder()
             .addInterceptor { chain: Interceptor.Chain ->
-                // Simulate a request that never completes on its own. Poll
-                // `isCanceled()` rather than sleeping forever: OkHttp's
-                // Call.cancel() closes sockets but does not interrupt a thread
-                // sleeping inside an interceptor, so an interrupt-based fake
-                // would hang the test JVM instead of proving cancellation.
+                // Synchronize with the test so a slow CI worker cannot cancel
+                // the job before OkHttp has actually entered this interceptor.
                 val call = chain.call()
-                val limitNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+                interceptorEntered.countDown()
+                val limitNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                 while (!call.isCanceled() && System.nanoTime() < limitNanos) {
                     Thread.sleep(10)
                 }
                 callCancelled.set(call.isCanceled())
+                if (call.isCanceled()) cancellationObserved.countDown()
                 throw IOException(
                     if (call.isCanceled()) "cancelled by call.cancel()" else "interceptor timeout",
                 )
@@ -56,8 +59,10 @@ class HttpFetcherCancellationTest {
         val fetcher = OkHttpFetcher(client = client)
 
         val job = launch { fetcher.get("https://example.invalid/blocking") }
-        delay(200)
-        assertTrue("the call is still in flight before cancel", !job.isCompleted)
+        assertTrue(
+            "OkHttp must enter the blocking interceptor before the test cancels",
+            interceptorEntered.await(3, TimeUnit.SECONDS),
+        )
 
         job.cancel()
 
@@ -65,6 +70,10 @@ class HttpFetcherCancellationTest {
         assertTrue(
             "suspend must return promptly after cancel, not after the 15s read timeout",
             joined != null,
+        )
+        assertTrue(
+            "the interceptor must observe cancellation of its underlying OkHttp Call",
+            cancellationObserved.await(1, TimeUnit.SECONDS),
         )
         assertTrue("the underlying OkHttp Call must be cancelled", callCancelled.get())
     }
