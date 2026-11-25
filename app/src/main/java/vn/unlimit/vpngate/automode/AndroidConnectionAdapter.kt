@@ -94,8 +94,14 @@ class AndroidConnectionAdapter(
      * Stage G-7: the profile download is bounded well inside one attempt's
      * budget. A download that outlives this is treated exactly like "there is
      * no profile", which is what the attempt would have concluded anyway.
+     *
+     * 20 s was measurably too small once the descriptor repair was added, and
+     * 28 s still assumed one round trip per phase: with a 12 s per-authority
+     * timeout the repair is a page read plus a retry (24 s), and the previous
+     * cap fired mid-flow — device log 2026-11-25, 12:19:12.871 → 12:19:32.915 is
+     * exactly 20.0 s and ended in a burst of instantly-cancelled sources.
      */
-    private val openVpnConfigDownloadTimeoutMs = 12_000L
+    private val openVpnConfigDownloadTimeoutMs = 30_000L
 
     /**
      * AUTOCONNECT-FIX-5 (v1.0.35): the outcome of the most recent [disconnect] teardown.

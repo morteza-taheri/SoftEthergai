@@ -1094,8 +1094,26 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                 runBlocking { VpnServerRepository().fetchOpenVpnProfile(connection, useUdp) }
             }.getOrNull()
 
+            // Persist it, exactly as the Auto Mode path does. Without this the
+            // bytes lived only in the connection object: a restart, or any later
+            // attempt on this server, paid for the same download again — and a
+            // refresh that omits the profile looked like a server with none.
+            val body = profile?.takeIf { it.isNotBlank() }
+            if (body != null) {
+                runCatching {
+                    val hostName = connection.hostName.orEmpty()
+                    if (hostName.isNotBlank()) {
+                        runBlocking {
+                            App.instance?.vpnGateItemDao?.updateOpenVpnConfig(hostName, body)
+                        }
+                    }
+                }.onFailure {
+                    Log.w(TAG, "OpenVPN profile downloaded but cache write failed", it)
+                }
+            }
+
             runOnUiThread {
-                if (profile.isNullOrBlank()) {
+                if (body == null) {
                     Toast.makeText(
                         this,
                         getString(R.string.error_load_profile),
@@ -1103,7 +1121,15 @@ class DetailActivity : AppCompatActivity(), VpnStatus.StateListener, ByteCountLi
                     ).show()
                     return@runOnUiThread
                 }
-                connection.setOpenVpnConfigDataString(profile)
+                // The downloader returns the `.ovpn` document itself, not the
+                // CSV feed's Base64 column, so it is assigned directly.
+                // `setOpenVpnConfigDataString` decodes Base64 and therefore
+                // returned null here for every downloaded profile — the bytes
+                // arrived, the store stayed empty, and the user saw
+                // `error_load_profile` on a download that had succeeded
+                // (device log 2026-11-25 12:46:14: "Downloaded" then
+                // "loadVpnProfile: no OpenVPN config stored").
+                connection.openVpnConfigData = body
                 if (loadVpnProfile(useUdp)) {
                     startOpenVpn()
                 } else {

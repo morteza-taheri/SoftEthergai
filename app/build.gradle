@@ -123,8 +123,14 @@ android {
             // Android userspace too), Android 10 getOwnerUid() crash fix,
             // About-screen update check, permanent server delete + one-row CSV
             // export, and a current update-checker manifest.
-            versionCode 154
-            versionName "2.4.20"
+            // v2.4.21 (155) — resilient collector integrated (HTML-only
+            // collection with a per-server OpenVPN download descriptor, Room
+            // 13), plus the on-demand profile repair: an expired page-token
+            // generation is refreshed from a live page before the download is
+            // retried, and a downloaded profile is now accepted and cached by
+            // the manual connect path.
+            versionCode 155
+            versionName "2.4.21"
         }
     }
 

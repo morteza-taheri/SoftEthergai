@@ -7591,3 +7591,155 @@ five per-ABI assets; the API-reported `sha256:` digests match the local
 `SHA256SUMS.txt`. `v2.4.19` was **not deleted** — the operator asked for a new
 release under the previous per-ABI conditions, not a delete+replace.
 
+
+## 12.16 — v2.4.21 (155): resilient collector merge and the on-demand profile repair
+
+### 12.16.1 — What was merged
+
+`fix/vpngate-resilient-collector-autoreconnect` (107 commits, 41 files) was
+reviewed against the shipped tree and merged on a scratch branch as `3a70ff1`,
+**after** resolving 21 files that both sides had touched. The branch's genuine
+contributions were kept: a per-server OpenVPN download identity (`sid`/`hid`/
+`host`) persisted through Room, an HTML-only collection made dialable on demand,
+`openVpnProfile` fetched on the measured route, `dropsOpenVpnProfiles()`
+accepting a descriptor as "profile still present", descriptor-preserving
+`mergeFallback`/`mergeAll`, an injectable retention `cap`, async OkHttp
+cancellation, and a CI test-report upload.
+
+Three mechanisms existed twice, and in each case exactly one survived:
+
+| Duplicate | Kept | Removed |
+|---|---|---|
+| Collector rung | `CollectorPath.FOREIGN_VPN` + `CollectorRoutingInput.foreignVpnAvailable` + `GlobalVpnTracker.currentForeignVpnNetwork()` (the `VpnOwnerUidReader`/`OwnedVpnDecision` implementation) | `SYSTEM_VPN` / `currentExternalVpnNetwork()` |
+| Profile downloader | `data/remote/OpenVpnProfileDownloader` with validated `remote`/port/proto and mirror escalation | `repository/OpenVpnConfigDownloader` (and its test) |
+| Auto Mode reconnect | `AutoModeRecoveryPolicy` + `recoveryJob`/`sessionEpoch`/`quarantine`/`attemptsPerServer` (two budgets: session-wide and per-server) | `reconnectJob` / `RECONNECT_COOLDOWN_MS` / `nextReconnectDelayMs` / `pendingReconnectDemotedKey` |
+
+The one place the merge had silently broken a documented contract was restored:
+`AutoModeController` publishes `AutoModeState.Disconnected` **after** the
+reconnect decision log (contract A-5), not before it.
+
+Room moved to **13**: `MIGRATION_11_12` keeps only `openVpnSid`/`openVpnHid`, and
+`MIGRATION_12_13` adds `openVpnDownloadHost`.
+
+### 12.16.2 — The defect that blocked the feature
+
+On the device every on-demand profile download failed. The logs named the
+symptom precisely:
+
+```
+profile download: http://150.40.105.5:32536 returned a page, not a profile
+```
+
+Four independent causes were proven, each with a measurement rather than an
+inference.
+
+**A — the `sid` is a page-load generation, not a server id.** 98 stored rows
+shared one `sid` (`1795595525891`), and the same token was accepted by every
+mirror (`200 application/x-openvpn-profile`, 10 016 bytes, on both
+`150.40.105.5:32536` and `150.40.105.15:38301`, for `udp=0` and `udp=1`). A
+token from an older collection answers `302 Location: /`; the client follows it
+and receives the mirror's own HTML page (118 bytes). Measured: `sid` 14 minutes
+old accepted, 40 minutes old refused.
+
+**B — the front page is a per-client rotating sample.** Two consecutive loads
+from the development host were identical (99 servers, byte-identical), while the
+phone's load of the same URL was a different 100-server sample. A server can
+therefore be absent from the page the app reads even when it is present for
+another client, and no amount of retrying fixes that: it is the honest "no
+downloadable profile right now" answer.
+
+**C — the endpoint always returns the UDP template.** A `udp=0` request for
+`public-vpn-75:443` came back as `proto udp` + `remote … 443`. The downloader's
+`proto` check therefore rejected **every** TCP download while carrying no
+information: the query port selects the listener, and
+`OpenVpnConfigTransform.forTransport` rewrites both `proto` and the remote port
+for the transport actually dialled.
+
+**D — the manual path decoded a raw profile as Base64.** `DetailActivity` called
+`setOpenVpnConfigDataString(profile)`, which runs `Base64.decode` and returns
+null for a `.ovpn` document. The download had succeeded and the store stayed
+empty, so the user saw `error_load_profile` on a successful download
+(`12:46:14 loadVpnProfile: no OpenVPN config stored`).
+
+### 12.16.3 — The repair
+
+`OpenVpnProfileDownloader` now treats the descriptor as a token with a lifetime:
+
+1. **Age check.** `sid` is a millisecond epoch (`1795595525875` →
+   2026-11-25T08:32:05Z, matching the collection time). A generation older than
+   `GENERATION_TRUST_MS` (20 min) is refreshed **before** it is tried, which is
+   what keeps the repair inside one attempt on a link where a single request can
+   take 12 s. The check is a hint, never a verdict: an untrusted token is still
+   tried if the refresh yields nothing, so a change to the encoding or a skewed
+   clock can cost time but not correctness.
+2. **Page re-arm.** `refreshIdentity` reads the same `/en/` document the
+   collector parses, so the token it publishes is by construction one the
+   download endpoint accepts. The parsed page is cached for `PAGE_TTL_MS`
+   (5 min), keyed by mirror base: one page load re-arms the whole sweep instead
+   of paying ~7 s per server.
+3. **One rejection ends the phase.** The generation is refused by every mirror
+   alike, so phase 1 stops at the first `TokenRejected` instead of repeating it.
+4. **Bounded, logged retries.** Every retry logs `token <8 hex>… on <base> ->
+   profile|token-rejected|unavailable`; the phase had been silent, which is what
+   made cause D invisible for a whole debugging round.
+5. **No `proto` gate**, and mirrors are tried before the canonical host, which
+   on a censored network is the one authority that cannot answer.
+6. **The manual path persists what it downloaded** (`updateOpenVpnConfig`),
+   exactly as the Auto Mode path already did, and assigns the raw document
+   instead of decoding it.
+
+Timeouts were re-derived from measurement: `SOURCE_TIMEOUT_MS` 5 s → 12 s
+(the same page took 7.3 s from the development host and 25 s from the phone on
+the same Wi-Fi), and the adapter's per-profile budget 20 s → 30 s. The 20 s cap
+had been firing mid-flow — `12:19:12.871 → 12:19:32.915` is exactly 20.0 s and
+ended in a burst of instantly-cancelled sources that read as network failures.
+
+### 12.16.4 — Verification
+
+**JVM.** `:app:testProDebugUnitTest` **1562 tests, 0 failed, 1 skipped**;
+`:SoftEtherClient:test` and `:sstpClient:test` green. The downloader suite grew
+to 10 cases, including the repair, the age-ordered refresh, the
+"old token still tried when the page cannot help" fallback, one-page-per-sweep
+caching, and the UDP-template-for-a-TCP-request case. Page tokens in those tests
+are captured from the clock, so no assertion can drift into exercising the wrong
+branch as real time passes.
+
+**Device (`5585fecc`, Redmi 10C, Android 13).** Database upgraded to
+`user_version = 13`; `VPNGateItem` has 30 columns ending
+`openVpnSid, openVpnHid, openVpnDownloadHost`; 735 existing rows preserved. A
+physical-route refresh produced `HTML produced 100 records; CSV feed skipped`,
+`100 incoming, 801 stored`, and left **98 rows carrying a download host**.
+
+The repair, end to end, on a server whose stored token was 26 minutes old:
+
+```
+13:04:14.740  profile download: stored token 17955976… is 26 min old; refreshing before the first try
+13:04:25.548  profile download: http://150.40.105.5:32536 page published 99 downloadable descriptor(s); public-vpn-109 is listed
+13:04:33.631  profile download: retry token 17955985… on http://150.40.105.5:32536 -> profile
+13:04:33.803  Starting openvpn
+```
+
+and on a second server over UDP, with the profile cached:
+
+```
+13:10:19.261  stored token 17955976… is 32 min old; refreshing before the first try
+13:10:22.148  page published 99 downloadable descriptor(s); public-vpn-53 is listed
+13:10:23.208  retry token 17955995… on http://150.40.105.5:32536 -> profile
+13:10:23.387  Starting openvpn
+```
+
+The tunnel came up — `NetworkAgentInfo{… ni{VPN CONNECTED} …
+VpnTransportInfo{sessionId=Japan[219.100.37.225][UDP:1195] - 10.223.112.25/30}}`
+with `tun0` — and the profile was persisted: rows with profile bytes went
+**66 → 67**. A TCP attempt to `public-vpn-109:443` reached
+`Starting openvpn` and then failed its handshake
+(`TCP connection was closed before it was established`), which is that host's
+reachability on this network, not a profile defect: the same server's profile
+was downloaded, accepted and parsed.
+
+### 12.16.5 — Version
+
+`versionCode 155` / `versionName 2.4.21`. `app-update/version.json` is
+deliberately **left at `154 / 2.4.20`**: it describes the published release, and
+pointing it at an unpublished build would make the in-app checker announce an
+update that cannot be downloaded.
