@@ -65,3 +65,7 @@ build_test_baseline.log
 # Scratch directory for local device/log analysis (logcat captures, pulled
 # databases, UI dumps). Can reach ~100 MB and must never be committed.
 .tmp/
+
+# Staging directory for release assets (five APKs, ~230 MB) and the release
+# notes that are uploaded to GitHub. Build output, never source.
+.release/
