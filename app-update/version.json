@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "versionCode": 154,
-  "versionName": "2.4.20",
+  "versionCode": 155,
+  "versionName": "2.4.21",
   "releasePageUrl": "https://github.com/morteza-taheri/SoftEthergai/releases/latest",
-  "notes": "Fixes the arm64-v8a APK not installing on phones with 32-bit Android userspace (the ARM64 asset now includes both ARM ABIs); fixes the app closing by itself on Android 10; permanent server deletion and one-server CSV export (clipboard or file) from the long-press menu; Check for update moved to the About screen"
+  "notes": "Resilient HTML-only server-list collection with a per-server OpenVPN download descriptor and Room 13; repaired on-demand profile download (expired page-generation tokens are refreshed, one page load per Auto Mode sweep, TCP template accepted); manual connect now caches the profile it downloads. Signed with a new release key - uninstall any older build first."
 }

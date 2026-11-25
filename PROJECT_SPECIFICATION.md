@@ -7739,7 +7739,47 @@ was downloaded, accepted and parsed.
 
 ### 12.16.5 — Version
 
-`versionCode 155` / `versionName 2.4.21`. `app-update/version.json` is
-deliberately **left at `154 / 2.4.20`**: it describes the published release, and
-pointing it at an unpublished build would make the in-app checker announce an
-update that cannot be downloaded.
+`versionCode 155` / `versionName 2.4.21`. `app-update/version.json` was held at
+`154 / 2.4.20` while the release was a draft; it is moved to `155 / 2.4.21` at
+publish time (§12.17).
+
+### 12.17 — Signing identity reset and the release-line cleanup (2026-11-25)
+
+The two committed GPG files are locked on this machine: `release.jks.gpg`
+(2,246 B) is an OpenPGP symmetric-key message (tag 3, AES256.CFB, iterated S2K,
+salt `E83241EC97056EA9`) that needs a passphrase, and
+`keyStore/release.jks.gpg` (8,959 B) is a public-key encrypted message (tag 1)
+addressed to RSA keyid `3CDC03C723117E92`, which is not present in
+`.blackbox/pubring.kbx` and has no secret key in `~/.gnupg`. Both the
+`GPG_PRIVATE_KEY` and `SIGN_KEY_PASSWORD` CI secrets are unavailable locally,
+and with `keyStore/release.jks` absent `:app:assembleProRelease` is correctly
+fail-closed.
+
+The five draft assets produced before this investigation had therefore come
+from the **debug** variant with `-PofficialBuild` (which strips the `-dev`
+suffix): all five were `application-debuggable` and carried this machine's
+debug certificate `3deb2ace…`. The previously published v2.4.20 asset had the
+same defect and the certificate `b1aa796a…` of the machine that built it.
+
+By the repository owner's decision, the nine published releases (26 assets)
+and all ten tags were removed from GitHub and a new signing identity was
+created:
+
+- `keyStore/release.jks` — JKS, alias `key_pro`, RSA 4096, SHA256withRSA,
+  10,000-day validity, DN `CN=SoftEthergai, OU=Mobile, O=SoftEthergai,
+  L=Tehran, ST=Tehran, C=IR`.
+- Certificate SHA-256 digest
+  `2dec9c7712d238df53b1c83b6119173ae732853314df922ab23cf26ff11a2aee`.
+- The password lives only in the gitignored `local.properties`
+  (`signKeyPassword`) and must be backed up **with** the keystore: either one
+  alone is useless.
+
+All five assets were rebuilt from `assembleProRelease` (not the debug variant)
+in two passes from one tree: `-PofficialBuild -Parm64Fallback` for the dual-ARM
+asset, then `-PofficialBuild -PabiSplits` for the four slices plus universal.
+The split outputs had to be staged before the second pass because both
+invocations write into the same `app/build/outputs/apk/pro/release/` directory.
+Verified: `versionCode 155` / `versionName 2.4.21`, no `application-debuggable`
+on any asset, one certificate on all five, `zipalign -c -v 4` clean, ABI gate
+PASSED. Existing installations need one uninstall because the signing identity
+changed; `app-update/version.json` now tracks `155 / 2.4.21`.
