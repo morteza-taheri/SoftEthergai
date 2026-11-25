@@ -1,7 +1,10 @@
 package vn.unlimit.vpngate.repository
 
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Interceptor
@@ -23,12 +26,6 @@ import vn.unlimit.vpngate.data.remote.OkHttpFetcher
  * [VpnServerRepository.refresh] is a real end-to-end deadline, not merely a
  * cooperative wrapper that a blocking socket read can outlive.
  *
- * Before the B-1 fix, a blocked `execute()` ignored the deadline until OkHttp's
- * own connect(10 s) + read(15 s) budget elapsed per hop — the device runs in
- * v1.0.65 observed 128 s / 139 s instead of the nominal 45 s. With the fix the
- * blocked read is interrupted when the deadline fires, so this test uses a
- * 300 ms deadline against an interceptor that would otherwise block forever.
- *
  * Pure JVM: the interceptor never opens a socket.
  */
 class ServerListRefreshDeadlineTest {
@@ -38,18 +35,19 @@ class ServerListRefreshDeadlineTest {
 
     @Test
     fun `the outer refresh deadline cuts a blocking HTTP call end to end`() = runBlocking {
+        val interceptorEntered = CountDownLatch(1)
+        val cancellationObserved = CountDownLatch(1)
         val client = OkHttpClient.Builder()
             .addInterceptor { chain: Interceptor.Chain ->
-                // Simulate a read that never completes on its own. Poll
-                // `isCanceled()` rather than sleeping forever: OkHttp's
-                // Call.cancel() closes sockets but does not interrupt a thread
-                // sleeping inside an interceptor, so an interrupt-based fake
-                // would hang the test instead of proving cancellation.
+                // Hold the request until the repository's own timeout cancels
+                // its child coroutine and therefore the underlying OkHttp Call.
                 val call = chain.call()
-                val limitNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+                interceptorEntered.countDown()
+                val limitNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                 while (!call.isCanceled() && System.nanoTime() < limitNanos) {
                     Thread.sleep(10)
                 }
+                if (call.isCanceled()) cancellationObserved.countDown()
                 throw IOException(
                     if (call.isCanceled()) "cancelled by the refresh deadline" else "interceptor timeout",
                 )
@@ -67,11 +65,18 @@ class ServerListRefreshDeadlineTest {
             boundFetcherFactory = { null },
             pathLog = {},
             fetchLog = { fetchLog.add(it) },
-            mainTimeoutMs = 300L,
+            // Leave enough startup headroom for loaded CI runners while still
+            // keeping this a short deterministic deadline regression test.
+            mainTimeoutMs = 2_000L,
         )
 
         val startedAt = System.currentTimeMillis()
-        val result = withTimeoutOrNull(5_000) { repo.refresh() }
+        val refresh = async { repo.refresh() }
+        assertTrue(
+            "the HTTP interceptor must be reached before the refresh deadline",
+            interceptorEntered.await(1_500, TimeUnit.MILLISECONDS),
+        )
+        val result = withTimeoutOrNull(5_000) { refresh.await() }
         val elapsedMs = System.currentTimeMillis() - startedAt
 
         assertNull("a refresh that hit its deadline must return null", result)
@@ -80,8 +85,12 @@ class ServerListRefreshDeadlineTest {
             fetchLog.any { it.contains("deadline exceeded") },
         )
         assertTrue(
-            "the 300 ms deadline must fire promptly; took ${elapsedMs}ms",
-            elapsedMs < 4_000,
+            "the 2 s deadline must fire promptly; took ${elapsedMs}ms",
+            elapsedMs < 4_500,
+        )
+        assertTrue(
+            "the underlying OkHttp call must observe the repository timeout",
+            cancellationObserved.await(1, TimeUnit.SECONDS),
         )
     }
 }
