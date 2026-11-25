@@ -4,6 +4,7 @@ import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -71,7 +72,7 @@ class ServerListRefreshDeadlineTest {
         )
 
         val startedAt = System.currentTimeMillis()
-        val refresh = async { repo.refresh() }
+        val refresh = async(Dispatchers.Default) { repo.refresh() }
         assertTrue(
             "the HTTP interceptor must be reached before the refresh deadline",
             interceptorEntered.await(1_500, TimeUnit.MILLISECONDS),
