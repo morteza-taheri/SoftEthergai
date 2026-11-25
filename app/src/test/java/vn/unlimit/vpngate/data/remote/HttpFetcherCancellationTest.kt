@@ -1,5 +1,6 @@
 package vn.unlimit.vpngate.data.remote
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -58,7 +59,7 @@ class HttpFetcherCancellationTest {
             .build()
         val fetcher = OkHttpFetcher(client = client)
 
-        val job = launch { fetcher.get("https://example.invalid/blocking") }
+        val job = launch(Dispatchers.Default) { fetcher.get("https://example.invalid/blocking") }
         assertTrue(
             "OkHttp must enter the blocking interceptor before the test cancels",
             interceptorEntered.await(3, TimeUnit.SECONDS),
