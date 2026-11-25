@@ -2,6 +2,7 @@ package vn.unlimit.vpngate.data.remote
 
 import android.net.Network
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -392,6 +393,7 @@ class OkHttpFetcher(
      * restricted to an official mirror authority; redirects are checked on
      * every hop and only same-source redirects are followed.
      */
+    @OptIn(InternalCoroutinesApi::class)
     private suspend fun executeCleartextMirror(
         initialUrl: String,
         redirectPolicy: RedirectPolicy?,
@@ -410,8 +412,16 @@ class OkHttpFetcher(
             val port = if (uri.port > 0) uri.port else 80
             val socket = client.socketFactory.createSocket()
             val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
-            val cancellation = job?.invokeOnCompletion { cause ->
-                if (cause is kotlinx.coroutines.CancellationException) runCatching { socket.close() }
+            // Run while the Job is entering cancellation, not after it has
+            // completed. A blocking Socket.connect/read prevents completion;
+            // the default completion handler therefore ran too late to unblock it.
+            val cancellation = job?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is kotlinx.coroutines.CancellationException) {
+                    runCatching { socket.close() }
+                }
             }
             try {
                 socket.connect(InetSocketAddress(uri.host, port), 10_000)
@@ -511,6 +521,8 @@ class OkHttpFetcher(
                 return@withContext HttpResponse(
                     initialUrl, current, status, headers["content-type"], body, chain.toList(),
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 CollectorLog.d("Cleartext mirror request failed: ${e.javaClass.simpleName}: ${e.message}")
                 return@withContext null
